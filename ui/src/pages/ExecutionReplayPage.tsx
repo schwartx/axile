@@ -8,7 +8,7 @@ import { getReplayManifest } from '@/lib/api/replay'
 import { projectReplay } from '@/features/replay/model'
 import { ReplayChart } from '@/features/replay/ReplayChart'
 import { appliedEventIndex, playbackCursor } from '@/features/replay/playback'
-import { replayFieldText, replayInstrument, replayNumber, replayRange, replayStream, replaySymbols, replayTime } from '@/features/replay/presentation'
+import { rememberReplaySymbols, replayCommandPresentation, replayFieldText, replayInstrument, replayNumber, replayRange, replayStream, replaySymbols, replayTime, replayWindowRequest } from '@/features/replay/presentation'
 import { useReplayWindow } from '@/features/replay/useReplayWindow'
 import type { ReplayContext, ReplayCursor, ReplayManifest, ReplayOrder, ReplayProjection, ReplayRange, ReplayTrade } from '@/features/replay/types'
 
@@ -20,7 +20,6 @@ const environmentLabels: Record<string, string> = { live: '实盘', demo: '演�
 const positionModeLabels: Record<string, string> = { net: '净持仓', hedge: '双向持仓' }
 const directionText = (value: string | null) => value === 'BUY' ? '买' : value === 'SELL' ? '卖' : '方向未知'
 const offsetText = (value: string | null) => ({ OPEN: '开', CLOSE: '平', CLOSETODAY: '平今', CLOSEYESTERDAY: '平昨' } as Record<string, string>)[value ?? ''] ?? ''
-const commandText = (phase: string) => phase === 'error' ? '观察到请求错误，订单状态仍以回报为准' : ['request', 'native_request'].includes(phase) ? '请求已发出，确认另见订单回报' : '同步结果已返回，场内状态以回报为准'
 
 function RecordedFields({ value, context, kind }: { value: ReplayOrder | ReplayTrade; context: ReplayContext; kind: 'order' | 'trade' }) {
   const fields = context.display?.[kind] ?? []
@@ -55,7 +54,10 @@ function OrdersAndTrades({ projection, context, symbol, selected, onSelect }: { 
       </tbody></table></div>
       {!orders.length && <p className="py-4 text-[13px] text-ink-3">此时尚未观察到相关委托。</p>}
       {selectedOrder && <RecordedFields value={selectedOrder} context={context} kind="order" />}
-      {commands.length > 0 && <details className="mt-3 border-t border-line pt-3 text-[12px] text-ink-3"><summary className="w-fit cursor-pointer focus-visible:outline-2 focus-visible:outline-accent">最近报撤请求 · {commands.length} 条观察</summary><ul className="mt-2 space-y-1.5">{commands.map(command => <li key={`${command.capture_seq}:${command.command_id}`} className="flex flex-wrap gap-x-3"><time className="num">{replayTime(command.time_us)}</time><span>{command.operation === 'cancel_order' ? '撤单' : command.operation === 'place_order' ? '报单' : '操作'} {command.order_id ?? command.symbol ?? ''}</span><span className={command.phase === 'error' ? 'text-warn' : ''}>{commandText(command.phase)}</span></li>)}</ul></details>}
+      {commands.length > 0 && <details className="mt-3 border-t border-line pt-3 text-[12px] text-ink-3"><summary className="w-fit cursor-pointer focus-visible:outline-2 focus-visible:outline-accent">最近报撤请求 · {commands.length} 条观察</summary><ul className="mt-2 space-y-1.5">{commands.map(command => {
+        const observation = replayCommandPresentation(command.data)
+        return <li key={`${command.capture_seq}:${command.command_id}`} className="flex flex-wrap gap-x-3"><time className="num">{replayTime(command.time_us)}</time><span>{command.operation === 'cancel_order' ? '撤单' : command.operation === 'place_order' ? '报单' : '操作'} {command.order_id ?? command.symbol ?? ''}</span><span className={observation.failed ? 'text-warn' : ''}>{observation.text}</span></li>
+      })}</ul></details>}
     </section>
     <section className="min-w-0" aria-label="当前游标已知的自己的成交">
       <div className="mb-3 flex items-baseline justify-between gap-3"><h2 className="font-semibold text-ink-1">自己的成交</h2><span className="text-[12px] text-ink-3">独立于市场成交圆点</span></div>
@@ -89,24 +91,21 @@ export function ExecutionReplayPage() {
       if (value.account_id !== accountId || value.execution_id !== executionId) throw new Error('这次执行不属于当前账户')
       setManifest(value)
       const first = value.recordings[0]
-      if (first) { setRecordingId(first.recording_id); setSymbol(Object.keys(first.context.instrument ?? {})[0] ?? ''); setRange(replayRange(first.coverage, undefined, Number(initialWindowDuration.current) * 1_000_000)) }
+      if (first) { setRecordingId(first.recording_id); setSymbol(replaySymbols(first)[0] ?? ''); setRange(replayRange(first.coverage, undefined, Number(initialWindowDuration.current) * 1_000_000)) }
     }).catch(cause => { if (!controller.signal.aborted) setManifestError(cause instanceof Error ? cause : new Error(String(cause))) }).finally(() => { if (!controller.signal.aborted) setManifestLoading(false) })
     return () => controller.abort()
   }, [accountId, executionId, revision])
 
   const recording = manifest?.recordings.find(item => item.recording_id === recordingId)
-  const request = useMemo(() => range && recordingId ? { ...range, recording_id: recordingId, ...(symbol ? { symbols: [symbol] } : {}) } : null, [range, recordingId, symbol])
+  const request = useMemo(() => range && recording ? replayWindowRequest(recording, range, symbol) : null, [range, recording, symbol])
   const loaded = useReplayWindow(executionId, request, revision)
   const windowData = loaded.value
   const context = windowData?.context ?? recording?.context
-  const symbols = [...new Set([...Object.keys(context?.instrument ?? {}), ...(knownSymbols[recordingId] ?? [])])]
+  const symbols = recording ? replaySymbols(recording, knownSymbols[recordingId] ?? []) : []
   useEffect(() => {
     if (!windowData) return
     const discovered = replaySymbols(windowData)
-    setKnownSymbols(previous => {
-      if (previous[windowData.recording_id]?.length) return previous
-      return { [windowData.recording_id]: discovered }
-    })
+    setKnownSymbols(previous => rememberReplaySymbols(previous, windowData))
     if (!symbol && discovered[0]) setSymbol(discovered[0])
   }, [windowData, symbol])
   const requestedSeek = pendingSeek.current?.recording === recordingId && pendingSeek.current?.symbol === symbol ? pendingSeek.current.time_us : null
@@ -187,8 +186,7 @@ export function ExecutionReplayPage() {
     setPlaying(false); setSeekDraft(null); pendingSeek.current = null; setRecordingId(value)
     const next = manifest?.recordings.find(item => item.recording_id === value)
     if (!next) return
-    setKnownSymbols(previous => ({ [value]: previous[value] ?? [] }))
-    setSymbol(Object.keys(next.context.instrument ?? {})[0] ?? ''); setRange(replayRange(next.coverage, undefined, Number(windowDuration) * 1_000_000))
+    setSymbol(replaySymbols(next, knownSymbols[value] ?? [])[0] ?? ''); setRange(replayRange(next.coverage, undefined, Number(windowDuration) * 1_000_000))
   }
   const moveWindow = (direction: -1 | 1) => {
     continuePlayback.current = null
@@ -223,7 +221,7 @@ export function ExecutionReplayPage() {
     {recording && context && <div className="mt-5 rounded-card border border-line bg-surface p-3 sm:p-5">
       <div className="flex flex-wrap items-end gap-x-4 gap-y-3">
         <label className="min-w-0 text-[12px] text-ink-2">录制段<select aria-label="选择录制段" className={`${selectClass} mt-1 block max-w-72`} value={recordingId} onChange={event => selectRecording(event.target.value)}>{manifest?.recordings.map((item, index) => <option key={item.recording_id} value={item.recording_id}>第 {index + 1} 段 · {item.recording_id}{item.order_known === false ? '（先后未知）' : ''}</option>)}</select></label>
-        <label className="text-[12px] text-ink-2">品种<select aria-label="选择回放品种" className={`${selectClass} mt-1 block`} value={symbol} onChange={event => { continuePlayback.current = null; setPlaying(false); setSelectedOrder(null); setSymbol(event.target.value) }}>{symbols.map(item => <option key={item} value={item}>{item}</option>)}</select></label>
+        <label className="text-[12px] text-ink-2">品种<select aria-label="选择回放品种" className={`${selectClass} mt-1 block`} value={symbol} onChange={event => { continuePlayback.current = null; setPlaying(false); setSelectedOrder(null); setSymbol(event.target.value) }}>{symbols.map(item => <option key={item} value={item}>{item}</option>)}</select>{recording.symbols_complete === false && <span className="mt-1 block max-w-64 text-[11px] leading-4 text-ink-3">品种目录尚不完整，后续窗口继续补充。</span>}</label>
         {recording.coverage.length > 1 && <label className="text-[12px] text-ink-2">可用时段<select aria-label="选择可用覆盖时段" className={`${selectClass} mt-1 block`} value={currentCoverage?.start_us ?? ''} onChange={event => { continuePlayback.current = null; setPlaying(false); setSeekDraft(null); pendingSeek.current = null; setRange(replayRange(recording.coverage, Number(event.target.value), Number(windowDuration) * 1_000_000)) }}>{recording.coverage.map(item => <option key={item.start_us} value={item.start_us}>{replayTime(item.start_us, true, false)} — {replayTime(item.end_us, true, false)}</option>)}</select></label>}
         <div className="min-w-0 flex-1 text-[12px] leading-5 text-ink-2"><p>{context.channel ?? '渠道未知'} · {environmentLabels[context.environment ?? ''] ?? context.environment ?? '环境未知'} · {context.account_mode ?? '账户模式未知'} · {positionModeLabels[context.position_mode ?? ''] ?? '持仓模式未知'}</p><p>{depthLabel} · {replayStream(context, symbol, 'depth')?.delivery ?? '交付粒度未知'} · 上海时间</p></div>
         <div className="text-right"><p className="text-[12px] text-ink-3">阶段目标 / 本次已确认成交</p><p className="num mt-1 text-[16px] text-ink-1">{replayNumber(target, unit?.quantity_decimals)} / {replayNumber(ownQuantity, unit?.quantity_decimals)} <span className="text-[12px] text-ink-2">{unit?.quantity_label}</span></p></div>

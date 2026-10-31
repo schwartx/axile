@@ -1,4 +1,4 @@
-//! Rebuild missing directory indexes in memory from verified sealed MCAP parts.
+//! Rebuild missing or damaged directory indexes from verified sealed MCAP parts.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -7,13 +7,16 @@ use std::path::Path;
 
 use mcap::records::{op, Record};
 use mcap::sans_io::{LinearReadEvent, LinearReader, LinearReaderOptions};
+use serde_json::Value;
 
 use crate::execution_replay::{
     child_file, day_directory, digest, failure, identifier, io_error, read_bounded, Catalog,
     CatalogRecording, PartDescriptor, RecoveryPartMeta, ReplayResult, CATALOG_LIMIT,
-    PART_FILE_LIMIT, RECOVERY_METADATA_LIMIT, RECOVERY_METADATA_NAME,
+    PART_FILE_LIMIT, RECOVERY_METADATA_LIMIT, RECOVERY_METADATA_NAME, SCAN_FILES,
 };
-use crate::execution_replay_reader::{validate_part_bytes_budget, Budget};
+use crate::execution_replay_reader::{
+    collect_part_symbols, validate_descriptor, validate_part_bytes_budget, Budget,
+};
 
 #[derive(Default)]
 pub(crate) struct ReadIndex {
@@ -72,25 +75,25 @@ fn read_day(
     }
     partials.extend(day_partials.iter().cloned());
     let catalog_path = child_file(&directory, "catalog.json")?;
-    let mut catalog = if catalog_path.exists() {
+    let indexed = if catalog_path.exists() {
         let size = fs::metadata(&catalog_path).map_err(io_error)?.len();
         budget.charge(size, 0)?;
         let bytes = read_bounded(&catalog_path, CATALOG_LIMIT)?;
-        let catalog: Catalog = serde_json::from_slice(&bytes)
-            .map_err(|error| failure("CORRUPT", error.to_string()))?;
-        if catalog.schema_version != 1 || catalog.day != day {
-            return Err(failure("CORRUPT", "invalid replay catalog version or day"));
-        }
-        catalog
+        decode_catalog(&bytes, day)?
     } else {
-        Catalog {
-            schema_version: 1,
-            day: day.into(),
-            recordings: BTreeMap::new(),
-            parts: Vec::new(),
-        }
+        None
     };
-    let known = known_parts(&catalog)?;
+    let (mut catalog, known) = indexed.unwrap_or_else(|| {
+        (
+            Catalog {
+                schema_version: 1,
+                day: day.into(),
+                recordings: BTreeMap::new(),
+                parts: Vec::new(),
+            },
+            BTreeSet::new(),
+        )
+    });
     files.sort();
     for name in files {
         budget.charge(0, 0)?;
@@ -103,11 +106,65 @@ fn read_day(
     Ok(catalog)
 }
 
+fn decode_catalog(bytes: &[u8], day: &str) -> ReplayResult<Option<(Catalog, BTreeSet<String>)>> {
+    let value: Value = match serde_json::from_slice(bytes) {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    if value
+        .get("schema_version")
+        .and_then(Value::as_u64)
+        .is_some_and(|version| version != 1)
+    {
+        return Err(failure("SCHEMA", "unsupported replay catalog version"));
+    }
+    let catalog: Catalog = match serde_json::from_value(value) {
+        Ok(catalog) => catalog,
+        Err(_) => return Ok(None),
+    };
+    if catalog.schema_version != 1 || catalog.day != day {
+        return Ok(None);
+    }
+    if catalog.parts.len() > SCAN_FILES || catalog.recordings.len() > SCAN_FILES {
+        return Err(failure("BUDGET", "catalog contains too many entries"));
+    }
+    let known = match known_parts(&catalog) {
+        Ok(known) => known,
+        Err(error) if matches!(error.code.as_str(), "REPLAY_SCHEMA" | "REPLAY_BUDGET") => {
+            return Err(error)
+        }
+        Err(_) => return Ok(None),
+    };
+    Ok(Some((catalog, known)))
+}
+
 fn known_parts(catalog: &Catalog) -> ReplayResult<BTreeSet<String>> {
     let mut names = BTreeSet::new();
+    for (identity, metadata) in &catalog.recordings {
+        identifier(identity)?;
+        if let Some(previous) = &metadata.previous_recording_id {
+            identifier(previous)?;
+        }
+        if !metadata.context.is_object() {
+            return Err(failure("CORRUPT", "recording has no frozen context"));
+        }
+        match metadata
+            .context
+            .get("schema_version")
+            .and_then(Value::as_u64)
+        {
+            Some(1) => (),
+            Some(_) => return Err(failure("SCHEMA", "unsupported frozen replay context")),
+            None => return Err(failure("CORRUPT", "frozen replay context has no version")),
+        }
+        crate::execution_replay::validate_symbols(&metadata.symbols)?;
+    }
     for part in &catalog.parts {
-        identifier(&part.recording_id)?;
-        if part.day != catalog.day || part.part == 0 || !names.insert(part.file_name()) {
+        validate_descriptor(part)?;
+        if part.day != catalog.day
+            || !catalog.recordings.contains_key(&part.recording_id)
+            || !names.insert(part.file_name())
+        {
             return Err(failure(
                 "CORRUPT",
                 "invalid or duplicate indexed replay part",
@@ -176,10 +233,12 @@ fn recover_sealed_part(
     part.sha256 = digest(&bytes);
     part.size_bytes = bytes.len() as u64;
     let data = validate_part_bytes_budget(&bytes, &part, account_id, budget)?;
+    collect_part_symbols(&data, &mut part.symbols)?;
     let metadata = CatalogRecording {
         context: data.context,
         previous_recording_id: recovery.previous_recording_id,
         executions: part.executions.clone(),
+        symbols: part.symbols.clone(),
         state: "unknown".into(),
         unsealed_start_us: None,
         error: None,
@@ -272,6 +331,7 @@ fn merge_recovered(
             ));
         }
         existing.executions.extend(metadata.executions);
+        existing.symbols.extend(metadata.symbols);
         if existing
             .unsealed_start_us
             .is_some_and(|start| part.start_us <= start && start < part.end_us)
@@ -363,6 +423,137 @@ mod tests {
             manifest(&fixture.0, 1, "7").unwrap_err().code,
             "REPLAY_CORRUPT"
         );
+    }
+
+    #[test]
+    fn malformed_catalog_recovers_only_verified_sealed_files_without_writing_index() {
+        let fixture = Fixture::new();
+        let (catalog, sealed) = fixture.write_part();
+        let original = fs::read(&sealed).unwrap();
+        let damaged = b"{truncated";
+        fs::write(&catalog, damaged).unwrap();
+        let partial = catalog
+            .parent()
+            .unwrap()
+            .join("recording-unsealed-000001.mcap.partial");
+        let unpublished = b"unpublished facts must not be parsed as replay";
+        fs::write(&partial, unpublished).unwrap();
+        fixture.assert_replay();
+        assert_eq!(fs::read(&catalog).unwrap(), damaged);
+        assert_eq!(fs::read(&sealed).unwrap(), original);
+        assert_eq!(fs::read(&partial).unwrap(), unpublished);
+        fs::write(&sealed, &original[..original.len() - 8]).unwrap();
+        assert_eq!(
+            manifest(&fixture.0, 1, "7").unwrap_err().code,
+            "REPLAY_CORRUPT"
+        );
+        assert_eq!(fs::read(&catalog).unwrap(), damaged);
+    }
+
+    #[test]
+    fn structurally_damaged_catalog_discards_its_metadata_during_recovery() {
+        for damage in [
+            "missing_field",
+            "wrong_day",
+            "invalid_part",
+            "duplicate_part",
+            "missing_context_version",
+            "invalid_recording_symbols",
+            "invalid_part_symbols",
+        ] {
+            let fixture = Fixture::new();
+            let (path, sealed) = fixture.write_part();
+            let original = fs::read(&sealed).unwrap();
+            let mut catalog: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            catalog["recordings"]["recovery-A"]["executions"] = json!(["forged"]);
+            match damage {
+                "missing_field" => {
+                    catalog.as_object_mut().unwrap().remove("recordings");
+                }
+                "wrong_day" => catalog["day"] = json!("2000-01-01"),
+                "invalid_part" => catalog["parts"][0]["first_seq"] = json!(0),
+                "duplicate_part" => {
+                    let duplicate = catalog["parts"][0].clone();
+                    catalog["parts"].as_array_mut().unwrap().push(duplicate);
+                }
+                "missing_context_version" => {
+                    catalog["recordings"]["recovery-A"]["context"] = json!({})
+                }
+                "invalid_recording_symbols" => {
+                    catalog["recordings"]["recovery-A"]["symbols"] = json!(["\n"])
+                }
+                "invalid_part_symbols" => catalog["parts"][0]["symbols"] = json!(["\n"]),
+                _ => unreachable!(),
+            }
+            let unchanged = serde_json::to_vec(&catalog).unwrap();
+            fs::write(&path, &unchanged).unwrap();
+            fixture.assert_replay();
+            assert_eq!(
+                manifest(&fixture.0, 1, "forged").unwrap()["availability"],
+                "not_recorded"
+            );
+            assert_eq!(fs::read(&path).unwrap(), unchanged);
+            assert_eq!(fs::read(&sealed).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn a_valid_unknown_catalog_version_is_not_reinterpreted_by_recovery() {
+        let fixture = Fixture::new();
+        let (path, sealed) = fixture.write_part();
+        let original = fs::read(&sealed).unwrap();
+        let mut catalog: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        catalog["schema_version"] = json!(2);
+        let unchanged = serde_json::to_vec(&catalog).unwrap();
+        fs::write(&path, &unchanged).unwrap();
+        assert_eq!(
+            manifest(&fixture.0, 1, "7").unwrap_err().code,
+            "REPLAY_SCHEMA"
+        );
+        assert_eq!(
+            window(
+                &fixture.0,
+                1,
+                "7",
+                r#"{"recording_id":"recovery-A","start_us":100,"end_us":101}"#,
+            )
+            .unwrap_err()
+            .code,
+            "REPLAY_SCHEMA"
+        );
+        assert_eq!(fs::read(&path).unwrap(), unchanged);
+        assert_eq!(fs::read(&sealed).unwrap(), original);
+        catalog["schema_version"] = json!(1);
+        catalog["recordings"]["recovery-A"]["context"]["schema_version"] = json!(2);
+        let unknown_context = serde_json::to_vec(&catalog).unwrap();
+        fs::write(&path, &unknown_context).unwrap();
+        assert_eq!(
+            manifest(&fixture.0, 1, "7").unwrap_err().code,
+            "REPLAY_SCHEMA"
+        );
+        assert_eq!(fs::read(&path).unwrap(), unknown_context);
+    }
+
+    #[test]
+    fn an_intact_catalog_hash_mismatch_is_not_treated_as_index_damage() {
+        let fixture = Fixture::new();
+        let (path, _) = fixture.write_part();
+        let mut catalog: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        catalog["parts"][0]["sha256"] = json!("0".repeat(64));
+        let unchanged = serde_json::to_vec(&catalog).unwrap();
+        fs::write(&path, &unchanged).unwrap();
+        assert_eq!(
+            window(
+                &fixture.0,
+                1,
+                "7",
+                r#"{"recording_id":"recovery-A","start_us":100,"end_us":101}"#,
+            )
+            .unwrap_err()
+            .code,
+            "REPLAY_VIEW_CHANGED"
+        );
+        assert_eq!(fs::read(&path).unwrap(), unchanged);
     }
 
     #[test]

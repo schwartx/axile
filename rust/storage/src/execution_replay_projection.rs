@@ -87,7 +87,7 @@ impl Projection {
     }
 
     pub(crate) fn restore(value: Value) -> Result<Self, AnalysisError> {
-        let state: Self = serde_json::from_value(value).map_err(|error| {
+        let mut state: Self = serde_json::from_value(value).map_err(|error| {
             AnalysisError::new("REPLAY_CHECKPOINT", format!("invalid checkpoint: {error}"))
         })?;
         if state.schema_version != 1
@@ -95,9 +95,11 @@ impl Projection {
             || state.state_through_seq > JS_SAFE_INTEGER
             || state.time_us.is_some_and(|time| time > JS_SAFE_INTEGER)
             || (state.state_through_seq > 0 && state.time_us.is_none())
+            || state.orders.values().any(|order| !order.is_object())
         {
             return Err(failure("unsupported or inconsistent checkpoint"));
         }
+        state.rebuild_cancel_pending();
         state.check_budget()?;
         Ok(state)
     }
@@ -160,6 +162,9 @@ impl Projection {
                     format!("unsupported topic {topic}"),
                 ))
             }
+        }
+        if matches!(topic, "/command" | "/order" | "/order_set") {
+            self.rebuild_cancel_pending();
         }
         self.state_through_seq = seq;
         self.time_us = Some(time);
@@ -251,6 +256,21 @@ impl Projection {
         self.rebuild_order_amounts();
         self.rebuild_totals();
         self.rebuild_positions();
+    }
+
+    fn rebuild_cancel_pending(&mut self) {
+        let pending: BTreeSet<_> = self
+            .commands
+            .values()
+            .filter_map(pending_cancel_order)
+            .collect();
+        for (key, order) in &mut self.orders {
+            let source_pending = order
+                .as_object()
+                .is_some_and(|data| text(data, "status").as_deref() == Some("pending_cancel"));
+            let cancel_pending = !terminal(order) && (source_pending || pending.contains(key));
+            order["cancel_pending"] = Value::Bool(cancel_pending);
+        }
     }
 
     fn owner_for_order(&self, symbol: &str, order_id: &str) -> Option<String> {
@@ -856,7 +876,9 @@ impl Projection {
     ) -> Result<(), AnalysisError> {
         let symbols = self.scope(data, &[]);
         let generation = data.get("sync_generation").and_then(Value::as_u64);
-        let disconnected = data.get("connected").and_then(Value::as_bool) == Some(false)
+        let disconnected = ["connected", "ready", "available", "synchronized"]
+            .iter()
+            .any(|field| data.get(*field).and_then(Value::as_bool) == Some(false))
             || matches!(
                 text(data, "status").as_deref(),
                 Some("disconnected" | "unavailable" | "invalidated")
@@ -1330,6 +1352,38 @@ fn command_ownership(value: &Value) -> Option<(String, String, String)> {
         data.get("symbol")?.as_str()?.to_owned(),
         identity(data.get("order_id"))?,
         identity(data.get("execution_id"))?,
+    ))
+}
+
+fn pending_cancel_order(value: &Value) -> Option<String> {
+    let data = value.as_object()?;
+    if text(data, "operation").as_deref() != Some("cancel_order")
+        || ["success", "accepted"].iter().any(|field| {
+            known(data, field) && data.get(*field).and_then(Value::as_bool) == Some(false)
+        })
+        || !matches!(
+            text(data, "phase").as_deref(),
+            Some(
+                "request"
+                    | "returned"
+                    | "result"
+                    | "native_request"
+                    | "native_return"
+                    | "native_returned"
+            )
+        )
+        || ["command_id", "symbol", "order_id"]
+            .iter()
+            .any(|field| !known(data, field))
+    {
+        return None;
+    }
+    identity(data.get("command_id"))?;
+    Some(compound(
+        data.get("symbol")?
+            .as_str()
+            .filter(|value| !value.is_empty())?,
+        &identity(data.get("order_id"))?,
     ))
 }
 
@@ -1940,5 +1994,229 @@ mod tests {
                 ["execution_id"]
                 .is_null()
         );
+    }
+
+    #[test]
+    fn cancel_intent_survives_sync_return_and_legacy_checkpoint_until_venue_terminal() {
+        let mut state = Projection::new("r");
+        let key = compound("A", "O");
+        state
+            .apply(&message(1, "/order", order("O", 10.0)))
+            .unwrap();
+        for (seq, phase) in [(2, "request"), (3, "returned"), (4, "result")] {
+            state
+                .apply(&message(
+                    seq,
+                    "/command",
+                    json!({
+                        "command_id":"C","operation":"cancel_order","phase":phase,
+                        "symbol":"A","order_id":"O","success":true
+                    }),
+                ))
+                .unwrap();
+            let snapshot = state.snapshot().unwrap();
+            assert_eq!(snapshot["orders"][&key]["cancel_pending"], true);
+            assert_eq!(snapshot["orders"][&key]["confirmed_book"], true);
+            assert_eq!(snapshot["orders"][&key]["status"], "working");
+        }
+        let mut legacy = state.snapshot().unwrap();
+        legacy["orders"][&key]
+            .as_object_mut()
+            .unwrap()
+            .remove("cancel_pending");
+        let mut restored = Projection::restore(legacy).unwrap();
+        assert_eq!(
+            restored.snapshot().unwrap()["orders"][&key]["cancel_pending"],
+            true
+        );
+        let mut terminal = order("O", 10.0);
+        terminal["status"] = json!("canceled");
+        restored.apply(&message(5, "/order", terminal)).unwrap();
+        assert_eq!(
+            restored.snapshot().unwrap()["orders"][&key]["cancel_pending"],
+            false
+        );
+        restored
+            .apply(&message(6, "/order", order("O", 10.0)))
+            .unwrap();
+        let value = Projection::restore(restored.snapshot().unwrap())
+            .unwrap()
+            .snapshot()
+            .unwrap();
+        assert_eq!(value["orders"][&key]["status"], "canceled");
+        assert_eq!(value["orders"][&key]["cancel_pending"], false);
+    }
+
+    #[test]
+    fn failed_cancel_only_resolves_its_own_intent_and_never_the_source_pending_state() {
+        for failure in [
+            json!({"phase":"error"}),
+            json!({"phase":"native_error"}),
+            json!({"phase":"result","success":false}),
+            json!({"phase":"result","accepted":false}),
+        ] {
+            let mut state = Projection::new("r");
+            let key = compound("A", "O");
+            state
+                .apply(&message(1, "/order", order("O", 10.0)))
+                .unwrap();
+            for (seq, command) in [(2, "first"), (3, "second")] {
+                state
+                    .apply(&message(
+                        seq,
+                        "/command",
+                        json!({
+                            "command_id":command,"operation":"cancel_order","phase":"request",
+                            "symbol":"A","order_id":"O"
+                        }),
+                    ))
+                    .unwrap();
+            }
+            let mut first_failure = failure.clone();
+            first_failure["command_id"] = json!("first");
+            state.apply(&message(4, "/command", first_failure)).unwrap();
+            assert_eq!(
+                state.snapshot().unwrap()["orders"][&key]["cancel_pending"],
+                true
+            );
+            let mut second_failure = failure.clone();
+            second_failure["command_id"] = json!("second");
+            state
+                .apply(&message(5, "/command", second_failure))
+                .unwrap();
+            let snapshot = state.snapshot().unwrap();
+            assert_eq!(snapshot["orders"][&key]["cancel_pending"], false);
+            assert_eq!(snapshot["orders"][&key]["confirmed_book"], true);
+            let mut pending = order("O", 10.0);
+            pending["status"] = json!("pending_cancel");
+            state.apply(&message(6, "/order", pending)).unwrap();
+            assert_eq!(
+                state.snapshot().unwrap()["orders"][&key]["cancel_pending"],
+                true
+            );
+            state
+                .apply(&message(7, "/order", order("O", 10.0)))
+                .unwrap();
+            assert_eq!(
+                state.snapshot().unwrap()["orders"][&key]["cancel_pending"],
+                false
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_command_identity_cannot_create_an_unresolvable_cancel_intent() {
+        let mut state = Projection::new("r");
+        state
+            .apply(&message(1, "/order", order("O", 10.0)))
+            .unwrap();
+        state
+            .apply(&message(
+                2,
+                "/command",
+                json!({
+                    "command_id":null,"operation":"cancel_order","phase":"request",
+                    "symbol":"A","order_id":"O"
+                }),
+            ))
+            .unwrap();
+        assert_eq!(
+            state.snapshot().unwrap()["orders"][compound("A", "O")]["cancel_pending"],
+            false
+        );
+    }
+
+    #[test]
+    fn complete_order_set_terminal_clears_a_pending_cancel() {
+        let mut state = Projection::new("r");
+        state
+            .apply(&message(1, "/order", order("O", 10.0)))
+            .unwrap();
+        state
+            .apply(&message(
+                2,
+                "/command",
+                json!({
+                    "command_id":"C","operation":"cancel_order","phase":"result",
+                    "symbol":"A","order_id":"O","success":true
+                }),
+            ))
+            .unwrap();
+        let mut terminal = order("O", 10.0);
+        terminal["status"] = json!("canceled");
+        state
+            .apply(&message(
+                3,
+                "/order_set",
+                json!({
+                    "scope":{"kind":"symbols","symbols":["A"]},"scope_complete":true,
+                    "synchronized":true,"sync_generation":1,
+                    "query_basis":{"start_seq":2,"request_revision":1},"orders":[terminal]
+                }),
+            ))
+            .unwrap();
+        let value = state.snapshot().unwrap();
+        assert_eq!(value["orders"][compound("A", "O")]["status"], "canceled");
+        assert_eq!(value["orders"][compound("A", "O")]["cancel_pending"], false);
+    }
+
+    #[test]
+    fn explicit_stream_loss_invalidates_again_in_the_same_generation_and_only_in_scope() {
+        for field in ["connected", "ready", "available", "synchronized"] {
+            let mut state = Projection::new("r");
+            state
+                .apply(&message(1, "/order", order("O", 10.0)))
+                .unwrap();
+            let mut other = order("B", 10.0);
+            other["symbol"] = json!("B");
+            state.apply(&message(2, "/order", other)).unwrap();
+            state
+                .apply(&message(
+                    3,
+                    "/quote/A",
+                    json!({"symbol":"A","book_valid":true}),
+                ))
+                .unwrap();
+            state
+                .apply(&message(
+                    4,
+                    "/quote/B",
+                    json!({"symbol":"B","book_valid":true}),
+                ))
+                .unwrap();
+            let mut loss = json!({
+                "scope":{"kind":"symbols","symbols":["A"]},"sync_generation":1,"status":"down"
+            });
+            loss[field] = json!(false);
+            state
+                .apply(&message(5, "/connection", loss.clone()))
+                .unwrap();
+            state
+                .apply(&message(
+                    6,
+                    "/connection",
+                    json!({
+                        "scope":{"kind":"symbols","symbols":["A"]},"sync_generation":1,
+                        "connected":true,"synchronized":true
+                    }),
+                ))
+                .unwrap();
+            let value = state.snapshot().unwrap();
+            assert_eq!(value["orders"][compound("A", "O")]["confirmed_book"], false);
+            assert_eq!(value["synchronized"]["A"], false);
+            state
+                .apply(&message(7, "/order", order("O", 10.0)))
+                .unwrap();
+            assert_eq!(
+                state.snapshot().unwrap()["orders"][compound("A", "O")]["confirmed_book"],
+                true
+            );
+            state.apply(&message(8, "/connection", loss)).unwrap();
+            let value = state.snapshot().unwrap();
+            assert_eq!(value["orders"][compound("A", "O")]["confirmed_book"], false);
+            assert_eq!(value["quotes"]["A"]["book_valid"], false);
+            assert_eq!(value["orders"][compound("B", "B")]["confirmed_book"], true);
+            assert_eq!(value["quotes"]["B"]["book_valid"], true);
+        }
     }
 }

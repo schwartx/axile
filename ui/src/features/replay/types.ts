@@ -50,6 +50,8 @@ export interface ReplayContext {
 }
 export interface ReplayRecording {
   recording_id: string
+  symbols?: string[]
+  symbols_complete?: boolean
   coverage: ReplayRange[]
   gaps?: ReplayGap[]
   boundary_reason?: string

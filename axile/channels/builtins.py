@@ -55,6 +55,7 @@ from axile.executor.models.unified_input_accounts import (
 
 def _ctp_replay_capability() -> ChannelReplayCapability:
     """声明原生期货观察能力，实际档数和覆盖由录制确认。"""
+    offsets = {"0": "开仓", "1": "平仓", "2": "强平", "3": "平今", "4": "平昨", "5": "强减", "6": "本地强平"}
     attributes = [
         "hedge_flag",
         "native_order_type",
@@ -62,6 +63,9 @@ def _ctp_replay_capability() -> ChannelReplayCapability:
         "volume_condition",
         "submit_status",
         "status_msg",
+        "native_direction",
+        "native_status",
+        "native_comb_offset_flag",
     ]
     identities = [
         "trading_day",
@@ -75,7 +79,7 @@ def _ctp_replay_capability() -> ChannelReplayCapability:
     ]
     return ChannelReplayCapability(
         supported=True,
-        adapter_version="1",
+        adapter_version="2",
         streams={
             kind: {
                 "availability": "partial",
@@ -91,11 +95,17 @@ def _ctp_replay_capability() -> ChannelReplayCapability:
             )
         }
         | {"market_trade": {"availability": "unavailable", "reason": "source_not_provided"}},
-        attributes={"order": attributes, "command": attributes},
+        attributes={
+            "order": attributes,
+            "command": attributes,
+            "trade": ["native_direction", "native_offset_flag"],
+            "position": ["native_position_direction"],
+        },
         native_identity={
             kind: identities
             for kind in ("quote", "order", "trade", "command", "account_observation", "order_set", "connection")
-        },
+        }
+        | {"position": ["trading_day", "exchange_id"]},
         display={
             "order": [
                 ReplayDisplayField(
@@ -105,7 +115,51 @@ def _ctp_replay_capability() -> ChannelReplayCapability:
                     values={"1": "投机", "2": "套利", "3": "套保", "5": "做市"},
                 ),
                 ReplayDisplayField(key="status_msg", label="柜台说明"),
-            ]
+                ReplayDisplayField(
+                    key="native_direction", label="原生买卖方向", kind="enum", values={"0": "买", "1": "卖"}
+                ),
+                ReplayDisplayField(
+                    key="native_status",
+                    label="原生委托状态",
+                    kind="enum",
+                    values={
+                        "0": "全部成交",
+                        "1": "部分成交，在队列中",
+                        "2": "部分成交，不在队列中",
+                        "3": "未成交，在队列中",
+                        "4": "未成交，不在队列中",
+                        "5": "已撤单",
+                        "a": "未知",
+                        "b": "尚未触发",
+                        "c": "已触发",
+                    },
+                ),
+                ReplayDisplayField(
+                    key="native_comb_offset_flag",
+                    label="原生开平标志",
+                    kind="enum",
+                    values=offsets,
+                ),
+            ],
+            "trade": [
+                ReplayDisplayField(
+                    key="native_direction", label="原生买卖方向", kind="enum", values={"0": "买", "1": "卖"}
+                ),
+                ReplayDisplayField(
+                    key="native_offset_flag",
+                    label="原生开平标志",
+                    kind="enum",
+                    values=offsets,
+                ),
+            ],
+            "position": [
+                ReplayDisplayField(
+                    key="native_position_direction",
+                    label="原生持仓方向",
+                    kind="enum",
+                    values={"1": "净持仓", "2": "多头", "3": "空头"},
+                )
+            ],
         },
     )
 

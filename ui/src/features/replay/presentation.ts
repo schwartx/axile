@@ -1,4 +1,5 @@
-import type { ReplayContext, ReplayDisplayField, ReplayGap, ReplayInstrument, ReplayRange, ReplayWindow } from '@/features/replay/types'
+import { replayCommandFailed, replayObject } from '@/features/replay/model'
+import type { ReplayContext, ReplayData, ReplayDisplayField, ReplayGap, ReplayInstrument, ReplayRange, ReplayRecording, ReplayWindow } from '@/features/replay/types'
 
 const dateParts = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
 
@@ -22,6 +23,16 @@ export function replayFieldText(value: unknown, field: ReplayDisplayField): stri
   return typeof value === 'string' ? value : null
 }
 
+export function replayCommandPresentation(data: ReplayData): { failed: boolean; text: string } {
+  const failed = replayCommandFailed(data), quality = replayObject(data.field_quality).phase
+  const phase = quality === 'missing' || quality === 'invalid' ? null : data.phase
+  const text = failed ? '观察到请求错误，订单状态仍以回报为准'
+    : phase === 'request' || phase === 'native_request' ? '请求已发出，确认另见订单回报'
+    : ['returned', 'result', 'native_return', 'native_returned'].includes(String(phase)) ? '同步结果已返回，场内状态以回报为准'
+    : '操作结果未知，订单状态以回报为准'
+  return { failed, text }
+}
+
 export function replayStream(context: ReplayContext, symbol: string, name: string) {
   const actual = context.streams?.[symbol]?.[name]
   if (actual) return actual
@@ -35,20 +46,44 @@ export function replayInstrument(context: ReplayContext, symbol: string): Replay
     price_label: context.units?.price_label, ...context.instrument?.[symbol] }
 }
 
-/** 品种名称可从窗口发现；历史价格和状态仍只能按游标投影。 */
-export function replaySymbols(window: ReplayWindow): string[] {
-  const symbols = new Set(Object.keys(window.context.instrument ?? {}))
-  for (const event of window.messages) {
-    if (typeof event.data.symbol === 'string') symbols.add(event.data.symbol)
-    if (Array.isArray(event.data.symbols)) for (const symbol of event.data.symbols) if (typeof symbol === 'string') symbols.add(symbol)
-  }
-  for (const field of ['quotes', 'orders', 'observed_positions'] as const) {
-    const values = window.state_before_start?.[field]
-    if (values && typeof values === 'object') for (const raw of Object.values(values)) {
-      if (raw && typeof raw === 'object' && typeof raw.symbol === 'string') symbols.add(raw.symbol)
+/** 目录与窗口只提供品种名称；历史价格和状态仍只能按游标投影。 */
+export function replaySymbols(source: ReplayRecording | ReplayWindow, known: readonly string[] = []): string[] {
+  const symbols = new Set(Array.isArray(known) ? known : [])
+  for (const symbol of Object.keys(source.context.instrument ?? {})) symbols.add(symbol)
+  if ('symbols' in source) for (const symbol of source.symbols ?? []) symbols.add(symbol)
+  if ('messages' in source) {
+    const observations: unknown[] = source.messages.map(event => event.data)
+    for (const field of ['quotes', 'orders', 'commands', 'connections', 'observed_positions', 'derived_positions', 'executions'] as const) {
+      const values = source.state_before_start?.[field]
+      if (values && typeof values === 'object') observations.push(...Object.values(values))
+    }
+    for (const raw of observations) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
+      const data = raw as Record<string, unknown>
+      for (const value of [data, ...(Array.isArray(data.orders) ? data.orders : []), ...(Array.isArray(data.positions) ? data.positions : [])]) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+        const row = value as Record<string, unknown>
+        if (typeof row.symbol === 'string') symbols.add(row.symbol)
+        if (Array.isArray(row.symbols)) for (const symbol of row.symbols) if (typeof symbol === 'string') symbols.add(symbol)
+        const scope = row.scope && typeof row.scope === 'object' && !Array.isArray(row.scope) ? row.scope as Record<string, unknown> : null
+        const scopedSymbols = Array.isArray(row.scope) ? row.scope : scope?.symbols
+        if (Array.isArray(scopedSymbols)) for (const symbol of scopedSymbols) if (typeof symbol === 'string') symbols.add(symbol)
+        if (row.by_symbol && typeof row.by_symbol === 'object' && !Array.isArray(row.by_symbol)) for (const symbol of Object.keys(row.by_symbol)) symbols.add(symbol)
+      }
     }
   }
   return [...symbols].filter(Boolean)
+}
+
+export function rememberReplaySymbols(previous: Record<string, string[]>, window: ReplayWindow): Record<string, string[]> {
+  const known = Object.hasOwn(previous, window.recording_id) ? previous[window.recording_id] : []
+  const symbols = replaySymbols(window, known)
+  return symbols.length === known.length ? previous : { ...previous, [window.recording_id]: symbols }
+}
+
+export function replayWindowRequest(recording: ReplayRecording, range: ReplayRange, symbol: string) {
+  return { ...range, recording_id: recording.recording_id,
+    ...(recording.symbols_complete === true && symbol ? { symbols: [symbol] } : {}) }
 }
 
 /** 只取同一已覆盖段，跨缺口时另选窗口，不将 UTC 拼成一条连续录制。 */

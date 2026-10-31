@@ -194,6 +194,8 @@ pub(crate) struct PartDescriptor {
     pub checkpoint_through_seq: u64,
     pub checkpoint_time_us: Option<u64>,
     pub executions: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub symbols: BTreeSet<String>,
 }
 
 impl PartDescriptor {
@@ -217,6 +219,8 @@ pub(crate) struct CatalogRecording {
     pub context: Value,
     pub previous_recording_id: Option<String>,
     pub executions: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub symbols: BTreeSet<String>,
     pub state: String,
     pub unsealed_start_us: Option<u64>,
     pub error: Option<String>,
@@ -826,6 +830,7 @@ pub(crate) struct ExecutionReplayWriter {
     last_time_us: Option<u64>,
     metadata_day: Option<String>,
     executions: BTreeSet<String>,
+    symbols: BTreeSet<String>,
     sealed: Vec<PartDescriptor>,
     account_bytes: u64,
     closed: bool,
@@ -901,6 +906,7 @@ impl ExecutionReplayWriter {
             last_time_us: None,
             metadata_day: None,
             executions: BTreeSet::new(),
+            symbols: BTreeSet::new(),
             sealed: Vec::new(),
             account_bytes,
             closed: false,
@@ -993,6 +999,7 @@ impl ExecutionReplayWriter {
                 changed |= self.executions.insert(identity);
             }
         }
+        changed |= collect_observed_symbols(&message["data"], &mut self.symbols)?;
         if changed {
             self.publish_catalog(None)?;
         }
@@ -1024,6 +1031,7 @@ impl ExecutionReplayWriter {
             checkpoint_through_seq: self.last_seq,
             checkpoint_time_us: self.last_time_us,
             executions: BTreeSet::new(),
+            symbols: BTreeSet::new(),
         };
         let path = child_file(&directory, &format!("{}.partial", descriptor.file_name()))?;
         let file = OpenOptions::new()
@@ -1095,6 +1103,7 @@ impl ExecutionReplayWriter {
                 context: self.context.clone(),
                 previous_recording_id: self.previous_recording_id.clone(),
                 executions: self.executions.clone(),
+                symbols: self.symbols.clone(),
                 state: if self.error.is_some() {
                     "error"
                 } else if self.closed {
@@ -1127,6 +1136,7 @@ impl ExecutionReplayWriter {
             part.descriptor.end_us = part.descriptor.end_us.max(end);
         }
         part.descriptor.executions = self.executions.clone();
+        part.descriptor.symbols = self.symbols.clone();
         let recovery = RecoveryPartMeta {
             schema_version: 1,
             account_id: self.account_id,
@@ -1297,6 +1307,61 @@ pub(crate) fn identity_string(value: &Value) -> Option<String> {
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .or_else(|| value.as_u64().map(|value| value.to_string()))
+}
+
+pub(crate) fn validate_symbols(symbols: &BTreeSet<String>) -> ReplayResult<()> {
+    if symbols.len() > SCAN_FILES {
+        return Err(failure(
+            "BUDGET",
+            "recording symbol directory exceeds budget",
+        ));
+    }
+    if symbols.iter().any(|symbol| {
+        symbol.is_empty() || symbol.len() > 256 || symbol.chars().any(char::is_control)
+    }) {
+        return Err(failure("CORRUPT", "invalid recording symbol directory"));
+    }
+    Ok(())
+}
+
+/// Names are directory metadata only; prices and states still obey the replay cursor.
+pub(crate) fn collect_observed_symbols(
+    data: &Value,
+    symbols: &mut BTreeSet<String>,
+) -> ReplayResult<bool> {
+    let previous = symbols.len();
+    if let Some(symbol) = data.get("symbol").and_then(Value::as_str) {
+        if !symbol.is_empty() && symbol.len() <= 256 && !symbol.chars().any(char::is_control) {
+            symbols.insert(symbol.into());
+        }
+    }
+    let scope_symbols = data.get("scope").and_then(|scope| {
+        if scope.is_array() {
+            Some(scope)
+        } else {
+            scope.get("symbols")
+        }
+    });
+    for values in [data.get("symbols"), scope_symbols]
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_array)
+    {
+        for symbol in values.iter().filter_map(Value::as_str) {
+            if !symbol.is_empty() && symbol.len() <= 256 && !symbol.chars().any(char::is_control) {
+                symbols.insert(symbol.into());
+            }
+        }
+    }
+    for name in ["orders", "positions"] {
+        if let Some(rows) = data.get(name).and_then(Value::as_array) {
+            for row in rows {
+                collect_observed_symbols(row, symbols)?;
+            }
+        }
+    }
+    validate_symbols(symbols)?;
+    Ok(symbols.len() != previous)
 }
 
 fn write_payload(
@@ -1608,5 +1673,95 @@ mod tests {
             "REPLAY_BUDGET"
         );
         assert!(recovery_metadata_size(usize::MAX).is_err());
+    }
+
+    #[test]
+    fn manifest_keeps_later_and_nested_symbols_without_future_price_facts() {
+        let directory = TestDirectory::new();
+        let context = json!({"schema_version":1}).to_string();
+        let mut writer = ExecutionReplayWriter::new(&directory.0, 7, "recA", &context).unwrap();
+        let time = 1_793_318_400_000_000;
+        writer
+            .append(&event(
+                1,
+                time,
+                "/quote/A",
+                json!({"symbol":"A","book_valid":false}),
+            ))
+            .unwrap();
+        writer
+            .append(&event(
+                2,
+                time + 30_000_000,
+                "/execution",
+                json!({"execution_id":"E","phase":"start","symbols":["X"]}),
+            ))
+            .unwrap();
+        writer
+            .append(&event(3, time + 30_000_001, "/account_observation", json!({"scope":{"kind":"account","symbols":[]},"scope_complete":false,"positions":[{"symbol":"P","position_side":"LONG","quantity":1}]})))
+            .unwrap();
+        writer
+            .append(&event(4, time + 30_000_002, "/order_set", json!({"scope":{"kind":"account","symbols":[]},"scope_complete":false,"synchronized":false,"orders":[{"symbol":"Q","order_id":"O","status":"unknown"}]})))
+            .unwrap();
+        writer.append(&event(5, time + 30_000_003, "/order_set", json!({
+            "scope":{"kind":"symbols","symbols":["SCOPED"]},"scope_complete":true,"synchronized":false,"orders":[]}))).unwrap();
+        writer
+            .append(&event(
+                6,
+                time + 30_000_004,
+                "/order_set",
+                json!({
+            "scope":["LEGACY"],"scope_complete":true,"synchronized":false,"orders":[]}),
+            ))
+            .unwrap();
+        writer.finish().unwrap();
+        let manifest = crate::execution_replay_reader::manifest(&directory.0, 7, "E").unwrap();
+        assert_eq!(
+            manifest["recordings"][0]["symbols"],
+            json!(["A", "LEGACY", "P", "Q", "SCOPED", "X"])
+        );
+        assert_eq!(manifest["recordings"][0]["symbols_complete"], true);
+        let window = crate::execution_replay_reader::window(
+            &directory.0,
+            7,
+            "E",
+            &json!({"recording_id":"recA","start_us":time,"end_us":time+20_000_000}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(window["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(window["messages"][0]["data"]["symbol"], "A");
+
+        let account = directory.0.join("account-7");
+        for entry in fs::read_dir(&account).unwrap() {
+            let path = entry.unwrap().path().join("catalog.json");
+            if path.is_file() {
+                let mut catalog: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                catalog["recordings"]["recA"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("symbols");
+                for part in catalog["parts"].as_array_mut().unwrap() {
+                    part.as_object_mut().unwrap().remove("symbols");
+                }
+                let original = serde_json::to_vec(&catalog).unwrap();
+                fs::write(&path, &original).unwrap();
+                let restored =
+                    crate::execution_replay_reader::manifest(&directory.0, 7, "E").unwrap();
+                assert_eq!(
+                    restored["recordings"][0]["symbols"],
+                    json!(["A", "LEGACY", "P", "Q", "SCOPED", "X"])
+                );
+                assert_eq!(restored["recordings"][0]["symbols_complete"], true);
+                assert_eq!(fs::read(&path).unwrap(), original);
+                fs::remove_file(&path).unwrap();
+                let recovered =
+                    crate::execution_replay_reader::manifest(&directory.0, 7, "E").unwrap();
+                assert_eq!(
+                    recovered["recordings"][0]["symbols"],
+                    json!(["A", "LEGACY", "P", "Q", "SCOPED", "X"])
+                );
+                assert!(!path.exists());
+            }
+        }
     }
 }

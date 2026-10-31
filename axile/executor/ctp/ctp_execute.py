@@ -460,7 +460,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         replay_capture.capture(
             self,
             "/command",
-            lambda: replay_capture.rejection(row, info, source="ctp.cancel_error", request_id=request_id),
+            lambda: replay_capture.cancel_rejection(self, row, info, request_id),
         )
         detail = insert_error_detail(info)
         if detail is not None:
@@ -1988,7 +1988,13 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         if not key:
             raise ValueError(f"找不到订单撤单键: {order_id}")
         r = build_order_cancel(self._config(), symbol=symbol, key=key)
-        self._send_trader_request("cancel_order_ctp", "ReqOrderAction", r, symbol=symbol)
+        self._send_trader_request(
+            "cancel_order_ctp",
+            "ReqOrderAction",
+            r,
+            symbol=symbol,
+            before_send=lambda rid: replay_capture.link_cancel_request(self, rid, symbol, order_id),
+        )
         return True
 
     @override

@@ -1,5 +1,6 @@
 """真实原生扩展和 MCAP 的隔离集成；输入为手写事实，不连接交易账户。"""
 
+import json
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -258,3 +259,184 @@ def test_actual_manifest_for_unrecorded_root_does_not_create_directories(tmp_pat
     assert not absent.exists()
     assert replay_manifest(tmp_path, 7, "never-recorded")["availability"] == "not_recorded"
     assert not (tmp_path / "account-7").exists()
+
+
+def test_actual_checkpoint_keeps_independent_cancel_intents(tmp_path):
+    root = tmp_path / "cancel-intents"
+    writer = _core.ExecutionReplayWriter(str(root), 7, "cancel-intents", '{"schema_version":1}')
+
+    def cancel(identity, phase, **result):
+        return "/command", {
+            "command_id": identity,
+            "operation": "cancel_order",
+            "phase": phase,
+            "symbol": "X",
+            "order_id": "O",
+            **result,
+        }
+
+    messages = [
+        ("/execution", {"execution_id": "E", "phase": "start", "symbols": ["X"]}),
+        (
+            "/order",
+            {
+                "symbol": "X",
+                "order_id": "O",
+                "status": "working",
+                "confirmed_book": True,
+                "sync_generation": 1,
+                "quantity": 2,
+                "remaining_quantity": 2,
+            },
+        ),
+        cancel("C1", "request"),
+        cancel("C1", "returned"),
+        cancel("C1", "result", success=True),
+        cancel("C2", "request"),
+        cancel("C1", "error"),
+        cancel("C2", "result", success=False),
+        cancel("C3", "request"),
+        (
+            "/order",
+            {"symbol": "X", "order_id": "O", "status": "canceled", "confirmed_book": False, "sync_generation": 1},
+        ),
+    ]
+    for sequence, (topic, data) in enumerate(messages, 1):
+        writer.append(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "recording_id": "cancel-intents",
+                    "capture_seq": sequence,
+                    "time_us": TIME + sequence,
+                    "topic": topic,
+                    "data": data,
+                }
+            )
+        )
+        if sequence in (5, 7, 8, 10):
+            writer.seal()
+    writer.finish()
+    for after_sequence, expected_pending in ((5, True), (7, True), (8, False), (10, False)):
+        baseline = window(root, "E", "cancel-intents", TIME + after_sequence + 1, TIME + 20)["state_before_start"]
+        order = baseline["orders"]['["X","O"]']
+        assert order["cancel_pending"] is expected_pending
+        assert order["confirmed_book"] is (after_sequence != 10)
+    assert_mcap_files(root, minimum=4)
+
+
+def test_actual_second_loss_rejects_query_proof_without_global_sync(make_recording):
+    recorder, now, root, recording_id = make_recording()
+    recorder.begin_execution("E", ["X"])
+    order = {
+        "symbol": "X",
+        "order_id": "O",
+        "status": "working",
+        "confirmed_book": True,
+        "quantity": 1,
+        "remaining_quantity": 1,
+    }
+    recorder.observe("/order", order)
+    recorder.observe("/quote/X", quote())
+    recorder.observe("/connection", {"connected": False})
+    recorder.observe("/connection", {"connected": True})
+    first = recorder.begin_query(["X"])
+    assert first is not None
+    recorder.observe(
+        "/order_set",
+        {
+            **first,
+            "scope": {"kind": "symbols", "symbols": ["X"]},
+            "scope_complete": True,
+            "synchronized": True,
+            "orders": [order],
+        },
+    )
+    second = recorder.begin_query(["X"])
+    assert second is not None
+    now[0] += 1
+    recorder.observe("/connection", {"status": "down", "ready": False, "available": False, "synchronized": False})
+    now[0] += 1
+    recorder.observe(
+        "/order_set",
+        {
+            **second,
+            "scope": {"kind": "symbols", "symbols": ["X"]},
+            "scope_complete": True,
+            "synchronized": True,
+            "orders": [order],
+        },
+    )
+    finished(recorder)
+    full = window(root, "E", recording_id, TIME, TIME + 100)
+    losses = [
+        message
+        for message in full["messages"]
+        if message["topic"] == "/connection" and message["data"].get("available") is False
+    ]
+    assert losses[-1]["data"]["sync_generation"] > second["sync_generation"]
+    assert full["messages"][-1]["data"]["query_basis"] is None
+    baseline = window(root, "E", recording_id, TIME + 10, TIME + 100)["state_before_start"]
+    assert baseline["orders"]['["X","O"]']["confirmed_book"] is False
+    assert baseline["quotes"]["X"]["book_valid"] is False
+
+
+def test_actual_symbol_directory_covers_earlier_and_later_nested_symbols(make_recording):
+    recorder, now, root, recording_id = make_recording({"schema_version": 1, "instrument": {}})
+    recorder.observe(
+        "/account_observation",
+        {
+            "scope": {"kind": "symbols", "symbols": ["A"]},
+            "scope_complete": True,
+            "positions": [{"symbol": "A", "position_side": "LONG", "quantity": 1}],
+        },
+    )
+    recorder.observe("/quote/A", {**quote(), "symbol": "A"})
+    now[0] += 30_000_000
+    recorder.begin_execution("E", ["X"])
+    recorder.observe("/quote/X", quote())
+    recorder.observe(
+        "/order_set",
+        {
+            "scope": {"kind": "symbols", "symbols": ["Y"]},
+            "scope_complete": False,
+            "synchronized": False,
+            "orders": [{"symbol": "Y", "order_id": "YO", "status": "unknown"}],
+        },
+    )
+    recorder.observe(
+        "/account_observation",
+        {
+            "scope": {"kind": "symbols", "symbols": ["Z"]},
+            "scope_complete": False,
+            "positions": [{"symbol": "Z", "position_side": "LONG", "quantity": 1}],
+        },
+    )
+    finished(recorder)
+    recording = replay_manifest(root, 7, "E")["recordings"][0]
+    assert recording["recording_id"] == recording_id
+    assert recording["symbols"] == ["A", "X", "Y", "Z"]
+    assert recording["symbols_complete"] is True
+    assert recording["context"].get("instrument", {}) == {}
+    for catalog in root.rglob("catalog.json"):
+        catalog.unlink()
+    recovered = replay_manifest(root, 7, "E")["recordings"][0]
+    assert recovered["symbols"] == recording["symbols"]
+    assert recovered["symbols_complete"] is True
+
+
+def test_actual_corrupt_catalog_is_recovered_read_only(make_recording):
+    recorder, _, root, recording_id = make_recording()
+    recorder.begin_execution("E", ["X"])
+    recorder.observe("/quote/X", quote())
+    finished(recorder)
+    catalog = next(root.rglob("catalog.json"))
+    sealed = {path: path.read_bytes() for path in root.rglob("*.mcap")}
+    catalog.write_bytes(b"{truncated")
+    assert replay_manifest(root, 7, "E")["availability"] == "available"
+    assert len(window(root, "E", recording_id, TIME, TIME + 1)["messages"]) == 2
+    assert catalog.read_bytes() == b"{truncated"
+    assert all(path.read_bytes() == original for path, original in sealed.items())
+    catalog.write_text(json.dumps({"schema_version": 2, "day": catalog.parent.name, "future_field": True}))
+    with pytest.raises(_core.NativeError):
+        replay_manifest(root, 7, "E")

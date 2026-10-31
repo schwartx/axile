@@ -524,9 +524,9 @@ class WorkerBackendManager:
         from axile.server.db.models.account import AccountSnapshot
 
         account = AccountSnapshot.model_validate(request.account_payload)
-        from axile.server.execution.worker_backend.replay import replay_config
+        from axile.server.execution.worker_backend.replay import current_replay_config
 
-        request.replay_config = replay_config(account)
+        request.replay_config = current_replay_config(account)
         key = connection_config_key(account.trade_channel, account.account_config)
         binding = getattr(handle, "connection_binding", None)
         if binding is None or binding.config_key != key:

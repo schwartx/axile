@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 
@@ -14,7 +15,15 @@ from axile.executor.ctp_product_sessions import get_ctp_product_sessions
 from axile.executor.trading_calendar import CHINA_CALENDAR_ID
 
 _DIRECTION = {"0": "BUY", "1": "SELL"}
-_OFFSET = {"0": "OPEN", "1": "CLOSE", "3": "CLOSETODAY", "4": "CLOSEYESTERDAY"}
+_OFFSET = {
+    "0": "OPEN",
+    "1": "CLOSE",
+    "2": "CLOSE",
+    "3": "CLOSETODAY",
+    "4": "CLOSEYESTERDAY",
+    "5": "CLOSE",
+    "6": "CLOSE",
+}
 _STATUS = {
     "0": "filled",
     "1": "partially_filled",
@@ -36,6 +45,13 @@ _IDENTITY = {
     "TradeID": "trade_id",
     "RequestID": "request_id",
 }
+_ENUM_ATTRIBUTES = {
+    "Direction": "native_direction",
+    "OrderStatus": "native_status",
+    "CombOffsetFlag": "native_comb_offset_flag",
+    "OffsetFlag": "native_offset_flag",
+    "PosiDirection": "native_position_direction",
+}
 
 
 class Fields:
@@ -44,6 +60,7 @@ class Fields:
     def __init__(self, row: object) -> None:
         self.row = row
         self.quality: dict[str, str] = {}
+        self.attributes: dict[str, str | int] = {}
 
     def value(self, name: str) -> object:
         """读取原始字段并记录存在性。"""
@@ -52,6 +69,14 @@ class Fields:
         else:
             value = getattr(self.row, name, None)
         self.quality[name] = "missing" if value is None or value == "" else "known"
+        if (
+            name in _ENUM_ATTRIBUTES
+            and isinstance(value, str | int)
+            and not isinstance(value, bool)
+            and value != ""
+            and len(str(value)) <= 512
+        ):
+            self.attributes[_ENUM_ATTRIBUTES[name]] = value
         return value
 
     def text(self, name: str) -> str | None:
@@ -111,7 +136,7 @@ def _base(fields: Fields, source: str) -> dict[str, object]:
     identity = {key: value for native, key in _IDENTITY.items() if (value := fields.text(native)) is not None}
     return {
         "source": source,
-        "attributes": {},
+        "attributes": fields.attributes,
         "native_identity": identity,
         "field_quality": fields.quality,
     }
@@ -206,18 +231,20 @@ def order(row: object, *, source: str = "ctp.order_return") -> dict[str, object]
         confirmed_book=status in {"working", "partially_filled"} if status != "unknown" else None,
     )
     data.update(_source_time(f, "InsertDate", "InsertTime"))
-    data["attributes"] = {
-        key: value
-        for native, key in {
-            "CombHedgeFlag": "hedge_flag",
-            "OrderPriceType": "native_order_type",
-            "TimeCondition": "time_condition",
-            "VolumeCondition": "volume_condition",
-            "OrderSubmitStatus": "submit_status",
-            "StatusMsg": "status_msg",
-        }.items()
-        if (value := f.text(native)) is not None
-    }
+    data["attributes"].update(
+        {
+            key: value
+            for native, key in {
+                "CombHedgeFlag": "hedge_flag",
+                "OrderPriceType": "native_order_type",
+                "TimeCondition": "time_condition",
+                "VolumeCondition": "volume_condition",
+                "OrderSubmitStatus": "submit_status",
+                "StatusMsg": "status_msg",
+            }.items()
+            if (value := f.text(native)) is not None
+        }
+    )
     return data
 
 
@@ -367,6 +394,32 @@ def command(
     return data
 
 
+def link_cancel_request(owner: object, request_id: int, symbol: str, order_id: str) -> None:
+    """在原生调用前保存本次录制内的精确撤单请求关联。"""
+    observer = getattr(owner, "_replay_observer", None)
+    command_id = recording.current_command_id()
+    generation = getattr(owner, "_replay_sync_generation", None)
+    if observer is None or not command_id or type(generation) is not int:
+        return
+    try:
+        with getattr(owner, "_lock"):
+            links = getattr(owner, "_replay_cancel_request_links", None)
+            if links is None:
+                links = OrderedDict()
+                setattr(owner, "_replay_cancel_request_links", links)
+            if links:
+                previous = next(iter(links.values()))
+                if previous[0] is not observer or previous[1] != generation:
+                    links.clear()
+            links[request_id] = (observer, generation, command_id, symbol, order_id)
+            while len(links) > 512:
+                links.popitem(last=False)
+    except Exception:  # noqa: BLE001 - 回放关联失败不能阻止撤单请求
+        recording.observe(
+            owner, "/connection", {"source": "ctp.replay", "available": False, "reason": "cancel_link_failed"}
+        )
+
+
 def begin_query(owner: object, symbol: str | None) -> dict[str, object] | None:
     """记录查询发起前缀，不能以业务订单缓存版本替代。"""
     if not recording.replay_enabled(owner):
@@ -411,4 +464,35 @@ def rejection(
     )
     if order_id is not None:
         data["order_id"] = order_id
+    return data
+
+
+def cancel_rejection(owner: object, row: object, info: object, request_id: int | None = None) -> dict[str, object]:
+    """仅按同录制、同代次的原生请求 ID 确认撤单失败。"""
+    rid = request_id if request_id is not None else Fields(row).value("RequestID")
+    rid = rid if type(rid) is int and rid > 0 else None
+    data = rejection(row, info, source="ctp.cancel_error", request_id=rid)
+    data["command_id"] = None
+    if rid is None or data["error_id"] is None or data["error_id"] == 0:
+        return data
+    links = getattr(owner, "_replay_cancel_request_links", None)
+    if links is None:
+        return data
+    with getattr(owner, "_lock"):
+        link = links.get(rid)
+        if (
+            link is None
+            or link[0] is not getattr(owner, "_replay_observer", None)
+            or link[1] != getattr(owner, "_replay_sync_generation", None)
+        ):
+            return data
+    data.update(
+        command_id=link[2],
+        symbol=link[3],
+        order_id=link[4],
+        operation="cancel_order",
+        phase="native_error",
+        success=False,
+        accepted=False,
+    )
     return data

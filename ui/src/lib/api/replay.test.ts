@@ -1,5 +1,7 @@
 import { describe, expect, it, spyOn } from 'bun:test'
 import { readReplayWindow, replayWindowQuery, validateReplayManifest, validateReplayPage } from '@/lib/api/replay'
+import { replaySymbols, replayWindowRequest } from '@/features/replay/presentation'
+import type { ReplayRecording, ReplayWindow } from '@/features/replay/types'
 
 const request = { recording_id: 'rec-A', start_us: 100, end_us: 200, symbols: ['合约 A'] }
 const page = () => ({ recording_id: 'rec-A', window_id: 'w', state_before_start: {}, messages: [{ schema_version: 1, recording_id: 'rec-A', capture_seq: 3, time_us: 100, topic: '/trade', data: {} }], next_cursor: null, complete: true, coverage: [{ start_us: 100, end_us: 200 }], gaps: [], context: { schema_version: 1 } })
@@ -31,6 +33,32 @@ describe('回放只读窗口边界', () => {
     row.messages[0].time_us = 200
     expect(() => validateReplayPage(row, request)).toThrow('超出')
     expect(() => validateReplayManifest({ account_id: 1, execution_id: 'e', recordings: [{ recording_id: 'r', coverage: [], context: { schema_version: 2 } }] })).toThrow('版本暂不支持')
+  })
+  it('品种目录兼容旧录制缺字段，并拒绝非字符串或无效名称', () => {
+    const recording = { recording_id: 'r', coverage: [], context: { schema_version: 1 } }
+    const manifest = { account_id: 1, execution_id: 'e', recordings: [recording] }
+    expect(validateReplayManifest(manifest).recordings[0].symbols).toBeUndefined()
+    const complete = validateReplayManifest({ ...manifest, recordings: [{ ...recording, symbols: ['A', 'X'], symbols_complete: true }] }).recordings[0]
+    expect(complete.symbols).toEqual(['A', 'X'])
+    expect(complete.symbols_complete).toBe(true)
+    expect(validateReplayManifest({ ...manifest, recordings: [{ ...recording, symbols_complete: false }] }).recordings[0].symbols_complete).toBe(false)
+    expect(() => validateReplayManifest({ ...manifest, recordings: [{ ...recording, symbols_complete: 'yes' }] })).toThrow('目录完整性')
+    expect(() => validateReplayManifest({ ...manifest, recordings: [{ ...recording, symbols_complete: true }] })).toThrow('缺少名称列表')
+    for (const symbols of ['A', [1], [''], ['A\nB']]) {
+      expect(() => validateReplayManifest({ ...manifest, recordings: [{ ...recording, symbols }] })).toThrow('品种目录')
+    }
+  })
+  it('只有完整目录才筛选品种，旧录制后窗仍能发现新出现的X', () => {
+    const recording: ReplayRecording = { recording_id: 'rec-A', context: { schema_version: 1 }, symbols: ['A'], coverage: [] }
+    const range = { start_us: 100, end_us: 200 }
+    const future = { ...page(), messages: [{ ...page().messages[0], data: { symbol: 'X' } }] } as ReplayWindow
+    for (const symbols_complete of [false, undefined]) {
+      const selected = replayWindowRequest({ ...recording, symbols_complete }, range, 'A')
+      expect(new URLSearchParams(replayWindowQuery(selected)).has('symbols')).toBe(false)
+      expect(replaySymbols(validateReplayPage(future, selected), ['A'])).toEqual(['A', 'X'])
+    }
+    const complete = replayWindowRequest({ ...recording, symbols: ['A', 'X'], symbols_complete: true }, range, 'X')
+    expect(new URLSearchParams(replayWindowQuery(complete)).get('symbols')).toBe('X')
   })
   it('固定窗口分页只恢复首页基线，后页继续同微秒序号', async () => {
     const urls: string[] = []

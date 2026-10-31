@@ -7,10 +7,12 @@ import pytest
 from openctp_ctp import thosttraderapi as td
 
 from axile.channels.builtins import _ctp_plugin
+from axile.executor.ctp import replay as ctp_replay
 from axile.executor.models.unified_order import OrderDirection, OrderType
 from axile.executor.order_submission_context import order_submission_context
 from axile.executor.replay import current_command_id
 from axile.server._native import _core
+from axile.server.execution_replay.contracts import freeze_data
 from axile.server.execution_replay.recorder import ReplayRecorder
 from axile.server.execution_replay.service import replay_manifest, replay_window
 from tests.unit.executor.ctp.test_connection_recovery import ScriptedBroker
@@ -184,3 +186,93 @@ def test_connection_exit_clears_native_order_confirmation_and_quote_validity(rec
     order = state["orders"][json.dumps(["ag2612", "20260909:7:1:10"], separators=(",", ":"))]
     assert order["confirmed_book"] is False
     assert state["quotes"]["ag2612"]["book_valid"] is False
+
+
+@pytest.mark.parametrize(
+    ("flag", "offset"),
+    [
+        (td.THOST_FTDC_OF_ForceClose, "CLOSE"),
+        (td.THOST_FTDC_OF_ForceOff, "CLOSE"),
+        (td.THOST_FTDC_OF_LocalForceClose, "CLOSE"),
+        ("unmapped", None),
+    ],
+)
+def test_native_enum_values_and_frozen_display_survive_real_mcap(recording, flag, offset):
+    row = SimpleNamespace(
+        **(vars(recording.broker.trade) | {"Direction": td.THOST_FTDC_D_Sell, "OffsetFlag": flag, "TradeID": "RAW"})
+    )
+    recording.recorder.observe(
+        "/trade", ctp_replay.trade(recording.executor, row, source="ctp.trade_return", order_id="raw-order")
+    )
+    recording.recorder.observe(
+        "/order",
+        ctp_replay.order(
+            SimpleNamespace(
+                **(
+                    vars(recording.broker.order)
+                    | {"Direction": "unmapped", "OrderStatus": "new", "CombOffsetFlag": flag}
+                )
+            )
+        ),
+    )
+    state, messages = finish_and_read(recording)
+    observed_trade = next(event["data"] for event in messages if event["topic"] == "/trade")
+    assert observed_trade["offset"] == offset
+    assert observed_trade["attributes"]["native_offset_flag"] == flag
+    assert state["trade_accounting"]["own_records"]["ctp:17:20260909:SHFE:ag2612:RAW"]["data"]["attributes"] == {
+        "native_direction": td.THOST_FTDC_D_Sell,
+        "native_offset_flag": flag,
+    }
+    observed_order = next(event["data"] for event in messages if event["topic"] == "/order")
+    assert observed_order["attributes"]["native_direction"] == "unmapped"
+    assert observed_order["attributes"]["native_status"] == "new"
+    assert observed_order["attributes"]["native_comb_offset_flag"] == flag
+    context = replay_manifest(recording.root, 17, "E-early")["recordings"][0]["context"]
+    assert context["adapter_version"] == "2"
+    display = next(field for field in context["display"]["trade"] if field["key"] == "native_offset_flag")
+    assert display["values"][td.THOST_FTDC_OF_ForceClose] == "强平"
+
+
+def test_normal_sdk_position_query_identity_survives_freeze_and_real_mcap(recording, monkeypatch):
+    account = td.CThostFtdcTradingAccountField()
+    account.BrokerID = "BROKERLEAK"
+    account.AccountID = "ACCOUNTLEAK"
+    account.Balance = 100
+    account.Available = 80
+    account.FrozenMargin = 2
+    position = td.CThostFtdcInvestorPositionField()
+    position.BrokerID = "BROKERLEAK"
+    position.InvestorID = "INVESTORLEAK"
+    position.InstrumentID = "ag2612"
+    position.TradingDay = "20261031"
+    position.ExchangeID = "SHFE"
+    position.PosiDirection = td.THOST_FTDC_PD_Long
+    position.Position = 4
+    position.TodayPosition = 2
+    position.LongFrozen = 1
+    expected_identity = {"trading_day": "20261031", "exchange_id": "SHFE"}
+    frame = ctp_replay.account_observation([account], [position], source="ctp.account_query")
+    context = _ctp_plugin().descriptor.replay.model_dump(mode="json")
+    frozen = freeze_data("/account_observation", frame, context)
+    assert frozen["positions"][0]["native_identity"] == expected_identity
+    requested = []
+
+    def query(name, _request):
+        requested.append(name)
+        assert name in {"ReqQryTradingAccount", "ReqQryInvestorPosition"}
+        return [account] if name == "ReqQryTradingAccount" else [position]
+
+    monkeypatch.setattr(recording.executor, "_query", query)
+    monkeypatch.setattr(recording.executor, "_position_valuation_quotes", lambda _rows: ({}, {}))
+    assert recording.executor.get_account_assets().available_cash == 80
+    assert requested == ["ReqQryTradingAccount", "ReqQryInvestorPosition"]
+    state, messages = finish_and_read(recording)
+    observation = next(event["data"] for event in messages if event["topic"] == "/account_observation")
+    assert observation["scope_complete"] is True
+    assert observation["positions"][0]["native_identity"] == expected_identity
+    assert observation["positions"][0]["quantity"] == 4
+    observed_position = next(row for row in state["observed_positions"].values() if row["symbol"] == "ag2612")
+    assert observed_position["native_identity"] == expected_identity
+    assert observed_position["quantity"] == 4
+    serialized = json.dumps({"observation": observation, "position": observed_position})
+    assert all(marker not in serialized for marker in ("BROKERLEAK", "ACCOUNTLEAK", "INVESTORLEAK", "swig"))

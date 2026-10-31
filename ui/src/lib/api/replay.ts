@@ -49,6 +49,9 @@ export function validateReplayManifest(value: unknown): ReplayManifest {
   for (const item of row.recordings) {
     const recording = object(item)
     if (typeof recording.recording_id !== 'string' || !ranges(recording.coverage)) throw new Error('回放目录包含无效覆盖范围')
+    if (recording.symbols !== undefined && (!Array.isArray(recording.symbols) || recording.symbols.some(symbol => typeof symbol !== 'string' || !symbol || symbol.length > 256 || [...symbol].some(character => character < ' ')))) throw new Error('回放目录包含无效品种目录')
+    if (recording.symbols_complete !== undefined && typeof recording.symbols_complete !== 'boolean') throw new Error('回放品种目录完整性无效')
+    if (recording.symbols_complete === true && recording.symbols === undefined) throw new Error('完整品种目录缺少名称列表')
     const context = object(recording.context)
     if (context.schema_version !== 1) throw new Error('该录制版本暂不支持，请升级后查看')
   }

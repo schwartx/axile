@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from axile.channels import get_channel
-from axile.server.db.models.account import AccountContext
+from axile.server.db.models.account import Account, AccountContext
 from axile.server.execution.worker_backend.protocol import WorkerReplayConfig
 
 
@@ -40,6 +40,28 @@ def replay_config(account: AccountContext) -> WorkerReplayConfig:
         context=context,
         supported=supported,
     )
+
+
+def current_replay_config(account: AccountContext) -> WorkerReplayConfig | None:
+    """独立读取当前录制意愿，保留本次交易快照的渠道解释。"""
+    from axile.server.native_store import native_operation_sync
+
+    try:
+        value = native_operation_sync("account_get", {"account_id": account.id})
+        if value is None:
+            return None
+        current = Account.model_validate(value)
+        if current.id != account.id:
+            return None
+        snapshot = account.model_copy(
+            update={
+                "replay_recording_enabled": current.replay_recording_enabled,
+                "replay_config_version": current.replay_config_version,
+            }
+        )
+        return replay_config(snapshot)
+    except Exception:  # noqa: BLE001 - 读取失败时不把历史开启意愿交给新 worker，也不影响交易
+        return None
 
 
 def worker_replay_status(state: Any) -> dict[str, object]:

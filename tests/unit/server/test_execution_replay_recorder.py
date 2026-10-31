@@ -316,37 +316,11 @@ def test_reader_preserves_legal_native_cursor_budget(monkeypatch):
         service.replay_window("/server/replay", 7, "E1", {"recording_id": "R1", "cursor": "A" * (512 * 1024 + 1)})
 
 
-def test_only_complete_valid_account_query_restores_account_sync(running):
-    recorder, owner, _, _ = running
+def test_healthy_transport_does_not_restore_pre_disconnect_query_proof(running):
+    recorder, owner, writers, _ = running
+    account_token = begin_query(owner, [])
     recorder.observe("/connection", {"connected": False})
-    assert not recorder._connection_ready
     recorder.observe("/connection", {"connected": True, "synchronized": True})
-    assert not recorder._connection_ready
-    symbol_token = begin_query(owner, ["A"])
-    recorder.observe(
-        "/order_set",
-        {
-            **symbol_token,
-            "scope": {"kind": "symbols", "symbols": ["A"]},
-            "scope_complete": True,
-            "synchronized": True,
-            "orders": [],
-        },
-    )
-    assert not recorder._connection_ready
-    account_token = begin_query(owner, [])
-    recorder.observe(
-        "/order_set",
-        {
-            **account_token,
-            "scope": {"kind": "account", "symbols": []},
-            "scope_complete": False,
-            "synchronized": True,
-            "orders": [],
-        },
-    )
-    assert not recorder._connection_ready
-    account_token = begin_query(owner, [])
     recorder.observe(
         "/order_set",
         {
@@ -357,7 +331,8 @@ def test_only_complete_valid_account_query_restores_account_sync(running):
             "orders": [],
         },
     )
-    assert recorder._connection_ready
+    recorder.close()
+    assert writers[0].messages[-1]["data"]["query_basis"] is None
 
 
 def test_query_token_cannot_expand_symbol_scope_to_account(running):
@@ -375,6 +350,136 @@ def test_query_token_cannot_expand_symbol_scope_to_account(running):
     )
     recorder.close()
     assert writers[0].messages[-1]["data"]["query_basis"] is None
+
+
+@pytest.mark.parametrize("failure", ["connected", "ready", "available", "synchronized"])
+def test_each_connection_loss_revokes_queries_without_account_sync(running, failure):
+    recorder, owner, writers, _ = running
+    recorder.observe("/connection", {failure: False})
+    recorder.observe("/connection", {"connected": True})
+    first = begin_query(owner, ["A"])
+    recorder.observe(
+        "/order_set",
+        {**first, "scope": ["A"], "scope_complete": True, "synchronized": True, "orders": []},
+    )
+    pending = begin_query(owner, ["A"])
+    recorder.observe("/connection", {failure: False})
+    assert owner._replay_sync_generation == pending["sync_generation"] + 1
+    recorder.observe(
+        "/order_set",
+        {
+            **pending,
+            "scope": ["A"],
+            "scope_complete": True,
+            "synchronized": True,
+            "orders": [{"symbol": "A", "order_id": "O", "status": "working"}],
+        },
+    )
+    recorder.close()
+    assert writers[0].messages[-1]["data"]["query_basis"] is None
+    assert ("A", "O") not in recorder._orders
+
+
+@pytest.mark.parametrize("rows", [[], [{"symbol": "A", "order_id": "O", "status": "canceled"}]])
+def test_complete_order_set_retires_capture_interest_after_the_tail(running, rows):
+    recorder, owner, writers, now = running
+    recorder.begin_execution("E", ["A"])
+    recorder.observe("/order", {"symbol": "A", "order_id": "O", "status": "working"})
+    recorder.end_execution("E")
+    token = begin_query(owner, ["A"])
+    recorder.observe(
+        "/order_set", {**token, "scope": ["A"], "scope_complete": True, "synchronized": True, "orders": rows}
+    )
+    recorder.observe("/quote/A", {"symbol": "A", "bids": [], "asks": []})
+    now[0] += module.TAIL_US + 1
+    recorder.observe("/quote/A", {"symbol": "A", "bids": [], "asks": []})
+    recorder.close()
+    assert ("A", "O") not in recorder._orders
+    assert len([message for message in writers[0].messages if message["topic"] == "/quote/A"]) == 1
+
+
+def test_order_set_prefix_keeps_new_orders_and_fills(running):
+    recorder, owner, _, _ = running
+    for identity in ("old", "filled"):
+        recorder.observe("/order", {"symbol": "A", "order_id": identity, "status": "working"})
+    token = begin_query(owner, ["A"])
+    recorder.observe("/order", {"symbol": "A", "order_id": "new", "status": "working"})
+    recorder.observe(
+        "/trade", {"symbol": "A", "order_id": "filled", "trade_key": "T", "identity_quality": "stable", "quantity": 1}
+    )
+    recorder.observe(
+        "/order_set", {**token, "scope": ["A"], "scope_complete": True, "synchronized": True, "orders": []}
+    )
+    assert recorder._orders == {("A", "new"), ("A", "filled")}
+
+
+def test_duplicate_trade_does_not_protect_an_order_from_a_new_complete_set(running):
+    recorder, owner, _, _ = running
+    recorder.observe("/order", {"symbol": "A", "order_id": "O", "status": "working"})
+    trade = {"symbol": "A", "order_id": "O", "trade_key": "T", "identity_quality": "stable", "quantity": 1}
+    recorder.observe("/trade", trade)
+    token = begin_query(owner, ["A"])
+    recorder.observe("/trade", trade)
+    recorder.observe(
+        "/order_set", {**token, "scope": ["A"], "scope_complete": True, "synchronized": True, "orders": []}
+    )
+    assert ("A", "O") not in recorder._orders
+
+
+def test_late_order_set_cannot_revive_removed_orders_in_an_overlapping_scope(running):
+    recorder, owner, _, _ = running
+    recorder.observe("/order", {"symbol": "A", "order_id": "OA", "status": "working"})
+    recorder.observe("/order", {"symbol": "B", "order_id": "OB", "status": "working"})
+    first = begin_query(owner, ["A", "B"])
+    second = begin_query(owner, ["A"])
+    assert first["query_basis"]["start_seq"] == second["query_basis"]["start_seq"]
+    recorder.observe(
+        "/order_set", {**second, "scope": ["A"], "scope_complete": True, "synchronized": True, "orders": []}
+    )
+    recorder.observe(
+        "/order_set",
+        {
+            **first,
+            "scope": ["A", "B"],
+            "scope_complete": True,
+            "synchronized": True,
+            "orders": [
+                {"symbol": "A", "order_id": "OA", "status": "working"},
+                {"symbol": "B", "order_id": "OB", "status": "canceled"},
+            ],
+        },
+    )
+    assert recorder._orders == set()
+
+
+@pytest.mark.parametrize("complete,synchronized", [(False, True), (True, False)])
+def test_partial_order_sets_and_old_generation_cannot_remove_capture_interest(running, complete, synchronized):
+    recorder, owner, _, _ = running
+    recorder.observe("/order", {"symbol": "A", "order_id": "O", "status": "working"})
+    token = begin_query(owner, ["A"])
+    recorder.observe(
+        "/order_set",
+        {**token, "scope": ["A"], "scope_complete": complete, "synchronized": synchronized, "orders": []},
+    )
+    recorder.observe("/connection", {"connected": False})
+    recorder.observe(
+        "/order_set", {**token, "scope": ["A"], "scope_complete": True, "synchronized": True, "orders": []}
+    )
+    recorder.observe(
+        "/order", {"symbol": "A", "order_id": "O", "status": "canceled", "sync_generation": token["sync_generation"]}
+    )
+    assert recorder._orders == {("A", "O")}
+
+
+def test_new_recording_does_not_inherit_order_interest_fences(running):
+    recorder, _, _, _ = running
+    recorder.observe("/order", {"symbol": "A", "order_id": "O", "status": "canceled"})
+    recorder.configure(False, 2)
+    eventually(lambda: recorder._session is None)
+    recorder.configure(True, 3)
+    eventually(lambda: recorder.status()["state"] == "recording")
+    recorder.observe("/order", {"symbol": "A", "order_id": "O", "status": "working"})
+    assert recorder._orders == {("A", "O")}
 
 
 def test_poll_seals_only_after_its_captured_queue_prefix(tmp_path):

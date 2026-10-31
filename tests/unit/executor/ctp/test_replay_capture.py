@@ -4,6 +4,7 @@ from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
+from openctp_ctp import thosttraderapi as td
 
 from axile.executor.ctp import replay
 from axile.executor.replay import set_replay_observer
@@ -34,7 +35,44 @@ def test_unknown_native_fields_do_not_inherit_business_defaults():
     assert data["source_time_us"] is None
     assert data["field_quality"]["Direction"] == "invalid"
     assert data["field_quality"]["VolumeTotalOriginal"] == "missing"
+    assert data["attributes"]["native_direction"] == "bad"
+    assert data["attributes"]["native_status"] == "bad"
     assert "secret" not in repr(data)
+
+
+@pytest.mark.parametrize(
+    "flag", [td.THOST_FTDC_OF_ForceClose, td.THOST_FTDC_OF_ForceOff, td.THOST_FTDC_OF_LocalForceClose]
+)
+def test_force_close_keeps_native_subtype_and_common_close_semantics(broker, flag):
+    row = SimpleNamespace(**(vars(broker.trade) | {"Direction": td.THOST_FTDC_D_Sell, "OffsetFlag": flag}))
+    data = replay.trade(broker.executor, row, source="ctp.trade_return")
+    assert data["direction"] == "SELL" and data["offset"] == "CLOSE"
+    assert data["field_quality"]["OffsetFlag"] == "known"
+    assert data["attributes"] == {"native_direction": td.THOST_FTDC_D_Sell, "native_offset_flag": flag}
+
+
+def test_unmapped_enums_keep_exact_scalars_without_guessing_normalized_values():
+    data = replay.order({"Direction": 0, "OrderStatus": "unmapped", "CombOffsetFlag": "01", "Password": "not-recorded"})
+    assert data["direction"] == "BUY" and data["status"] == "unknown" and data["offset"] is None
+    assert data["attributes"] == {
+        "native_direction": 0,
+        "native_status": "unmapped",
+        "native_comb_offset_flag": "01",
+    }
+    assert data["field_quality"]["CombOffsetFlag"] == "invalid"
+    assert "not-recorded" not in repr(data)
+
+
+def test_unknown_position_direction_is_retained_without_claiming_a_complete_position_scope():
+    data = replay.account_observation(
+        [SimpleNamespace(Balance=100)],
+        [SimpleNamespace(InstrumentID="ag2612", PosiDirection="new-code", Position=4)],
+        source="ctp.account_query",
+    )
+    row = data["positions"][0]
+    assert row["position_side"] is None and row["field_quality"]["PosiDirection"] == "invalid"
+    assert row["attributes"]["native_position_direction"] == "new-code"
+    assert data["scope_complete"] is False
 
 
 def test_duplicate_trade_observations_do_not_duplicate_business_callbacks(broker):
@@ -269,7 +307,7 @@ def test_ctp_connection_exits_invalidate_the_recorded_generation(broker, tmp_pat
         else:
             executor._invalidate_connection("ambiguous native order identity")
         assert recorder._sync_generation == before + 1
-        assert recorder._connection_ready is False
+        assert executor._replay_sync_generation == before + 1
     finally:
         recorder.close()
     observations = [message["data"] for message in writer.messages if message["topic"] == "/connection"]

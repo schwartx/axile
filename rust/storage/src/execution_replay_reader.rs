@@ -13,10 +13,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::execution_replay::{
-    account_directory, checked_us, child_file, day_directory, digest, failure, identifier,
-    io_error, read_bounded, validate_message, CatalogRecording, PartDescriptor, ReplayResult,
-    CHECKPOINT_LIMIT, CONTEXT_LIMIT, JS_SAFE, MESSAGE_LIMIT, PAGE_LIMIT, PART_FILE_LIMIT,
-    PART_LIMIT, SCAN_BYTES, SCAN_DAYS, SCAN_EVENTS, SCAN_FILES, SCAN_SECONDS, SCHEMA,
+    account_directory, checked_us, child_file, collect_observed_symbols, day_directory, digest,
+    failure, identifier, io_error, read_bounded, validate_message, validate_symbols,
+    CatalogRecording, PartDescriptor, ReplayResult, CHECKPOINT_LIMIT, CONTEXT_LIMIT, JS_SAFE,
+    MESSAGE_LIMIT, PAGE_LIMIT, PART_FILE_LIMIT, PART_LIMIT, SCAN_BYTES, SCAN_DAYS, SCAN_EVENTS,
+    SCAN_FILES, SCAN_SECONDS, SCHEMA,
 };
 use crate::execution_replay_projection::Projection;
 use crate::execution_replay_recovery::load_read_index;
@@ -85,8 +86,9 @@ fn integer(value: &Value, name: &str) -> ReplayResult<u64> {
     Ok(number)
 }
 
-fn validate_descriptor(part: &PartDescriptor) -> ReplayResult<()> {
+pub(crate) fn validate_descriptor(part: &PartDescriptor) -> ReplayResult<()> {
     identifier(&part.recording_id)?;
+    validate_symbols(&part.symbols)?;
     if part.part == 0
         || !valid_part_sequences(part)
         || part.start_us >= part.end_us
@@ -234,6 +236,35 @@ pub(crate) fn validate_part_bytes_budget(
     })
 }
 
+pub(crate) fn collect_part_symbols(
+    data: &PartData,
+    symbols: &mut BTreeSet<String>,
+) -> ReplayResult<()> {
+    for name in [
+        "quotes",
+        "orders",
+        "executions",
+        "commands",
+        "observed_positions",
+        "derived_positions",
+    ] {
+        if let Some(rows) = data.projection.get(name).and_then(Value::as_object) {
+            for row in rows.values() {
+                collect_observed_symbols(row, symbols)?;
+                if let Some(by_symbol) = row.get("by_symbol").and_then(Value::as_object) {
+                    for value in by_symbol.values() {
+                        collect_observed_symbols(value, symbols)?;
+                    }
+                }
+            }
+        }
+    }
+    for message in &data.messages {
+        collect_observed_symbols(&message["data"], symbols)?;
+    }
+    Ok(())
+}
+
 fn decode_message(
     message: &mcap::Message<'_>,
     part: &PartDescriptor,
@@ -364,6 +395,7 @@ fn recording_views(account: &Path, budget: &mut Budget) -> ReplayResult<Recordin
                 metadata
                     .executions
                     .extend(existing.executions.iter().cloned());
+                metadata.symbols.extend(existing.symbols.iter().cloned());
             }
             view.metadata = Some(metadata);
         }
@@ -400,6 +432,11 @@ fn recording_views(account: &Path, budget: &mut Budget) -> ReplayResult<Recordin
                 ));
             }
         }
+        let metadata = view.metadata.as_mut().unwrap();
+        for part in &view.parts {
+            metadata.symbols.extend(part.symbols.iter().cloned());
+        }
+        validate_symbols(&metadata.symbols)?;
     }
     for identity in &index.partial_recordings {
         if let Some(metadata) = recordings
@@ -514,7 +551,8 @@ fn manifest_recording(
     let previous = metadata.previous_recording_id.as_ref();
     let order_known = previous.is_some_and(|previous| views.contains_key(previous));
     json!({"recording_id":identity,"coverage":coverage(&view.parts,None,None),
-        "gaps":gaps,"parts":view.parts,"context":metadata.context,
+        "gaps":gaps,"parts":view.parts,"context":metadata.context,"symbols":metadata.symbols,
+        "symbols_complete":!metadata.symbols.is_empty(),
         "instrument":metadata.context.get("instrument").cloned().unwrap_or_else(|| json!({})),
         "streams":metadata.context.get("streams").cloned().unwrap_or_else(|| json!({})),
         "previous_recording_id":previous,"order_known":order_known,
@@ -561,12 +599,26 @@ pub(crate) fn manifest(root: &Path, account_id: u64, execution: &str) -> ReplayR
             &views,
         ));
     }
+    let legacy_directories: BTreeSet<String> = result
+        .iter()
+        .filter(|recording| recording["symbols_complete"] != true)
+        .map(|recording| recording["recording_id"].as_str().unwrap().to_owned())
+        .collect();
+    fill_legacy_symbol_directories(&account, &views, &mut result, &mut budget)?;
     let partial = result
         .iter()
         .any(|recording| recording["availability"] == "partial");
-    let response = json!({"schema_version":1,"account_id":account_id,"execution_id":execution,
+    let mut response = json!({"schema_version":1,"account_id":account_id,"execution_id":execution,
         "availability":if result.is_empty() {"not_recorded"} else if partial {"partial"} else {"available"},
         "reason":if result.is_empty() {Some("not_recorded")} else {None},"recordings":result});
+    if serde_json::to_vec(&response).map_err(io_error)?.len() > PAGE_LIMIT {
+        for recording in response["recordings"].as_array_mut().unwrap() {
+            if legacy_directories.contains(recording["recording_id"].as_str().unwrap()) {
+                recording["symbols"] = json!([]);
+                recording["symbols_complete"] = json!(false);
+            }
+        }
+    }
     if serde_json::to_vec(&response).map_err(io_error)?.len() > PAGE_LIMIT {
         return Err(failure(
             "BUDGET",
@@ -574,6 +626,58 @@ pub(crate) fn manifest(root: &Path, account_id: u64, execution: &str) -> ReplayR
         ));
     }
     Ok(response)
+}
+
+fn fill_legacy_symbol_directories(
+    account: &Path,
+    views: &BTreeMap<String, RecordingView>,
+    recordings: &mut [Value],
+    budget: &mut Budget,
+) -> ReplayResult<()> {
+    for recording in recordings {
+        if recording["symbols_complete"] == true {
+            continue;
+        }
+        let identity = recording["recording_id"].as_str().unwrap();
+        let view = &views[identity];
+        if view.parts.is_empty() {
+            continue;
+        }
+        let mut symbols = BTreeSet::new();
+        let mut complete = true;
+        for part in &view.parts {
+            let path = child_file(
+                &day_directory(account, &part.day, false)?,
+                &part.file_name(),
+            )?;
+            match fs::metadata(path) {
+                Ok(metadata) if metadata.len() == part.size_bytes => (),
+                Ok(_) => {
+                    complete = false;
+                    continue;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    complete = false;
+                    continue;
+                }
+                Err(error) => return Err(io_error(error)),
+            }
+            let scan = read_part_budget(account, part, budget)
+                .and_then(|data| collect_part_symbols(&data, &mut symbols));
+            match scan {
+                Ok(()) => (),
+                Err(error) if error.code == "REPLAY_BUDGET" => {
+                    recording["symbols"] = json!(symbols);
+                    // A best-effort directory must not hide otherwise readable legacy recordings.
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        recording["symbols"] = json!(symbols);
+        recording["symbols_complete"] = json!(complete);
+    }
+    Ok(())
 }
 
 fn recording_order(
@@ -1158,6 +1262,7 @@ mod tests {
             checkpoint_through_seq: through,
             checkpoint_time_us: checkpoint,
             executions: BTreeSet::from(["7".into()]),
+            symbols: BTreeSet::new(),
         }
     }
 
@@ -1166,6 +1271,7 @@ mod tests {
             context: json!({"schema_version":1}),
             previous_recording_id: None,
             executions: BTreeSet::from(["7".into()]),
+            symbols: BTreeSet::new(),
             state: "closed".into(),
             unsealed_start_us: None,
             error: None,
@@ -1347,5 +1453,93 @@ mod tests {
         assert!(validate_part_bytes(&bytes, &descriptor, 1).is_err());
         descriptor.sha256 = digest(&bytes);
         assert!(validate_part_bytes(&bytes, &descriptor, 1).is_err());
+    }
+
+    #[test]
+    fn optional_legacy_symbol_scan_budget_does_not_hide_manifest_metadata() {
+        let account =
+            std::env::temp_dir().join(format!("axile-legacy-symbol-budget-{}", std::process::id()));
+        let directory = account.join("2026-10-31");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("recording-A-000001.mcap"), [0_u8; 100]).unwrap();
+        let views = BTreeMap::from([(
+            "A".into(),
+            RecordingView {
+                metadata: Some(metadata()),
+                parts: vec![part(1, 0, 1, 1, 100, None)],
+            },
+        )]);
+        let mut recordings = vec![json!({"recording_id":"A","symbols":[],
+            "symbols_complete":false,"availability":"available"})];
+        let mut budget = Budget {
+            bytes: SCAN_BYTES,
+            ..Budget::default()
+        };
+        fill_legacy_symbol_directories(&account, &views, &mut recordings, &mut budget).unwrap();
+        assert_eq!(recordings[0]["availability"], "available");
+        assert_eq!(recordings[0]["symbols_complete"], false);
+        assert_eq!(recordings[0]["symbols"], json!([]));
+        fs::remove_dir_all(account).unwrap();
+    }
+
+    #[test]
+    fn legacy_symbol_directory_keeps_missing_prefix_and_later_window_readable() {
+        use crate::execution_replay::ExecutionReplayWriter;
+        let root = std::env::temp_dir().join(format!(
+            "axile-legacy-symbol-missing-prefix-{}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).unwrap();
+        let mut writer =
+            ExecutionReplayWriter::new(&root, 1, "legacy", r#"{"schema_version":1}"#).unwrap();
+        for (seq, time, topic, data) in [
+            (
+                1,
+                100,
+                "/execution",
+                json!({"execution_id":"E","phase":"start","symbols":["A"]}),
+            ),
+            (2, 101, "/quote/A", json!({"symbol":"A","book_valid":false})),
+            (3, 200, "/quote/A", json!({"symbol":"A","book_valid":false})),
+        ] {
+            if seq == 3 {
+                writer.seal().unwrap();
+            }
+            writer
+                .append(
+                    &json!({"schema_version":1,"recording_id":"legacy",
+                "capture_seq":seq,"time_us":time,"topic":topic,"data":data})
+                    .to_string(),
+                )
+                .unwrap();
+        }
+        writer.finish().unwrap();
+        let catalog_path = root.join("account-1/1970-01-01/catalog.json");
+        let mut catalog: Value = serde_json::from_slice(&fs::read(&catalog_path).unwrap()).unwrap();
+        catalog["recordings"]["legacy"]
+            .as_object_mut()
+            .unwrap()
+            .remove("symbols");
+        for part in catalog["parts"].as_array_mut().unwrap() {
+            part.as_object_mut().unwrap().remove("symbols");
+        }
+        let bytes = serde_json::to_vec(&catalog).unwrap();
+        fs::write(&catalog_path, &bytes).unwrap();
+        fs::remove_file(root.join("account-1/1970-01-01/recording-legacy-000001.mcap")).unwrap();
+        let result = manifest(&root, 1, "E").unwrap();
+        assert_eq!(result["availability"], "partial");
+        assert_eq!(result["recordings"][0]["symbols"], json!(["A"]));
+        assert_eq!(result["recordings"][0]["symbols_complete"], false);
+        let later = window(
+            &root,
+            1,
+            "E",
+            &json!({"recording_id":"legacy","start_us":200,"end_us":201}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(later["state_before_start"]["state_through_seq"], 2);
+        assert_eq!(later["messages"][0]["capture_seq"], 3);
+        assert_eq!(fs::read(catalog_path).unwrap(), bytes);
+        fs::remove_dir_all(root).unwrap();
     }
 }

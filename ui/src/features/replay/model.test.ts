@@ -315,4 +315,87 @@ describe('回放按本地已观察前缀恢复', () => {
     expect(result.orders[key('A', 'a')].remaining_volume).toBeNull()
     expect(result.executionSymbolComplete.E.A).toBe(false)
   })
+
+  test.each(['connected', 'ready', 'available', 'synchronized'])('同代次的%s失效也撤销盘口和订单确认，健康连接不自行恢复', flag => {
+    const messages = [message(1, '/quote/A', { symbol: 'A', book_valid: true, valid_until_us: 1000,
+      bids: [{ price: 98, quantity: 2 }], asks: [{ price: 99, quantity: 3 }] }),
+    message(2, '/order', order('a')),
+    message(3, '/connection', { scope: { kind: 'account', symbols: [] }, sync_generation: 1, status: 'down', [flag]: false }),
+    message(4, '/connection', { scope: { kind: 'account', symbols: [] }, sync_generation: 1, connected: true })]
+    const result = projectReplay(windowOf(messages), { time_us: 400 })
+    expect(result.orders[key('A', 'a')].confirmed).toBe(false)
+    expect(result.quotes.A.book_valid).toBe(false)
+  })
+
+  test.each(['returned', 'result', 'native_request', 'native_return', 'native_returned'])('撤单%s只是意图，完整重放和新旧检查点恢复都保持待确认', phase => {
+    const request = { command_id: 'cancel-a', operation: 'cancel_order', symbol: 'A', order_id: 'a' }
+    const latest = { ...request, phase, success: phase === 'result' ? true : null }
+    const messages = [message(1, '/order', order('a')), message(2, '/command', { ...request, phase: 'request' }),
+      message(3, '/command', latest)]
+    const full = projectReplay(windowOf(messages), { time_us: 300 })
+    for (const cached of [undefined, true]) {
+      const carried = projectReplay(windowOf([], { state_through_seq: 3, time_us: 300,
+        orders: { [key('A', 'a')]: { ...order('a'), cancel_pending: cached, observed_at_us: 100, observed_seq: 1 } },
+        commands: { 'cancel-a': { ...latest, observed_at_us: 300, observed_seq: 3 } },
+      }), { time_us: 300 })
+      expect(carried.orders[key('A', 'a')].cancel_pending).toBe(full.orders[key('A', 'a')].cancel_pending)
+      expect(carried.orders[key('A', 'a')]).toMatchObject({ cancel_pending: true, confirmed: true, terminal: false, status: 'working' })
+      expect(carried.orderHistory).toHaveLength(1)
+    }
+  })
+
+  test.each([{ phase: 'error' }, { phase: 'native_error' }, { phase: 'result', success: false },
+    { phase: 'native_return', accepted: false }])('失败撤单按命令身份解除意图，原委托保持有效：%o', failure => {
+    const request = { command_id: 'cancel-a', operation: 'cancel_order', symbol: 'A', order_id: 'a', phase: 'request' }
+    const messages = [message(1, '/order', order('a')), message(2, '/command', request),
+      message(3, '/command', { command_id: 'cancel-a', ...failure })]
+    const window = windowOf(messages)
+    expect(projectReplay(window, { time_us: 200 }).orders[key('A', 'a')].cancel_pending).toBe(true)
+    const result = projectReplay(window, { time_us: 300 })
+    expect(result.orders[key('A', 'a')]).toMatchObject({ cancel_pending: false, confirmed: true, terminal: false, status: 'working' })
+    const restored = projectReplay(windowOf([], { state_through_seq: 3, time_us: 300,
+      orders: { [key('A', 'a')]: { ...order('a'), cancel_pending: true } },
+      commands: { 'cancel-a': { ...request, ...failure, observed_seq: 3, observed_at_us: 300 } },
+    }), { time_us: 300 })
+    expect(restored.orders[key('A', 'a')].cancel_pending).toBe(false)
+  })
+
+  test('多次撤单各自收敛，缺身份错误不清其他意图，订单终态清除全部待撤', () => {
+    const request = { operation: 'cancel_order', symbol: 'A', order_id: 'a', phase: 'request' }
+    const messages = [message(1, '/order', order('a')),
+      message(2, '/command', { ...request, command_id: 'c1' }), message(3, '/command', { ...request, command_id: 'c2' }),
+      message(4, '/command', { command_id: 'c1', phase: 'error' }),
+      message(5, '/command', { ...request, command_id: null, phase: 'error' }),
+      message(6, '/command', { command_id: 'c2', phase: 'result', success: false }),
+      message(7, '/command', { ...request, command_id: 'c3' }),
+      message(8, '/order', order('a', { status: 'filled', filled_quantity: 10, remaining_quantity: 0 })),
+      message(9, '/order', order('a'))]
+    const window = windowOf(messages)
+    expect(projectReplay(window, { time_us: 500 }).orders[key('A', 'a')].cancel_pending).toBe(true)
+    expect(projectReplay(window, { time_us: 600 }).orders[key('A', 'a')].cancel_pending).toBe(false)
+    expect(projectReplay(window, { time_us: 700 }).orders[key('A', 'a')].cancel_pending).toBe(true)
+    expect(projectReplay(window, { time_us: 900 }).orders[key('A', 'a')]).toMatchObject({ terminal: true, cancel_pending: false, confirmed: false })
+  })
+
+  test('撤单意图先于订单观察可恢复，柜台待撤证据不被本地重试失败清掉', () => {
+    const request = { operation: 'cancel_order', command_id: 'c1', symbol: 'A', order_id: 'a', phase: 'request' }
+    const messages = [message(1, '/command', request), message(2, '/order', order('a')),
+      message(3, '/order', order('a', { status: 'pending_cancel' })),
+      message(4, '/command', { command_id: 'c1', phase: 'error' })]
+    expect(projectReplay(windowOf(messages), { time_us: 200 }).orders[key('A', 'a')].cancel_pending).toBe(true)
+    expect(projectReplay(windowOf(messages), { time_us: 400 }).orders[key('A', 'a')].cancel_pending).toBe(true)
+  })
+
+  test('恢复检查点先载入完整命令事实，不把部分恢复的单一归属当成证明', () => {
+    const state = { state_through_seq: 4, time_us: 400,
+      orders: { [key('A', 'a')]: order('a') },
+      commands: { c1: { command_id: 'c1', operation: 'place_order', phase: 'result', symbol: 'A', order_id: 'a', execution_id: 'E' },
+        c2: { command_id: 'c2', operation: 'place_order', phase: 'result', symbol: 'A', order_id: 'a', execution_id: 'F' } },
+      trade_accounting: { own_seen_keys: ['T'], market_seen_keys: [], own_complete: false,
+        own_records: { T: { data: fill('T', 1, { order_id: 'a', execution_id: null }), first_time_us: 100, first_capture_seq: 1 } }, market_records: {} },
+    }
+    const result = projectReplay(windowOf([], state), { time_us: 400 })
+    expect(result.orders[key('A', 'a')].execution_id).toBeNull()
+    expect(result.ownTrades[0].execution_id).toBeNull()
+  })
 })

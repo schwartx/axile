@@ -14,6 +14,7 @@ const symbolOf = (data: ReplayData, topic = '') => text(data.symbol) ?? (topic.i
 const orderKey = (symbol: string, id: string) => JSON.stringify([symbol, id])
 const positionKey = (symbol: string, side: string | null) => JSON.stringify([symbol, side])
 const terminalStates = new Set(['filled', 'canceled', 'cancelled', 'rejected', 'expired'])
+const pendingCancelPhases = new Set(['request', 'returned', 'result', 'native_request', 'native_return', 'native_returned'])
 
 function known(data: ReplayData, key: string): unknown {
   const quality = replayObject(data.field_quality)[key]
@@ -62,7 +63,7 @@ function order(data: ReplayData, time: number, seq: number, carry = false): Repl
     price: number(known(data, 'price')), volume: number(known(data, 'quantity')),
     filled_volume: number(known(data, 'filled_quantity')), remaining_volume: number(known(data, 'remaining_quantity')),
     direction: text(known(data, 'direction')), offset: text(known(data, 'offset')), status,
-    confirmed, terminal, cancel_pending: known(data, 'cancel_pending') === true || status === 'pending_cancel', carry_in: carry,
+    confirmed, terminal, cancel_pending: !terminal && (known(data, 'cancel_pending') === true || normalized === 'pending_cancel'), carry_in: carry,
     execution_id: text(data.execution_id), previous_order_id: text(data.previous_order_id),
     time_us: sourceTime(data, time), capture_seq: seq,
     attributes: replayObject(data.attributes), native_identity: replayObject(data.native_identity),
@@ -192,13 +193,19 @@ function seed(window: ReplayWindow): ProjectionState {
     const visible = pending.market === true ? view.marketTrades : view.ownTrades
     if (value && !visible.some(item => value.key ? item.key === value.key : item.capture_seq === value.capture_seq && item.key == null)) visible.push(value)
   }
-  for (const item of rows(base.commands)) {
-    const data = replayObject(item)
-    applyCommand(state, data, { schema_version: 1, recording_id: window.recording_id, topic: '/command', data,
-      time_us: integer(data.observed_at_us) ?? view.time_us, capture_seq: integer(data.observed_seq) ?? seq })
+  const commands = rows(base.commands).map(replayObject)
+  for (const data of commands) {
+    const id = text(data.command_id) ?? `observation:${integer(data.observed_seq) ?? seq}`
+    state.commandFacts[id] = data
   }
+  for (const data of commands) {
+    applyCommand(state, data, { schema_version: 1, recording_id: window.recording_id, topic: '/command', data,
+      time_us: integer(data.observed_at_us) ?? view.time_us, capture_seq: integer(data.observed_seq) ?? seq }, true)
+  }
+  rebuildCancelPending(state)
   if (!view.accountingComplete) warn(state, '账户历史成交覆盖不完整，单次执行按各自记录判断')
   rebuildOrderAmounts(state)
+  view.orderHistory = Object.values(view.orders)
   return state
 }
 
@@ -237,8 +244,9 @@ function updateOrder(state: ProjectionState, data: ReplayData, message: ReplayMe
   merged.observed_at_us = message.time_us; merged.observed_seq = message.capture_seq
   state.orderFacts[key] = merged
   const value = order(merged, message.time_us, message.capture_seq)!
-  state.view.orders[key] = { ...value, cancel_pending: value.terminal ? false : previous?.cancel_pending || value.cancel_pending,
-    carry_in: previous?.carry_in ?? false }
+  value.cancel_pending = cancelPending(state, value)
+  state.orderFacts[key].cancel_pending = value.cancel_pending
+  state.view.orders[key] = { ...value, carry_in: previous?.carry_in ?? false }
   if (snapshotStart == null) state.orderChanges[key] = message.capture_seq
   rebuildOrderAmounts(state)
   state.view.orderHistory.push(state.view.orders[key])
@@ -259,7 +267,30 @@ function acceptGeneration(state: ProjectionState, symbol: string, generation: nu
   }
   return true
 }
-function applyCommand(state: ProjectionState, data: ReplayData, message: ReplayMessage) {
+export function replayCommandFailed(data: ReplayData): boolean {
+  return ['error', 'native_error'].includes(text(known(data, 'phase')) ?? '')
+    || known(data, 'success') === false || known(data, 'accepted') === false
+}
+function cancelPending(state: ProjectionState, value: ReplayOrder): boolean {
+  if (value.terminal) return false
+  if (value.status?.toLowerCase() === 'pending_cancel') return true
+  return Object.values(state.commandFacts).some(data => text(known(data, 'command_id')) != null
+    && known(data, 'operation') === 'cancel_order' && known(data, 'symbol') === value.symbol
+    && known(data, 'order_id') === value.order_id && pendingCancelPhases.has(text(known(data, 'phase')) ?? '')
+    && !replayCommandFailed(data))
+}
+function rebuildCancelPending(state: ProjectionState, message?: ReplayMessage) {
+  for (const [key, previous] of Object.entries(state.view.orders)) {
+    const pending = cancelPending(state, previous)
+    state.orderFacts[key] = { ...state.orderFacts[key], cancel_pending: pending }
+    if (pending === previous.cancel_pending) continue
+    const value = { ...previous, cancel_pending: pending,
+      ...(message ? { time_us: message.time_us, capture_seq: message.capture_seq } : {}) }
+    state.view.orders[key] = value
+    if (message) state.view.orderHistory.push(value)
+  }
+}
+function applyCommand(state: ProjectionState, data: ReplayData, message: ReplayMessage, restoring = false) {
   const suppliedId = text(data.command_id), id = suppliedId ?? `observation:${message.capture_seq}`
   if (!suppliedId) warn(state, '部分操作缺少命令身份，仅展示本次观察')
   const merged = mergeFields(state.commandFacts[id] ?? {}, data)
@@ -267,16 +298,10 @@ function applyCommand(state: ProjectionState, data: ReplayData, message: ReplayM
   const command: ReplayCommand = {
     command_id: id, operation: text(data.operation) ?? 'unknown', phase: text(data.phase) ?? 'unknown',
     symbol: text(data.symbol), order_id: text(data.order_id), price: number(known(data, 'price')), volume: number(known(data, 'quantity')),
-    time_us: message.time_us, capture_seq: message.capture_seq, data,
+    time_us: message.time_us, capture_seq: message.capture_seq, data: merged,
   }
   state.view.commands.push(command)
-  if (command.operation === 'cancel_order' && command.phase === 'request' && command.symbol && command.order_id) {
-    const key = orderKey(command.symbol, command.order_id), previous = state.view.orders[key]
-    if (previous && !previous.terminal) {
-      state.view.orders[key] = { ...previous, cancel_pending: true, time_us: message.time_us, capture_seq: message.capture_seq }
-      state.view.orderHistory.push(state.view.orders[key])
-    }
-  }
+  rebuildCancelPending(state, restoring ? undefined : message)
   for (const value of Object.values(state.view.orders)) {
     const owner = ownerForOrder(state, value.symbol, value.order_id)
     if (owner && !value.execution_id && !['manual', 'external'].includes(text(state.orderFacts[value.key]?.origin) ?? '')) {
@@ -300,7 +325,7 @@ function applyCommand(state: ProjectionState, data: ReplayData, message: ReplayM
     const associated = bindKnownOwner(state, pendingData)
     pending.observation = nested ? { ...observation, data: associated } : associated
   }
-  rebuildOrderAmounts(state, message)
+  rebuildOrderAmounts(state, restoring ? undefined : message)
 }
 function ownerForOrder(state: ProjectionState, symbol: string, id: string): string | null {
   if (id.startsWith('unknown-observation:')) return null
@@ -511,7 +536,8 @@ function applyOrderSet(state: ProjectionState, data: ReplayData, message: Replay
   }
 }
 function applyConnection(state: ProjectionState, data: ReplayData, message: ReplayMessage) {
-  const disconnected = data.connected === false || ['disconnected', 'unavailable', 'invalidated'].includes(text(data.status) ?? '')
+  const disconnected = ['connected', 'ready', 'available', 'synchronized'].some(field => data[field] === false)
+    || ['disconnected', 'unavailable', 'invalidated'].includes(text(data.status) ?? '')
   const symbols = scopeSymbols(data.scope ?? 'account', state), generation = integer(data.sync_generation)
   for (const symbol of symbols) {
     if (!acceptGeneration(state, symbol, generation, message)) continue
