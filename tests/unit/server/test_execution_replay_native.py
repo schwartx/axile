@@ -14,6 +14,9 @@ from axile.server.execution_replay.service import replay_manifest, replay_window
 
 TIME = 1_793_404_800_000_000
 MAGIC = b"\x89MCAP0\r\n"
+POSITION_MERGES = json.loads(
+    (Path(__file__).parents[2] / "fixtures/execution_replay/position-field-merge.json").read_text()
+)
 
 
 def wait_for(predicate):
@@ -88,6 +91,36 @@ def trade(identity, quantity, **fields):
         "offset": "OPEN",
         **fields,
     }
+
+
+@pytest.mark.parametrize("complete", [False, True])
+@pytest.mark.parametrize("scenario", POSITION_MERGES, ids=lambda scenario: scenario["name"])
+def test_position_field_merge_checkpoint_contract(make_recording, complete, scenario):
+    recorder, now, root, identity = make_recording()
+    recorder.begin_execution("E", ["X"])
+    for index, values in enumerate((scenario["initial"], scenario["update"]), 1):
+        now[0] += 1
+        recorder.observe(
+            "/account_observation",
+            {
+                "scope": ["X"],
+                "scope_complete": True if index == 1 else complete,
+                "positions": [{"symbol": "X", "position_side": "LONG", "quantity": index + 3, **values}],
+            },
+        )
+    finished(recorder)
+    request = {"recording_id": identity, "start_us": now[0] + 1, "end_us": now[0] + 2}
+    state = replay_window(root, 7, "E", request)["state_before_start"]
+    position = state["observed_positions"]['["X","LONG"]']
+    assert position == {
+        "symbol": "X",
+        "position_side": "LONG",
+        "quantity": 5,
+        **scenario["merged"],
+        "observed_at_us": now[0],
+        "observed_seq": 3,
+    }
+    assert state["position_basis"]['["X","LONG"]']["status"] == "unverified"
 
 
 def window(root, execution_id, recording_id, start, end, cursor=None):

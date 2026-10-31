@@ -112,6 +112,7 @@ type ProjectionState = {
   executions: Record<string, ReplayData>
   pending: Map<string, ReplayData>
   orderFacts: Record<string, ReplayData>
+  positionFacts: Record<string, ReplayData>
   ownLastFactSeq: Map<string, number>
   commandFacts: Record<string, ReplayData>
   commandOwners: Map<string, string | null>
@@ -158,7 +159,7 @@ function seed(window: ReplayWindow): ProjectionState {
   }
   const state: ProjectionState = {
     view, ownSeen, marketSeen, ownFacts: new Map(), marketFacts: new Map(), orderChanges: {}, setRevisions: {}, setObservations: {}, generations: {}, knownScopes: new Set(), basis: {}, executions: {}, pending: new Map(),
-    orderFacts: {}, ownLastFactSeq: new Map(), commandFacts: {}, commandOwners: new Map(), cancelOrders: new Set(),
+    orderFacts: {}, positionFacts: {}, ownLastFactSeq: new Map(), commandFacts: {}, commandOwners: new Map(), cancelOrders: new Set(),
   }
   for (const item of rows(base.quotes)) {
     const row = replayObject(item), value = quote(row, view.time_us, integer(row.observed_seq) ?? seq)
@@ -179,8 +180,12 @@ function seed(window: ReplayWindow): ProjectionState {
   }
   for (const [input, output] of [[base.observed_positions, view.observedPositions], [base.derived_positions, view.derivedPositions]] as const) {
     for (const raw of rows(input)) {
-      const value = position(replayObject(raw), view.time_us)
-      if (value) output[positionKey(value.symbol, value.direction)] = value
+      const row = replayObject(raw), value = position(row, view.time_us)
+      if (value) {
+        const key = positionKey(value.symbol, value.direction)
+        output[key] = value
+        if (output === view.observedPositions) state.positionFacts[key] = { ...row }
+      }
     }
   }
   for (const [input, output] of [[base.order_change_seq, state.orderChanges], [base.last_set_revision, state.setRevisions], [base.sync_generation, state.generations]] as const) {
@@ -538,23 +543,23 @@ function applyObservation(state: ProjectionState, data: ReplayData, message: Rep
   if (data.scope_complete === true) {
     for (const [key, value] of Object.entries(state.view.observedPositions)) {
       if (symbols.has(value.symbol) && !positions.some(next => positionKey(next.symbol, next.direction) === key)) {
-        state.view.observedPositions[key] = { ...value, volume: 0, available_volume: value.available_volume == null ? null : 0,
-          frozen_volume: value.frozen_volume == null ? null : 0, today_volume: value.today_volume == null ? null : 0,
-          yesterday_volume: value.yesterday_volume == null ? null : 0, time_us: message.time_us }
+        const raw: ReplayData = { ...state.positionFacts[key], field_quality: { ...replayObject(state.positionFacts[key]?.field_quality) }, observed_at_us: message.time_us }
+        for (const field of ['quantity', 'available_quantity', 'frozen_quantity', 'today_quantity', 'yesterday_quantity']) {
+          if (Object.hasOwn(raw, field)) { raw[field] = 0; replayObject(raw.field_quality)[field] = 'known' }
+        }
+        state.positionFacts[key] = raw
+        state.view.observedPositions[key] = position(raw, message.time_us)!
         state.basis[key] = { status: 'unverified', proof: null }
       }
     }
   }
-  for (const value of positions) {
-    const key = positionKey(value.symbol, value.direction), previous = state.view.observedPositions[key]
-    const raw = rows(data.positions).map(replayObject).find(row => symbolOf(row) === value.symbol && text(row.position_side) === value.direction) ?? {}
-    const merged = { ...value }
-    if (previous && data.scope_complete !== true) {
-      for (const [field, native] of [['volume', 'quantity'], ['available_volume', 'available_quantity'], ['frozen_volume', 'frozen_quantity'], ['today_volume', 'today_quantity'], ['yesterday_volume', 'yesterday_quantity']] as const) {
-        if (!Object.hasOwn(raw, native)) merged[field] = previous[field]
-      }
-    }
-    state.view.observedPositions[key] = merged
+  for (const raw of rows(data.positions).map(replayObject)) {
+    const value = position(raw, message.time_us)
+    if (!value) continue
+    const key = positionKey(value.symbol, value.direction)
+    const merged = { ...mergeFields(state.positionFacts[key] ?? {}, raw), observed_at_us: message.time_us }
+    state.positionFacts[key] = merged
+    state.view.observedPositions[key] = position(merged, message.time_us)!
   }
   for (const symbol of symbols) {
     for (const [key, value] of Object.entries(state.view.derivedPositions)) if (value.symbol === symbol) delete state.view.derivedPositions[key]

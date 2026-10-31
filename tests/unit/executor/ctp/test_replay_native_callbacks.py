@@ -16,6 +16,7 @@ from axile.server.execution_replay.contracts import freeze_data
 from axile.server.execution_replay.recorder import ReplayRecorder
 from axile.server.execution_replay.service import replay_manifest, replay_window
 from tests.unit.executor.ctp.test_connection_recovery import ScriptedBroker
+from tests.unit.server.test_execution_replay_recorder import eventually
 
 
 @pytest.fixture
@@ -46,6 +47,8 @@ def recording(monkeypatch, tmp_path):
 
 
 def finish_and_read(recording):
+    # starting 可被关闭取消；读文件的测试须先等 writer 就绪。
+    eventually(lambda: recording.recorder.status()["state"] == "recording")
     recording.now[0] += 1
     recording.recorder.observe("/execution", {"execution_id": "E-early", "symbol": "ag2612", "target_quantity": 1})
     status = recording.recorder.close()

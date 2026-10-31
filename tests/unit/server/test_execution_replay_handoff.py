@@ -116,6 +116,41 @@ w.finish()
             process.communicate(timeout=3)
 
 
+@pytest.mark.parametrize("action", ["off", "disconnect"])
+def test_starting_cancel_before_first_writer_attempt(tmp_path, action):
+    entered, release = threading.Event(), threading.Event()
+    attempts = []
+
+    def metadata():
+        entered.set()
+        assert release.wait(2)
+        return {"environment": "demo"}
+
+    recorder = ReplayRecorder(7, tmp_path, writer_factory=lambda *_: attempts.append(True))
+    recorder.attach(SimpleNamespace(replay_context_metadata=metadata))
+    recorder.configure(True, 1)
+    try:
+        assert entered.wait(1)
+        assert recorder.status()["state"] == "starting"
+        session = recorder._session
+        recorder.begin_execution("canceled", ["X"])
+        assert session.queue
+        if action == "off":
+            recorder.configure(False, 2)
+        else:
+            recorder.attach(None)
+        assert recorder.status()["state"] == "closing"
+        release.set()
+        session.thread.join(1)
+        assert not session.thread.is_alive()
+        assert recorder.status()["state"] == ("disabled" if action == "off" else "waiting_connection")
+        assert not session.queue and session.queued_bytes == 0
+        assert not attempts and not list(tmp_path.iterdir())
+    finally:
+        release.set()
+        recorder.close()
+
+
 @pytest.mark.parametrize("action", ["off", "disconnect", "close", "overflow"])
 def test_waiting_handoff_is_cancelable_and_keeps_queue_budget(tmp_path, monkeypatch, action):
     attempts = []

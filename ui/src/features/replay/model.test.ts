@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { projectReplay } from '@/features/replay/model'
 import type { ReplayData, ReplayMessage, ReplayWindow } from '@/features/replay/types'
+import positionMerges from '../../../../tests/fixtures/execution_replay/position-field-merge.json'
 
 const key = (symbol: string, id: string) => JSON.stringify([symbol, id])
 const message = (capture_seq: number, topic: string, data: ReplayData, time_us = capture_seq * 100): ReplayMessage => ({
@@ -21,6 +22,35 @@ const fill = (id: string, quantity: number, rest: ReplayData = {}): ReplayData =
   identity_quality: 'stable', quantity, price: 99, direction: 'BUY', position_side: 'NET', execution_id: 'exec-1', ...rest })
 
 describe('回放按本地已观察前缀恢复', () => {
+  for (const complete of [false, true]) for (const scenario of positionMerges) {
+    test(`持仓字段 ${scenario.name} complete=${complete} 连播与窗前/窗后恢复一致`, () => {
+      const first = { symbol: 'X', position_side: 'LONG', quantity: 4, ...scenario.initial }
+      const second = { symbol: 'X', position_side: 'LONG', quantity: 5, ...scenario.update }
+      const merged = { symbol: 'X', position_side: 'LONG', quantity: 5, ...scenario.merged, observed_at_us: 200 }
+      const events = [message(1, '/account_observation', { scope: ['X'], scope_complete: true, positions: [first] }),
+        message(2, '/account_observation', { scope: ['X'], scope_complete: complete, positions: [second] })]
+      const continuous = projectReplay(windowOf(events), { time_us: 200 })
+      const before = projectReplay(windowOf([events[1]], { state_through_seq: 1, time_us: 100,
+        observed_positions: { [key('X', 'LONG')]: { ...first, observed_at_us: 100 } } }), { time_us: 200 })
+      const after = projectReplay(windowOf([], { state_through_seq: 2, time_us: 200,
+        observed_positions: { [key('X', 'LONG')]: merged } }), { time_us: 200 })
+      expect(continuous.observedPositions[key('X', 'LONG')]).toMatchObject({ volume: 5, today_volume: scenario.visible })
+      expect(continuous.observedPositions).toEqual(before.observedPositions)
+      expect(continuous.observedPositions).toEqual(after.observedPositions)
+      expect(continuous.derivedPositions).toEqual({})
+    })
+  }
+
+  test('完整范围缺席将曾记录但质量未知的字段确认为零，未记录字段仍未知', () => {
+    const result = projectReplay(windowOf([
+      message(1, '/account_observation', { scope: ['X'], scope_complete: false,
+        positions: [{ symbol: 'X', position_side: 'LONG', quantity: null, today_quantity: 2,
+          field_quality: { quantity: 'missing', today_quantity: 'invalid' } }] }),
+      message(2, '/account_observation', { scope: ['X'], scope_complete: true, positions: [] }),
+    ]), { time_us: 200 })
+    expect(result.observedPositions[key('X', 'LONG')]).toMatchObject({ volume: 0, today_volume: 0, available_volume: null })
+  })
+
   test('恢复窗前计量后补查同笔不重计，新增稳定成交才增加', () => {
     const state = {
       state_through_seq: 2,
