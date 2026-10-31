@@ -60,6 +60,8 @@ pub(crate) struct Projection {
     synchronized: BTreeMap<String, bool>,
     order_change_seq: BTreeMap<String, u64>,
     last_set_revision: BTreeMap<String, u64>,
+    #[serde(default)]
+    last_set_observation: BTreeMap<String, (u64, u64, u64)>,
 }
 
 impl Projection {
@@ -83,6 +85,7 @@ impl Projection {
             synchronized: BTreeMap::new(),
             order_change_seq: BTreeMap::new(),
             last_set_revision: BTreeMap::new(),
+            last_set_observation: BTreeMap::new(),
         }
     }
 
@@ -96,6 +99,16 @@ impl Projection {
             || state.time_us.is_some_and(|time| time > JS_SAFE_INTEGER)
             || (state.state_through_seq > 0 && state.time_us.is_none())
             || state.orders.values().any(|order| !order.is_object())
+            || state
+                .last_set_observation
+                .values()
+                .any(|(generation, revision, seq)| {
+                    *generation > JS_SAFE_INTEGER
+                        || *revision == 0
+                        || *revision > JS_SAFE_INTEGER
+                        || *seq == 0
+                        || *seq > state.state_through_seq
+                })
         {
             return Err(failure("unsupported or inconsistent checkpoint"));
         }
@@ -186,6 +199,7 @@ impl Projection {
             + self.trade_accounting.pending.len()
             + self.order_change_seq.len()
             + self.last_set_revision.len()
+            + self.last_set_observation.len()
             + self.sync_generation.len()
             + self.synchronized.len()
             + self.trade_accounting.own_seen_keys.len()
@@ -604,16 +618,34 @@ impl Projection {
         seq: u64,
         time: u64,
     ) -> Result<(), AnalysisError> {
+        let query = if let Some(basis) = data.get("query_basis") {
+            if basis.get("recording_id").and_then(Value::as_str) != Some(self.recording_id.as_str())
+            {
+                return Ok(());
+            }
+            let Some((generation, start, _)) = query_basis_fields(data, seq, &self.recording_id)
+            else {
+                return Ok(());
+            };
+            Some((generation, start))
+        } else {
+            None
+        };
         let symbol = required_text(data, "symbol")?;
+        let id =
+            identity(data.get("order_id")).unwrap_or_else(|| format!("unknown-observation:{seq}"));
+        let key = compound(&symbol, &id);
+        if query.is_some_and(|(generation, start)| {
+            self.query_is_fenced(&symbol, &key, generation, start)
+        }) {
+            return Ok(());
+        }
         let generation = data.get("sync_generation").and_then(Value::as_u64);
         if !self.accept_generation(&symbol, generation) {
             return Ok(());
         }
-        let id =
-            identity(data.get("order_id")).unwrap_or_else(|| format!("unknown-observation:{seq}"));
         let associated = self.data_with_owner(data, seq, time);
         let data = &associated;
-        let key = compound(&symbol, &id);
         if generation.is_none() {
             if let Some(previous) = self.orders.get_mut(&key) {
                 previous["confirmed_book"] = Value::Bool(false);
@@ -635,6 +667,60 @@ impl Projection {
         Ok(())
     }
 
+    fn query_is_fenced(&self, symbol: &str, key: &str, generation: u64, start: u64) -> bool {
+        self.order_change_seq
+            .get(key)
+            .is_some_and(|changed| *changed > start)
+            || [symbol, ""].iter().any(|scope| {
+                self.last_set_observation
+                    .get(*scope)
+                    .is_some_and(|(observed, _, seq)| {
+                        *observed > generation || (*observed == generation && *seq > start)
+                    })
+            })
+    }
+
+    fn observe_set(&mut self, scope: &str, generation: u64, revision: u64, seq: u64) {
+        if self
+            .last_set_observation
+            .get(scope)
+            .is_none_or(|(previous, request, _)| (generation, revision) > (*previous, *request))
+        {
+            self.last_set_observation
+                .insert(scope.into(), (generation, revision, seq));
+        }
+    }
+
+    fn current_set_scope(
+        &self,
+        symbols: &BTreeSet<String>,
+        generation: u64,
+        revision: u64,
+    ) -> bool {
+        symbols.iter().all(|symbol| {
+            self.sync_generation
+                .get(symbol)
+                .is_none_or(|current| generation >= *current)
+                && (self.sync_generation.get(symbol) != Some(&generation)
+                    || self
+                        .last_set_revision
+                        .get(symbol)
+                        .is_none_or(|current| revision > *current))
+        })
+    }
+
+    fn current_account_generation(&self, generation: Option<u64>) -> bool {
+        generation.is_some_and(|generation| {
+            self.sync_generation
+                .values()
+                .all(|current| generation >= *current)
+                && self
+                    .last_set_observation
+                    .values()
+                    .all(|(current, _, _)| generation >= *current)
+        })
+    }
+
     fn accept_generation(&mut self, symbol: &str, generation: Option<u64>) -> bool {
         let Some(generation) = generation else {
             return true;
@@ -648,6 +734,13 @@ impl Projection {
             self.sync_generation.insert(symbol.into(), generation);
             self.synchronized.insert(symbol.into(), false);
             self.last_set_revision.remove(symbol);
+            if self
+                .last_set_observation
+                .get(symbol)
+                .is_some_and(|(previous, _, _)| *previous < generation)
+            {
+                self.last_set_observation.remove(symbol);
+            }
         }
         true
     }
@@ -737,9 +830,17 @@ impl Projection {
         let symbols = self.scope(data, rows);
         let generation = data.get("sync_generation").and_then(Value::as_u64);
         let basis = order_set_basis(data, seq, &self.recording_id);
-        let identified = rows
-            .iter()
-            .all(|row| row["symbol"].as_str().is_some() && identity(row.get("order_id")).is_some());
+        let identified = rows.iter().all(|row| {
+            row["symbol"]
+                .as_str()
+                .is_some_and(|symbol| !symbol.is_empty())
+                && identity(row.get("order_id")).is_some()
+        });
+        let global = account_scope(data)
+            && identified
+            && basis.is_some_and(|(generation, _, revision)| {
+                self.current_set_scope(&symbols, generation, revision)
+            });
         for symbol in symbols {
             if !self.accept_generation(&symbol, generation) {
                 continue;
@@ -756,7 +857,11 @@ impl Projection {
             }
             self.apply_set_symbol(&symbol, rows, seq, time, generation, start)?;
             self.last_set_revision.insert(symbol.clone(), revision);
+            self.observe_set(&symbol, generation, revision, seq);
             self.synchronized.insert(symbol, true);
+        }
+        if let Some((generation, _, revision)) = basis.filter(|_| global) {
+            self.observe_set("", generation, revision, seq);
         }
         self.rebuild_order_amounts();
         Ok(())
@@ -820,6 +925,7 @@ impl Projection {
             .into_iter()
             .flatten()
             .filter_map(Value::as_str)
+            .filter(|symbol| !symbol.is_empty())
             .map(str::to_owned)
             .collect();
         let account = scope.is_some_and(|value| value["kind"] == "account");
@@ -852,6 +958,7 @@ impl Projection {
                     .map(str::to_owned),
             );
         }
+        symbols.remove("");
         symbols
     }
 
@@ -883,6 +990,9 @@ impl Projection {
                 text(data, "status").as_deref(),
                 Some("disconnected" | "unavailable" | "invalidated")
             );
+        if disconnected && account_scope(data) && self.current_account_generation(generation) {
+            self.last_set_observation.clear();
+        }
         for symbol in symbols {
             if !self.accept_generation(&symbol, generation) {
                 continue;
@@ -890,6 +1000,7 @@ impl Projection {
             self.connections
                 .insert(symbol.clone(), annotate(data, seq, time));
             if disconnected {
+                self.last_set_observation.remove(&symbol);
                 self.invalidate_orders(&symbol, "disconnected");
                 self.synchronized.insert(symbol.clone(), false);
                 if let Some(quote) = self.quotes.get_mut(&symbol) {
@@ -1190,6 +1301,23 @@ fn order_set_basis(
     {
         return None;
     }
+    query_basis_fields(data, seq, recording_id)
+}
+
+fn account_scope(data: &Map<String, Value>) -> bool {
+    data.get("scope").is_some_and(|scope| {
+        scope["kind"] == "account"
+            || scope
+                .as_array()
+                .is_some_and(|symbols| symbols.iter().any(|symbol| symbol.as_str() == Some("*")))
+    })
+}
+
+fn query_basis_fields(
+    data: &Map<String, Value>,
+    seq: u64,
+    recording_id: &str,
+) -> Option<(u64, u64, u64)> {
     let generation = data
         .get("sync_generation")?
         .as_u64()
@@ -1561,6 +1689,475 @@ mod tests {
     fn order(id: &str, remaining: f64) -> Value {
         json!({"symbol":"A","order_id":id,"sync_generation":1,"status":"working","quantity":10,
             "filled_quantity":10.0-remaining,"remaining_quantity":remaining,"confirmed_book":true})
+    }
+
+    fn query_order(id: &str, price: f64, start: u64, revision: u64) -> Value {
+        let mut data = order(id, 10.0);
+        data["price"] = json!(price);
+        data["query_basis"] =
+            json!({"recording_id":"r","start_seq":start,"request_revision":revision});
+        data
+    }
+
+    fn complete_set(scope: Value, rows: Vec<Value>, start: u64, revision: u64) -> Value {
+        json!({"scope":scope,"scope_complete":true,"synchronized":true,"sync_generation":1,
+            "query_basis":{"recording_id":"r","start_seq":start,"request_revision":revision},"orders":rows})
+    }
+
+    #[test]
+    fn complete_set_delivery_fences_single_queries_in_either_request_order() {
+        for (single_revision, set_revision) in [(1, 2), (2, 1)] {
+            for present in [false, true] {
+                let mut state = Projection::new("r");
+                let mut initial = order("O", 10.0);
+                initial["price"] = json!(100);
+                state.apply(&message(1, "/order", initial)).unwrap();
+                state
+                    .apply(&message(2, "/order", order("other", 10.0)))
+                    .unwrap();
+                let mut amended = order("O", 10.0);
+                amended["price"] = json!(101);
+                let rows = if present {
+                    vec![amended, order("other", 10.0)]
+                } else {
+                    Vec::new()
+                };
+                state
+                    .apply(&message(
+                        3,
+                        "/order_set",
+                        complete_set(
+                            json!({"kind":"symbols","symbols":["A"]}),
+                            rows,
+                            2,
+                            set_revision,
+                        ),
+                    ))
+                    .unwrap();
+                let before = state.snapshot().unwrap();
+                assert_eq!(
+                    before["last_set_observation"]["A"],
+                    json!([1, set_revision, 3])
+                );
+                let mut state = Projection::restore(before.clone()).unwrap();
+                state
+                    .apply(&message(
+                        4,
+                        "/order",
+                        query_order("O", 100.0, 2, single_revision),
+                    ))
+                    .unwrap();
+                assert_eq!(state.snapshot().unwrap()["orders"], before["orders"]);
+                assert_eq!(
+                    state.snapshot().unwrap()["order_change_seq"][compound("A", "O")],
+                    1
+                );
+                let key = compound("A", "O");
+                if present {
+                    assert_eq!(state.snapshot().unwrap()["orders"][&key]["price"], 101);
+                    assert_eq!(
+                        state.snapshot().unwrap()["orders"][&key]["confirmed_book"],
+                        true
+                    );
+                } else {
+                    assert_eq!(
+                        state.snapshot().unwrap()["orders"][&key]["confirmed_book"],
+                        false
+                    );
+                    assert_eq!(
+                        state.snapshot().unwrap()["orders"][&key]["confirmation_state"],
+                        "absent"
+                    );
+                }
+                state
+                    .apply(&message(5, "/order", query_order("O", 102.0, 4, 3)))
+                    .unwrap();
+                assert_eq!(state.snapshot().unwrap()["orders"][&key]["price"], 102.0);
+                let mut websocket = order("O", 10.0);
+                websocket["price"] = json!(103);
+                state.apply(&message(6, "/order", websocket)).unwrap();
+                assert_eq!(state.snapshot().unwrap()["orders"][&key]["price"], 103);
+                assert_eq!(
+                    state.snapshot().unwrap()["last_set_observation"],
+                    before["last_set_observation"]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn account_empty_set_fences_unknown_symbols_and_respects_generations() {
+        let mut state = Projection::new("r");
+        state
+            .apply(&message(
+                1,
+                "/order_set",
+                complete_set(json!({"kind":"account","symbols":[]}), Vec::new(), 0, 1),
+            ))
+            .unwrap();
+        assert_eq!(
+            state.snapshot().unwrap()["last_set_observation"][""],
+            json!([1, 1, 1])
+        );
+        let mut state = Projection::restore(state.snapshot().unwrap()).unwrap();
+        state
+            .apply(&message(2, "/order", query_order("O", 100.0, 0, 2)))
+            .unwrap();
+        assert!(state.snapshot().unwrap()["orders"]
+            .as_object()
+            .unwrap()
+            .is_empty());
+        state
+            .apply(&message(3, "/order", order("known", 10.0)))
+            .unwrap();
+        let mut unknown = query_order("O", 100.0, 0, 3);
+        unknown["symbol"] = json!("B");
+        state.apply(&message(4, "/order", unknown.clone())).unwrap();
+        assert!(state.snapshot().unwrap()["orders"]
+            .get(compound("B", "O"))
+            .is_none());
+        unknown["sync_generation"] = json!(0);
+        unknown["query_basis"]["start_seq"] = json!(4);
+        state.apply(&message(5, "/order", unknown.clone())).unwrap();
+        assert!(state.snapshot().unwrap()["orders"]
+            .get(compound("B", "O"))
+            .is_none());
+        unknown["sync_generation"] = json!(2);
+        state.apply(&message(6, "/order", unknown)).unwrap();
+        assert_eq!(
+            state.snapshot().unwrap()["orders"][compound("B", "O")]["confirmed_book"],
+            true
+        );
+        assert_eq!(
+            state.snapshot().unwrap()["last_set_observation"][""],
+            json!([1, 1, 1])
+        );
+    }
+
+    #[test]
+    fn rejected_sets_do_not_advance_observation_and_account_partial_expiry_stays_local() {
+        let mut initial = Projection::new("r");
+        initial
+            .apply(&message(1, "/order", order("O", 10.0)))
+            .unwrap();
+        initial
+            .apply(&message(
+                2,
+                "/order_set",
+                complete_set(
+                    json!({"kind":"symbols","symbols":["A"]}),
+                    vec![order("O", 10.0)],
+                    1,
+                    2,
+                ),
+            ))
+            .unwrap();
+        let checkpoint = initial.snapshot().unwrap();
+        for invalid in ["partial", "unproven", "old_generation", "expired"] {
+            let mut state = Projection::restore(checkpoint.clone()).unwrap();
+            let mut data =
+                complete_set(json!({"kind":"symbols","symbols":["A"]}), Vec::new(), 2, 3);
+            match invalid {
+                "partial" => data["scope_complete"] = json!(false),
+                "unproven" => data["query_basis"] = Value::Null,
+                "old_generation" => data["sync_generation"] = json!(0),
+                _ => data["query_basis"]["request_revision"] = json!(1),
+            }
+            state.apply(&message(3, "/order_set", data)).unwrap();
+            assert_eq!(
+                state.snapshot().unwrap()["last_set_observation"],
+                checkpoint["last_set_observation"]
+            );
+        }
+        let mut state = Projection::restore(checkpoint.clone()).unwrap();
+        state
+            .apply(&message(
+                3,
+                "/order_set",
+                complete_set(json!({"kind":"account","symbols":[]}), Vec::new(), 2, 1),
+            ))
+            .unwrap();
+        assert_eq!(
+            state.snapshot().unwrap()["last_set_observation"],
+            checkpoint["last_set_observation"]
+        );
+        let mut old = complete_set(json!({"kind":"account","symbols":[]}), Vec::new(), 3, 99);
+        old["sync_generation"] = json!(0);
+        state.apply(&message(4, "/order_set", old)).unwrap();
+        assert!(state.snapshot().unwrap()["last_set_observation"]
+            .get("")
+            .is_none());
+        state
+            .apply(&message(
+                5,
+                "/order_set",
+                complete_set(json!({"kind":"account","symbols":[]}), Vec::new(), 4, 3),
+            ))
+            .unwrap();
+        let before = state.snapshot().unwrap();
+        state
+            .apply(&message(
+                6,
+                "/order_set",
+                complete_set(json!({"kind":"account","symbols":[]}), Vec::new(), 5, 3),
+            ))
+            .unwrap();
+        assert_eq!(
+            state.snapshot().unwrap()["last_set_observation"],
+            before["last_set_observation"]
+        );
+    }
+
+    #[test]
+    fn set_observation_reset_is_scoped_and_old_checkpoints_default_empty() {
+        let mut state = Projection::new("r");
+        state
+            .apply(&message(
+                1,
+                "/order_set",
+                complete_set(json!({"kind":"account","symbols":[]}), Vec::new(), 0, 1),
+            ))
+            .unwrap();
+        state
+            .apply(&message(
+                2,
+                "/order_set",
+                complete_set(
+                    json!({"kind":"symbols","symbols":["A","B"]}),
+                    Vec::new(),
+                    1,
+                    2,
+                ),
+            ))
+            .unwrap();
+        state.apply(&message(3,"/connection",json!({"scope":{"kind":"symbols","symbols":["A"]},"sync_generation":1,"connected":false}))).unwrap();
+        let value = state.snapshot().unwrap();
+        assert!(value["last_set_observation"].get("A").is_none());
+        assert_eq!(value["last_set_observation"]["B"], json!([1, 2, 2]));
+        assert_eq!(value["last_set_observation"][""], json!([1, 1, 1]));
+        state.apply(&message(4,"/connection",json!({"scope":{"kind":"account","symbols":[]},"sync_generation":0,"connected":false}))).unwrap();
+        assert_eq!(
+            state.snapshot().unwrap()["last_set_observation"],
+            value["last_set_observation"]
+        );
+        state.apply(&message(5,"/connection",json!({"scope":{"kind":"account","symbols":[]},"sync_generation":2,"connected":false}))).unwrap();
+        assert!(state.snapshot().unwrap()["last_set_observation"]
+            .as_object()
+            .unwrap()
+            .is_empty());
+        let mut legacy = state.snapshot().unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("last_set_observation");
+        assert!(
+            Projection::restore(legacy).unwrap().snapshot().unwrap()["last_set_observation"]
+                .as_object()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn single_query_preserves_amendments_and_accepts_a_later_fresh_query() {
+        let mut state = Projection::new("r");
+        let mut initial = order("O", 10.0);
+        initial["price"] = json!(100);
+        state.apply(&message(1, "/order", initial)).unwrap();
+        state
+            .apply(&message(2, "/order", order("other", 10.0)))
+            .unwrap();
+        let mut amendment = order("O", 10.0);
+        amendment["price"] = json!(101);
+        state.apply(&message(3, "/order", amendment)).unwrap();
+        let before = state.snapshot().unwrap();
+        state
+            .apply(&message(4, "/order", query_order("O", 100.0, 2, 1)))
+            .unwrap();
+        let value = state.snapshot().unwrap();
+        let key = compound("A", "O");
+        assert_eq!(value["orders"], before["orders"]);
+        assert_eq!(value["order_change_seq"][&key], 3);
+        assert_eq!(value["synchronized"], before["synchronized"]);
+        assert_eq!(value["last_set_revision"], before["last_set_revision"]);
+        assert_eq!(value["state_through_seq"], 4);
+        state
+            .apply(&message(5, "/order", query_order("O", 102.0, 4, 2)))
+            .unwrap();
+        let mut restored = Projection::restore(state.snapshot().unwrap()).unwrap();
+        restored
+            .apply(&message(6, "/order", query_order("O", 103.0, 4, 3)))
+            .unwrap();
+        assert_eq!(restored.snapshot().unwrap()["orders"][&key]["price"], 102.0);
+        assert_eq!(restored.snapshot().unwrap()["order_change_seq"][&key], 5);
+        restored
+            .apply(&message(7, "/order", query_order("O", 104.0, 6, 4)))
+            .unwrap();
+        assert_eq!(restored.snapshot().unwrap()["orders"][&key]["price"], 104.0);
+        let mut legacy = order("O", 10.0);
+        legacy["price"] = json!(105);
+        restored.apply(&message(8, "/order", legacy)).unwrap();
+        let value = restored.snapshot().unwrap();
+        assert_eq!(value["orders"][&key]["price"], 105);
+        assert_eq!(
+            value["orders"][compound("A", "other")]["confirmed_book"],
+            true
+        );
+        assert_eq!(value["order_change_seq"][compound("A", "other")], 2);
+    }
+
+    #[test]
+    fn invalid_single_query_proof_cannot_advance_generation_or_reuse_confirmation() {
+        let invalid = [
+            Value::Null,
+            json!({}),
+            json!({"start_seq":1,"request_revision":1}),
+            json!({"recording_id":"other","start_seq":1,"request_revision":1}),
+            json!({"recording_id":"r","start_seq":3,"request_revision":1}),
+            json!({"recording_id":"r","start_seq":true,"request_revision":1}),
+            json!({"recording_id":"r","start_seq":1,"request_revision":0}),
+            json!({"recording_id":"r","start_seq":1,"request_revision":JS_SAFE_INTEGER+1}),
+            json!({"recording_id":"r","sync_generation":1,"start_seq":1,"request_revision":1}),
+        ];
+        for basis in invalid {
+            let mut state = Projection::new("r");
+            state
+                .apply(&message(1, "/order", order("O", 10.0)))
+                .unwrap();
+            state
+                .apply(&message(2, "/order", order("other", 10.0)))
+                .unwrap();
+            let before = state.snapshot().unwrap();
+            let mut data = query_order("O", 999.0, 1, 1);
+            data["sync_generation"] = json!(2);
+            data["query_basis"] = basis;
+            state.apply(&message(3, "/order", data.clone())).unwrap();
+            let value = state.snapshot().unwrap();
+            assert_eq!(value["orders"], before["orders"]);
+            assert_eq!(value["sync_generation"], before["sync_generation"]);
+            assert_eq!(value["order_change_seq"], before["order_change_seq"]);
+            data["symbol"] = Value::Null;
+            data["query_basis"] = Value::Null;
+            state.apply(&message(4, "/order", data)).unwrap();
+            assert_eq!(state.snapshot().unwrap()["orders"], before["orders"]);
+        }
+        for generation in [
+            Value::Null,
+            json!(true),
+            json!(-1),
+            json!(JS_SAFE_INTEGER + 1),
+        ] {
+            let mut state = Projection::new("r");
+            let mut data = query_order("O", 999.0, 0, 1);
+            data["sync_generation"] = generation;
+            state.apply(&message(1, "/order", data)).unwrap();
+            assert!(state.snapshot().unwrap()["orders"]
+                .as_object()
+                .unwrap()
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn single_query_cannot_rollback_a_terminal_order_or_cross_a_generation() {
+        let mut state = Projection::new("r");
+        state
+            .apply(&message(1, "/order", order("O", 10.0)))
+            .unwrap();
+        let mut terminal = order("O", 10.0);
+        terminal["status"] = json!("canceled");
+        terminal["price"] = json!(101);
+        state.apply(&message(2, "/order", terminal)).unwrap();
+        let terminal = state.snapshot().unwrap()["orders"][compound("A", "O")].clone();
+        state
+            .apply(&message(3, "/order", query_order("O", 100.0, 1, 1)))
+            .unwrap();
+        assert_eq!(
+            state.snapshot().unwrap()["orders"][compound("A", "O")],
+            terminal
+        );
+        state.apply(&message(4,"/connection",json!({"scope":{"kind":"symbols","symbols":["A"]},"sync_generation":2,"connected":false}))).unwrap();
+        let before = state.snapshot().unwrap();
+        state
+            .apply(&message(5, "/order", query_order("new", 999.0, 4, 2)))
+            .unwrap();
+        assert_eq!(state.snapshot().unwrap()["orders"], before["orders"]);
+        let mut fresh = query_order("new", 102.0, 5, 3);
+        fresh["sync_generation"] = json!(2);
+        fresh["query_basis"]["sync_generation"] = json!(2);
+        state.apply(&message(6, "/order", fresh)).unwrap();
+        let value = state.snapshot().unwrap();
+        assert_eq!(value["orders"][compound("A", "new")]["price"], 102.0);
+        assert_eq!(
+            value["orders"][compound("A", "new")]["confirmed_book"],
+            true
+        );
+        assert_eq!(value["orders"][compound("A", "O")]["status"], "canceled");
+        assert_eq!(value["sync_generation"]["A"], 2);
+        assert_eq!(value["synchronized"]["A"], false);
+    }
+
+    #[test]
+    fn real_mcap_retains_a_fenced_query_and_recovers_the_amended_price() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static CASE: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "axile-single-query-fence-{}-{}",
+            std::process::id(),
+            CASE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let mut writer = crate::execution_replay::ExecutionReplayWriter::new(
+            &root,
+            7,
+            "r",
+            r#"{"schema_version":1}"#,
+        )
+        .unwrap();
+        let mut initial = order("O", 10.0);
+        initial["price"] = json!(100);
+        let mut amendment = order("O", 10.0);
+        amendment["price"] = json!(101);
+        let inputs = [
+            message(
+                1,
+                "/execution",
+                json!({"execution_id":"E","phase":"started","symbol":"A"}),
+            ),
+            message(2, "/order", initial),
+            message(3, "/order", amendment),
+            message(4, "/order", query_order("O", 100.0, 2, 1)),
+        ];
+        for input in inputs {
+            writer.append(&input.to_string()).unwrap();
+        }
+        writer.finish().unwrap();
+        let full = crate::execution_replay_reader::window(
+            &root,
+            7,
+            "E",
+            r#"{"recording_id":"r","start_us":100,"end_us":105}"#,
+        )
+        .unwrap();
+        assert_eq!(full["messages"][3]["data"]["price"], 100.0);
+        assert_eq!(full["messages"][3]["data"]["query_basis"]["start_seq"], 2);
+        let seek = crate::execution_replay_reader::window(
+            &root,
+            7,
+            "E",
+            r#"{"recording_id":"r","start_us":105,"end_us":106}"#,
+        )
+        .unwrap();
+        let mut replayed = Projection::restore(full["state_before_start"].clone()).unwrap();
+        for input in full["messages"].as_array().unwrap() {
+            replayed.apply(input).unwrap();
+        }
+        let state = seek["state_before_start"].clone();
+        assert_eq!(state["orders"][compound("A", "O")]["price"], 101);
+        assert_eq!(state["order_change_seq"][compound("A", "O")], 3);
+        assert_eq!(replayed.snapshot().unwrap(), state);
+        drop(writer);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

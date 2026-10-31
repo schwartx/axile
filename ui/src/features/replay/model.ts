@@ -66,7 +66,7 @@ function order(data: ReplayData, time: number, seq: number, carry = false): Repl
     filled_volume: number(known(data, 'filled_quantity')), remaining_volume: number(known(data, 'remaining_quantity')),
     direction: text(known(data, 'direction')), offset: text(known(data, 'offset')), status, observed_status: observedStatus,
     confirmed, terminal, cancel_pending: !terminal && (known(data, 'cancel_pending') === true || normalized === 'pending_cancel'), carry_in: carry,
-    execution_id: text(data.execution_id), previous_order_id: text(data.previous_order_id),
+    execution_id: text(known(data, 'execution_id')), origin: text(known(data, 'origin')), previous_order_id: text(data.previous_order_id),
     time_us: sourceTime(data, time), capture_seq: seq,
     attributes: replayObject(data.attributes), native_identity: replayObject(data.native_identity),
   }
@@ -80,7 +80,7 @@ function trade(data: ReplayData, time: number, seq: number): ReplayTrade | null 
     order_id: text(data.order_id), price: number(known(data, 'price')), quantity: number(known(data, 'quantity')),
     direction: text(known(data, 'direction')), offset: text(known(data, 'offset')),
     position_side: text(known(data, 'position_side')), source: text(data.source), source_seq: integer(data.source_seq),
-    execution_id: text(data.execution_id), identity_quality: quality, origin: text(data.origin), conflict: false,
+    execution_id: text(known(data, 'execution_id')), identity_quality: quality, origin: text(known(data, 'origin')), conflict: false,
     granularity: text(data.granularity), time_us: sourceTime(data, time), capture_seq: seq,
     attributes: replayObject(data.attributes), native_identity: replayObject(data.native_identity),
   }
@@ -104,6 +104,7 @@ type ProjectionState = {
   marketFacts: Map<string, ReplayTrade>
   orderChanges: Record<string, number>
   setRevisions: Record<string, number>
+  setObservations: Record<string, [number, number, number]>
   generations: Record<string, number>
   basis: Record<string, ReplayData>
   executions: Record<string, ReplayData>
@@ -116,7 +117,7 @@ type ProjectionState = {
 }
 function scopeSymbols(scope: unknown, state: ProjectionState): Set<string> {
   if (Array.isArray(scope)) {
-    const symbols = new Set(scope.filter((value): value is string => typeof value === 'string'))
+    const symbols = new Set(scope.filter((value): value is string => typeof value === 'string' && value !== ''))
     if (symbols.delete('*')) for (const symbol of scopeSymbols('account', state)) symbols.add(symbol)
     return symbols
   }
@@ -125,10 +126,15 @@ function scopeSymbols(scope: unknown, state: ProjectionState): Set<string> {
     ...Object.values(state.view.orders).map(value => value.symbol),
     ...Object.values(state.view.observedPositions).map(value => value.symbol),
     ...Object.keys(state.view.quotes),
-    ...rows(object.symbols).filter((value): value is string => typeof value === 'string'),
+    ...rows(object.symbols).filter((value): value is string => typeof value === 'string' && value !== ''),
   ])
   if (Array.isArray(object.symbols)) return scopeSymbols(object.symbols, state)
   return new Set()
+}
+function accountScope(scope: unknown): boolean {
+  const object = replayObject(scope)
+  return scope === 'account' || object.kind === 'account'
+    || (Array.isArray(scope) ? scope : rows(object.symbols)).includes('*')
 }
 function warn(state: ProjectionState, message: string) {
   if (!state.view.warnings.includes(message)) state.view.warnings.push(message)
@@ -147,7 +153,7 @@ function seed(window: ReplayWindow): ProjectionState {
     warnings: [],
   }
   const state: ProjectionState = {
-    view, ownSeen, marketSeen, ownFacts: new Map(), marketFacts: new Map(), orderChanges: {}, setRevisions: {}, generations: {}, basis: {}, executions: {}, pending: new Map(),
+    view, ownSeen, marketSeen, ownFacts: new Map(), marketFacts: new Map(), orderChanges: {}, setRevisions: {}, setObservations: {}, generations: {}, basis: {}, executions: {}, pending: new Map(),
     orderFacts: {}, ownLastFactSeq: new Map(), commandFacts: {}, commandOwners: new Map(), cancelOrders: new Set(),
   }
   for (const item of rows(base.quotes)) {
@@ -175,6 +181,10 @@ function seed(window: ReplayWindow): ProjectionState {
   }
   for (const [input, output] of [[base.order_change_seq, state.orderChanges], [base.last_set_revision, state.setRevisions], [base.sync_generation, state.generations]] as const) {
     for (const [key, value] of Object.entries(replayObject(input))) if (integer(value) != null) output[key] = value as number
+  }
+  for (const [scope, value] of Object.entries(replayObject(base.last_set_observation))) {
+    if (Array.isArray(value) && value.length === 3 && integer(value[0]) != null && value[0] >= 0
+      && integer(value[1]) != null && value[1] > 0 && integer(value[2]) != null && value[2] >= 0) state.setObservations[scope] = [value[0], value[1], value[2]]
   }
   for (const [symbol, value] of Object.entries(replayObject(base.position_basis))) state.basis[symbol] = replayObject(value)
   for (const [input, output, visible] of [[accounting.own_records, state.ownFacts, view.ownTrades], [accounting.market_records, state.marketFacts, view.marketTrades]] as const) {
@@ -209,12 +219,14 @@ function seed(window: ReplayWindow): ProjectionState {
   return state
 }
 
-function updateOrder(state: ProjectionState, data: ReplayData, message: ReplayMessage, snapshotStart?: number) {
+function updateOrder(state: ProjectionState, data: ReplayData, message: ReplayMessage, snapshotStart?: number, snapshotIsChange = false) {
   const symbol = symbolOf(data), observedId = text(known(data, 'order_id')), id = observedId ?? `unknown-observation:${message.capture_seq}`
   if (!symbol) { warn(state, '委托观察缺少品种'); return }
   if (!observedId) warn(state, '部分委托缺少稳定身份，仅展示未知观察')
   const key = orderKey(symbol, id)
   const generation = integer(data.sync_generation)
+  if (snapshotStart != null && snapshotIsChange && generation != null && [state.setObservations[symbol], state.setObservations['']]
+    .some(observation => observation && (observation[0] > generation || observation[0] === generation && observation[2] > snapshotStart))) return
   if (!acceptGeneration(state, symbol, generation, message)) return
   if (snapshotStart != null && (state.orderChanges[key] ?? -1) > snapshotStart) return
   const previous = state.view.orders[key], raw = state.orderFacts[key] ?? {}
@@ -249,7 +261,7 @@ function updateOrder(state: ProjectionState, data: ReplayData, message: ReplayMe
   value.cancel_pending = cancelPending(state, value)
   state.orderFacts[key].cancel_pending = value.cancel_pending
   state.view.orders[key] = { ...value, carry_in: previous?.carry_in ?? false }
-  if (snapshotStart == null) state.orderChanges[key] = message.capture_seq
+  if (snapshotStart == null || snapshotIsChange) state.orderChanges[key] = message.capture_seq
   rebuildOrderAmounts(state)
   state.view.orderHistory.push(state.view.orders[key])
 }
@@ -266,6 +278,7 @@ function acceptGeneration(state: ProjectionState, symbol: string, generation: nu
     }
     state.generations[symbol] = generation
     delete state.setRevisions[symbol]
+    if ((state.setObservations[symbol]?.[0] ?? generation) < generation) delete state.setObservations[symbol]
   }
   return true
 }
@@ -526,17 +539,40 @@ function applyObservation(state: ProjectionState, data: ReplayData, message: Rep
     state.basis[positionKey(symbol, text(row.position_side))] = replayObject(row.position_basis ?? data.position_basis)
   }
 }
-function applyOrderSet(state: ProjectionState, data: ReplayData, message: ReplayMessage) {
+function orderQueryBasis(data: ReplayData, message: ReplayMessage, requireIdentity = false) {
   const basis = replayObject(data.query_basis), start = integer(basis.start_seq), revision = integer(basis.request_revision)
   const generation = integer(data.sync_generation)
-  if (data.synchronized !== true || data.scope_complete !== true || start == null || start >= message.capture_seq || revision == null || revision <= 0 || generation == null) return
+  if (start == null || start < 0 || start >= message.capture_seq || revision == null || revision <= 0 || generation == null) return null
+  if (requireIdentity && basis.recording_id !== message.recording_id) return null
   if ((basis.recording_id != null && basis.recording_id !== message.recording_id)
-    || (basis.sync_generation != null && basis.sync_generation !== generation)) return
+    || (basis.sync_generation != null && basis.sync_generation !== generation)) return null
+  return { start, revision, generation }
+}
+function applyOrder(state: ProjectionState, data: ReplayData, message: ReplayMessage) {
+  if (!Object.hasOwn(data, 'query_basis')) { updateOrder(state, data, message); return }
+  const basis = orderQueryBasis(data, message, true)
+  // 接受的单笔查询也是变化，已在它之前发起的并发查询不能再回退该单。
+  if (basis) updateOrder(state, data, message, basis.start, true)
+}
+function rememberOrderSet(state: ProjectionState, scope: string, generation: number, revision: number, seq: number) {
+  const previous = state.setObservations[scope]
+  if (!previous || generation > previous[0] || generation === previous[0] && revision > previous[1]) state.setObservations[scope] = [generation, revision, seq]
+}
+function applyOrderSet(state: ProjectionState, data: ReplayData, message: ReplayMessage) {
+  if (data.synchronized !== true || data.scope_complete !== true) return
+  const basis = orderQueryBasis(data, message)
+  if (!basis) return
+  const { start, revision, generation } = basis
   const orders = rows(data.orders).map(replayObject), symbols = scopeSymbols(data.scope, state)
   for (const row of orders) { const symbol = symbolOf(row); if (symbol) symbols.add(symbol) }
+  const global = accountScope(data.scope) && [...symbols].every(symbol => {
+    const current = state.generations[symbol]
+    return (current == null || generation >= current) && (current !== generation || revision > (state.setRevisions[symbol] ?? -1))
+  })
   for (const symbol of symbols) {
     if (!acceptGeneration(state, symbol, generation, message) || revision <= (state.setRevisions[symbol] ?? -1)) continue
     state.setRevisions[symbol] = revision
+    rememberOrderSet(state, symbol, generation, revision, message.capture_seq)
     const scoped = orders.filter(row => symbolOf(row) === symbol)
     for (const row of scoped) updateOrder(state, { ...row, sync_generation: generation }, message, start)
     const present = new Set(scoped.map(row => text(row.order_id)).filter(Boolean))
@@ -550,14 +586,17 @@ function applyOrderSet(state: ProjectionState, data: ReplayData, message: Replay
       }
     }
   }
+  if (global) rememberOrderSet(state, '', generation, revision, message.capture_seq)
 }
 function applyConnection(state: ProjectionState, data: ReplayData, message: ReplayMessage) {
   const disconnected = ['connected', 'ready', 'available', 'synchronized'].some(field => data[field] === false)
     || ['disconnected', 'unavailable', 'invalidated'].includes(text(data.status) ?? '')
-  const symbols = scopeSymbols(data.scope ?? 'account', state), generation = integer(data.sync_generation)
+  const scope = data.scope ?? 'account', fullAccount = accountScope(scope)
+  const symbols = scopeSymbols(scope, state), generation = integer(data.sync_generation)
   for (const symbol of symbols) {
     if (!acceptGeneration(state, symbol, generation, message)) continue
     if (!disconnected) continue
+    if (!fullAccount && generation != null && generation >= (state.setObservations[symbol]?.[0] ?? generation)) delete state.setObservations[symbol]
     for (const [key, value] of Object.entries(state.view.orders)) if (value.symbol === symbol) {
       state.orderFacts[key] = { ...state.orderFacts[key], confirmed_book: false }
       state.view.orders[key] = { ...value, confirmed: false, time_us: message.time_us, capture_seq: message.capture_seq }
@@ -568,6 +607,9 @@ function applyConnection(state: ProjectionState, data: ReplayData, message: Repl
       state.view.quoteHistory.push(state.view.quotes[symbol])
     }
   }
+  if (disconnected && fullAccount && generation != null
+    && Object.values(state.generations).every(current => generation >= current)
+    && Object.values(state.setObservations).every(observation => generation >= observation[0])) state.setObservations = {}
 }
 function derivePositions(state: ProjectionState) {
   state.view.derivedPositions = {}
@@ -628,7 +670,7 @@ export function projectReplay(window: ReplayWindow, cursor: ReplayCursor, _symbo
     const topic = message.topic.replace(/^\//, ''), data = replayObject(message.data)
     if (topic.startsWith('quote/')) { const value = quote(data, message.time_us, message.capture_seq, topic); if (value) { state.view.quotes[value.symbol] = value; state.view.quoteHistory.push(value) } }
     else if (topic.startsWith('market_trade/')) applyTrade(state, { ...data, symbol: symbolOf(data, topic) }, message, true)
-    else if (topic === 'order') updateOrder(state, data, message)
+    else if (topic === 'order') applyOrder(state, data, message)
     else if (topic === 'trade') applyTrade(state, data, message, false)
     else if (topic === 'command') applyCommand(state, data, message)
     else if (topic === 'account_observation') applyObservation(state, data, message)

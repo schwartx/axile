@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-from threading import Event, Lock, Thread
+from threading import Event, Thread
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -20,6 +20,7 @@ from axile.server.execution.worker_backend.manager import (
     WorkerBackendExecutionError,
     WorkerBackendManager,
     WorkerBackendTimeoutError,
+    _WorkerBackendHandle,
 )
 from axile.server.execution.worker_backend.protocol import (
     WorkerBackendErrorPayload,
@@ -99,7 +100,7 @@ class _FakeControlConnection:
         self.closed = True
 
 
-class _FakeHandle:
+class _FakeHandle(_WorkerBackendHandle):
     catalog = None
     instruments = None
 
@@ -110,13 +111,12 @@ class _FakeHandle:
         poll_result: bool = True,
         join_stops: bool = True,
     ) -> None:
-        self.account_id = 2
-        self.monitor = None
-        self.process = _FakeProcess(is_alive=is_alive, join_stops=join_stops)
-        self.connection = _FakeConnection(poll_result=poll_result)
-        self.control_connection = _FakeControlConnection()
-        self.request_lock = Lock()
-        self.retired = False
+        super().__init__(
+            account_id=2,
+            process=_FakeProcess(is_alive=is_alive, join_stops=join_stops),
+            connection=_FakeConnection(poll_result=poll_result),
+            control_connection=_FakeControlConnection(),
+        )
 
 
 def test_manager_recreates_dead_worker_before_execute(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -582,7 +582,9 @@ def test_request_blocking_force_terminates_unresponsive_worker_after_cancel(
     )
     request = _execute_request()
     request.execution_id = "exec-force-stop"
-    monkeypatch.setattr(worker_manager_module, "_TERMINATION_GRACE_SECONDS", 0.0)
+    monkeypatch.setattr(worker_manager_module, "_TERMINATION_GRACE_SECONDS", 0.05)
+    # 真实 Pipe.poll 会释放执行线程，让控制发送线程在宽限期内下发终止。
+    monkeypatch.setattr(handle.connection, "poll", Event().wait)
 
     with pytest.raises(ExecutionTerminated) as caught:
         manager._request_blocking(2, request, timeout=10.0, termination_controller=controller)

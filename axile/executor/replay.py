@@ -3,10 +3,38 @@
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
+from typing import NamedTuple
 from uuid import uuid4
 
 ReplayObserver = Callable[[str, Mapping[str, object]], None]
 _command_id: ContextVar[str | None] = ContextVar("replay_command_id", default=None)
+_MISSING = object()
+
+
+class ReplayReceipt(NamedTuple):
+    """消息或操作入口固定的录制身份。"""
+
+    observer: ReplayObserver
+    sync_generation: int | None
+
+
+def capture_receipt(owner: object | None) -> ReplayReceipt | None:
+    """固定观察者和代次，后续阶段不借用新的录制身份。"""
+    observer = getattr(owner, "_replay_observer", None)
+    if observer is None:
+        return None
+    generation = getattr(owner, "_replay_sync_generation", None)
+    return ReplayReceipt(observer, generation if type(generation) is int else None)
+
+
+def observe_receipt(receipt: ReplayReceipt | None, topic: str, data: Mapping[str, object]) -> None:
+    """沿入口身份交付观察，未知代次不在交付时补造。"""
+    if receipt is None:
+        return
+    try:
+        receipt.observer(topic, {**data, "sync_generation": receipt.sync_generation})
+    except Exception:  # noqa: BLE001 - 录制旁路不能传播到交易路径
+        return
 
 
 def set_replay_observer(owner: object, callback: ReplayObserver | None) -> None:
@@ -60,21 +88,25 @@ def current_command_id() -> str | None:
 
 
 @contextmanager
-def replay_command(owner: object, operation: str, data: Mapping[str, object]) -> Iterator[str | None]:
+def replay_command(
+    owner: object, operation: str, data: Mapping[str, object], *, receipt: object = _MISSING
+) -> Iterator[str | None]:
     """覆盖报撤调用及装饰器拒绝，异常原样传播且不保存异常文本。"""
-    if getattr(owner, "_replay_observer", None) is None:
+    if receipt is _MISSING:
+        receipt = capture_receipt(owner)
+    if not isinstance(receipt, ReplayReceipt):
         yield None
         return
     identity = uuid4().hex
     token = _command_id.set(identity)
     base = {**data, "command_id": identity, "operation": operation}
-    observe(owner, "/command", {**base, "phase": "request"})
+    observe_receipt(receipt, "/command", {**base, "phase": "request"})
     try:
         yield identity
     except BaseException as error:
-        observe(owner, "/command", {**base, "phase": "error", "error_type": type(error).__name__})
+        observe_receipt(receipt, "/command", {**base, "phase": "error", "error_type": type(error).__name__})
         raise
     else:
-        observe(owner, "/command", {**base, "phase": "returned"})
+        observe_receipt(receipt, "/command", {**base, "phase": "returned"})
     finally:
         _command_id.reset(token)

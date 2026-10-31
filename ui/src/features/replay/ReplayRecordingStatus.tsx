@@ -3,7 +3,7 @@ import { getReplayStatus } from '@/lib/api/replay'
 import { usePolling } from '@/lib/hooks/usePolling'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 
-const labels: Record<string, string> = { disabled: '已关闭', waiting_connection: '已开启，等待账户正常连接', starting: '正在启用录制', recording: '正在记录', closing: '正在结束本段记录', error: '记录已中断', unsupported: '当前渠道暂不支持录制' }
+const labels: Record<string, string> = { disabled: '已关闭', waiting_connection: '已开启，等待账户正常连接', starting: '录制设置待生效', recording: '正在记录', closing: '正在结束本段记录', error: '录制状态异常', unsupported: '当前渠道暂不支持录制' }
 
 /** 保存意愿与 worker 实际生效分开，录制状态不会触发连接或交易。 */
 export function ReplayRecordingStatus({ accountId, savedEnabled }: { accountId: number; savedEnabled: boolean }) {

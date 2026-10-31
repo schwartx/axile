@@ -562,7 +562,8 @@ def _run_termination_control_loop(connection: Connection, state: _WorkerBackendS
                     if signal.config is not None
                     else worker_replay_status(state)
                 )
-                connection.send(WorkerReplayStatus(signal.request_id, status))
+                if signal.request_id is not None:
+                    connection.send(WorkerReplayStatus(signal.request_id, status))
     except (EOFError, OSError):
         return
     except BaseException as exc:  # noqa: BLE001 - IPC 最外层必须保留所有进程退出原因

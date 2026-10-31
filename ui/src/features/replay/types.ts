@@ -107,6 +107,7 @@ export interface ReplayOrder {
   terminal: boolean
   carry_in: boolean
   execution_id: string | null
+  origin?: string | null
   previous_order_id: string | null
   time_us: number
   capture_seq: number

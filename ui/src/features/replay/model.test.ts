@@ -106,6 +106,222 @@ describe('回放按本地已观察前缀恢复', () => {
     expect(result.orderHistory.some(row => row.order_id === 'a' && !row.confirmed)).toBe(true)
   })
 
+  test('单笔旧查询不覆盖同代次WS改价改量，检查点恢复与完整前缀一致', () => {
+    const first = order('a', { price: 100 }), other = order('b', { price: 80 })
+    const amended = order('a', { price: 101, quantity: 12, remaining_quantity: 12, attributes: { source: 'ws' } })
+    const stale = message(4, '/order', order('a', { price: 100, attributes: { source: 'rest' },
+      query_basis: { recording_id: 'rec-A', start_seq: 2, request_revision: 1 } }))
+    const full = windowOf([message(1, '/order', first), message(2, '/order', other), message(3, '/order', amended), stale])
+    const restored = windowOf([stale], { state_through_seq: 3, time_us: 300, sync_generation: { A: 1 },
+      order_change_seq: { [key('A', 'a')]: 3, [key('A', 'b')]: 2 },
+      orders: { [key('A', 'a')]: { ...amended, observed_seq: 3, observed_at_us: 300 },
+        [key('A', 'b')]: { ...other, observed_seq: 2, observed_at_us: 200 } } })
+    for (const window of [full, restored]) {
+      const result = projectReplay(window, { time_us: 400 })
+      expect(result.orders[key('A', 'a')]).toMatchObject({ price: 101, volume: 12, remaining_volume: 12,
+        confirmed: true, capture_seq: 3, attributes: { source: 'ws' } })
+      expect(result.orders[key('A', 'b')]).toMatchObject({ price: 80, confirmed: true })
+      expect(result.orderHistory.some(value => value.capture_seq === 4)).toBe(false)
+      const fresh = message(5, '/order', order('a', { price: 102,
+        query_basis: { recording_id: 'rec-A', start_seq: 4, request_revision: 2 } }))
+      expect(projectReplay({ ...window, messages: [...window.messages, fresh] }, { time_us: 500 }).orders[key('A', 'a')])
+        .toMatchObject({ price: 102, confirmed: true, capture_seq: 5 })
+    }
+  })
+
+  test.each([
+    null, [], {}, { recording_id: 'rec-B', start_seq: 1, request_revision: 1 },
+    { start_seq: 1, request_revision: 1 },
+    { recording_id: 'rec-A', start_seq: -1, request_revision: 1 },
+    { recording_id: 'rec-A', start_seq: 3, request_revision: 1 },
+    { recording_id: 'rec-A', start_seq: 4, request_revision: 1 },
+    { recording_id: 'rec-A', start_seq: 1, request_revision: 0 },
+    { recording_id: 'rec-A', start_seq: 1, request_revision: Number.MAX_SAFE_INTEGER + 1 },
+    { recording_id: 'rec-A', start_seq: 1, request_revision: 1, sync_generation: 1 },
+  ].map(query_basis => [query_basis] as const))('明确无效单笔query证明整行忽略，不推进代次或制造确认：%j', query_basis => {
+    const invalid = message(3, '/order', order('a', { price: 999, sync_generation: 2, query_basis }))
+    const prefix = [message(1, '/order', order('a', { price: 100 })), message(2, '/order', order('a', { price: 101 }))]
+    const after = projectReplay(windowOf([...prefix, invalid]), { time_us: 300 })
+    expect(after.orders[key('A', 'a')]).toMatchObject({ price: 101, confirmed: true, capture_seq: 2 })
+    expect(projectReplay(windowOf([{ ...invalid, data: { ...invalid.data, order_id: 'new' } }]), { time_us: 300 }).orders).toEqual({})
+    const next = projectReplay(windowOf([...prefix, invalid, message(4, '/order', order('a', { price: 102 }))]), { time_us: 400 })
+    expect(next.orders[key('A', 'a')]).toMatchObject({ price: 102, confirmed: true, capture_seq: 4 })
+  })
+
+  test('单笔合法查询按本单水位合并且保留其它单，无query key的实时观察继续生效', () => {
+    const query = order('a', { price: 101, query_basis: { recording_id: 'rec-A', start_seq: 1, request_revision: 1 } })
+    const messages = [message(1, '/order', order('a', { price: 100 })),
+      message(2, '/order', order('b', { price: 80 })), message(3, '/order', query)]
+    const result = projectReplay(windowOf(messages), { time_us: 300 })
+    expect(result.orders[key('A', 'a')]).toMatchObject({ price: 101, confirmed: true, capture_seq: 3 })
+    expect(result.orders[key('A', 'b')]).toMatchObject({ price: 80, confirmed: true })
+    expect(projectReplay(windowOf([...messages, message(4, '/order', order('a', { price: 103 }))]), { time_us: 400 })
+      .orders[key('A', 'a')]).toMatchObject({ price: 103, confirmed: true })
+    expect(projectReplay(windowOf([message(2, '/order', { ...query, sync_generation: null })]), { time_us: 200 }).orders).toEqual({})
+    expect(projectReplay(windowOf([message(2, '/order', { ...query,
+      query_basis: { recording_id: 'rec-A', start_seq: 1, request_revision: 1, sync_generation: 1 } })]), { time_us: 200 }).orders[key('A', 'a')])
+      .toMatchObject({ price: 101, confirmed: true })
+  })
+
+  test.each([false, true])('并发单笔查询先返回者形成变化水位，晚返回的旧起点保守跳过：newerFirst=%s', newerFirst => {
+    const query = (price: number, request_revision: number, start_seq = 1) => order('a', { price,
+      query_basis: { recording_id: 'rec-A', start_seq, request_revision } })
+    const first = query(newerFirst ? 102 : 101, newerFirst ? 2 : 1)
+    const later = query(newerFirst ? 101 : 102, newerFirst ? 1 : 2)
+    const messages = [message(1, '/order', order('a', { price: 100 })), message(2, '/order', first), message(3, '/order', later)]
+    expect(projectReplay(windowOf(messages), { time_us: 300 }).orders[key('A', 'a')])
+      .toMatchObject({ price: first.price, confirmed: true, capture_seq: 2 })
+    expect(projectReplay(windowOf([...messages, message(4, '/order', query(104, 3, 3))]), { time_us: 400 }).orders[key('A', 'a')])
+      .toMatchObject({ price: 104, confirmed: true, capture_seq: 4 })
+  })
+
+  test.each([[true, 1, 2], [false, 1, 2], [true, 2, 1], [false, 2, 1]] as const)(
+    '完整集合交付后挡住较早开始的单笔查询，present=%s singleRev=%i setRev=%i', (present, singleRevision, setRevision) => {
+      const initial = order('a', { price: 100 })
+      const complete = message(2, '/order_set', { scope: ['A'], scope_complete: true, synchronized: true, sync_generation: 1,
+        query_basis: { start_seq: 1, request_revision: setRevision }, orders: present ? [order('a', { price: 101 })] : [] })
+      const stale = message(3, '/order', order('a', { price: 100,
+        query_basis: { recording_id: 'rec-A', start_seq: 1, request_revision: singleRevision } }))
+      const restored = windowOf([stale], { state_through_seq: 2, time_us: 200, sync_generation: { A: 1 },
+        last_set_revision: { A: setRevision }, last_set_observation: { A: [1, setRevision, 2] },
+        order_change_seq: { [key('A', 'a')]: 1 }, orders: { [key('A', 'a')]: { ...initial,
+          price: present ? 101 : 100, confirmed_book: present, confirmation_state: present ? 'confirmed' : 'absent',
+          observed_seq: present ? 2 : 1, observed_at_us: present ? 200 : 100 } } })
+      for (const window of [windowOf([message(1, '/order', initial), complete, stale]), restored]) {
+        const value = projectReplay(window, { time_us: 300 }).orders[key('A', 'a')]
+        expect(value).toMatchObject({ price: present ? 101 : 100, confirmed: present, status: present ? 'working' : 'unknown' })
+        expect(projectReplay({ ...window, messages: window.messages.map(value => value.capture_seq === 3
+          ? { ...value, data: { ...value.data, order_id: 'new' } } : value) }, { time_us: 300 }).orders[key('A', 'new')]).toBeUndefined()
+        const fresh = message(4, '/order', order('a', { price: 103,
+          query_basis: { recording_id: 'rec-A', start_seq: 3, request_revision: 3 } }))
+        expect(projectReplay({ ...window, messages: [...window.messages, fresh] }, { time_us: 400 }).orders[key('A', 'a')])
+          .toMatchObject({ price: 103, confirmed: true })
+        expect(projectReplay({ ...window, messages: [...window.messages, message(4, '/order', order('a', { price: 104 }))] }, { time_us: 400 })
+          .orders[key('A', 'a')]).toMatchObject({ price: 104, confirmed: true })
+      }
+    })
+
+  test('完整空账户集合也保护尚未发现的品种，原生检查点空串水位与全播一致', () => {
+    const complete = message(1, '/order_set', { scope: { kind: 'account', symbols: [] }, scope_complete: true,
+      synchronized: true, sync_generation: 2, query_basis: { start_seq: 0, request_revision: 1 }, orders: [] })
+    const baseline = { state_through_seq: 1, time_us: 100, last_set_observation: { '': [2, 1, 1] } }
+    for (const window of [windowOf([complete]), windowOf([], baseline)]) {
+      const single = (generation: number, start_seq: number) => message(2, '/order', order('new', { symbol: 'X', sync_generation: generation,
+        query_basis: { recording_id: 'rec-A', start_seq, request_revision: 2 } }))
+      for (const query of [single(2, 0), single(1, 1)]) expect(projectReplay({ ...window, messages: [...window.messages, query] }, { time_us: 200 }).orders).toEqual({})
+      for (const query of [single(2, 1), single(3, 0)]) expect(projectReplay({ ...window, messages: [...window.messages, query] }, { time_us: 200 })
+        .orders[key('X', 'new')]).toMatchObject({ confirmed: true })
+    }
+  })
+
+  test.each([false, true])('账户完整集合在部分品种已过期时不推进global，仍局部处理有效品种：otherKnown=%s', otherKnown => {
+    const other = otherKnown ? 'C' : 'B'
+    const initial = [message(1, '/order', order('a', { price: 100 })),
+      message(2, '/order', order(otherKnown ? 'b' : 'a', { symbol: otherKnown ? 'B' : 'A', price: otherKnown ? 200 : 100 }))]
+    const scoped = message(3, '/order_set', { scope: ['A'], scope_complete: true, synchronized: true, sync_generation: 1,
+      query_basis: { start_seq: 2, request_revision: 2 }, orders: [order('a', { price: 101 })] })
+    const staleAccount = message(4, '/order_set', { scope: { kind: 'account', symbols: [] }, scope_complete: true,
+      synchronized: true, sync_generation: 1, query_basis: { start_seq: 2, request_revision: 1 }, orders: [] })
+    const concurrent = message(5, '/order', order('new', { symbol: other,
+      query_basis: { recording_id: 'rec-A', start_seq: 2, request_revision: 3 } }))
+    const full = windowOf([...initial, scoped, staleAccount, concurrent])
+    const baseline = { state_through_seq: 4, time_us: 400, sync_generation: { A: 1, ...(otherKnown ? { B: 1 } : {}) },
+      last_set_revision: { A: 2, ...(otherKnown ? { B: 1 } : {}) },
+      last_set_observation: { A: [1, 2, 3], ...(otherKnown ? { B: [1, 1, 4] } : {}) },
+      order_change_seq: { [key('A', 'a')]: otherKnown ? 1 : 2, ...(otherKnown ? { [key('B', 'b')]: 2 } : {}) },
+      orders: { [key('A', 'a')]: order('a', { price: 101, observed_seq: 3, observed_at_us: 300 }),
+        ...(otherKnown ? { [key('B', 'b')]: order('b', { symbol: 'B', price: 200, observed_seq: 2,
+          observed_at_us: 200, confirmed_book: false, confirmation_state: 'absent' }) } : {}) } }
+    for (const window of [full, windowOf([concurrent], baseline)]) {
+      const result = projectReplay(window, { time_us: 500 })
+      expect(result.orders[key('A', 'a')]).toMatchObject({ price: 101, confirmed: true })
+      expect(result.orders[key(other, 'new')]).toMatchObject({ confirmed: true })
+      if (otherKnown) expect(result.orders[key('B', 'b')]).toMatchObject({ status: 'unknown', confirmed: false })
+    }
+  })
+
+  test('品种集合只保护其范围，空品种不能冒充账户水位', () => {
+    const complete = (scope: unknown) => message(2, '/order_set', { scope, scope_complete: true, synchronized: true, sync_generation: 1,
+      query_basis: { start_seq: 1, request_revision: 1 }, orders: [] })
+    const single = (symbol: string) => message(3, '/order', order('new', { symbol,
+      query_basis: { recording_id: 'rec-A', start_seq: 1, request_revision: 2 } }))
+    expect(projectReplay(windowOf([complete(['A']), single('B')]), { time_us: 300 }).orders[key('B', 'new')]).toMatchObject({ confirmed: true })
+    expect(projectReplay(windowOf([complete(['A']), single('A')]), { time_us: 300 }).orders).toEqual({})
+    expect(projectReplay(windowOf([complete(['']), single('B')]), { time_us: 300 }).orders[key('B', 'new')]).toMatchObject({ confirmed: true })
+  })
+
+  test.each([
+    { scope_complete: false }, { synchronized: false }, { query_basis: null },
+    { query_basis: { recording_id: 'wrong', start_seq: 2, request_revision: 6 } },
+    { sync_generation: 0 }, { query_basis: { start_seq: 2, request_revision: 5 } },
+    { query_basis: { start_seq: 2, request_revision: 4 } },
+  ])('无效、部分、旧代或过期完整集合不推进交付水位：%j', invalid => {
+    for (const account of [false, true]) {
+      const scope = account ? '' : 'A'
+      const state = { state_through_seq: 2, time_us: 200, sync_generation: { A: 1 }, last_set_revision: { A: 5 },
+        last_set_observation: { [scope]: [1, 5, 2] } }
+      const complete = message(3, '/order_set', { scope: account ? { kind: 'account', symbols: [] } : ['A'], scope_complete: true,
+        synchronized: true, sync_generation: 1, query_basis: { start_seq: 2, request_revision: 6 }, orders: [], ...invalid })
+      const fresh = message(4, '/order', order('new', { price: 104,
+        query_basis: { recording_id: 'rec-A', start_seq: 2, request_revision: 7 } }))
+      expect(projectReplay(windowOf([complete, fresh], state), { time_us: 400 }).orders[key('A', 'new')])
+        .toMatchObject({ price: 104, confirmed: true })
+    }
+  })
+
+  test.each([false, true])('新代次较低revision完整集合仍建立本代水位，account=%s', account => {
+    const scope = account ? '' : 'A'
+    const baseline = { state_through_seq: 2, time_us: 200, sync_generation: { A: 1 }, last_set_revision: { A: 99 },
+      last_set_observation: { [scope]: [1, 99, 2] } }
+    const complete = message(3, '/order_set', { scope: account ? { kind: 'account', symbols: ['A'] } : ['A'], scope_complete: true,
+      synchronized: true, sync_generation: 2, query_basis: { start_seq: 2, request_revision: 1 }, orders: [] })
+    const single = message(4, '/order', order('new', { sync_generation: 2,
+      query_basis: { recording_id: 'rec-A', start_seq: 2, request_revision: 2 } }))
+    expect(projectReplay(windowOf([complete, single], baseline), { time_us: 400 }).orders).toEqual({})
+    expect(projectReplay(windowOf([complete, { ...single, data: { ...single.data,
+      query_basis: { recording_id: 'rec-A', start_seq: 3, request_revision: 2 } } }], baseline), { time_us: 400 }).orders[key('A', 'new')])
+      .toMatchObject({ confirmed: true })
+  })
+
+  test('窄范围失效只清本品种水位，保留其它品种及账户水位', () => {
+    const loss = message(3, '/connection', { scope: ['A'], connected: false, sync_generation: 1 })
+    const single = (symbol: string) => message(4, '/order', order('new', { symbol,
+      query_basis: { recording_id: 'rec-A', start_seq: 1, request_revision: 2 } }))
+    const baseline = { state_through_seq: 2, time_us: 200, sync_generation: { A: 1, B: 1 },
+      last_set_observation: { A: [1, 1, 2], B: [1, 1, 2] } }
+    expect(projectReplay(windowOf([loss, single('A')], baseline), { time_us: 400 }).orders[key('A', 'new')]).toMatchObject({ confirmed: true })
+    expect(projectReplay(windowOf([loss, single('B')], baseline), { time_us: 400 }).orders).toEqual({})
+    expect(projectReplay(windowOf([loss, single('A')], { ...baseline,
+      last_set_observation: { ...baseline.last_set_observation, '': [1, 1, 2] } }), { time_us: 400 }).orders).toEqual({})
+    const healthy = { ...loss, data: { ...loss.data, connected: true } }
+    expect(projectReplay(windowOf([healthy, single('A')], baseline), { time_us: 400 }).orders).toEqual({})
+  })
+
+  test.each([null, 0, 1])('账户失效只有明确当前代次才清账户和品种水位：generation=%s', generation => {
+    const baseline = { state_through_seq: 2, time_us: 200, sync_generation: { A: 1 },
+      last_set_observation: { '': [1, 1, 2], A: [1, 1, 2] } }
+    const loss = message(3, '/connection', { scope: { kind: 'account', symbols: [] }, connected: false, sync_generation: generation })
+    const single = message(4, '/order', order('new', { symbol: 'X',
+      query_basis: { recording_id: 'rec-A', start_seq: 1, request_revision: 2 } }))
+    const result = projectReplay(windowOf([loss, single], baseline), { time_us: 400 })
+    if (generation === 1) expect(result.orders[key('X', 'new')]).toMatchObject({ confirmed: true })
+    else expect(result.orders).toEqual({})
+  })
+
+  test.each([false, true])('旧代次失效不能清较高代次水位，即使品种此前尚未发现：account=%s', account => {
+    const baseline = { state_through_seq: 2, time_us: 200, last_set_observation: { [account ? '' : 'A']: [2, 1, 2] } }
+    const loss = message(3, '/connection', { scope: account ? { kind: 'account', symbols: [] } : ['A'], connected: false, sync_generation: 1 })
+    const single = message(4, '/order', order('new', { sync_generation: 2,
+      query_basis: { recording_id: 'rec-A', start_seq: 1, request_revision: 2 } }))
+    expect(projectReplay(windowOf([loss, single], baseline), { time_us: 400 }).orders).toEqual({})
+  })
+
+  test('旧检查点未提供集合交付水位时仍可恢复并接受后发查询', () => {
+    const state = { state_through_seq: 2, time_us: 200, sync_generation: { A: 1 }, last_set_revision: { A: 1 } }
+    const single = message(3, '/order', order('new', { query_basis: { recording_id: 'rec-A', start_seq: 2, request_revision: 2 } }))
+    expect(projectReplay(windowOf([single], state), { time_us: 300 }).orders[key('A', 'new')]).toMatchObject({ confirmed: true })
+  })
+
   test('待撤仍在场，断线先失效，旧代回报不复活', () => {
     const result = projectReplay(windowOf([message(1, '/quote/A', { symbol: 'A', bids: [{ price: 98, quantity: 2 }], asks: [], book_valid: true, valid_until_us: 5000 }, 50),
       message(2, '/order', order('a', { sync_generation: 1 }), 100),
@@ -466,5 +682,24 @@ describe('回放按本地已观察前缀恢复', () => {
       expect(projectReplay(window, { time_us }).executionSymbolComplete.E.A).toBe(false)
       expect(window).toEqual(before)
     }
+  })
+
+  test('归属展示保留订单来源，全播与检查点一致且不把无效归属当已知', () => {
+    const source = order('a', { execution_id: 'E', origin: 'manual' })
+    const invalid = order('b', { execution_id: 'E', origin: 'external', field_quality: { execution_id: 'invalid', origin: 'missing' } })
+    const full = windowOf([message(1, '/order', source), message(2, '/order', invalid)])
+    const carried = windowOf([], { state_through_seq: 2, time_us: 200,
+      orders: { [key('A', 'a')]: source, [key('A', 'b')]: invalid } })
+    for (const window of [full, carried]) {
+      const view = projectReplay(window, { time_us: 200 })
+      expect(view.orders[key('A', 'a')]).toMatchObject({ execution_id: 'E', origin: 'manual' })
+      expect(view.orders[key('A', 'b')]).toMatchObject({ execution_id: null, origin: null })
+    }
+  })
+
+  test('归属展示不采用成交中质量无效的执行身份与来源', () => {
+    const value = fill('T', 1, { order_id: 'a', origin: 'manual', field_quality: { execution_id: 'missing', origin: 'invalid' } })
+    const view = projectReplay(windowOf([message(1, '/trade', value)]), { time_us: 100 })
+    expect(view.ownTrades[0]).toMatchObject({ execution_id: null, origin: null })
   })
 })

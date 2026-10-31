@@ -539,18 +539,54 @@ fn manifest_recording(
     let metadata = view.metadata.as_ref().unwrap();
     let mut gaps = recorded_gaps(&view.parts);
     gaps.extend(metadata_gaps(metadata));
-    let missing = view.parts.iter().any(|part| {
-        day_directory(account, &part.day, false)
+    let mut available = Vec::new();
+    let mut end_limit = JS_SAFE;
+    let mut next: Option<&PartDescriptor> = None;
+    for part in view.parts.iter().rev() {
+        if next.is_some_and(|next| {
+            part.last_seq != next.checkpoint_through_seq
+                || part.part.checked_add(1) != Some(next.part)
+        }) {
+            end_limit = end_limit.min(next.unwrap().start_us);
+        }
+        next = Some(part);
+        let exists = day_directory(account, &part.day, false)
             .and_then(|directory| child_file(&directory, &part.file_name()))
             .and_then(|path| fs::metadata(path).map_err(io_error))
-            .map_or(true, |metadata| metadata.len() != part.size_bytes)
-    });
+            .is_ok_and(|metadata| metadata.len() == part.size_bytes);
+        if exists {
+            let mut interval = part.clone();
+            interval.end_us = interval.end_us.min(end_limit);
+            available.push(interval);
+        } else {
+            // No window ending after this time may silently skip the missing part.
+            end_limit = part.start_us;
+        }
+    }
+    available.reverse();
+    let missing = available.len() != view.parts.len();
     if missing {
         gaps.push(json!({"reason":"file_missing_or_changed"}));
     }
+    let mut start_limit = 0;
+    for index in 0..available.len() {
+        let part = &available[index];
+        let prefix_available = index > 0
+            && available[index - 1].last_seq == part.checkpoint_through_seq
+            && available[index - 1].part.checked_add(1) == Some(part.part);
+        if !prefix_available {
+            // A checkpoint containing @start facts cannot replace a missing same-time prefix.
+            start_limit = if part.checkpoint_through_seq > 0 {
+                part.checkpoint_time_us.unwrap_or(0).saturating_add(1)
+            } else {
+                0
+            };
+        }
+        available[index].start_us = part.start_us.max(start_limit);
+    }
     let previous = metadata.previous_recording_id.as_ref();
     let order_known = previous.is_some_and(|previous| views.contains_key(previous));
-    json!({"recording_id":identity,"coverage":coverage(&view.parts,None,None),
+    json!({"recording_id":identity,"coverage":coverage(&available,None,None),
         "gaps":gaps,"parts":view.parts,"context":metadata.context,"symbols":metadata.symbols,
         "symbols_complete":!metadata.symbols.is_empty(),
         "instrument":metadata.context.get("instrument").cloned().unwrap_or_else(|| json!({})),
@@ -1169,12 +1205,14 @@ fn filtered_projection(mut state: Value, symbols: &BTreeSet<String>) -> Value {
         "position_scopes",
         "order_change_seq",
         "last_set_revision",
+        "last_set_observation",
         "sync_generation",
         "synchronized",
     ] {
         if let Some(rows) = state.get_mut(field).and_then(Value::as_object_mut) {
             rows.retain(|key, row| {
                 symbols.contains(key)
+                    || (field == "last_set_observation" && key.is_empty())
                     || row_symbol(key, row).is_some_and(|symbol| symbols.contains(&symbol))
             });
             for row in rows.values_mut() {
@@ -1378,7 +1416,13 @@ mod tests {
         let state = json!({"trade_accounting":{"own_seen_keys":["a","b"],"market_seen_keys":[],
             "own_records":{"a":{"symbol":"A","quantity":4},"b":{"symbol":"B","quantity":9}},
             "market_records":{},"pending":{},"execution_totals":{"7":{"complete":true,"by_symbol":{"A":{"quantity":4},"B":{"quantity":9}}}}}});
+        let mut state = state;
+        state["last_set_observation"] = json!({"": [2, 3, 7], "A": [2, 4, 8], "B": [2, 5, 9]});
         let state = filtered_projection(state, &symbols);
+        assert_eq!(
+            state["last_set_observation"],
+            json!({"": [2, 3, 7], "A": [2, 4, 8]})
+        );
         assert_eq!(state["trade_accounting"]["own_seen_keys"], json!(["a"]));
         assert_eq!(
             state["trade_accounting"]["execution_totals"]["7"]["by_symbol"],

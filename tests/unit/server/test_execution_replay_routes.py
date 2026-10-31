@@ -4,6 +4,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import pytest
 from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
 
@@ -71,7 +72,9 @@ def test_native_budget_failure_has_actionable_code_without_local_path(monkeypatc
         assert "/private/" not in response.text
 
 
-def test_recording_only_patch_does_not_prepare_reconcile_or_change_schedule(monkeypatch):
+@pytest.mark.parametrize("acknowledged", [True, False])
+@pytest.mark.parametrize("recording_only", [True, False])
+def test_recording_patch_keeps_acknowledgement_separate_from_trading_sync(monkeypatch, acknowledged, recording_only):
     account = Account(id=7, name="test", market="future", trade_channel="ctp", brokerage="test")
     account.runtime_sync = AccountRuntimeSyncPublic(status="synchronized", revision=1, attempts=1)
     stored = account.model_dump(exclude={"replay_config_version"}) | {
@@ -79,6 +82,8 @@ def test_recording_only_patch_does_not_prepare_reconcile_or_change_schedule(monk
         "runtime_sync": {"status": "pending", "revision": 2, "attempts": 1},
     }
     applied = []
+    reconciled = []
+    returned_sync = []
 
     async def get_account(_):
         return account
@@ -88,6 +93,10 @@ def test_recording_only_patch_does_not_prepare_reconcile_or_change_schedule(monk
 
     async def configure(snapshot):
         applied.append((snapshot.replay_recording_enabled, snapshot.replay_config_version))
+        return {
+            "config_version": snapshot.replay_config_version,
+            "effective_version": snapshot.replay_config_version if acknowledged else None,
+        }
 
     async def native(name, request):
         if name == "runtime_sync_begin_attempt":
@@ -96,11 +105,18 @@ def test_recording_only_patch_does_not_prepare_reconcile_or_change_schedule(monk
         return {"status": "synchronized", "revision": 2, "attempts": 2}
 
     async def response(account, sync):
+        returned_sync.append(sync)
         return account
 
-    async def forbidden(*args):
-        raise AssertionError("recording-only PATCH must not reconcile trading runtime")
+    async def reconcile(_sched, account_id):
+        assert not recording_only, "recording-only PATCH must not reconcile trading runtime"
+        reconciled.append(account_id)
+        return {"status": "synchronized", "revision": 2, "attempts": 2}
 
+    async def reap(_account_id):
+        assert not recording_only
+
+    from axile.server.execution import notification_outbox, supplements
     from axile.server.execution.worker_backend import manager
 
     monkeypatch.setattr(account_crud, "_get_account_or_404", get_account)
@@ -108,11 +124,18 @@ def test_recording_only_patch_does_not_prepare_reconcile_or_change_schedule(monk
     monkeypatch.setattr(account_crud, "_account_response", response)
     monkeypatch.setattr(account_crud, "_validate_channel_account_config", lambda *args: {})
     monkeypatch.setattr(account_crud, "_check_algorithm_channel_compat", lambda *args: None)
-    monkeypatch.setattr(account_crud, "_reconcile_committed_runtime", forbidden)
+    monkeypatch.setattr(account_crud, "_reconcile_committed_runtime", reconcile)
     monkeypatch.setattr(account_crud, "native_operation", native)
     monkeypatch.setattr(manager, "get_worker_backend_manager", lambda: SimpleNamespace(configure_replay=configure))
-    asyncio.run(account_crud._update_account(object(), 7, AccountUpdate(replay_recording_enabled=True), Response()))
+    monkeypatch.setattr(supplements, "reap_cancelled_queue", reap)
+    monkeypatch.setattr(notification_outbox, "wake_notifications", lambda _: None)
+    response = Response()
+    patch = {"replay_recording_enabled": True} | ({} if recording_only else {"remark": "updated"})
+    asyncio.run(account_crud._update_account(object(), 7, AccountUpdate(**patch), response))
     assert applied == [(True, 2)]
+    assert response.status_code == (200 if acknowledged else 202)
+    assert reconciled == ([] if recording_only else [7])
+    assert returned_sync[0]["status"] == "synchronized"
 
 
 def test_native_database_recording_and_http_window_roundtrip(monkeypatch, native_database):

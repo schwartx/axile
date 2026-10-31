@@ -7,7 +7,7 @@ from inspect import signature
 from math import isfinite
 
 from axile.executor.order_submission_context import get_order_submission_context
-from axile.executor.replay import observe, replay_command, replay_enabled
+from axile.executor.replay import capture_receipt, observe_receipt, replay_command
 
 
 def _intent_value(value: object) -> object:
@@ -46,7 +46,8 @@ def replay_operation[**P, R](operation: str) -> Callable[[Callable[P, R]], Calla
         @wraps(function)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             owner = args[0] if args else None
-            if owner is None or not replay_enabled(owner):
+            receipt = capture_receipt(owner)
+            if receipt is None:
                 return function(*args, **kwargs)
             arguments = call_signature.bind_partial(*args, **kwargs).arguments
             fields = {
@@ -57,11 +58,11 @@ def replay_operation[**P, R](operation: str) -> Callable[[Callable[P, R]], Calla
             fields.update(_action_context(owner))
             if "volume" in arguments:
                 fields["quantity"] = _intent_value(arguments["volume"])
-            with replay_command(owner, operation, fields) as command_id:
+            with replay_command(owner, operation, fields, receipt=receipt) as command_id:
                 result = function(*args, **kwargs)
             # 返回值只关联同步结果，不能据此确认柜台受理或撤单生效。
-            observe(
-                owner,
+            observe_receipt(
+                receipt,
                 "/command",
                 {
                     **fields,

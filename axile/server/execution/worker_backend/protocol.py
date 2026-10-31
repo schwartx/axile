@@ -84,7 +84,7 @@ class WorkerReplayConfig:
 class WorkerReplayControl:
     """通过独立控制通路更新录制意愿或读取实际状态。"""
 
-    request_id: str
+    request_id: str | None
     config: WorkerReplayConfig | None = None
 
 
