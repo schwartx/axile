@@ -106,6 +106,7 @@ type ProjectionState = {
   setRevisions: Record<string, number>
   setObservations: Record<string, [number, number, number]>
   generations: Record<string, number>
+  knownScopes: Set<string>
   basis: Record<string, ReplayData>
   executions: Record<string, ReplayData>
   pending: Map<string, ReplayData>
@@ -126,6 +127,8 @@ function scopeSymbols(scope: unknown, state: ProjectionState): Set<string> {
     ...Object.values(state.view.orders).map(value => value.symbol),
     ...Object.values(state.view.observedPositions).map(value => value.symbol),
     ...Object.keys(state.view.quotes),
+    ...Object.keys(state.generations),
+    ...state.knownScopes,
     ...rows(object.symbols).filter((value): value is string => typeof value === 'string' && value !== ''),
   ])
   if (Array.isArray(object.symbols)) return scopeSymbols(object.symbols, state)
@@ -153,7 +156,7 @@ function seed(window: ReplayWindow): ProjectionState {
     warnings: [],
   }
   const state: ProjectionState = {
-    view, ownSeen, marketSeen, ownFacts: new Map(), marketFacts: new Map(), orderChanges: {}, setRevisions: {}, setObservations: {}, generations: {}, basis: {}, executions: {}, pending: new Map(),
+    view, ownSeen, marketSeen, ownFacts: new Map(), marketFacts: new Map(), orderChanges: {}, setRevisions: {}, setObservations: {}, generations: {}, knownScopes: new Set(), basis: {}, executions: {}, pending: new Map(),
     orderFacts: {}, ownLastFactSeq: new Map(), commandFacts: {}, commandOwners: new Map(), cancelOrders: new Set(),
   }
   for (const item of rows(base.quotes)) {
@@ -187,6 +190,15 @@ function seed(window: ReplayWindow): ProjectionState {
       && integer(value[1]) != null && value[1] > 0 && integer(value[2]) != null && value[2] >= 0) state.setObservations[scope] = [value[0], value[1], value[2]]
   }
   for (const [symbol, value] of Object.entries(replayObject(base.position_basis))) state.basis[symbol] = replayObject(value)
+  for (const field of ['connections', 'position_scopes'] as const) {
+    for (const symbol of Object.keys(replayObject(base[field]))) if (symbol) state.knownScopes.add(symbol)
+  }
+  for (const key of Object.keys(state.basis)) {
+    try {
+      const value: unknown = JSON.parse(key)
+      if (Array.isArray(value) && typeof value[0] === 'string' && value[0]) state.knownScopes.add(value[0])
+    } catch { continue }
+  }
   for (const [input, output, visible] of [[accounting.own_records, state.ownFacts, view.ownTrades], [accounting.market_records, state.marketFacts, view.marketTrades]] as const) {
     for (const raw of rows(input)) {
       const record = replayObject(raw), data = replayObject(record.data)
@@ -323,10 +335,10 @@ function rememberCommand(state: ProjectionState, data: ReplayData, time: number,
 function applyCommand(state: ProjectionState, data: ReplayData, message: ReplayMessage) {
   rememberCommand(state, data, message.time_us, message.capture_seq)
   rebuildCancelPending(state, message)
-  bindCommandOwners(state, message)
+  bindCommandOwners(state)
   rebuildOrderAmounts(state, message)
 }
-function bindCommandOwners(state: ProjectionState, message?: ReplayMessage) {
+function bindCommandOwners(state: ProjectionState) {
   state.commandOwners.clear()
   for (const data of Object.values(state.commandFacts)) {
     if (known(data, 'operation') !== 'place_order') continue
@@ -339,7 +351,7 @@ function bindCommandOwners(state: ProjectionState, message?: ReplayMessage) {
     const owner = ownerForOrder(state, value.symbol, value.order_id)
     if (owner && !value.execution_id && !['manual', 'external'].includes(text(state.orderFacts[value.key]?.origin) ?? '')) {
       state.orderFacts[value.key] = { ...state.orderFacts[value.key], execution_id: owner, origin: 'execution' }
-      state.view.orders[value.key] = { ...value, execution_id: owner }
+      state.view.orders[value.key] = { ...value, execution_id: owner, origin: 'execution' }
     }
   }
   for (const [key, value] of state.ownFacts) {
@@ -347,7 +359,6 @@ function bindCommandOwners(state: ProjectionState, message?: ReplayMessage) {
     if (!owner || value.execution_id || ['manual', 'external'].includes(value.origin ?? '')) continue
     const associated = { ...value, execution_id: owner, origin: 'execution' }
     state.ownFacts.set(key, associated)
-    if (message) state.ownLastFactSeq.set(key, message.capture_seq)
     const index = state.view.ownTrades.findIndex(item => item.key === key)
     if (index >= 0) state.view.ownTrades[index] = associated
     if (validTrade(associated) && associated.order_id) state.pending.delete(`own:trade:${key}`)
@@ -407,7 +418,7 @@ function applyTrade(state: ProjectionState, data: ReplayData, message: ReplayMes
   if (validTrade(merged)) seen.add(value.key)
   else { if (!market) state.view.accountingComplete = false; warn(state, '部分成交事实无效或冲突，数量待确认') }
   facts.set(value.key, merged)
-  if (!market && (!previous || ['symbol', 'price', 'quantity', 'direction', 'position_side', 'offset', 'execution_id', 'order_id', 'origin'].some(field =>
+  if (!market && (!previous || ['symbol', 'price', 'quantity', 'direction', 'position_side', 'offset', 'order_id'].some(field =>
     !sameTradeFact(field, previous[field as keyof ReplayTrade], merged[field as keyof ReplayTrade])))) state.ownLastFactSeq.set(value.key, message.capture_seq)
   const prefix = market ? 'market' : 'own'
   if (integer(data.related_capture_seq) != null) {
@@ -509,6 +520,7 @@ function applyObservation(state: ProjectionState, data: ReplayData, message: Rep
   })
   const symbols = scopeSymbols(data.scope, state)
   for (const value of positions) symbols.add(value.symbol)
+  for (const symbol of symbols) state.knownScopes.add(symbol)
   if (data.scope_complete === true) {
     for (const [key, value] of Object.entries(state.view.observedPositions)) {
       if (symbols.has(value.symbol) && !positions.some(next => positionKey(next.symbol, next.direction) === key)) {
@@ -563,6 +575,8 @@ function applyOrderSet(state: ProjectionState, data: ReplayData, message: Replay
   const basis = orderQueryBasis(data, message)
   if (!basis) return
   const { start, revision, generation } = basis
+  const account = state.setObservations['']
+  if (account && (account[0] > generation || account[0] === generation && account[1] >= revision)) return
   const orders = rows(data.orders).map(replayObject), symbols = scopeSymbols(data.scope, state)
   for (const row of orders) { const symbol = symbolOf(row); if (symbol) symbols.add(symbol) }
   const global = accountScope(data.scope) && [...symbols].every(symbol => {
@@ -595,6 +609,7 @@ function applyConnection(state: ProjectionState, data: ReplayData, message: Repl
   const symbols = scopeSymbols(scope, state), generation = integer(data.sync_generation)
   for (const symbol of symbols) {
     if (!acceptGeneration(state, symbol, generation, message)) continue
+    state.knownScopes.add(symbol)
     if (!disconnected) continue
     if (!fullAccount && generation != null && generation >= (state.setObservations[symbol]?.[0] ?? generation)) delete state.setObservations[symbol]
     for (const [key, value] of Object.entries(state.view.orders)) if (value.symbol === symbol) {

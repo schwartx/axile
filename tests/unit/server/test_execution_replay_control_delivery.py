@@ -10,7 +10,7 @@ import pytest
 
 from axile.server.core import db
 from axile.server.db.models.account import Account, AccountCreate
-from axile.server.execution.worker_backend import manager, replay, worker
+from axile.server.execution.worker_backend import manager, replay, worker, worker_state
 from axile.server.execution.worker_backend.protocol import (
     WorkerReplayControl,
     WorkerReplayStatus,
@@ -55,6 +55,7 @@ def runtime(native_database, monkeypatch):
 
     def spawn(enabled=False):
         state = worker._WorkerBackendState(account_id=account.id, executor=SimpleNamespace(), connected_once=True)
+        worker_state._configure_executor_resources(state, account, state.executor)
         if enabled:
             replay.configure_worker_replay(state, replay.replay_config(account))
             eventually(lambda: state.replay_recorder.status()["state"] == "recording")
@@ -94,7 +95,8 @@ def runtime(native_database, monkeypatch):
     backend._workers.clear()
     for instance in active:
         eventually(lambda: instance.handle.control_thread is None)
-        instance.parent.send(None)
+        if not instance.parent.closed:
+            instance.parent.send(None)
         instance.thread.join(2)
         assert not instance.thread.is_alive()
         instance.parent.close()
@@ -195,8 +197,8 @@ def test_late_status_ack_does_not_overwrite_a_newer_saved_intent(runtime, monkey
     original = runtime.backend._receive_replay_status
     results = {}
 
-    def paused(handle):
-        result = original(handle)
+    def paused(handle, **kwargs):
+        result = original(handle, **kwargs)
         received.set()
         assert release.wait(2)
         return result

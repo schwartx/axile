@@ -111,6 +111,7 @@ from axile.executor.order_volume_limits import (
     ensure_order_volume_allowed,
 )
 from axile.executor.quote_diagnostics import QuoteDiagnostics
+from axile.executor.replay import capture_receipt
 from axile.executor.session_closed import COMMON_SESSION_CLOSED, SESSION_CLOSED_MESSAGE
 from axile.executor.termination_cleanup import cleanup_query_allowed
 from axile.executor.trading_calendar import CHINA_CALENDAR_ID, ShinnyTradingCalendar
@@ -1819,10 +1820,13 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         )
 
     def _on_order(self, row):
+        receipt = capture_receipt(self)
         with self._lock:
             if self._closed or self._invalid_reason:
                 return
-            replay_capture.capture(self, "/order", lambda: replay_capture.order(row, source="ctp.order_return"))
+            replay_capture.capture(
+                self, "/order", lambda: replay_capture.order(row, source="ctp.order_return"), receipt=receipt
+            )
             try:
                 o = self._remember_order(row)
             except CtpRequestError as exc:

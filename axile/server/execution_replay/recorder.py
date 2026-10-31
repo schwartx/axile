@@ -657,6 +657,9 @@ class ReplayRecorder:
         ):
             return
         start, revision = basis["start_seq"], basis["request_revision"]
+        account = self._order_set_observation.get("")
+        if account is not None and account[:2] >= (self._sync_generation, revision):
+            return
         symbols = self._order_scope_symbols_locked(scope, rows)
         global_scope = scope[0] == "account" and self._current_set_scope_locked(symbols, revision)
         for symbol in symbols:

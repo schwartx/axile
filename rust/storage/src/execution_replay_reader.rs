@@ -984,7 +984,7 @@ impl WindowPage<'_> {
         Ok(())
     }
 
-    fn consume(&mut self, message: Value) -> ReplayResult<bool> {
+    fn consume(&mut self, mut message: Value) -> ReplayResult<bool> {
         let seq = integer(&message, "capture_seq")?;
         let time = integer(&message, "time_us")?;
         if time < self.request.start_us {
@@ -992,7 +992,31 @@ impl WindowPage<'_> {
             return Ok(false);
         }
         self.ensure_baseline()?;
-        if time >= self.request.end_us || seq <= self.after_seq {
+        if time >= self.request.end_us {
+            return Ok(false);
+        }
+        if !self.symbols.is_empty() {
+            let projection = self.projection.as_mut().unwrap();
+            projection.apply(&message)?;
+            if message["topic"] == "/order_set"
+                && message["data"]["scope_complete"] == true
+                && message["data"]["synchronized"] == true
+                && message["data"]["query_basis"].is_object()
+            {
+                let accepted = projection.observed_set_scope(seq);
+                if !accepted.contains("") {
+                    message["data"]["scope"] = json!({"kind":"symbols","symbols":accepted});
+                    if let Some(rows) = message["data"]["orders"].as_array_mut() {
+                        rows.retain(|row| {
+                            row["symbol"]
+                                .as_str()
+                                .is_some_and(|symbol| accepted.contains(symbol))
+                        });
+                    }
+                }
+            }
+        }
+        if seq <= self.after_seq {
             return Ok(false);
         }
         let Some(message) = filtered_message(message, self.symbols) else {
@@ -1080,7 +1104,9 @@ pub(crate) fn window(
         }
         page.begin_part(&data, part)?;
         for message in data.messages {
-            if page.consume(message)? {
+            let page_full = page.consume(message)?;
+            budget.charge(0, 0)?;
+            if page_full {
                 more = true;
                 break;
             }
@@ -1139,12 +1165,9 @@ fn filtered_message(mut message: Value, symbols: &BTreeSet<String>) -> Option<Va
 }
 
 fn clip_scoped_data(data: &mut Value, symbols: &BTreeSet<String>) {
-    let original = if data["scope"]["kind"] == "account" {
-        Some(symbols.iter().cloned().collect())
-    } else {
-        scope_symbols(data)
-    };
-    if let Some(original) = original {
+    if data["scope"]["kind"] == "account" {
+        data["scope"] = json!({"kind":"account","symbols":[]});
+    } else if let Some(original) = scope_symbols(data) {
         data["scope"] = json!({"kind":"symbols","symbols":original
             .into_iter()
             .filter(|symbol| symbols.contains(symbol))
@@ -1431,7 +1454,7 @@ mod tests {
     }
 
     #[test]
-    fn account_scope_is_narrowed_to_the_selected_symbol_without_losing_completeness() {
+    fn account_scope_keeps_global_meaning_while_rows_are_filtered() {
         let symbols = BTreeSet::from(["A".into()]);
         for topic in ["/connection", "/order_set", "/account_observation"] {
             let message = json!({"topic":topic,"data":{"scope":{"kind":"account","symbols":[]},
@@ -1440,7 +1463,7 @@ mod tests {
             let message = filtered_message(message, &symbols).unwrap();
             assert_eq!(
                 message["data"]["scope"],
-                json!({"kind":"symbols","symbols":["A"]})
+                json!({"kind":"account","symbols":[]})
             );
             assert_eq!(message["data"]["scope_complete"], true);
             assert_eq!(message["data"]["orders"], json!([{"symbol":"A"}]));
@@ -1585,5 +1608,114 @@ mod tests {
         assert_eq!(later["messages"][0]["capture_seq"], 3);
         assert_eq!(fs::read(catalog_path).unwrap(), bytes);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn filtered_queries_replay_like_the_original_account_projection() {
+        use crate::execution_replay::ExecutionReplayWriter;
+        for (name, listed, paged) in [
+            ("empty", false, false),
+            ("listed", true, false),
+            ("paged", false, true),
+        ] {
+            let root = std::env::temp_dir()
+                .join(format!("axile-filter-query-{}-{name}", std::process::id()));
+            fs::create_dir(&root).unwrap();
+            let mut writer =
+                ExecutionReplayWriter::new(&root, 7, "filtered", r#"{"schema_version":1}"#)
+                    .unwrap();
+            let order = |symbol: &str, price: u64| {
+                json!({"symbol":symbol,"order_id":"O","status":"working",
+                "confirmed_book":true,"quantity":1,"remaining_quantity":1,"price":price,"sync_generation":1})
+            };
+            let basis = |revision: u64, start: u64| json!({"recording_id":"filtered","request_revision":revision,"start_seq":start});
+            let mut events = vec![
+                (
+                    "/execution".to_owned(),
+                    json!({"execution_id":"E","phase":"start","symbols":["A"]}),
+                ),
+                ("/order".to_owned(), order("A", 100)),
+                (
+                    "/order_set".to_owned(),
+                    json!({"scope":{"kind":"symbols","symbols":["A"]},"scope_complete":true,
+                    "synchronized":true,"sync_generation":1,"query_basis":basis(2,2),"orders":[order("A",101)]}),
+                ),
+                (
+                    "/order_set".to_owned(),
+                    json!({"scope":{"kind":"account","symbols":[]},"scope_complete":true,
+                    "synchronized":true,"sync_generation":1,"query_basis":basis(1,2),
+                    "orders":if listed {vec![order("B",101)]} else {vec![]}}),
+                ),
+                ("/order".to_owned(), {
+                    let mut row = order("B", 100);
+                    row["query_basis"] = basis(3, 2);
+                    row
+                }),
+            ];
+            if paged {
+                events.extend((0..PAGE_MESSAGES).map(|_| {
+                    (
+                        "/quote/B".to_owned(),
+                        json!({"symbol":"B","book_valid":false}),
+                    )
+                }));
+                let start = events.len() as u64;
+                events.push(("/order_set".to_owned(), json!({"scope":{"kind":"account","symbols":[]},"scope_complete":true,
+                    "synchronized":true,"sync_generation":1,"query_basis":basis(4,start),"orders":[]})));
+            }
+            for (index, (topic, data)) in events.into_iter().enumerate() {
+                let seq = index as u64 + 1;
+                writer
+                    .append(
+                        &json!({"schema_version":1,"recording_id":"filtered","capture_seq":seq,
+                    "time_us":100+seq,"topic":topic,"data":data})
+                        .to_string(),
+                    )
+                    .unwrap();
+            }
+            writer.finish().unwrap();
+            let mut request =
+                json!({"recording_id":"filtered","start_us":100,"end_us":10_000,"symbols":["B"]});
+            let first = window(&root, 7, "E", &request.to_string()).unwrap();
+            assert_eq!(first["state_before_start"]["state_through_seq"], 0);
+            let mut replayed = Projection::new("filtered");
+            let mut page = first;
+            loop {
+                for message in page["messages"].as_array().unwrap() {
+                    replayed.apply(message).unwrap();
+                }
+                if page["complete"] == true {
+                    break;
+                }
+                request["cursor"] = page["next_cursor"].clone();
+                page = window(&root, 7, "E", &request.to_string()).unwrap();
+            }
+            let restored = window(
+                &root,
+                7,
+                "E",
+                r#"{"recording_id":"filtered","start_us":10000,"end_us":10001,"symbols":["B"]}"#,
+            )
+            .unwrap();
+            let actual =
+                filtered_projection(replayed.snapshot().unwrap(), &BTreeSet::from(["B".into()]));
+            for field in [
+                "orders",
+                "last_set_observation",
+                "last_set_revision",
+                "order_change_seq",
+                "sync_generation",
+                "synchronized",
+            ] {
+                assert_eq!(
+                    actual[field], restored["state_before_start"][field],
+                    "{name}: {field}"
+                );
+            }
+            let order = &actual["orders"][r#"["B","O"]"#];
+            assert_eq!(order["confirmed_book"], !paged);
+            assert_eq!(order["price"], if listed { 101 } else { 100 });
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 }

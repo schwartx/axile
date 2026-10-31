@@ -9,6 +9,8 @@ from axile.channels import get_channel
 from axile.server.db.models.account import Account, AccountContext
 from axile.server.execution.worker_backend.protocol import WorkerReplayConfig
 
+_RESOURCE_CONTEXT_ERROR = "录制渠道声明读取失败，交易继续运行"
+
 
 def replay_root() -> Path:
     """以服务端配置的数据库目录确定录制根目录。"""
@@ -88,6 +90,22 @@ def worker_replay_status(state: Any) -> dict[str, object]:
     }
 
 
+def bind_worker_replay_resources(state: Any, account: AccountContext, executor: object) -> None:
+    """冻结实际执行器的声明，不从旧交易快照恢复录制开关。"""
+    resources: tuple[object, dict[str, object], bool] = (executor, {}, False)
+    error = None
+    try:
+        config = replay_config(account)
+        resources = (executor, config.context, config.supported)
+    except Exception:  # noqa: BLE001 - 声明失败不能改变交易资源准备结果
+        error = _RESOURCE_CONTEXT_ERROR
+    with state.replay_lock:
+        state.replay_resources = resources
+        if error is not None or state.replay_error == _RESOURCE_CONTEXT_ERROR:
+            state.replay_error = error
+        sync_worker_replay_connection(state)
+
+
 def sync_worker_replay_connection(state: Any, ready: bool | None = None) -> None:
     """只绑定已有连接；控制线程无需等待交易资源锁。"""
     with state.replay_lock:
@@ -95,10 +113,15 @@ def sync_worker_replay_connection(state: Any, ready: bool | None = None) -> None
             return
         try:
             connected = state.connected_once and not state.disconnected if ready is None else ready
-            state.replay_recorder.attach(
-                state.executor if connected else None,
+            owner, context, supported = state.replay_resources or (
+                None,
                 state.replay_config.context,
-                supported=state.replay_config.supported,
+                state.replay_config.supported,
+            )
+            state.replay_recorder.attach(
+                owner if connected and owner is state.executor else None,
+                context,
+                supported=supported,
             )
         except Exception:
             state.replay_error = "录制连接观察失败，交易继续运行"

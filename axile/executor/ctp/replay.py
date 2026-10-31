@@ -14,6 +14,7 @@ from axile.executor.ctp.quote_time import resolve_quote_time
 from axile.executor.ctp_product_sessions import get_ctp_product_sessions
 from axile.executor.trading_calendar import CHINA_CALENDAR_ID
 
+_MISSING = object()
 _DIRECTION = {"0": "BUY", "1": "SELL"}
 _OFFSET = {
     "0": "OPEN",
@@ -111,16 +112,16 @@ class Fields:
         return values.get(value) if value is not None else None
 
 
-def capture(owner: object, topic: str, build: Callable[[], dict[str, object]]) -> None:
+def capture(owner: object, topic: str, build: Callable[[], dict[str, object]], *, receipt: object = _MISSING) -> None:
     """只在开启时构造观察；规范化故障也不能改变交易返回。"""
-    observer = getattr(owner, "_replay_observer", None)
-    if observer is None:
+    if receipt is _MISSING:
+        receipt = recording.capture_receipt(owner)
+    if not isinstance(receipt, recording.ReplayReceipt):
         return
-    generation = getattr(owner, "_replay_sync_generation", None)
+    observer, generation = receipt
     try:
         data = build()
-        if type(generation) is int:
-            data.setdefault("sync_generation", generation)
+        data.setdefault("sync_generation", generation)
         observer(topic, data)
     except Exception:  # noqa: BLE001 - 旁路规范化也必须隔离于交易
         try:

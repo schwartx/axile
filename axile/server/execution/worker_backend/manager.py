@@ -127,6 +127,16 @@ _TERMINATION_POLL_SECONDS = 0.1
 _TERMINATION_GRACE_SECONDS = 5.0
 """人工终止后等待 worker 协作撤单并退出的宽限时间（秒）."""
 
+_REPLAY_STATE_PRIORITY = {
+    "recording": 0,
+    "error": 1,
+    "closing": 2,
+    "starting": 3,
+    "waiting_connection": 4,
+    "unsupported": 5,
+    "disabled": 6,
+}
+
 _worker_backend_manager: "WorkerBackendManager | None" = None
 _connection_binding_lock = Lock()
 
@@ -220,6 +230,7 @@ class WorkerBackendManager:
         self._lock = Lock()
         # 一账户一常驻 worker；无空闲回收/无上限是有意取舍，理由与重评估阈值见类 docstring。
         self._workers: dict[int, _WorkerBackendHandle] = {}
+        self._retiring_workers: dict[int, list[_WorkerBackendHandle]] = {}
         self._replay_configs: dict[int, WorkerReplayConfig] = {}
         self.instrument_catalog = InstrumentCatalog()
         self._catalog_accounts: dict[int, tuple[str, bool, str]] = {}
@@ -290,7 +301,13 @@ class WorkerBackendManager:
             else:
                 config = previous
             handle = self._workers.get(account_id)
-            if handle is None:
+            retiring = [item for item in self._retiring_workers.get(account_id, ()) if item.process.is_alive()]
+            if retiring:
+                self._retiring_workers[account_id] = retiring
+            else:
+                self._retiring_workers.pop(account_id, None)
+            handles = ([handle] if handle is not None else []) + [item for item in retiring if item is not handle]
+            if not handles:
                 return {
                     "desired": config.enabled,
                     "state": "disabled"
@@ -303,6 +320,34 @@ class WorkerBackendManager:
                     "recording_id": None,
                     "error": None,
                 }
+        # 先向所有仍存活的实例交付意愿，再共用一次有界的确认预算。
+        for handle in handles:
+            if handle.process.is_alive():
+                try:
+                    if update or handle.replay_sent_version < config.config_version:
+                        self._queue_replay_config(handle, config)
+                except (OSError, EOFError, ValueError):
+                    pass
+        deadline = clock_monotonic() + 0.5
+        results = [self._replay_handle_status(handle, deadline) for handle in handles]
+        known = [result.get("effective_version") for result in results]
+        effective = (
+            min(cast(int, version) for version in known) if all(type(version) is int for version in known) else None
+        )
+        newest = max(results, key=lambda item: cast(int, item.get("config_version", -1)))
+        # 任一存活实例仍在录制时，不能被其他实例的 disabled 掩盖。
+        result = min(results, key=lambda item: _REPLAY_STATE_PRIORITY.get(str(item.get("state")), 1))
+        return self._replay_status_with_intent(
+            account_id,
+            result
+            | {
+                "desired": newest.get("desired", config.enabled),
+                "config_version": newest.get("config_version", config.config_version),
+                "effective_version": effective,
+            },
+        )
+
+    def _replay_handle_status(self, handle: _WorkerBackendHandle, deadline: float) -> dict[str, object]:
         fallback = {
             "state": "error",
             "effective_version": None,
@@ -310,28 +355,19 @@ class WorkerBackendManager:
             "error": "录制控制状态待确认；交易连接未改变",
         }
         if not self._is_handle_healthy(handle):
-            return self._replay_status_with_intent(account_id, fallback)
+            return fallback
         locked = False
         try:
-            # 配置先独立排队，旧状态回复或查询锁超时不能丢掉已保存意愿。
-            if update:
-                self._queue_replay_config(handle, config)
-            locked = handle.replay_lock.acquire(timeout=0.5)
+            locked = handle.replay_lock.acquire(timeout=max(0.0, deadline - clock_monotonic()))
             if not locked:
-                return self._replay_status_with_intent(
-                    account_id, fallback | {"state": "starting", "error": "录制控制正在处理，请稍后查询"}
-                )
+                return fallback | {"state": "starting", "error": "录制控制正在处理，请稍后查询"}
             if handle.replay_pending is not None:
-                self._receive_replay_status(handle)
-            with self._lock:
-                config = self._replay_configs[account_id]
-            self._queue_replay_config(handle, config)
+                self._receive_replay_status(handle, deadline=deadline)
             request = WorkerReplayControl(uuid4().hex)
             self._queue_control_message(handle, request)
-            result = self._receive_replay_status(handle)
-            return self._replay_status_with_intent(account_id, result)
+            return self._receive_replay_status(handle, deadline=deadline)
         except (OSError, EOFError, TimeoutError, ValueError):
-            return self._replay_status_with_intent(account_id, fallback)
+            return fallback
         finally:
             if locked:
                 handle.replay_lock.release()
@@ -429,9 +465,10 @@ class WorkerBackendManager:
         return status | {"desired": config.enabled, "config_version": config.config_version}
 
     @staticmethod
-    def _receive_replay_status(handle: _WorkerBackendHandle) -> dict[str, object]:
+    def _receive_replay_status(handle: _WorkerBackendHandle, *, deadline: float | None = None) -> dict[str, object]:
         expected = handle.replay_pending
-        deadline = clock_monotonic() + 0.5
+        if deadline is None:
+            deadline = clock_monotonic() + 0.5
         while expected is not None and handle.control_connection.poll(max(0.0, deadline - clock_monotonic())):
             response = handle.control_connection.recv()
             if not isinstance(response, WorkerReplayStatus):
@@ -601,13 +638,41 @@ class WorkerBackendManager:
             handle.retired = True
             if self._workers.get(account_id) is handle:
                 self._workers.pop(account_id, None)
-        self._terminate_process(handle)
+            self._track_worker_retirement_locked(account_id, handle)
+        try:
+            self._terminate_process(handle)
+        finally:
+            self._finish_worker_retirement(account_id, handle)
 
     def _drop_account_blocking(self, account_id: int) -> None:
         with self._lock:
             handle = self._workers.pop(account_id, None)
+            if handle is not None:
+                self._track_worker_retirement_locked(account_id, handle)
         if handle is not None:
-            self._dispose_handle(handle)
+            try:
+                self._dispose_handle(handle)
+            finally:
+                self._finish_worker_retirement(account_id, handle)
+
+    def _finish_worker_retirement(self, account_id: int, handle: _WorkerBackendHandle) -> None:
+        """关闭结束后才解除录制控制跟踪，不把移出业务注册表当作已停录。"""
+        with self._lock:
+            self._finish_worker_retirement_locked(account_id, handle)
+
+    def _track_worker_retirement_locked(self, account_id: int, handle: _WorkerBackendHandle) -> None:
+        """持 manager 锁登记仍可能写入录制的旧实例。"""
+        if all(item is not handle for item in self._retiring_workers.get(account_id, ())):
+            self._retiring_workers.setdefault(account_id, []).append(handle)
+
+    def _finish_worker_retirement_locked(self, account_id: int, handle: _WorkerBackendHandle) -> None:
+        if handle.process.is_alive():
+            return
+        remaining = [item for item in self._retiring_workers.get(account_id, ()) if item is not handle]
+        if remaining:
+            self._retiring_workers[account_id] = remaining
+        else:
+            self._retiring_workers.pop(account_id, None)
 
     @staticmethod
     def _is_handle_healthy(handle: _WorkerBackendHandle) -> bool:
@@ -620,7 +685,11 @@ class WorkerBackendManager:
                 return handle
 
             if handle is not None:
-                self._dispose_handle(handle)
+                self._track_worker_retirement_locked(account_id, handle)
+                try:
+                    self._dispose_handle(handle)
+                finally:
+                    self._finish_worker_retirement_locked(account_id, handle)
 
             handle = self._spawn_worker(account_id)
             self._workers[account_id] = handle
@@ -1193,9 +1262,18 @@ class WorkerBackendManager:
         with self._lock:
             workers = list(self._workers.items())
             self._workers.clear()
-        for _account_id, handle in workers:
-            # 服务关停时不能等待仍在后台恢复的请求锁；其线程会随 worker 退出而解除等待。
-            self._dispose_handle(handle, lock_timeout=self._shutdown_recv_timeout)
+            for account_id, retiring in self._retiring_workers.items():
+                workers.extend(
+                    (account_id, handle) for handle in retiring if all(item is not handle for _, item in workers)
+                )
+            for account_id, handle in workers:
+                self._track_worker_retirement_locked(account_id, handle)
+        for account_id, handle in workers:
+            try:
+                # 服务关停时不能等待仍在后台恢复的请求锁；其线程会随 worker 退出而解除等待。
+                self._dispose_handle(handle, lock_timeout=self._shutdown_recv_timeout)
+            finally:
+                self._finish_worker_retirement(account_id, handle)
 
     def close(self) -> None:
         """关闭所有多进程 worker，兼容 atexit 钩子。."""

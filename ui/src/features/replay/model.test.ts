@@ -702,4 +702,90 @@ describe('回放按本地已观察前缀恢复', () => {
     const view = projectReplay(windowOf([message(1, '/trade', value)]), { time_us: 100 })
     expect(view.ownTrades[0]).toMatchObject({ execution_id: null, origin: null })
   })
+
+  test('空委托范围的查询水位仍约束后到的账户集合', () => {
+    const messages = [message(1, '/execution', { execution_id: 'E', phase: 'start', symbols: ['X'] }),
+      message(2, '/order_set', { scope: { kind: 'symbols', symbols: ['X'] }, synchronized: true, scope_complete: true,
+        sync_generation: 1, query_basis: { recording_id: 'rec-A', start_seq: 1, request_revision: 2 }, orders: [] }),
+      message(3, '/order_set', { scope: { kind: 'account', symbols: [] }, synchronized: true, scope_complete: true,
+        sync_generation: 1, query_basis: { recording_id: 'rec-A', start_seq: 1, request_revision: 1 }, orders: [] }),
+      message(4, '/order', order('Y1', { symbol: 'Y', price: 100,
+        query_basis: { recording_id: 'rec-A', start_seq: 1, request_revision: 3 } }))]
+    expect(projectReplay(windowOf(messages), { time_us: 400 }).orders[key('Y', 'Y1')]).toMatchObject({ confirmed: true, price: 100 })
+  })
+
+  test.each([
+    { sync_generation: { X: 1 } },
+    { connections: { X: { sync_generation: null } } },
+    { position_scopes: { X: { scope_complete: true } } },
+    { position_basis: { '["X","LONG"]': { status: 'unverified' } } },
+  ])('账户断线覆盖已有但无可见行的范围 %j', state => {
+    const messages = [message(2, '/connection', { scope: { kind: 'account', symbols: [] }, connected: false, sync_generation: 2 }),
+      message(3, '/order', order('O', { symbol: 'X', sync_generation: 1, confirmed_book: false })),
+      message(4, '/order', order('O', { symbol: 'X', sync_generation: 2 }))]
+    const window = windowOf(messages, { state_through_seq: 1, time_us: 100, ...state })
+    expect(projectReplay(window, { time_us: 300 }).orders[key('X', 'O')]).toBeUndefined()
+    expect(projectReplay(window, { time_us: 400 }).orders[key('X', 'O')].confirmed).toBe(true)
+  })
+
+  test.each(['command', 'trade'])('纯成交归属补充不阻止在途空集合确认缺席 %s', source => {
+    const observations = [message(1, '/execution', { execution_id: 'E', phase: 'start', symbols: ['A'] }),
+      message(2, '/order', order('O')),
+      message(3, '/trade', fill('T', 1, { execution_id: null, origin: 'unknown', order_id: 'O' }))]
+    const metadata = source === 'command'
+      ? message(4, '/command', { command_id: 'C', operation: 'place_order', phase: 'result', execution_id: 'E', symbol: 'A', order_id: 'O' })
+      : message(4, '/trade', fill('T', 1, { execution_id: 'E', origin: 'execution', order_id: 'O' }))
+    const complete = message(5, '/order_set', { scope: ['A'], scope_complete: true, synchronized: true, sync_generation: 1,
+      query_basis: { recording_id: 'rec-A', start_seq: 3, request_revision: 1 }, orders: [] })
+    const view = projectReplay(windowOf([...observations, metadata, complete]), { time_us: 500 })
+    expect(view.orders[key('A', 'O')]).toMatchObject({ status: 'unknown', confirmed: false })
+    if (source === 'command') expect(view.orders[key('A', 'O')]).toMatchObject({ execution_id: 'E', origin: 'execution' })
+    expect(view.ownTrades[0].execution_id).toBe('E')
+    expect(view.executionTotals.E.A).toBe(1)
+  })
+
+  test.each(['new', 'identity', 'quantity', 'price'])('真实成交或身份变化仍保护查询期间的订单 %s', change => {
+    const first = fill('T', 1, { quantity: change === 'quantity' ? null : 1,
+      order_id: change === 'identity' ? null : 'O', price: change === 'price' ? null : 99 })
+    const observations = [message(1, '/order', order('O')), message(2, '/trade', first),
+      message(3, '/trade', fill(change === 'new' ? 'U' : 'T', 1, { order_id: 'O' })),
+      message(4, '/order_set', { scope: ['A'], scope_complete: true, synchronized: true, sync_generation: 1,
+        query_basis: { recording_id: 'rec-A', start_seq: 2, request_revision: 1 }, orders: [] })]
+    expect(projectReplay(windowOf(observations), { time_us: 400 }).orders[key('A', 'O')].confirmed).toBe(true)
+  })
+
+  test.each(['account', 'none', 'symbol'])('筛选后的集合保留原生已接纳的范围语义 %s', accepted => {
+    const complete = message(1, '/order_set', { scope: { kind: accepted === 'account' ? 'account' : 'symbols',
+      symbols: accepted === 'symbol' ? ['B'] : [] }, synchronized: true, scope_complete: true, sync_generation: 1,
+      query_basis: { recording_id: 'rec-A', start_seq: 0, request_revision: 1 },
+      orders: accepted === 'symbol' ? [order('OB', { symbol: 'B', price: 101 })] : [] })
+    const stale = message(2, '/order', order('OB', { symbol: 'B', price: 100,
+      query_basis: { recording_id: 'rec-A', start_seq: 0, request_revision: 2 } }))
+    const value = projectReplay(windowOf([complete, stale]), { time_us: 200 }).orders[key('B', 'OB')]
+    if (accepted === 'account') expect(value).toBeUndefined()
+    else expect(value).toMatchObject({ confirmed: true, price: accepted === 'symbol' ? 101 : 100 })
+  })
+
+  test.each(['symbols', 'account'])('完整账户新水位阻止旧完整集合复活此前未知的B %s', kind => {
+    const account = message(2, '/order_set', { scope: { kind: 'account', symbols: [] }, synchronized: true,
+      scope_complete: true, sync_generation: 1, query_basis: { start_seq: 1, request_revision: 2 }, orders: [] })
+    const response = (generation: number, revision: number) => message(3, '/order_set', { scope: { kind, symbols: kind === 'symbols' ? ['B'] : [] },
+      synchronized: true, scope_complete: true, sync_generation: generation,
+      query_basis: { start_seq: 1, request_revision: revision }, orders: [order('OB', { symbol: 'B', sync_generation: generation })] })
+    const before = [message(1, '/execution', { execution_id: 'E', phase: 'start' }), account]
+    expect(projectReplay(windowOf([...before, response(1, 1)]), { time_us: 300 }).orders[key('B', 'OB')]).toBeUndefined()
+    for (const [generation, revision] of [[1, 3], [2, 1]]) {
+      expect(projectReplay(windowOf([...before, response(generation, revision)]), { time_us: 300 }).orders[key('B', 'OB')].confirmed).toBe(true)
+    }
+  })
+
+  test.each(['partial', 'unproven'])('账户非完整或无证明的集合不能形成完整集合屏障 %s', kind => {
+    const account = message(2, '/order_set', { scope: { kind: 'account', symbols: [] }, synchronized: true,
+      scope_complete: kind !== 'partial', sync_generation: 1,
+      query_basis: kind === 'unproven' ? null : { start_seq: 1, request_revision: 2 }, orders: [] })
+    const narrow = message(3, '/order_set', { scope: ['B'], synchronized: true, scope_complete: true, sync_generation: 1,
+      query_basis: { start_seq: 1, request_revision: 1 }, orders: [order('OB', { symbol: 'B' })] })
+    expect(projectReplay(windowOf([message(1, '/execution', { execution_id: 'E', phase: 'start' }), account, narrow]),
+      { time_us: 300 }).orders[key('B', 'OB')].confirmed).toBe(true)
+  })
 })

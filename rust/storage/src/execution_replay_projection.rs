@@ -335,7 +335,6 @@ impl Projection {
             if matches_order(&record["data"], symbol, order_id)
                 && supplement_owner(&mut record["data"], execution_id, seq, time)
             {
-                record["last_fact_seq"] = json!(seq);
                 changed.push((key.clone(), record.clone()));
             }
         }
@@ -691,6 +690,14 @@ impl Projection {
         }
     }
 
+    pub(crate) fn observed_set_scope(&self, seq: u64) -> BTreeSet<String> {
+        self.last_set_observation
+            .iter()
+            .filter(|(_, (_, _, observed))| *observed == seq)
+            .map(|(scope, _)| scope.clone())
+            .collect()
+    }
+
     fn current_set_scope(
         &self,
         symbols: &BTreeSet<String>,
@@ -836,6 +843,17 @@ impl Projection {
                 .is_some_and(|symbol| !symbol.is_empty())
                 && identity(row.get("order_id")).is_some()
         });
+        if identified
+            && basis.is_some_and(|(generation, _, revision)| {
+                self.last_set_observation
+                    .get("")
+                    .is_some_and(|(seen, applied, _)| {
+                        *seen > generation || (*seen == generation && *applied >= revision)
+                    })
+            })
+        {
+            return Ok(());
+        }
         let global = account_scope(data)
             && identified
             && basis.is_some_and(|(generation, _, revision)| {
@@ -1367,9 +1385,7 @@ fn trade_fact_changed(previous: &Map<String, Value>, current: &Map<String, Value
         "direction",
         "position_side",
         "offset",
-        "execution_id",
         "order_id",
-        "origin",
     ]
     .iter()
     .any(|field| {
@@ -1702,6 +1718,105 @@ mod tests {
     fn complete_set(scope: Value, rows: Vec<Value>, start: u64, revision: u64) -> Value {
         json!({"scope":scope,"scope_complete":true,"synchronized":true,"sync_generation":1,
             "query_basis":{"recording_id":"r","start_seq":start,"request_revision":revision},"orders":rows})
+    }
+
+    #[test]
+    fn observed_set_scope_reports_only_scopes_accepted_by_the_current_event() {
+        let mut state = Projection::new("r");
+        state
+            .apply(&message(1, "/order", order("O", 10.0)))
+            .unwrap();
+        let mut other = order("OB", 10.0);
+        other["symbol"] = json!("B");
+        state.apply(&message(2, "/order", other)).unwrap();
+        state
+            .apply(&message(
+                3,
+                "/order_set",
+                complete_set(json!(["A"]), vec![], 2, 2),
+            ))
+            .unwrap();
+        assert_eq!(state.observed_set_scope(3), BTreeSet::from(["A".into()]));
+        state
+            .apply(&message(
+                4,
+                "/order_set",
+                complete_set(json!({"kind":"account"}), vec![], 2, 1),
+            ))
+            .unwrap();
+        assert_eq!(state.observed_set_scope(4), BTreeSet::from(["B".into()]));
+        state
+            .apply(&message(
+                5,
+                "/order_set",
+                complete_set(json!({"kind":"account"}), vec![], 4, 3),
+            ))
+            .unwrap();
+        let all = BTreeSet::from(["".into(), "A".into(), "B".into()]);
+        assert_eq!(state.observed_set_scope(5), all);
+        let mut restored = Projection::restore(state.snapshot().unwrap()).unwrap();
+        assert_eq!(restored.observed_set_scope(5), all);
+        restored
+            .apply(&message(
+                6,
+                "/order_set",
+                complete_set(json!({"kind":"account"}), vec![], 4, 3),
+            ))
+            .unwrap();
+        assert!(restored.observed_set_scope(6).is_empty());
+    }
+
+    #[test]
+    fn complete_sets_respect_global_revision_and_generation_before_creating_new_scopes() {
+        for scope in [json!({"kind":"account"}), json!(["A"])] {
+            for (generation, revision, accepted) in [
+                (1, 4, false),
+                (2, 1, false),
+                (2, 2, false),
+                (2, 3, true),
+                (3, 1, true),
+            ] {
+                let mut state = Projection::new("r");
+                let mut account = complete_set(json!({"kind":"account"}), vec![], 0, 2);
+                account["sync_generation"] = json!(2);
+                state.apply(&message(1, "/order_set", account)).unwrap();
+                let before = state.snapshot().unwrap();
+                let mut candidate =
+                    complete_set(scope.clone(), vec![order("O", 10.0)], 1, revision);
+                candidate["sync_generation"] = json!(generation);
+                state.apply(&message(2, "/order_set", candidate)).unwrap();
+                let value = state.snapshot().unwrap();
+                if accepted {
+                    assert_eq!(value["orders"][compound("A", "O")]["confirmed_book"], true);
+                    assert_eq!(value["sync_generation"]["A"], generation);
+                    assert!(state.observed_set_scope(2).contains("A"));
+                } else {
+                    for field in [
+                        "orders",
+                        "sync_generation",
+                        "last_set_revision",
+                        "last_set_observation",
+                    ] {
+                        assert_eq!(value[field], before[field]);
+                    }
+                    assert!(state.observed_set_scope(2).is_empty());
+                    let mut fresh = complete_set(json!(["A"]), vec![order("O", 10.0)], 1, 3);
+                    fresh["sync_generation"] = json!(2);
+                    state.apply(&message(3, "/order_set", fresh)).unwrap();
+                    assert_eq!(
+                        state.snapshot().unwrap()["orders"][compound("A", "O")]["confirmed_book"],
+                        true
+                    );
+                }
+                assert_eq!(
+                    Projection::restore(state.snapshot().unwrap())
+                        .unwrap()
+                        .snapshot()
+                        .unwrap(),
+                    state.snapshot().unwrap()
+                );
+            }
+        }
     }
 
     #[test]
@@ -2566,10 +2681,96 @@ mod tests {
             value["trade_accounting"]["own_records"]["T"]["last_observed_seq"],
             2
         );
+        assert_eq!(
+            value["trade_accounting"]["own_records"]["T"]["last_fact_seq"],
+            2
+        );
         assert!(value["orders"].as_object().unwrap().is_empty());
         assert!(value["commands"].get("unknown-command:5").is_some());
         let restored = Projection::restore(before).unwrap().snapshot().unwrap();
         assert!(restored["trade_accounting"]["own_records"]["T"]["data"]["execution_id"].is_null());
+    }
+
+    #[test]
+    fn trade_ownership_enrichment_does_not_override_complete_order_absence() {
+        for (field, enrichment) in [("execution_id", json!("E")), ("origin", json!("external"))] {
+            let mut state = Projection::new("r");
+            state
+                .apply(&message(1, "/order", order("O", 10.0)))
+                .unwrap();
+            let mut original = trade("T", 1.0);
+            original["execution_id"] = Value::Null;
+            original["origin"] = json!("unknown");
+            state
+                .apply(&message(2, "/trade", original.clone()))
+                .unwrap();
+            original[field] = enrichment.clone();
+            state.apply(&message(3, "/trade", original)).unwrap();
+            state
+                .apply(&message(
+                    4,
+                    "/order_set",
+                    complete_set(json!(["A"]), vec![], 2, 1),
+                ))
+                .unwrap();
+            let value = state.snapshot().unwrap();
+            assert_eq!(value["orders"][compound("A", "O")]["confirmed_book"], false);
+            assert_eq!(
+                value["orders"][compound("A", "O")]["confirmation_state"],
+                "absent"
+            );
+            assert_eq!(
+                value["trade_accounting"]["own_records"]["T"]["last_fact_seq"],
+                2
+            );
+            assert_eq!(
+                value["trade_accounting"]["own_records"]["T"]["data"][field],
+                enrichment
+            );
+        }
+    }
+
+    #[test]
+    fn physical_trade_enrichment_and_new_fills_still_protect_inflight_orders() {
+        for field in ["price", "quantity", "order_id", "new_trade"] {
+            let mut state = Projection::new("r");
+            state
+                .apply(&message(1, "/order", order("O", 10.0)))
+                .unwrap();
+            let mut original = trade("T", 1.0);
+            if field != "new_trade" {
+                original[field] = Value::Null;
+            }
+            state.apply(&message(2, "/trade", original)).unwrap();
+            state
+                .apply(&message(
+                    3,
+                    "/trade",
+                    trade(if field == "new_trade" { "T2" } else { "T" }, 1.0),
+                ))
+                .unwrap();
+            state
+                .apply(&message(
+                    4,
+                    "/order_set",
+                    complete_set(json!(["A"]), vec![], 2, 1),
+                ))
+                .unwrap();
+            let value = state.snapshot().unwrap();
+            assert_eq!(value["orders"][compound("A", "O")]["confirmed_book"], true);
+            assert_eq!(value["order_change_seq"][compound("A", "O")], 3);
+            assert_eq!(
+                value["orders"][compound("A", "O")]["known_trade_quantity"],
+                if field == "new_trade" { 2.0 } else { 1.0 }
+            );
+            assert_eq!(
+                Projection::restore(value.clone())
+                    .unwrap()
+                    .snapshot()
+                    .unwrap(),
+                value
+            );
+        }
     }
 
     #[test]

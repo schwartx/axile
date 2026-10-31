@@ -105,6 +105,7 @@ def test_saved_off_wins_over_old_on_snapshot_for_every_new_worker(saved_account,
         assert not (path.parent / "replay").exists()
     finally:
         backend._workers.clear()
+        backend._retiring_workers.clear()
 
 
 def test_saved_on_also_supersedes_an_old_off_snapshot(saved_account):
