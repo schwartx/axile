@@ -54,12 +54,12 @@ function RecordedFields({ value, context, kind, executionId, position }: { value
   </div>
 }
 
-export function OrdersAndTrades({ projection, context, symbol, selected, onSelect, selectedTradeKey, onSelectTrade, executionId, tab, onTabChange, onSeek, coverage, gaps = [], children }: { selectedTradeKey: string | null; onSelectTrade: (key: string) => void; children?: ReactNode; onTabChange: (tab: ReplayDetailTab) => void; tab: ReplayDetailTab; onSeek: (time: number) => void; coverage: ReplayRange[]; gaps?: ReplayGap[]; projection: ReplayProjection; context: ReplayContext; symbol: string; selected: string | null; onSelect: (key: string) => void; executionId: string }) {
+export function OrdersAndTrades({ projection, context, symbol, selected, onSelect, selectedTradeKey, onSelectTrade, executionId, tab, onTabChange, onSeek, coverage, gaps = [], selectionPending = false, children }: { selectedTradeKey: string | null; onSelectTrade: (key: string) => void; children?: ReactNode; onTabChange: (tab: ReplayDetailTab) => void; tab: ReplayDetailTab; onSeek: (time: number) => void; coverage: ReplayRange[]; gaps?: ReplayGap[]; selectionPending?: boolean; projection: ReplayProjection; context: ReplayContext; symbol: string; selected: string | null; onSelect: (key: string) => void; executionId: string }) {
   const instrument = replayInstrument(context, symbol), decimals = instrument.quantity_decimals ?? 6
   const orders = Object.values(projection.orders).filter(order => order.symbol === symbol)
   const selectedOrder = orders.find(order => order.key === selected)
   const trades = projection.ownTrades.filter(trade => trade.symbol === symbol)
-  const selectedTrade = trades.find(trade => replayTradeKey(trade) === selectedTradeKey) ?? trades.at(-1)
+  const selectedTrade = selectedTradeKey == null ? trades.at(-1) : trades.find(trade => replayTradeKey(trade) === selectedTradeKey)
   const canSeekTrade = selectedTrade != null && coverage.some(range => selectedTrade.time_us >= range.start_us && selectedTrade.time_us < range.end_us)
   const commands = projection.commands.filter(command => !command.symbol || command.symbol === symbol).slice(-6)
   return <div className="replay-stage">
@@ -107,9 +107,9 @@ export function OrdersAndTrades({ projection, context, symbol, selected, onSelec
       {tab === 'trades' ? selectedTrade ? <>
         <RecordedFields value={selectedTrade} context={context} kind="trade" executionId={executionId} />
         <button type="button" className="replay-trade-seek text-accent disabled:text-ink-2" disabled={!canSeekTrade} onClick={() => onSeek(selectedTrade.time_us)}>{canSeekTrade ? '定位此成交' : '成交时刻未被覆盖'}</button>
-      </> : <p className="replay-inspector-empty">游标前暂无自有成交。</p>
+      </> : <p className="replay-inspector-empty">{selectedTradeKey ? '选中成交在游标处尚未观察到。' : '游标前暂无自有成交。'}</p>
       : selectedOrder ? <RecordedFields value={selectedOrder} context={context} kind="order" executionId={executionId} position={replayOrderPositionContext(selectedOrder, projection, gaps)} />
-      : <div className="replay-inspector-empty"><h2>委托详情</h2><p>观察到委托后，在这里查看当时的状态、价格和成交数量。</p></div>}
+      : selectionPending ? <p className="replay-inspector-empty">选中委托在游标处尚未观察到。</p> : <div className="replay-inspector-empty"><h2>委托详情</h2><p>观察到委托后，在这里查看当时的状态、价格和成交数量。</p></div>}
     </aside>
   </div>
 }

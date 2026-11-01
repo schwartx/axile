@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { sliderValueAt } from '@/components/ui/sliderValue'
 
 /** 自绘单值滑条：44px 操作区、指针捕获、刻度和完整键盘语义。 */
-export function ValueSlider({ value, min, max, step, onChange, onChangeEnd, formatValue, label, unit = '', disabled = false, describedBy, invalid = false }: {
+export function ValueSlider({ value, min, max, step, onChange, onChangeEnd, formatValue, label, unit = '', disabled = false, describedBy, invalid = false, variant = 'default' }: {
   value: number
   min: number
   max: number
@@ -15,6 +15,7 @@ export function ValueSlider({ value, min, max, step, onChange, onChangeEnd, form
   disabled?: boolean
   describedBy?: string
   invalid?: boolean
+  variant?: 'default' | 'axis'
 }) {
   const track = useRef<HTMLDivElement>(null)
   const pointer = useRef<number | null>(null)
@@ -84,19 +85,19 @@ export function ValueSlider({ value, min, max, step, onChange, onChangeEnd, form
       onKeyUp={(event) => {
         if (['Home', 'End', 'ArrowLeft', 'ArrowDown', 'ArrowRight', 'ArrowUp', 'PageUp', 'PageDown'].includes(event.key)) commit()
       }}>
-      <div ref={track} className="relative h-1.5 w-full rounded-full bg-ink-3/15">
-        <div className={`absolute inset-y-0 left-0 rounded-full ${invalid ? 'bg-warn' : 'bg-accent'}`} style={{ width: `${fraction * 100}%` }} />
-        {marks.map((mark) => <span key={mark} aria-hidden="true"
+      <div ref={track} className={`relative h-1.5 w-full rounded-full ${variant === 'axis' ? 'bg-transparent' : 'bg-ink-3/15'}`}>
+        {variant !== 'axis' && <div className={`absolute inset-y-0 left-0 rounded-full ${invalid ? 'bg-warn' : 'bg-accent'}`} style={{ width: `${fraction * 100}%` }} />}
+        {variant !== 'axis' && marks.map((mark) => <span key={mark} aria-hidden="true"
           className={`absolute top-1/2 h-1 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full ${mark <= bounded ? 'bg-surface/70' : 'bg-ink-3/40'}`}
           style={{ left: `${(mark - min) / (max - min) * 100}%` }} />)}
-        <span aria-hidden="true" style={{ left: `${fraction * 100}%` }}
+        <span data-slider-thumb aria-hidden="true" style={{ left: `${fraction * 100}%` }}
           className={`absolute top-1/2 flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center gap-0.5 rounded-full border-2 bg-surface shadow-sm transition-shadow duration-150 motion-reduce:transition-none ${invalid ? 'border-warn' : 'border-accent'} ${dragging ? 'ring-4 ring-accent/15' : disabled ? '' : 'group-hover:ring-4 group-hover:ring-accent/10'}`}>
-          <span className="h-2 w-px rounded-full bg-ink-3/60" /><span className="h-2 w-px rounded-full bg-ink-3/60" />
+          <span className="h-2 w-px rounded-full bg-ink-3/60" />{variant !== 'axis' && <span className="h-2 w-px rounded-full bg-ink-3/60" />}
         </span>
       </div>
     </div>
-    <div aria-hidden="true" className="num flex justify-between px-3 text-[11px] text-ink-3">
+    {variant !== 'axis' && <div aria-hidden="true" className="num flex justify-between px-3 text-[11px] text-ink-3">
       <span>{format(min)}</span><span>{marks.length === 3 ? format(marks[1]) : ''}</span><span>{format(max)}</span>
-    </div>
+    </div>}
   </div>
 }

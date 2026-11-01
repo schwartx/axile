@@ -12,9 +12,9 @@ test('成交默认详情与列表选中项一致，覆盖外时间明确禁用�
       topic: '/trade', data: { symbol: 'X', trade_key: `T${index}`, order_id: `O${index}`, identity_quality: 'stable',
         quantity: index, price: 99, direction: 'BUY', execution_id: 'E' } })) }
   const projection = projectReplay(window, { time_us: 200 })
-  const render = (covered: boolean) => renderToStaticMarkup(createElement(OrdersAndTrades, {
+  const render = (covered: boolean, selectedTradeKey: string | null = null) => renderToStaticMarkup(createElement(OrdersAndTrades, {
     projection, context: window.context, symbol: 'X', selected: null, onSelect: () => {}, executionId: 'E',
-    selectedTradeKey: null, onSelectTrade: () => {}, tab: 'trades', onTabChange: () => {}, onSeek: () => {}, coverage: covered ? window.coverage : [],
+    selectedTradeKey, onSelectTrade: () => {}, tab: 'trades', onTabChange: () => {}, onSeek: () => {}, coverage: covered ? window.coverage : [],
   }))
   const html = render(true)
   const pressed = html.match(/<button(?=[^>]*aria-pressed="true")[^>]*>[\s\S]*?<\/button>/g) ?? []
@@ -23,4 +23,7 @@ test('成交默认详情与列表选中项一致，覆盖外时间明确禁用�
   expect(html).toContain('成交详情 · O2')
   expect(html).toContain('定位此成交')
   expect(render(false)).toContain('disabled="">成交时刻未被覆盖')
+  const future = render(true, '3:T3')
+  expect(future).toContain('选中成交在游标处尚未观察到')
+  expect(future).not.toContain('成交详情 · O2')
 })

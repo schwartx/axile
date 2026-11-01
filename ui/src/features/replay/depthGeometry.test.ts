@@ -25,7 +25,7 @@ describe('动态盘口及委托位置', () => {
     if (bids + asks > 100) expect(buckets.some(bucket => bucket.minPrice !== bucket.maxPrice)).toBe(true)
   })
   it('1224桌面高度仍直接列出全部十档，数量不大时不提前聚合', () => {
-    const depth = quote(5), small = replayChartLayout(992, 257), view = replayObservedPriceView([depth], [], [], 1)!
+    const depth = quote(5), small = replayChartLayout(992, 281), view = replayObservedPriceView([depth], [], [], 1)!
     const buckets = replayDepthBuckets(recordedDepth(depth), [], view, small)
     expect(buckets).toHaveLength(10)
     expect(buckets.every(bucket => bucket.levels.length === 1)).toBe(true)

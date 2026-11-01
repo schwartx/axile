@@ -18,10 +18,10 @@ test('统一页头及多品种选择接入现有组件，不渲染原生下拉�
   expect(result.nativeControl).toBe(false)
 })
 
-test('统一滑块拖动只预览，提交采用最终值并保持暂停', () => {
+test('主图时间轴定位实时更新游标，采用最终位置并保持暂停', () => {
   const result = pageCase('draft-commit')
   expect(result.preview).toContain('08:00:05.000000')
-  expect(result.chartTimeBeforeCommit).toBe(0)
+  expect(result.chartTimeBeforeCommit).toBe(5_000_000)
   expect(result.cursor).toContain('08:00:07.000000')
   expect(result.playing).toBe(false)
 })
@@ -85,7 +85,7 @@ test.each(['drag', 'duration'])('跨窗读取中主动%s，响应到达后仍保
   const result = pageCase(`pause-${action}`)
   expect(result.pausedBeforeLoad).toBe(true)
   expect(result.playingAfterLoad).toBe(false)
-  if (action === 'drag') expect(result.seekLabel).toContain('准备定位 1970-01-01 08:00:25.000000')
+  if (action === 'drag') expect(result.seekLabel).toContain('08:00:25.000000')
 })
 
 test('首窗读取失败后仍能定位后窗，播放及步进不执行失效状态', () => {
@@ -124,4 +124,21 @@ test('点选图中成交暂停播放并关联委托及详情，但不改变游�
   expect(result.selectedOrder).toBe(JSON.stringify(['X', 'M']))
   expect(result.selectedTrade).toBeNull()
   expect(result.tab).toBe('orders')
+})
+
+test('默认读取整段，后续图层与游标状态独立，未来选择和倒退不泄漏终态', () => {
+  const result = pageCase('overview')
+  expect(result.initial).toMatchObject({ range: { start_us: 0, end_us: 40_000_000 }, sceneTrades: 1, currentTrades: 0, sceneStatus: 'filled', currentStatus: 'working' })
+  expect(result.earlyBook).toBe(1)
+  expect(result.lateBook).toBe(9)
+  expect(result.restoredBook).toBe(1)
+  expect(result.pending).toBe(true)
+  expect(result.future).toEqual({ selected: '5:future', currentTrades: 0 })
+})
+
+test('后移短窗再切回整段，恢复当前覆盖时段起点且不跨越缺口', () => {
+  expect(pageCase('whole-after-window')).toEqual([
+    { later: { start_us: 2_000_000, end_us: 4_000_000 }, whole: { start_us: 0, end_us: 40_000_000 } },
+    { later: { start_us: 62_000_000, end_us: 64_000_000 }, whole: { start_us: 60_000_000, end_us: 100_000_000 } },
+  ])
 })

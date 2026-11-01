@@ -94,6 +94,10 @@ export function replayRange(coverage: ReplayRange[], start?: number, durationUs 
   return { start_us: from, end_us: Math.min(range.end_us, from + durationUs) }
 }
 
+export function replayWindowDuration(value: string): number {
+  return value === 'all' ? Number.MAX_SAFE_INTEGER : Number(value) * 1_000_000
+}
+
 export function replayGapAt(gaps: ReplayGap[], timeUs: number, symbol?: string): ReplayGap | undefined {
   return gaps.find(gap => timeUs >= gap.start_us && timeUs < gap.end_us && (!gap.symbol || !symbol || gap.symbol === symbol))
 }

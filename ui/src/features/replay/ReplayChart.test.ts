@@ -40,3 +40,17 @@ it('切换当前执行只改变归属展示，不改账户订单或数量', () =
   expect(html).toContain('其他执行 2 · 1单')
   expect(JSON.stringify(projection)).toBe(before)
 })
+
+it('默认整段图含后续成交，盘口可读状态仍只取游标前缀，定位轴位于主图内', () => {
+  const { window } = chart()
+  window.messages = [{ schema_version: 1, recording_id: 'r', capture_seq: 6, time_us: 150, topic: '/trade', data: { symbol: 'X', order_id: 'F', trade_key: 'F', identity_quality: 'stable', price: 100, quantity: 1 } }]
+  const projection = projectReplay(window, { time_us: 100 }), scene = projectReplay(window, { time_us: 199 })
+  const before = JSON.stringify(projection)
+  const html = renderToStaticMarkup(createElement(ReplayChart, { window, projection, scene, symbol: 'X', executionId: 'E', range: window.coverage[0], selectedOrder: null, selectedTrade: null, onSelectTrade: () => {}, onInspect: () => {}, onSelectOrder: () => {}, onSeek: () => {} }))
+  expect(html).toContain('data-review-mode="review"')
+  expect(html).toContain('已录自有成交 1 笔')
+  expect(html).toContain('class="replay-chart-axis"')
+  expect(html).toContain('aria-label="录制定位"')
+  expect(projection.ownTrades).toHaveLength(0)
+  expect(JSON.stringify(projection)).toBe(before)
+})

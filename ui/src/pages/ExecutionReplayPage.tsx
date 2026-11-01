@@ -17,7 +17,7 @@ import { OrdersAndTrades, type ReplayDetailTab } from '@/features/replay/ReplayD
 import { OverflowText } from '@/components/ui/OverflowText'
 import { InkRewrite } from '@/components/ui/InkRewrite'
 import '@/features/replay/replay.css'
-import { rememberReplaySymbols, replayInstrument, replayNumber, replayRange, replayStream, replaySymbols, replayTime, replayWindowRequest } from '@/features/replay/presentation'
+import { rememberReplaySymbols, replayInstrument, replayNumber, replayRange, replayStream, replaySymbols, replayTime, replayWindowRequest, replayWindowDuration } from '@/features/replay/presentation'
 import { useReplayWindow } from '@/features/replay/useReplayWindow'
 import type { ReplayCursor, ReplayManifest, ReplayRange } from '@/features/replay/types'
 
@@ -37,7 +37,7 @@ export function ExecutionReplayPage() {
   const [knownSymbols, setKnownSymbols] = useState<Record<string, string[]>>({})
   const [cursor, setCursor] = useState<ReplayCursor>({ time_us: 0 }), [playing, setPlaying] = useState(false), [speed, setSpeed] = useState('1')
   const [cursorWindow, setCursorWindow] = useState('')
-  const [selectedOrder, setSelectedOrder] = useState<string | null>(null), [windowDuration, setWindowDuration] = useState('20')
+  const [selectedOrder, setSelectedOrder] = useState<string | null>(null), [windowDuration, setWindowDuration] = useState('all')
   const [selectedTrade, setSelectedTrade] = useState<string | null>(null)
   const [detailTab, setDetailTab] = useState<ReplayDetailTab>('orders')
   const [seekDraft, setSeekDraft] = useState<number | null>(null)
@@ -53,7 +53,7 @@ export function ExecutionReplayPage() {
       if (value.account_id !== accountId || value.execution_id !== executionId) throw new Error('这次执行不属于当前账户')
       setManifest(value)
       const first = value.recordings[0]
-      if (first) { setRecordingId(first.recording_id); setSymbol(replaySymbols(first)[0] ?? ''); setRange(replayRange(first.coverage, undefined, Number(initialWindowDuration.current) * 1_000_000)) }
+      if (first) { setRecordingId(first.recording_id); setSymbol(replaySymbols(first)[0] ?? ''); setRange(replayRange(first.coverage, undefined, replayWindowDuration(initialWindowDuration.current))) }
     }).catch(cause => { if (!controller.signal.aborted) setManifestError(cause instanceof Error ? cause : new Error(String(cause))) }).finally(() => { if (!controller.signal.aborted) setManifestLoading(false) })
     return () => controller.abort()
   }, [accountId, executionId, revision])
@@ -77,6 +77,10 @@ export function ExecutionReplayPage() {
     try { return { value: windowData ? projectReplay(windowData, currentCursor, symbol) : null, error: null } }
     catch (cause) { return { value: null, error: cause instanceof Error ? cause : new Error(String(cause)) } }
   }, [windowData, currentCursor, symbol])
+  const reviewed = useMemo(() => {
+    try { return { value: windowData && range ? projectReplay(windowData, { time_us: range.end_us - 1 }, symbol) : null, error: null } }
+    catch (cause) { return { value: null, error: cause instanceof Error ? cause : new Error(String(cause)) } }
+  }, [windowData, range, symbol])
   const projection = projected.value
   const events = useMemo(() => windowData?.messages ?? [], [windowData])
   const eventIndex = appliedEventIndex(events, currentCursor)
@@ -111,7 +115,7 @@ export function ExecutionReplayPage() {
     if (!coverage) return
     if (windowData && !loaded.error && !projected.error && timeUs >= range.start_us && timeUs < range.end_us) { setCursor({ time_us: timeUs }); return }
     pendingSeek.current = { recording: recordingId, symbol, time_us: timeUs }
-    const duration = Number(windowDuration) * 1_000_000
+    const duration = replayWindowDuration(windowDuration)
     const start = !windowData || loaded.error || projected.error ? timeUs : coverage.start_us + Math.floor((timeUs - coverage.start_us) / duration) * duration
     setRange(replayRange(recording.coverage, start, duration))
   }
@@ -139,7 +143,7 @@ export function ExecutionReplayPage() {
         const coverage = recording?.coverage.find(item => range.start_us >= item.start_us && range.start_us < item.end_us)
         if (coverage && range.end_us < coverage.end_us) {
           continuePlayback.current = windowData.recording_id
-          setRange({ start_us: range.end_us, end_us: Math.min(coverage.end_us, range.end_us + Number(windowDuration) * 1_000_000) })
+          setRange({ start_us: range.end_us, end_us: Math.min(coverage.end_us, range.end_us + replayWindowDuration(windowDuration)) })
         }
       }
       else frame = requestAnimationFrame(advance)
@@ -153,13 +157,13 @@ export function ExecutionReplayPage() {
     setPlaying(false); setSeekDraft(null); pendingSeek.current = null; setRecordingId(value)
     const next = manifest?.recordings.find(item => item.recording_id === value)
     if (!next) return
-    setSymbol(replaySymbols(next, knownSymbols[value] ?? [])[0] ?? ''); setRange(replayRange(next.coverage, undefined, Number(windowDuration) * 1_000_000))
+    setSymbol(replaySymbols(next, knownSymbols[value] ?? [])[0] ?? ''); setRange(replayRange(next.coverage, undefined, replayWindowDuration(windowDuration)))
   }
   const moveWindow = (direction: -1 | 1) => {
     continuePlayback.current = null
     if (!recording || !range) return
     setPlaying(false)
-    const duration = Number(windowDuration) * 1_000_000
+    const duration = replayWindowDuration(windowDuration)
     const coverageIndex = recording.coverage.findIndex(item => range.start_us >= item.start_us && range.start_us < item.end_us)
     const containing = recording.coverage[coverageIndex]
     if (!containing) return
@@ -178,20 +182,30 @@ export function ExecutionReplayPage() {
   const canPrevWindow = Boolean(range && recording?.coverage.some(item => item.start_us < range.start_us))
   const canNextWindow = Boolean(range && recording?.coverage.some(item => item.end_us > range.end_us))
   const currentCoverage = recording?.coverage.find(item => range && range.start_us >= item.start_us && range.start_us < item.end_us)
-  const readReady = projection != null && windowData != null && !loaded.loading
+  const readReady = projection != null && reviewed.value != null && windowData != null && !loaded.loading
   const navigationTime = projection ? currentCursor.time_us : range?.start_us ?? 0
   const visibleOrders = Object.values(projection?.orders ?? {}).filter(order => order.symbol === symbol)
-  const activeOrder = visibleOrders.find(order => order.key === selectedOrder)?.key ?? visibleOrders.find(order => replayOwnership(order, executionId).kind === 'current')?.key ?? visibleOrders[0]?.key ?? null
+  const activeOrder = selectedOrder && reviewed.value?.orders[selectedOrder] ? selectedOrder : visibleOrders.find(order => order.key === selectedOrder)?.key ?? visibleOrders.find(order => replayOwnership(order, executionId).kind === 'current')?.key ?? visibleOrders[0]?.key ?? null
   const inspect = () => { continuePlayback.current = null; setPlaying(false) }
   const inspectOrder = (key: string) => { inspect(); setSelectedOrder(key); setSelectedTrade(null); setDetailTab('orders') }
   const inspectTrade = (key: string) => {
     inspect(); setSelectedTrade(key); setDetailTab('trades')
-    const trade = projection?.ownTrades.find(value => replayTradeKey(value) === key)
-    const order = visibleOrders.find(value => trade?.order_id != null && value.order_id === trade.order_id)
+    const trade = reviewed.value?.ownTrades.find(value => replayTradeKey(value) === key)
+    const order = Object.values(reviewed.value?.orders ?? {}).find(value => trade?.order_id != null && value.order_id === trade.order_id)
     if (order) setSelectedOrder(order.key)
   }
   const firstQuote = events.find(event => event.topic === `/quote/${symbol}` && event.data.book_valid === true)
 
+  const transport = range && <div className="replay-chart-transport" aria-label="回放播放控制">
+<div className="replay-play-controls">
+            <button type="button" className={buttonClass} onClick={() => step(-1)} disabled={!readReady || eventIndex < 0} aria-label="前一观察"><SkipBack size={15} aria-hidden /><span>上一步</span></button>
+            <button type="button" className={`${buttonClass} replay-play-button`} aria-label={playing ? '暂停回放' : '播放回放'} onClick={() => { continuePlayback.current = null; if (!playing && navigationTime >= range.end_us - 1) pauseAndSeek(range.start_us); setPlaying(value => !value) }} disabled={!readReady}>{playing ? <Pause size={15} aria-hidden /> : <Play size={15} aria-hidden />}<InkRewrite text={playing ? '暂停' : '播放'} tone="label" /></button>
+            <button type="button" className={buttonClass} onClick={() => step(1)} disabled={!readReady || eventIndex >= events.length - 1} aria-label="后一观察"><SkipForward size={15} aria-hidden /><span>下一步</span></button>
+            <label className="replay-speed-picker"><span>倍速</span><Select ariaLabel="播放速度" className={selectClass} value={speed} onChange={setSpeed} options={['0.5', '1', '2', '4'].map(value => ({ value, label: `${value}×` }))} /></label>
+          </div>
+          <time className="replay-cursor-time num text-xs text-ink-1">{replayTime(navigationTime)} <span className="text-ink-2">{playing ? '播放中' : '已暂停'}</span></time>
+
+  </div>
   return <section className="replay-workbench" aria-label="执行回放">
     <header className="replay-desk-header">
       <div className="flex min-w-0 flex-wrap items-center gap-3"><AccountPageTitle accountId={accountId} page="执行回放" name={item?.name} channel={item?.trade_channel ?? context?.channel} market={item?.market} flip={false} back={{ to: `/accounts/${accountId}/executions/${executionId}`, label: '返回执行详情' }} /></div>
@@ -200,14 +214,14 @@ export function ExecutionReplayPage() {
         <button type="button" onClick={() => setRevision(value => value + 1)} className={buttonClass} aria-label="重新读取已封口记录" disabled={manifestLoading || loaded.loading}><RefreshCw size={14} aria-hidden /></button>
       </div>
     </header>
-    <div className="replay-read-errors" hidden={!manifestError && !loaded.error && !projected.error}>
+    <div className="replay-read-errors" hidden={!manifestError && !loaded.error && !projected.error && !reviewed.error}>
       <ErrorNotice intent="read" title="回放目录读取失败" error={manifestError} onRetry={() => setRevision(value => value + 1)} />
-      <ErrorNotice intent="read" title="回放窗口读取失败" error={loaded.error ?? projected.error} onRetry={() => setRevision(value => value + 1)} />
+      <ErrorNotice intent="read" title="回放窗口读取失败" error={loaded.error ?? projected.error ?? reviewed.error} onRetry={() => setRevision(value => value + 1)} />
     </div>
     {manifestLoading && <p className="replay-empty" role="status">正在查找这次执行的录制…</p>}
     {manifest && !manifest.recordings.length && <div className="replay-empty"><h2 className="font-medium text-ink-1">{availabilityLabels[manifest.availability] ?? '暂无可回放记录'}</h2><p className="mt-2 max-w-xl text-sm text-ink-2">{manifest.reason ?? '这次执行没有已封口的录制。账户录制默认关闭，开启前的数据不会补录。'}</p></div>}
     {recording && context && <>
-      {projection && windowData && !loaded.loading ? <OrdersAndTrades projection={projection} context={context} symbol={symbol} selected={activeOrder} onSelect={inspectOrder} selectedTradeKey={selectedTrade} onSelectTrade={inspectTrade} executionId={executionId} tab={detailTab} onTabChange={setDetailTab} onSeek={seekRecording} coverage={recording.coverage} gaps={windowData.gaps}>
+      {projection && reviewed.value && windowData && !loaded.loading ? <OrdersAndTrades projection={projection} context={context} symbol={symbol} selected={activeOrder} onSelect={inspectOrder} selectedTradeKey={selectedTrade} onSelectTrade={inspectTrade} executionId={executionId} tab={detailTab} onTabChange={setDetailTab} onSeek={seekRecording} coverage={recording.coverage} gaps={windowData.gaps} selectionPending={Boolean(activeOrder && !projection.orders[activeOrder])}>
       <div className="replay-desk-status">
         <span className="text-xs text-ink-2">{depthLabel} <span className="replay-clock-zone">· 上海时间</span></span>
         {firstQuote && navigationTime < firstQuote.time_us && <button type="button" className="text-xs text-accent underline-offset-4 hover:underline" onClick={() => pauseAndSeek(firstQuote.time_us)}>首个盘口</button>}
@@ -215,30 +229,11 @@ export function ExecutionReplayPage() {
       </div>
       <div className="replay-main-chart">
         {loaded.loading && <div className="replay-empty" role="status">正在恢复所选时刻的状态，回放已暂停…</div>}
-        {projection && windowData && range && !loaded.loading && <ReplayChart window={windowData} range={range} projection={projection} symbol={symbol} selectedOrder={activeOrder} onSelectOrder={inspectOrder} selectedTrade={selectedTrade} onSelectTrade={inspectTrade} onInspect={inspect} onSeek={pauseAndSeek} executionId={executionId} symbolControl={symbols.length > 1 ? <Select ariaLabel="选择回放品种" searchable className={selectClass} value={symbol} options={symbols.map(value => ({ value, label: value }))} onChange={value => { continuePlayback.current = null; setPlaying(false); setSelectedOrder(null); setSelectedTrade(null); setSymbol(value) }} /> : <span className="text-[13px] font-semibold text-ink-1">{symbol || '无已录品种'}</span>} />}
+        {projection && windowData && range && !loaded.loading && <ReplayChart window={windowData} range={range} projection={projection} scene={reviewed.value ?? projection} overviewLabel={windowDuration === 'all' ? '整段复盘' : '窗口复盘'} symbol={symbol} selectedOrder={activeOrder} onSelectOrder={inspectOrder} selectedTrade={selectedTrade} onSelectTrade={inspectTrade} onInspect={inspect} onSeek={pauseAndSeek} executionId={executionId} symbolControl={symbols.length > 1 ? <Select ariaLabel="选择回放品种" searchable className={selectClass} value={symbol} options={symbols.map(value => ({ value, label: value }))} onChange={value => { continuePlayback.current = null; setPlaying(false); setSelectedOrder(null); setSelectedTrade(null); setSymbol(value) }} /> : <span className="text-[13px] font-semibold text-ink-1">{symbol || '无已录品种'}</span>}>{transport}</ReplayChart>}
         {!range && <p className="replay-empty">该录制段没有可读取的封口覆盖区间。</p>}
-        {!loaded.loading && range && !readReady && <p className="replay-empty text-ink-2">所选窗口暂不可用。可在下方切换窗口或定位其他时段。</p>}
+        {!loaded.loading && range && !readReady && <p className="replay-empty text-ink-2">所选窗口暂不可用。可在录制信息中切换窗口或重试。</p>}
       </div>
-      </OrdersAndTrades> : <div className="replay-empty" role="status">{loaded.loading ? '正在恢复所选时刻的状态，回放已暂停…' : '所选窗口暂不可用，可在录制信息中切换窗口。'}</div>}
-      {range && <footer className="replay-transport" aria-label="回放播放控制" onKeyDown={event => { if (event.defaultPrevented || event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof Element && event.target.closest('[role="slider"], [role="combobox"], [role="listbox"], [aria-haspopup="listbox"]')) return; if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); if (readReady) step(event.key === 'ArrowLeft' ? -1 : 1) } }}>
-        <div className="replay-transport-row">
-          <div className="replay-play-controls">
-            <button type="button" className={buttonClass} onClick={() => step(-1)} disabled={!readReady || eventIndex < 0} aria-label="前一观察"><SkipBack size={15} aria-hidden /><span>上一步</span></button>
-            <button type="button" className={`${buttonClass} replay-play-button`} aria-label={playing ? '暂停回放' : '播放回放'} onClick={() => { continuePlayback.current = null; if (!playing && navigationTime >= range.end_us - 1) pauseAndSeek(range.start_us); setPlaying(value => !value) }} disabled={!readReady}>{playing ? <Pause size={15} aria-hidden /> : <Play size={15} aria-hidden />}<InkRewrite text={playing ? '暂停' : '播放'} tone="label" /></button>
-            <button type="button" className={buttonClass} onClick={() => step(1)} disabled={!readReady || eventIndex >= events.length - 1} aria-label="后一观察"><SkipForward size={15} aria-hidden /><span>下一步</span></button>
-            <label className="replay-speed-picker"><span>倍速</span><Select ariaLabel="播放速度" className={selectClass} value={speed} onChange={setSpeed} options={['0.5', '1', '2', '4'].map(value => ({ value, label: `${value}×` }))} /></label>
-          </div>
-          <time className="replay-cursor-time num text-xs text-ink-1">{replayTime(navigationTime)} <span className="text-ink-2">{playing ? '播放中' : '已暂停'}</span></time>
-
-        </div>
-        <div className="replay-timeline num">
-          <p id="replay-seek-description" className="sr-only">{seekDraft == null ? '录制定位 · 同一微秒可逐事件查看' : `准备定位 ${replayTime(seekDraft, true)} · 松开后读取`}</p>
-          <ValueSlider label="录制定位" describedBy="replay-seek-description" min={0} max={Math.max(1, (currentCoverage?.end_us ?? range.end_us) - (currentCoverage?.start_us ?? range.start_us) - 1)} step={1} value={Math.max(0, (seekDraft ?? navigationTime) - (currentCoverage?.start_us ?? range.start_us))}
-            formatValue={offset => replayTime((currentCoverage?.start_us ?? range.start_us) + offset)}
-            onChange={offset => { continuePlayback.current = null; setPlaying(false); setSeekDraft((currentCoverage?.start_us ?? range.start_us) + offset) }}
-            onChangeEnd={offset => seekRecording((currentCoverage?.start_us ?? range.start_us) + offset)} />
-        </div>
-      </footer>}
+      </OrdersAndTrades> : <div className="replay-empty" role="status">{loaded.loading ? '正在恢复所选时刻的状态，回放已暂停…' : '所选窗口暂不可用，可在录制信息中切换窗口。'}{range && <div className="w-full max-w-xl"><ValueSlider label="录制定位" min={0} max={Math.max(1, (currentCoverage?.end_us ?? range.end_us) - (currentCoverage?.start_us ?? range.start_us) - 1)} step={1} value={Math.max(0, (seekDraft ?? navigationTime) - (currentCoverage?.start_us ?? range.start_us))} formatValue={offset => replayTime((currentCoverage?.start_us ?? range.start_us) + offset)} onChange={offset => { continuePlayback.current = null; setPlaying(false); setSeekDraft((currentCoverage?.start_us ?? range.start_us) + offset) }} onChangeEnd={offset => seekRecording((currentCoverage?.start_us ?? range.start_us) + offset)} /></div>}{transport}</div>}
     </>}
     <div id="replay-information" popover="auto" className="replay-information bg-surface text-ink-1" aria-label="录制信息与完整性说明">
       <div className="mb-4 flex items-center justify-between gap-4"><h2 className="text-sm font-medium">录制信息</h2><button type="button" popoverTarget="replay-information" popoverTargetAction="hide" className={buttonClass} aria-label="关闭录制信息"><X size={15} aria-hidden /></button></div>
@@ -246,17 +241,17 @@ export function ExecutionReplayPage() {
       {recording && context && <>
           <div className="replay-window-controls mb-4">
             <button type="button" className={buttonClass} onClick={() => moveWindow(-1)} disabled={!canPrevWindow} aria-label="上一窗口"><ChevronLeft size={14} aria-hidden /><span className="sr-only">上一窗口</span></button>
-            <label><span>读取窗口 </span><Select value={windowDuration} ariaLabel="窗口时长" className={selectClass} onChange={value => { continuePlayback.current = null; setPlaying(false); setWindowDuration(value); setRange(replayRange(recording.coverage, range?.start_us, Number(value) * 1_000_000)) }} options={['2', '5', '10', '20'].map(value => ({ value, label: `${value} 秒` }))} /></label>
+            <label><span>读取窗口 </span><Select value={windowDuration} ariaLabel="窗口时长" className={selectClass} onChange={value => { continuePlayback.current = null; setPlaying(false); setWindowDuration(value); setRange(replayRange(recording.coverage, value === 'all' ? currentCoverage?.start_us : range?.start_us, replayWindowDuration(value))) }} options={['all', '2', '5', '10', '20'].map(value => ({ value, label: value === 'all' ? '整段' : `${value} 秒` }))} /></label>
             <button type="button" className={buttonClass} onClick={() => moveWindow(1)} disabled={!canNextWindow} aria-label="下一窗口"><span className="sr-only">下一窗口</span><ChevronRight size={14} aria-hidden /></button>
           </div>
         <div className="mb-3 text-xs text-ink-2"><p className="mb-1">录制段</p><Select ariaLabel="选择录制段" className={`${selectClass} w-full`} value={recordingId} onChange={selectRecording} options={(manifest?.recordings ?? []).map((value, index) => ({ value: value.recording_id, label: `第 ${index + 1} 段${value.order_known === false ? '（先后未知）' : ''}` }))} /></div>
         <OverflowText text={recording.recording_id} className="mb-3 block text-xs text-ink-2" />
-        {recording.coverage.length > 1 && <div className="mb-3 text-xs text-ink-2"><p className="mb-1">可用时段</p><Select ariaLabel="选择可用覆盖时段" className={`${selectClass} w-full`} value={currentCoverage?.start_us ?? null} onChange={value => { if (value == null) return; continuePlayback.current = null; setPlaying(false); setSeekDraft(null); pendingSeek.current = null; setRange(replayRange(recording.coverage, value, Number(windowDuration) * 1_000_000)) }} options={recording.coverage.map(value => ({ value: value.start_us, label: `${replayTime(value.start_us, true, false)} — ${replayTime(value.end_us, true, false)}` }))} /></div>}
+        {recording.coverage.length > 1 && <div className="mb-3 text-xs text-ink-2"><p className="mb-1">可用时段</p><Select ariaLabel="选择可用覆盖时段" className={`${selectClass} w-full`} value={currentCoverage?.start_us ?? null} onChange={value => { if (value == null) return; continuePlayback.current = null; setPlaying(false); setSeekDraft(null); pendingSeek.current = null; setRange(replayRange(recording.coverage, value, replayWindowDuration(windowDuration))) }} options={recording.coverage.map(value => ({ value: value.start_us, label: `${replayTime(value.start_us, true, false)} — ${replayTime(value.end_us, true, false)}` }))} /></div>}
         {recording.symbols_complete === false && <p className="mb-3 text-xs text-ink-2">品种目录尚不完整，后续窗口继续补充。</p>}
         <p className="mb-3 text-xs text-ink-2">{environmentLabels[context.environment ?? ''] ?? context.environment ?? '环境未知'} · {context.account_mode ?? '账户模式未知'} · {positionModeLabels[context.position_mode ?? ''] ?? '持仓模式未知'} · 上海时间</p>
         <div className="space-y-2 border-t border-line py-3 text-xs text-ink-2">{['depth', 'market_trade', 'own_order', 'own_trade', 'position'].map((name, index) => { const stream = replayStream(context, symbol, name); return <p key={name}>{['盘口', '市场成交', '自有委托', '自有成交', '持仓'][index]}：{stream ? availabilityLabels[stream.availability] : '未说明'}{stream?.reason ? ` · ${stream.reason === 'waiting_observation' ? '等待观察' : stream.reason}` : ''}{stream?.delivery ? ` · ${stream.delivery}` : ''}</p> })}</div>
         {warnings.length > 0 && <div className="mb-3 space-y-2 text-xs text-warn" role="status">{warnings.map(warning => <p key={warning}>{warning}</p>)}</div>}
-        <p className="border-t border-line pt-3 text-xs text-ink-2">只读 · 仅呈现游标处已观察到的数据。热力颜色表示挂量，有限盘口不代表排队位置；完整性与缺失以本次录制说明为准。</p>
+        <p className="border-t border-line pt-3 text-xs text-ink-2">整段复盘展示已读取时段的完整记录；盘口与委托状态只恢复到游标时刻。超出读取预算时可选择较短窗口。热力颜色表示挂量，有限盘口不代表排队位置；完整性与缺失以本次录制说明为准。</p>
       </>}
     </div>
   </section>
