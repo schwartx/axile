@@ -13,9 +13,11 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Literal, TypeVar, cast
 
+from axile.executor import replay as recording
 from axile.executor.algorithms.utils.clock import clock_monotonic, get_default_clock
 from axile.executor.connection_state import ConnectionMonitor
 from axile.executor.instrument_catalog_records import EXCHANGES, Instrument, normalize_catalog_symbol
+from axile.executor.tq import replay
 from axile.executor.tq.connection import report_tq_failure
 from axile.executor.tq.symbols import TQInstrument, TQSymbolResolver
 
@@ -132,6 +134,7 @@ class TQRuntime:
         self._quote_condition = threading.Condition()
         self._logger = logging.getLogger(__name__)
         self._listeners: list[Callable[[str, dict[str, object]], None]] = []
+        self.replay_owner: object | None = None
         self.synchronized = True
         self.connection_revision = 0
         self._notifications: set[str] = set()
@@ -232,11 +235,12 @@ class TQRuntime:
         self._logger.warning("TQ 行情订阅失败 %s，耗时 %.3fs: %s", symbol, time.monotonic() - state.started, error)
 
     def _publish_quote(self, state: _QuoteSubscription) -> None:
+        receipt = recording.capture_receipt(self.replay_owner)
         snapshot = cast(dict[str, object], _quote_value_snapshot(snapshot_entity(state.entity)))
         with self._quote_condition:
             state.snapshot = snapshot
             self._quote_condition.notify_all()
-        self._emit("quote", deepcopy(snapshot))
+        self._emit("quote", deepcopy(snapshot), receipt=receipt)
 
     def quote_snapshots(self, symbols: list[str], *, timeout: float = 5.0) -> dict[str, dict[str, object]]:
         """在调用线程按单次总 deadline 等待首份快照，返回已就绪合约的独立副本。
@@ -356,7 +360,19 @@ class TQRuntime:
                     records[record.key] = record
         return list(records.values())
 
-    def _emit(self, kind: str, payload: dict[str, object]) -> None:
+    def _emit(
+        self,
+        kind: str,
+        payload: dict[str, object],
+        *,
+        receipt: object = replay.MISSING,
+        token: dict[str, object] | None = None,
+        synchronized: bool = False,
+    ) -> None:
+        try:
+            replay.event(self.replay_owner, kind, payload, receipt=receipt, token=token, synchronized=synchronized)
+        except Exception:  # noqa: BLE001 - 原始观察异常不能改变业务事件交付
+            pass
         for listener in tuple(self._listeners):
             try:
                 listener(kind, dict(payload))
@@ -387,6 +403,7 @@ class TQRuntime:
                     self.synchronized = True
                     reset = reset or code == 2019112902
                     self._connection.succeeded()
+                    self._emit("connection", {"ready": True})
             else:
                 self._emit("notification", {**snapshot_entity(row), "notification_id": str(key)})
         self._notifications = current_ids
@@ -407,17 +424,34 @@ class TQRuntime:
             getter = getattr(api, getter_name, None)
             if not callable(getter):
                 continue
+            self._pump_collection(getter, kind, previous, reset)
+
+    def _pump_collection(self, getter, kind: str, previous: dict[str, dict[str, object]], reset: bool) -> None:
+        receipt = recording.capture_receipt(self.replay_owner)
+        token = None
+        try:
             rows = getter()
             if not isinstance(rows, Mapping):
-                continue
+                return
+            replacing = kind == "order" and self.synchronized and (reset or previous.keys() - rows.keys())
+            if replacing:
+                token = replay.begin_query(self.replay_owner, receipt, [])
             current = {str(key): snapshot_entity(value) for key, value in rows.items() if not str(key).startswith("_")}
             for key, value in current.items():
                 if previous.get(key) != value:
-                    self._emit(kind, value)
-            if kind == "order" and self.synchronized and (reset or previous.keys() - current.keys()):
-                self._emit("orders.reset", {"rows": list(current.values())})
+                    self._emit(kind, value, receipt=receipt)
+            if replacing:
+                self._emit(
+                    "orders.reset",
+                    {"rows": list(current.values())},
+                    receipt=receipt,
+                    token=token,
+                    synchronized=self.synchronized,
+                )
             previous.clear()
             previous.update(current)
+        finally:
+            recording.finish_query(self.replay_owner, token)
 
     def _run(self) -> None:
         try:

@@ -164,6 +164,126 @@ def _ctp_replay_capability() -> ChannelReplayCapability:
     )
 
 
+def _gm_replay_capability() -> ChannelReplayCapability:
+    """声明掘金实际回调与查询快照；不承诺连续行情或市场逐笔。"""
+    attributes = [
+        "side",
+        "status",
+        "order_type",
+        "order_style",
+        "order_business",
+        "position_effect",
+        "position_side",
+        "ord_rej_reason",
+        "ord_rej_reason_detail",
+        "order_duration",
+        "order_qualifier",
+        "stop_price",
+        "filled_amount",
+        "filled_vwap",
+        "exec_type",
+        "commission",
+        "cost",
+        "vwap",
+        "vwap_diluted",
+        "vwap_open",
+        "market_value",
+        "available",
+        "available_now",
+        "available_today",
+        "order_frozen_today",
+        "target_volume",
+        "target_value",
+        "target_percent",
+        "order_frozen",
+        "price",
+        "volume",
+    ]
+    kinds = ("quote", "order", "trade", "command", "position", "account_observation", "order_set", "connection")
+    return ChannelReplayCapability(
+        supported=True,
+        streams={
+            kind: {
+                "availability": "partial",
+                "reason": "waiting_observation",
+                "delivery": "query" if kind == "position" else "callback_and_query",
+                "intermediate_states": "observed_only",
+            }
+            for kind in ("depth", "own_order", "own_trade", "position")
+        }
+        | {"market_trade": {"availability": "unavailable", "reason": "source_not_provided"}},
+        attributes={kind: attributes for kind in kinds},
+        native_identity={kind: ["cl_ord_id", "order_id", "ex_ord_id", "exec_id"] for kind in kinds},
+        display={
+            "order": [
+                ReplayDisplayField(key="status", label="原生委托状态", kind="number"),
+                ReplayDisplayField(key="order_business", label="委托业务类型", kind="number"),
+                ReplayDisplayField(key="ord_rej_reason_detail", label="拒绝说明"),
+                ReplayDisplayField(key="filled_amount", label="已成金额", kind="number", unit="CNY"),
+                ReplayDisplayField(key="filled_vwap", label="原生成交均价", kind="number"),
+            ],
+            "position": [
+                ReplayDisplayField(key="available_now", label="当前可卖", kind="number", unit="股"),
+                ReplayDisplayField(key="available_today", label="当日可用", kind="number", unit="股"),
+                ReplayDisplayField(key="order_frozen_today", label="当日委托冻结", kind="number", unit="股"),
+                ReplayDisplayField(key="vwap", label="原生持仓均价", kind="number"),
+                ReplayDisplayField(key="vwap_diluted", label="原生摊薄成本", kind="number"),
+            ],
+            "command": [ReplayDisplayField(key="target_volume", label="目标股数", kind="number", unit="股")],
+        },
+    )
+
+
+def _tq_replay_capability() -> ChannelReplayCapability:
+    """声明天勤快照差分，不将 SDK 合并后的观察当作完整逐笔流。"""
+    identity = ["order_id", "exchange_order_id", "trade_id", "exchange_trade_id", "exchange_id", "instrument_id"]
+    return ChannelReplayCapability(
+        supported=True,
+        streams={
+            kind: {
+                "availability": "partial",
+                "reason": "waiting_observation",
+                "delivery": "snapshot_diff" if kind != "position" else "query",
+                "intermediate_states": "observed_only",
+            }
+            for kind in ("depth", "own_order", "own_trade", "position")
+        }
+        | {"market_trade": {"availability": "unavailable", "reason": "source_not_provided"}},
+        attributes={
+            "order": [
+                "native_status",
+                "last_msg",
+                "price_type",
+                "time_condition",
+                "volume_condition",
+                "is_online",
+                "is_dead",
+                "is_error",
+                "account_mode",
+            ],
+            **{kind: ["account_mode"] for kind in ("quote", "command", "trade", "position")},
+        },
+        native_identity={
+            kind: identity for kind in ("quote", "order", "trade", "command", "position", "order_set", "connection")
+        },
+        display={
+            "order": [
+                ReplayDisplayField(key="native_status", label="原生委托状态"),
+                ReplayDisplayField(key="last_msg", label="原生委托说明"),
+                ReplayDisplayField(key="price_type", label="价格条件"),
+                ReplayDisplayField(key="time_condition", label="时间条件"),
+                ReplayDisplayField(key="volume_condition", label="数量条件"),
+                ReplayDisplayField(
+                    key="account_mode",
+                    label="账户模式",
+                    kind="enum",
+                    values={"live": "实盘", "kq": "快期模拟", "sim": "本地模拟"},
+                ),
+            ],
+        },
+    )
+
+
 _LEVERAGE = ChannelLeverage(min=0, max=125, step=0.1)
 _SINGLE_MAKER = AlgorithmReference(method="SINGLE-MAKER", params={})
 _CN_STOCK_SESSION_WINDOWS = tuple(ChannelSessionWindow(start=start, end=end) for start, end in CN_STOCK_WINDOWS)
@@ -397,6 +517,7 @@ def _gm_plugin() -> ChannelPlugin:
                 steps=_GM_STEPS, notice="使用当前配置建立临时会话并核对账户；不保存配置、不下单。"
             ),
             channel="gm",
+            replay=_gm_replay_capability(),
             label="掘金",
             description="通过本机终端或 RPC 服务连接掘金量化",
             icon="landmark",
@@ -507,6 +628,7 @@ def _tq_plugin() -> ChannelPlugin:
                 steps=_TQ_STEPS, notice="使用当前配置建立临时会话并核对账户；不保存配置、不下单。"
             ),
             channel="tq",
+            replay=_tq_replay_capability(),
             futures_close=close_capability(automatic=False),
             label="天勤",
             description="通过天勤连接国内期货、期权与组合市场",

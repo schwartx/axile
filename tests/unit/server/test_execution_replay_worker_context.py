@@ -83,7 +83,7 @@ def runtime(tmp_path, monkeypatch):
         state.replay_recorder.close()
 
 
-def allow_fixture_replay(channel, monkeypatch):
+def allow_fixture_replay(channel, monkeypatch, *, supported=True):
     original = replay.get_channel
 
     def get_channel(name):
@@ -91,7 +91,7 @@ def allow_fixture_replay(channel, monkeypatch):
         descriptor = registration.descriptor
         if name == channel:
             descriptor = descriptor.model_copy(
-                update={"replay": descriptor.replay.model_copy(update={"supported": True})}
+                update={"replay": descriptor.replay.model_copy(update={"supported": supported})}
             )
         return SimpleNamespace(descriptor=descriptor)
 
@@ -136,7 +136,8 @@ def test_frozen_trade_uses_actual_context_and_later_same_version_resource_can_ch
     assert runtime.state.replay_config.config_version == current.replay_config_version
 
 
-def test_switch_to_unsupported_channel_does_not_keep_old_supported_declaration(runtime):
+def test_switch_to_unsupported_channel_does_not_keep_old_supported_declaration(runtime, monkeypatch):
+    allow_fixture_replay("gm", monkeypatch, supported=False)
     current = runtime.update(trade_channel="gm", account_config={"fixture": "new"})
     stale = replay.current_replay_config(runtime.old)
     fresh = replay.current_replay_config(current)

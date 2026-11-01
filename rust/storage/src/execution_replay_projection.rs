@@ -394,6 +394,7 @@ impl Projection {
             );
             self.mark_incomplete(market);
             if !market {
+                self.rebuild_order_amounts();
                 self.rebuild_totals();
                 self.rebuild_positions();
             }
@@ -1723,6 +1724,39 @@ mod tests {
     fn complete_set(scope: Value, rows: Vec<Value>, start: u64, revision: u64) -> Value {
         json!({"scope":scope,"scope_complete":true,"synchronized":true,"sync_generation":1,
             "query_basis":{"recording_id":"r","start_seq":start,"request_revision":revision},"orders":rows})
+    }
+
+    #[test]
+    fn uncertain_trade_rebuilds_order_remaining_immediately() {
+        let mut state = Projection::new("r");
+        state
+            .apply(&message(1, "/order", order("O", 10.0)))
+            .unwrap();
+        state.apply(&message(2, "/trade", trade("T", 4.0))).unwrap();
+        let key = compound("A", "O");
+        assert_eq!(
+            state.snapshot().unwrap()["orders"][&key]["remaining_quantity"],
+            6.0
+        );
+        let mut correction = trade("T", 4.0);
+        correction["identity_quality"] = json!("weak");
+        correction["trade_key"] = Value::Null;
+        correction["quantity"] = Value::Null;
+        correction["price"] = Value::Null;
+        state.apply(&message(3, "/trade", correction)).unwrap();
+        let snapshot = state.snapshot().unwrap();
+        assert!(snapshot["orders"][&key]["remaining_quantity"].is_null());
+        assert_eq!(
+            snapshot["orders"][&key]["remaining_quantity_complete"],
+            false
+        );
+        assert_eq!(
+            snapshot["trade_accounting"]["own_records"]
+                .as_object()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]

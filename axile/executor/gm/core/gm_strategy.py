@@ -19,6 +19,8 @@ from gm.csdk.c_sdk import TickLikeDict2  # type: ignore
 from gm.model import DictLikeAccountStatus, DictLikeExecRpt, DictLikeOrder  # type: ignore
 from gm.model.storage import Context  # type: ignore
 
+from axile.executor import replay as recording
+from axile.executor.gm import replay
 from axile.executor.gm.common import (
     AccConnectionState,
     convert_gm_trade_to_trade_record,
@@ -43,6 +45,61 @@ _StartupDetailValue: TypeAlias = str | int | float | bool | None
 def _get_bridge_context() -> GMStrategyRuntimeContext | None:
     """返回当前 GM bridge 已注册的运行时上下文."""
     return get_gm_strategy_runtime_context()
+
+
+def _capture_replay_receipt() -> tuple[object | None, recording.ReplayReceipt | None]:
+    """在回调入口固定账户观察者，不依赖算法监听器。"""
+    context = _get_bridge_context()
+    owner = getattr(getattr(context, "dispatcher", None), "_replay_owner", None)
+    return owner, recording.capture_receipt(owner)
+
+
+def _observe_replay_connection(receipt: recording.ReplayReceipt | None, reason: str, connected: bool) -> None:
+    """连接恢复不证明订单已完整同步，失效只交付原录制段。"""
+    recording.observe_receipt(
+        receipt,
+        "/connection",
+        {
+            "source": "gm.connection",
+            "connected": connected,
+            "available": connected,
+            "synchronized": False,
+            "reason": reason,
+        },
+    )
+
+
+def _observe_replay_tick(owner: object, receipt: recording.ReplayReceipt | None, tick: object) -> None:
+    """代码解析也属于录制旁路，异常不能跳过正常 tick 分发。"""
+    if receipt is None:
+        return
+    try:
+        symbol = replay.symbol(tick)
+        if symbol:
+            replay.capture(owner, f"/quote/{symbol}", lambda: replay.quote(tick, source="gm.tick"), receipt=receipt)
+    except Exception:  # noqa: BLE001 - 代码解析故障仍交付原观察者
+        recording.observe_receipt(
+            receipt, "/connection", {"source": "gm.replay", "available": False, "reason": "normalization_failed"}
+        )
+
+
+def _observe_native_request(request, phase: str, *, result: object = None, error: BaseException | None = None) -> None:
+    """仅在实际消费队列时记录原生动作，取消或过期请求不冒充已发送。"""
+    if request.operation not in {"order_volume", "order_cancel"}:
+        return
+    replay.capture(
+        request.replay_owner,
+        "/command",
+        lambda: replay.command(
+            request.operation,
+            request.kwargs,
+            phase=phase,
+            command_id=request.replay_command_id,
+            result=result,
+            error_type=type(error).__name__ if error is not None else None,
+        ),
+        receipt=request.replay_receipt,
+    )
 
 
 def _get_bridge_stats() -> dict[str, int] | None:
@@ -304,8 +361,11 @@ def on_tick(_context: Context, tick: TickLikeDict2) -> None:
 
     当订阅的标的有新的 tick 数据时触发此回调。
     """
+    owner, receipt = _capture_replay_receipt()
     if _is_stopped():
         return
+
+    _observe_replay_tick(owner, receipt, tick)
 
     try:
         context = _get_bridge_context()
@@ -332,8 +392,11 @@ def on_order_status(_context: Context, order: DictLikeOrder) -> None:
 
     当委托状态变化时（已报、部成、已成、撤单等）触发此回调。
     """
+    owner, receipt = _capture_replay_receipt()
     if _is_stopped():
         return
+
+    replay.capture(owner, "/order", lambda: replay.order(order, source="gm.order_return"), receipt=receipt)
 
     try:
         context = _get_bridge_context()
@@ -360,8 +423,11 @@ def on_execution_report(_context: Context, execrpt: DictLikeExecRpt) -> None:
 
     当订单产生新的成交时触发此回调。
     """
+    owner, receipt = _capture_replay_receipt()
     if _is_stopped():
         return
+
+    replay.capture(owner, "/trade", lambda: replay.trade(owner, execrpt, source="gm.trade_return"), receipt=receipt)
 
     try:
         context = _get_bridge_context()
@@ -384,6 +450,7 @@ def on_execution_report(_context: Context, execrpt: DictLikeExecRpt) -> None:
 
 def on_account_status(_context: Context, account: DictLikeAccountStatus) -> None:
     """交易账户状态更新事件."""
+    _, receipt = _capture_replay_receipt()
     if _is_stopped():
         return
     _emit_runtime_log("info", f"账户状态更新: {account}")
@@ -404,6 +471,8 @@ def on_account_status(_context: Context, account: DictLikeAccountStatus) -> None
             _fail_account_startup(context, error)
         return
     state = status.get("state")
+    if state in {AccConnectionState.LOGGEDIN, AccConnectionState.ERROR, AccConnectionState.DISCONNECTED}:
+        _observe_replay_connection(receipt, "account_status", state == AccConnectionState.LOGGEDIN)
     if state == AccConnectionState.LOGGEDIN:
         if context.strategy_initialized:
             context.ready_event.set()
@@ -421,6 +490,7 @@ def on_account_status(_context: Context, account: DictLikeAccountStatus) -> None
 
 def on_error(_context: Context, code: str, info: str | bytes) -> None:
     """将 SDK 明确的鉴权错误送回启动线程，其他错误只保留日志。"""
+    _, receipt = _capture_replay_receipt()
     if _is_stopped():
         return
     _emit_runtime_log("error", f"错误: code={code}, info={info}")
@@ -431,6 +501,7 @@ def on_error(_context: Context, code: str, info: str | bytes) -> None:
         return
     if status not in {1000, 1026}:
         return
+    _observe_replay_connection(receipt, "authentication_error", False)
     context = _get_bridge_context()
     if context is None or context.startup_failed:
         return
@@ -448,8 +519,10 @@ def on_error(_context: Context, code: str, info: str | bytes) -> None:
 
 def on_trade_data_connected(_context: Context) -> None:
     """交易通道网络连接成功事件."""
+    _, receipt = _capture_replay_receipt()
     if _is_stopped():
         return
+    _observe_replay_connection(receipt, "trade_transport_connected", True)
     _update_startup_phase("trade_connected")
     _emit_runtime_log("info", "交易通道已连接")
     context = _get_bridge_context()
@@ -461,8 +534,10 @@ def on_trade_data_connected(_context: Context) -> None:
 
 def on_trade_data_disconnected(_context: Context) -> None:
     """交易通道网络连接断开事件."""
+    _, receipt = _capture_replay_receipt()
     if _is_stopped():
         return
+    _observe_replay_connection(receipt, "trade_transport_disconnected", False)
     _emit_runtime_log("warning", "交易通道已断开")
     context = _get_bridge_context()
     if context is not None and context.connection_monitor is not None:
@@ -479,6 +554,20 @@ def on_trade_data_disconnected(_context: Context) -> None:
             steps_title="交易服务检查",
             steps=("检查 GM 交易服务和网络访问情况。", "该回调无法确认本地终端进程是否退出。"),
         )
+
+
+def on_market_data_connected(_context: Context) -> None:
+    """行情通道恢复只确认连接，不补造未观察的盘口。"""
+    _, receipt = _capture_replay_receipt()
+    if not _is_stopped():
+        _observe_replay_connection(receipt, "market_transport_connected", True)
+
+
+def on_market_data_disconnected(_context: Context) -> None:
+    """行情断流使回放覆盖失效，不触发额外订阅或查询。"""
+    _, receipt = _capture_replay_receipt()
+    if not _is_stopped():
+        _observe_replay_connection(receipt, "market_transport_disconnected", False)
 
 
 def _process_bridge_requests(_context: Context) -> None:
@@ -516,10 +605,13 @@ def _process_bridge_requests(_context: Context) -> None:
             continue
 
         try:
+            _observe_native_request(request, "native_request")
             result = _dispatch_bridge_request(request.operation, request.kwargs)
         except Exception as exc:
+            _observe_native_request(request, "native_error", error=exc)
             request.future.set_exception(exc)
         else:
+            _observe_native_request(request, "native_return", result=result)
             request.future.set_result(result)
 
 

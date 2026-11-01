@@ -6,8 +6,8 @@ GM 策略框架桥接器.
 Notes
 -----
 该桥接器负责在独立线程中启动 ``gm.api.run()``，避免阻塞主线程。
-订单状态与成交回报可以稳定转发，但 GM SDK 的实时行情订阅在后台线程中存在已知限制。
-如需获取实时行情快照，建议通过 ``GMExecutor.get_market_data()`` 调用 ``current()``。
+订单、成交与实际到达的 tick 经统一分发器交付，行情覆盖以收到的数据为准。
+订阅推送与 ``GMExecutor.get_market_data()`` 调用的 ``current()`` 快照并存。
 """
 
 import os
@@ -19,6 +19,8 @@ import traceback
 from collections.abc import Callable
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
@@ -26,6 +28,7 @@ from typing import Any, Protocol, TypeAlias
 
 from loguru import logger
 
+from axile.executor import replay as recording
 from axile.executor.algorithms.utils.clock import clock_monotonic, get_default_clock
 from axile.executor.connection_state import CONNECTION_ERROR_SCOPE, ConnectionMonitor, preserve_connection_failure
 from axile.executor.gm.common import AccConnectionState
@@ -54,6 +57,19 @@ GMBridgeResultMapping: TypeAlias = dict[str, GMBridgeScalar]
 GMBridgeResultItem: TypeAlias = GMBridgeScalar | GMBridgeResultMapping
 GMBridgeResult: TypeAlias = GMBridgeScalar | GMBridgeResultMapping | list[GMBridgeResultItem]
 SignalHandler: TypeAlias = int | Callable[[int, FrameType | None], None] | None
+_replay_call: ContextVar[tuple[object, recording.ReplayReceipt | None, str | None] | None] = ContextVar(
+    "gm_replay_call", default=None
+)
+
+
+@contextmanager
+def replay_bridge_call(owner: object, receipt: recording.ReplayReceipt | None, command_id: str | None):
+    """将入口已关闭的空身份也带到队列，不额外生成公共命令。"""
+    token = _replay_call.set((owner, receipt, command_id))
+    try:
+        yield
+    finally:
+        _replay_call.reset(token)
 
 
 class GMBridgeStartupError(RuntimeError):
@@ -124,6 +140,9 @@ class GMBridgeRequest:
     kwargs: dict[str, Any]
     future: Future[GMBridgeResult]
     deadline: float | None = None
+    replay_owner: object | None = None
+    replay_receipt: recording.ReplayReceipt | None = None
+    replay_command_id: str | None = None
 
     def is_expired(self, now: float | None = None) -> bool:
         """
@@ -484,11 +503,18 @@ class GMStrategyBridge:
         if not self._running:
             raise RuntimeError(f"GM bridge 未运行，无法执行操作: {operation}")
 
+        context = _replay_call.get()
+        owner = context[0] if context is not None else getattr(self, "_replay_owner", None)
+        receipt = context[1] if context is not None else recording.capture_command_receipt(owner)
+        command_id = context[2] if context is not None else recording.current_command_id()
         bridge_request = GMBridgeRequest(
             operation=operation,
             kwargs=kwargs,
             future=Future(),
             deadline=None if timeout is None else time.monotonic() + timeout,
+            replay_owner=owner,
+            replay_receipt=receipt,
+            replay_command_id=command_id,
         )
         self._request_queue.put(bridge_request)
 

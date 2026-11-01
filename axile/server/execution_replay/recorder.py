@@ -901,20 +901,25 @@ class ReplayRecorder:
             owner = self._owner if self._session is session and not session.stopping else None
         hook = getattr(owner, "replay_context_metadata", None)
         environment = "unknown"
+        account_mode = None
         if callable(hook):
             try:
                 metadata = hook()
                 if (
                     isinstance(metadata, dict)
-                    and set(metadata) <= {"environment"}
+                    and set(metadata) <= {"environment", "account_mode"}
                     and metadata.get("environment") in {"live", "demo", "unknown"}
+                    and ("account_mode" not in metadata or metadata["account_mode"] in {"live", "kq", "sim"})
                 ):
                     environment = metadata["environment"]
+                    account_mode = metadata.get("account_mode")
             except Exception:  # noqa: BLE001 - 元数据来源失败不能改变交易或补造环境
                 pass
         with self._condition:
             if self._session is session:
                 session.context["environment"] = environment
+                if account_mode is not None:
+                    session.context["account_mode"] = account_mode
 
     def _seed_cached_observations(self, session: _Session) -> None:
         with self._condition:

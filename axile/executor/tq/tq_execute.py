@@ -11,6 +11,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from axile.common.trade_channel import TradeChannel
+from axile.executor import replay as recording
 from axile.executor.abstract_executor.base import AbstractExecutor
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.catalog_execution import CatalogExecutionMixin
@@ -28,6 +29,7 @@ from axile.executor.models.unified_order import OrderDirection, OrderType, Trade
 from axile.executor.models.unified_price import UnifiedPriceData
 from axile.executor.order_submission_context import get_order_submission_context
 from axile.executor.session_closed import COMMON_SESSION_CLOSED, SESSION_CLOSED_MESSAGE
+from axile.executor.tq import replay
 from axile.executor.tq.converters import account_to_unified, order_to_unified, quote_to_unified, trade_to_unified
 from axile.executor.tq.order_terminal_audit import TQOrderTerminalAudit
 from axile.executor.tq.runtime import TQRuntime, snapshot_entity
@@ -201,6 +203,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
         runtime = TQRuntime(lambda: self._build_api(account_config), connection=connection_monitor(self))
         runtime.add_listener(self._on_runtime_event)
         self._runtime = runtime
+        runtime.replay_owner = self
         self._instrument_provider.bind(runtime.query_catalog, channel="tq")
         runtime.install_catalog([], self._resolve_catalog_symbol)
 
@@ -415,12 +418,21 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
     @override
     def get_account_assets(self) -> UnifiedAccountAssets:
         runtime = self._require_runtime()
+        receipt = recording.capture_receipt(self)
 
         def query(api: object) -> tuple[dict[str, object], dict[str, dict[str, object]]]:
             with connection_monitor(self).accessing():
                 native_account = getattr(api, "get_account")()
                 native_positions = getattr(api, "get_position")()
             account = snapshot_entity(native_account)
+            replay.capture(
+                self,
+                "/account_observation",
+                lambda: replay.account(
+                    self, account, {str(name): snapshot_entity(row) for name, row in native_positions.items()}
+                ),
+                receipt=receipt,
+            )
             positions = {
                 str(symbol): snapshot_entity(row)
                 for symbol, row in native_positions.items()
@@ -472,6 +484,8 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
         price: float = 0,
         **kwargs: object,
     ) -> UnifiedOrder:
+        receipt = recording.capture_command_receipt(self)
+        command_id = recording.current_command_id() or (uuid4().hex if receipt is not None else None)
         if not float(volume).is_integer() or volume <= 0:
             raise ValueError("TqSdk 委托数量必须为正整数手")
         self._ensure_instrument_symbols([symbol])
@@ -506,9 +520,22 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
                 "limit_price": None if order_type is OrderType.MARKET else float(price),
                 "order_id": order_id,
             }
-            native_order = insert_order(**arguments)
-            row = snapshot_entity(native_order)
-            row["order_id"] = order_id
+            token = replay.begin_query(self, receipt, [symbol])
+            try:
+                native_order = replay.command(
+                    self, receipt, command_id, "place_order", arguments, lambda: insert_order(**arguments)
+                )
+                row = snapshot_entity(native_order)
+                row["order_id"] = order_id
+
+                def observation():
+                    data = replay.order(self, row, source="tq.insert_order_return")
+                    data["query_basis"] = token.get("query_basis") if token else None
+                    return data
+
+                replay.capture(self, "/order", observation, receipt=receipt)
+            finally:
+                recording.finish_query(self, token)
             return row
 
         result = runtime.call(submit)
@@ -531,16 +558,62 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
 
     @override
     def _cancel_order_impl(self, symbol: str, order_id: str) -> bool:
+        receipt = recording.capture_command_receipt(self)
+        command_id = recording.current_command_id() or (uuid4().hex if receipt is not None else None)
         runtime = self._require_runtime()
         runtime.resolver.to_tq(symbol, for_trade=True)
-        runtime.call(lambda api: getattr(api, "cancel_order")(order_id))
+        runtime.call(
+            lambda api: replay.command(
+                self,
+                receipt,
+                command_id,
+                "cancel_order",
+                {"symbol": symbol, "order_id": order_id},
+                lambda: getattr(api, "cancel_order")(order_id),
+            )
+        )
         return True
+
+    def _query_order_rows(self) -> list[dict[str, object]]:
+        """复用正常账户查询，完整性证明在 owner 冻结快照前取得。"""
+        runtime = self._require_runtime()
+        receipt = recording.capture_receipt(self)
+
+        def query(api):
+            token = replay.begin_query(self, receipt, [])
+            try:
+                rows = [snapshot_entity(row) for row in getattr(api, "get_order")().values()]
+                replay.capture(
+                    self,
+                    "/order_set",
+                    lambda: replay.order_set(self, rows, synchronized=runtime.synchronized, token=token),
+                    receipt=receipt,
+                )
+                return rows
+            finally:
+                recording.finish_query(self, token)
+
+        return runtime.call(query)
+
+    def _query_trade_rows(self) -> list[dict[str, object]]:
+        """正常成交查询也保存原始观察，推送与查询共用稳定身份。"""
+        receipt = recording.capture_receipt(self)
+
+        def query(api):
+            rows = [snapshot_entity(row) for row in getattr(api, "get_trade")().values()]
+            for row in rows:
+                replay.capture(
+                    self, "/trade", lambda: replay.trade(self, row, source="tq.trade_query"), receipt=receipt
+                )
+            return rows
+
+        return self._require_runtime().call(query)
 
     @override
     def _get_pending_orders_impl(self, symbol: str | None = None) -> list[UnifiedOrder]:
         runtime = self._require_runtime()
         symbol = normalize_catalog_symbol(symbol) if symbol is not None else None
-        rows = runtime.call(lambda api: [snapshot_entity(row) for row in getattr(api, "get_order")().values()])
+        rows = self._query_order_rows()
         orders = [order_to_unified(row, runtime.resolver) for row in rows]
         for order in orders:
             self._terminal_audit.emit(order)
@@ -558,7 +631,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
     def reconcile_terminal_order(self, symbol: str, order_id: str) -> UnifiedOrder | None:
         """读取 SDK 订单真实终态；缺失订单保持未知。"""
         runtime = self._require_runtime()
-        rows = runtime.call(lambda api: [snapshot_entity(row) for row in getattr(api, "get_order")().values()])
+        rows = self._query_order_rows()
         for row in rows:
             order = order_to_unified(row, runtime.resolver)
             if order.order_id == order_id and order.symbol == symbol and order.is_completed():
@@ -570,21 +643,21 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
     def _query_trades_impl(self, symbol: str, order_id: str) -> list[TradeRecord]:
         runtime = self._require_runtime()
         runtime.resolver.to_tq(symbol)
-        rows = runtime.call(lambda api: [snapshot_entity(row) for row in getattr(api, "get_trade")().values()])
+        rows = self._query_trade_rows()
         trades = [trade_to_unified(row, runtime.resolver) for row in rows]
         return [trade for trade in trades if trade.order_id == order_id and trade.symbol == symbol]
 
     def _query_recent_orders_impl(self, symbol: str | None = None) -> list[UnifiedOrder]:
         """读取天勤当前同步的账户委托集合。"""
         runtime = self._require_runtime()
-        rows = runtime.call(lambda api: [snapshot_entity(row) for row in getattr(api, "get_order")().values()])
+        rows = self._query_order_rows()
         orders = [order_to_unified(row, runtime.resolver) for row in rows]
         return [order for order in orders if symbol is None or order.symbol == symbol]
 
     def _query_recent_trades_impl(self, symbol: str | None = None) -> list[TradeRecord]:
         """读取天勤当前交易日的账户成交集合。"""
         runtime = self._require_runtime()
-        rows = runtime.call(lambda api: [snapshot_entity(row) for row in getattr(api, "get_trade")().values()])
+        rows = self._query_trade_rows()
         trades = [trade_to_unified(row, runtime.resolver) for row in rows]
         return [trade for trade in trades if symbol is None or trade.symbol == symbol]
 
@@ -704,7 +777,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
             self._terminal_audit.emit(order)
             self.account_orders.apply(order)
             self._dispatch(self._order_callbacks, order)
-        elif kind == "connection":
+        elif kind == "connection" and row.get("ready") is not True:
             self.account_orders.invalidate("天勤连接已断开，委托状态待确认")
         elif kind == "orders.reset":
             watermark = self.account_orders.begin_sync()
@@ -727,6 +800,11 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
                     message,
                     event_id=f"tq-notify-{row.get('notification_id')}",
                 )
+
+    def replay_context_metadata(self) -> dict[str, str]:
+        """冻结录制环境，不暴露账户配置或重新查询 SDK。"""
+        mode = self._config().account_mode
+        return {"environment": "live" if mode == "live" else "demo", "account_mode": mode}
 
     def _register(self, callbacks: list[Any], callback: Any) -> None:
         with self._lock:
