@@ -39,6 +39,7 @@ mock.module('lucide-react', () => Object.fromEntries(['ChevronLeft', 'ChevronRig
 for (const [path, name] of [['features/account/pageHead.tsx', 'AccountPageTitle'], ['components/ui/Select.tsx', 'Select'], ['components/ui/ValueSlider.tsx', 'ValueSlider'], ['components/ui/BackLink.tsx', 'BackLink'], ['components/ui/ErrorNotice.tsx', 'ErrorNotice'], ['components/ui/Segmented.tsx', 'Segmented'], ['components/ui/OverflowText.tsx', 'OverflowText'], ['components/ui/InkRewrite.tsx', 'InkRewrite'], ['features/replay/ReplayChart.tsx', 'ReplayChart']]) mock.module(ui + path, () => ({ [name]: () => null }))
 mock.module(ui + 'stores/domain.ts', () => ({ useDomainStore: (select: any) => select({ accounts: [{ account_id: 7, name: 'demo', trade_channel: 'binance', market: 'crypto' }] }) }))
 mock.module(ui + 'lib/viewTransition.ts', () => ({ withViewTransition: (update: () => void) => update() }))
+mock.module(ui + 'components/ui/Tooltip.tsx', () => ({ Tooltip: () => null }))
 
 const manifest = { account_id: 7, execution_id: 'E2', availability: 'partial', recordings: [{ recording_id: 'r', symbols: scenario === 'controls' ? ['X', 'Y'] : ['X'], symbols_complete: true, coverage: [{ start_us: 0, end_us: 40_000_000 }], context: { schema_version: 1, instrument: {} } }] }
 if (scenario === 'whole-after-window') manifest.recordings[0].coverage.push({ start_us: 60_000_000, end_us: 100_000_000 })

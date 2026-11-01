@@ -4,6 +4,16 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { ReplayChart } from '@/features/replay/ReplayChart'
 import { projectReplay } from '@/features/replay/model'
 import type { ReplayWindow } from '@/features/replay/types'
+import { readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+
+it('悬浮详情可移入与固定，查看不定位，取消固定离开关闭，显式定位精确成交时间', () => {
+  const source = readFileSync(new URL('../../../tests/replay-hover.fixture.ts', import.meta.url), 'utf8')
+  const script = `const ui=${JSON.stringify(new URL('../../', import.meta.url).pathname)};\n${source}`
+  const result = spawnSync(process.execPath, ['-e', script], { cwd: new URL('../../../', import.meta.url), encoding: 'utf8', timeout: 10_000 })
+  if (result.status !== 0) throw Error(result.stderr || result.stdout)
+  expect(JSON.parse(result.stdout.trim())).toEqual({ entered: true, futureLabeled: true, pinned: true, inspection: { seeks: [], selected: ['2:T'], pauses: 2, unchanged: true }, closedAfterUnpin: true, located: { seeks: [50], closed: true }, escapeClosed: true })
+})
 
 function chart() {
   const window: ReplayWindow = { recording_id: 'r', window_id: 'w', context: { schema_version: 1 }, messages: [],
@@ -27,7 +37,7 @@ it('真实图表组件的可读ORD按归属列量，不把他单与未知归入�
   expect(html).toContain('人工 4 · 1单')
   expect(html).toContain('归属未知 未知 · 1单')
   expect(html).toContain('实线为本次，点线为账户上下文')
-  expect(html).toContain('自有量包含账户全部有效单')
+  expect(html).toContain('账户挂单是游标时刻该账户在此价位有效委托的未成交剩余量，包含其他执行')
   expect(html).toContain('本次成交')
   expect(html).toContain('账户上下文成交')
 })

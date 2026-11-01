@@ -14,7 +14,7 @@ export function replayRemainingQuantity(orders: Pick<ReplayOrder, 'remaining_vol
 
 export function replayChartLayout(width: number, height: number): ReplayChartLayout {
   const columns = width >= 600
-  return { left: 76, right: width - (columns ? 346 : 12), top: 34, bottom: height - 56,
+  return { left: 76, right: width - (columns ? 346 : 12), top: 34, bottom: height - 30,
     priceX: 68, cobX: width - 334, ordX: width - 68, columns }
 }
 

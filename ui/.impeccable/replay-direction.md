@@ -66,3 +66,18 @@ seed: user-approved-prototype — 对话内可交互草图的 `data-variant="盘
 保留全宽大图、市场价格线、自有委托线与成交标记、真实线性价格轴、实际动态已录档位和右侧引导线读数。沿用 AccountPageTitle、Select、Segmented、ValueSlider、既有主题与字体，不另建视觉体系。底部明细仍为128px、摘要列320px，仅验收1224×707与1440×900桌面。
 
 当前9张截图、259项测试/1100个断言与类型、构建、lint记录见 [统一时间轴证据](review/unified-axis/evidence.md)；本轮文档核对及保留的体系漂移见 [documentation.md](review/unified-axis/documentation.md)。真实样本证明买五卖五、横盘、成交、撤单和NOOP；动态2/4档、不对称与240档仍是明示fixture证据。未新增后端、Rust、数据库、交易入口、依赖或栅格素材；未验收手机、长期性能或新SDK/原生扩展。
+
+
+## 2026-11-01 最新确认：紧凑控制与可操作悬浮详情
+
+本条延续已确认的整段复盘与主图统一时间轴，只更新桌面控件密度、悬浮详情和盘口列名。用户批准的 [交互草图](/Users/schwarzroot/.codex/visualizations/2026/10/31/01a192b1-220e-79b0-9c0f-27ba65a415ac/replay-compact-interaction.html) 是组件交互参考，不是像素构图规格；实际页面继续保留全宽 Bookmap 大图、价格与委托线、成交标记、动态实际已录档位和真实线性价格轴，不按草图的局部示意删减盘口。
+
+品种、播放/步进、倍速、时间、模式和视图操作合为一条32px工具栏，次行只保留图例、挂量标尺及必要的视野外返回入口；删除常驻操作说明行。ValueSlider 的 axis 变体改为24px操作区与小三角，和 Canvas 时间基线对齐，保留焦点、键盘及微秒定位语义；默认 ValueSlider 仍为44px。继续复用 AccountPageTitle、Select、Segmented、Tooltip 和 ValueSlider，不改变全局 token、字体或组件体系。
+
+图中悬浮详情有12px外层进入区和200ms离开缓冲；指针或焦点移入会取消关闭，移入期间保持原命中锚点。固定会暂停回放，移开后仍保留；查看关联委托或成交会暂停并选择记录，不改变游标。取消固定后离开会关闭。画布聚焦时 Enter 固定当前价位详情，Escape 关闭；从卡内关闭时恢复画布焦点。“定位此时刻”才显式改变游标，成交使用原始微秒时间。后续已录标签按命中记录的实际观察时间判定；查看尚未到游标的成交，底部继续显示“尚未观察到”，不采用未来终态。
+
+右列由“自有量”改称“账户挂单”：表示回放游标时刻该账户在此价位有效委托的未成交剩余量，包含其他执行；不表示持仓、队列或排队位置，剩余量缺失保持未知。列头使用既有 Tooltip 提供范围说明，行详情继续说明本次执行的数量。
+
+整段仍指所选连续覆盖区间，可切换逐步回放；20,000条消息、16MiB、25秒预算及缺口、观察前缀、未知状态契约保持。实测1224×707时工具栏49→32px、轴44→24px、Canvas区域290→349px，页面无纵向溢出；拖动时间轴后其中心与 Canvas 基线偏差0px。验收仍仅1224×707、1440×900桌面。
+
+本轮260项测试/1101断言、15文件以及typecheck、构建、lint和两仓diff检查通过；detector仅一次，0 primary、3字号advisory。8张最终必需截图与真实录制交互见 [evidence.md](review/compact-hover/evidence.md)；fresh finish [reviewer.md](review/compact-hover/reviewer.md) 的实际裁决为 `disposition: ship`、无material fixes。体系漂移和独立验证边界见 [documentation.md](review/compact-hover/documentation.md)。未新增后端、Rust、数据库、交易、依赖或栅格素材；未验收手机、长期性能或新SDK/原生扩展。

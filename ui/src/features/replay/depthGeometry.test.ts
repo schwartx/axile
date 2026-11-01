@@ -55,9 +55,9 @@ describe('动态盘口及委托位置', () => {
   })
   it('密集热力以价格像素区间保留峰值与未知标记，不累加数量', () => {
     const depth = quote(2)
-    depth.bids = [{ price: 100, quantity: 2 }, { price: 100.00001, quantity: 9 }, { price: 100.00002, quantity: null }]
+    depth.bids = [{ price: 100.00001, quantity: 2 }, { price: 100.00002, quantity: 9 }, { price: 100.00003, quantity: null }]
     const heat = replayHeatCells([depth], range, 500, { min: 90, max: 110, tick: .00001 }, layout, [])
-    expect(heat.cells.some(cell => cell.quantity === 9 && cell.unknown && cell.minPrice === 100 && cell.maxPrice === 100.00002)).toBe(true)
+    expect(heat.cells.some(cell => cell.quantity === 9 && cell.unknown && cell.minPrice === 100.00001 && cell.maxPrice === 100.00003)).toBe(true)
     expect(heat.cells.some(cell => cell.quantity === 11)).toBe(false)
   })
   it('当前档位与终态的挂单时档位分开，过期和缺口不能沿用旧盘口', () => {

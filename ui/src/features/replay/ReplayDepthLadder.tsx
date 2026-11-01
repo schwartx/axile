@@ -1,6 +1,7 @@
 import { replayPriceY, replayRemainingQuantity, type ReplayChartLayout, type ReplayPriceView } from '@/features/replay/chartGeometry'
 import { recordedDepth, replayDepthBuckets, type ReplayDepthBucket } from '@/features/replay/depthGeometry'
 import { replayOwnership } from '@/features/replay/ownership'
+import { Tooltip } from '@/components/ui/Tooltip'
 import type { ReplayOrder, ReplayQuote } from '@/features/replay/types'
 
 export function ReplayDepthLadder({ quote, orders, view, layout, height, executionId, selected, onSelect, onZoom, priceText, quantityText }: {
@@ -24,7 +25,7 @@ export function ReplayDepthLadder({ quote, orders, view, layout, height, executi
     else if (bucket.orders.length) onSelect((bucket.orders.find(order => order.key === selected) ?? bucket.orders[0]).key)
   }
   return <div className="replay-depth-ladder num" style={{ left: layout.right + 8, height }} aria-label="与大图同价对齐的当前盘口">
-    <div className="replay-ladder-head"><span>价位映射</span><div><span>档位</span><span>价格</span><span>市场量</span><span>自有量</span></div></div>
+    <div className="replay-ladder-head"><span>价位映射</span><div><span>档位</span><span>价格</span><span>市场量</span><Tooltip content="回放游标时刻，账户在该价位的有效委托未成交剩余量，包含其他执行；不代表持仓或排队位置。"><button type="button" className="text-right" aria-label="账户挂单说明">账户挂单</button></Tooltip></div></div>
     <svg className="replay-ladder-lines" width="100%" height={height} aria-hidden="true">
       {buckets.map(bucket => <g key={`${bucket.minPrice}:${bucket.maxPrice}`}>
         <circle cx="6" cy={bucket.y} r="2" fill="var(--color-ink-2)" />
