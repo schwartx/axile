@@ -97,3 +97,5 @@ export function replayRange(coverage: ReplayRange[], start?: number, durationUs 
 export function replayGapAt(gaps: ReplayGap[], timeUs: number, symbol?: string): ReplayGap | undefined {
   return gaps.find(gap => timeUs >= gap.start_us && timeUs < gap.end_us && (!gap.symbol || !symbol || gap.symbol === symbol))
 }
+
+export const replayStatusLabels: Record<string, string> = { pending: '请求中', working: '已受理', partially_filled: '部分成交', pending_cancel: '撤单待确认', filled: '已成交', canceled: '已撤销', rejected: '已拒绝', expired: '已过期', unknown: '状态未知', trigger_wait: '等待触发', activated: '已激活，待确认场内状态' }

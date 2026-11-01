@@ -1,0 +1,78 @@
+import { replayOnBookOrder } from '@/features/replay/chartGeometry'
+import type { ReplayCursor, ReplayOrder, ReplayProjection, ReplayRange, ReplayTrade } from '@/features/replay/types'
+import type { ReplayPriceView } from '@/features/replay/chartGeometry'
+
+export const replayTradeKey = (trade: ReplayTrade) => `${trade.capture_seq}:${trade.key}`
+
+/** 浏览范围只覆盖当前已读取窗口，不改变回放游标。 */
+export function clampReplayView(view: ReplayRange, bounds: ReplayRange): ReplayRange {
+  const duration = Math.max(1, Math.min(bounds.end_us - bounds.start_us, Math.round(view.end_us - view.start_us)))
+  const start = Math.max(bounds.start_us, Math.min(bounds.end_us - duration, Math.round(view.start_us)))
+  return { start_us: start, end_us: start + duration }
+}
+
+export function zoomReplayTime(view: ReplayRange, factor: number, anchor: number, bounds: ReplayRange): ReplayRange {
+  const duration = Math.max(Math.min(1000, bounds.end_us - bounds.start_us), (view.end_us - view.start_us) * factor)
+  const ratio = (anchor - view.start_us) / (view.end_us - view.start_us)
+  return clampReplayView({ start_us: anchor - duration * ratio, end_us: anchor + duration * (1 - ratio) }, bounds)
+}
+
+export function zoomReplayPriceAt(view: ReplayPriceView, factor: number, anchor: number): ReplayPriceView {
+  const span = Math.max(view.tick * 4, (view.max - view.min) * factor)
+  const ratio = (anchor - view.min) / (view.max - view.min)
+  return { ...view, min: anchor - span * ratio, max: anchor + span * (1 - ratio) }
+}
+
+export function replayOrderCommands(order: ReplayOrder, projection: ReplayProjection) {
+  const linked = projection.commands.filter(command => command.order_id === order.order_id && command.symbol === order.symbol)
+  const ids = new Set(linked.map(command => command.command_id).filter(Boolean))
+  return projection.commands.filter(command => linked.includes(command) || ids.has(command.command_id))
+}
+
+/** 仅用游标前已关联的请求与回报展开过程；不向未来查询委托身份。 */
+export function replayOrderFocus(order: ReplayOrder, projection: ReplayProjection, bounds: ReplayRange): ReplayRange {
+  const rows = projection.orderHistory.filter(row => row.key === order.key)
+  const times = [...rows.map(row => row.time_us), ...projection.ownTrades.filter(trade => trade.order_id === order.order_id && trade.symbol === order.symbol).map(trade => trade.time_us),
+    ...replayOrderCommands(order, projection).map(command => command.time_us)]
+  if (replayOnBookOrder(order)) times.push(projection.time_us)
+  const from = Math.min(order.time_us, ...times), to = Math.max(order.time_us, ...times), pad = Math.max(1000, (to - from) * 0.3)
+  return clampReplayView({ start_us: from - pad, end_us: to + pad }, bounds)
+}
+
+export type OrderMarkKind = 'placed' | 'changed' | 'filled' | 'canceled' | 'expired' | 'rejected'
+export interface OrderMark { order: ReplayOrder; kind: OrderMarkKind; time: number; price: number }
+export interface OrderSegment { order: ReplayOrder; start: number; end: number; next: ReplayOrder | undefined; entry: boolean }
+
+function orderMarkKind(order: ReplayOrder, previous: ReplayOrder | undefined, entry: boolean, active: boolean): OrderMarkKind | null {
+  if (order.terminal && order.status !== previous?.status && ['filled', 'canceled', 'expired', 'rejected'].includes(order.status ?? '')) return order.status as OrderMarkKind
+  if (active && previous && replayOnBookOrder(previous) && previous.price !== order.price) return 'changed'
+  return entry ? 'placed' : null
+}
+
+/** 只描绘已观察到的生命周期；首个观察已是终态时只给终点，不补挂单起点。 */
+export function replayOrderTimeline(history: ReplayOrder[], symbol: string, range: ReplayRange, cursor: ReplayCursor) {
+  const groups = new Map<string, ReplayOrder[]>()
+  const segments: OrderSegment[] = [], marks: OrderMark[] = []
+  for (const order of history) {
+    if (order.symbol !== symbol || order.time_us > cursor.time_us || cursor.capture_seq != null && order.capture_seq > cursor.capture_seq) continue
+    const rows = groups.get(order.key) ?? []; rows.push(order); groups.set(order.key, rows)
+  }
+  for (const rows of groups.values()) {
+    rows.sort((a, b) => a.time_us - b.time_us || a.capture_seq - b.capture_seq)
+    let observedActive = false
+    rows.forEach((order, index) => {
+      const previous = rows[index - 1], next = rows[index + 1]
+      const active = replayOnBookOrder(order)
+      const entry = active && !order.carry_in && !observedActive
+      if (active) {
+        observedActive = true
+        const start = Math.max(range.start_us, order.time_us), end = Math.min(range.end_us - 1, cursor.time_us, next?.time_us ?? cursor.time_us)
+        if (end >= start) segments.push({ order, start, end, next, entry })
+      }
+      if (order.price == null || !Number.isFinite(order.price) || order.time_us < range.start_us || order.time_us >= range.end_us) return
+      const kind = orderMarkKind(order, previous, entry, active)
+      if (kind) marks.push({ order, kind, time: order.time_us, price: order.price })
+    })
+  }
+  return { segments, marks }
+}

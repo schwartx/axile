@@ -1,4 +1,4 @@
-import type { ReplayGap, ReplayOrder, ReplayQuote, ReplayRange } from '@/features/replay/types'
+import type { ReplayGap, ReplayOrder, ReplayQuote, ReplayRange, ReplayTrade } from '@/features/replay/types'
 
 export interface ReplayChartLayout { left: number; right: number; top: number; bottom: number; priceX: number; cobX: number; ordX: number; columns: boolean }
 export interface ReplayPriceView { min: number; max: number; tick: number }
@@ -13,9 +13,9 @@ export function replayRemainingQuantity(orders: Pick<ReplayOrder, 'remaining_vol
 }
 
 export function replayChartLayout(width: number, height: number): ReplayChartLayout {
-  const columns = width >= 720
-  return { left: columns ? 12 : 68, right: width - (columns ? 278 : 12), top: 34, bottom: height - 32,
-    priceX: columns ? width - 233 : 62, cobX: width - 187, ordX: width - 88, columns }
+  const columns = width >= 600
+  return { left: 76, right: width - (columns ? 346 : 12), top: 34, bottom: height - 32,
+    priceX: 68, cobX: width - 334, ordX: width - 68, columns }
 }
 
 export function replayPriceY(price: number, view: ReplayPriceView, layout: ReplayChartLayout): number {
@@ -42,7 +42,7 @@ export function depthGap(gaps: ReplayGap[], timeUs: number, symbol: string): boo
 
 export function currentReplayQuote(quote: ReplayQuote | undefined, timeUs: number, gaps: ReplayGap[]): ReplayQuote | null {
   if (!quote?.book_valid || quote.time_us > timeUs || depthGap(gaps, timeUs, quote.symbol)) return null
-  return quote.time_us === timeUs || (quote.valid_until_us != null && timeUs < quote.valid_until_us) ? quote : null
+  return quote.time_us === timeUs || (quote.valid_until_us != null && timeUs < quote.valid_until_us && replayQuoteEnd(quote, timeUs, timeUs, gaps) === timeUs) ? quote : null
 }
 
 /** 未声明有效区间的快照只是一处观测，不延展为连续深度。 */
@@ -56,9 +56,10 @@ export function replayQuoteEnd(quote: ReplayQuote, nextTimeUs: number, cursorUs:
   return Math.max(quote.time_us, end)
 }
 
-export function defaultReplayPriceView(quote: ReplayQuote | undefined, orders: ReplayOrder[], tick?: number | null): ReplayPriceView | null {
+export function defaultReplayPriceView(quote: Pick<ReplayQuote, 'bids' | 'asks'> | undefined, orders: ReplayOrder[], tick?: number | null, marketTrades: ReplayTrade[] = []): ReplayPriceView | null {
   const prices = quote ? [...quote.bids, ...quote.asks].map(level => level.price).filter(price => Number.isFinite(price) && price > 0) : []
   if (!prices.length) prices.push(...orders.flatMap(order => order.price != null && order.price > 0 ? [order.price] : []))
+  if (!prices.length) prices.push(...marketTrades.flatMap(trade => trade.price != null && Number.isFinite(trade.price) && trade.price > 0 ? [trade.price] : []))
   if (!prices.length) return null
   prices.sort((a, b) => a - b)
   const differences = prices.slice(1).map((price, index) => price - prices[index]).filter(value => value > 0)
@@ -68,13 +69,39 @@ export function defaultReplayPriceView(quote: ReplayQuote | undefined, orders: R
 
 export function zoomReplayPrice(view: ReplayPriceView, factor: number): ReplayPriceView {
   const center = (view.min + view.max) / 2
-  const half = Math.max(view.tick * 2, Math.min((view.max - view.min) * factor / 2, view.tick * 500))
+  const half = Math.max(view.tick * 2, (view.max - view.min) * factor / 2)
   return { ...view, min: center - half, max: center + half }
+}
+
+export function centerReplayPrice(view: ReplayPriceView, price: number): ReplayPriceView {
+  const half = (view.max - view.min) / 2
+  return { ...view, min: price - half, max: price + half }
+}
+
+/** 只连接已录制的市场成交价，窗口外、未来和缺口都不延线。 */
+export function replayMarketPriceSegments(trades: ReplayTrade[], symbol: string, range: ReplayRange, cursorUs: number, gaps: ReplayGap[]): ReplayTrade[][] {
+  const marketGaps = gaps.filter(gap => {
+    const topic = gap.topic?.replace(/^\/+/, '')
+    return (!gap.symbol || gap.symbol === symbol) && (!topic || topic === 'market_trade' || topic.startsWith('market_trade/'))
+  })
+  const visible = trades.filter(trade => trade.symbol === symbol && Number.isFinite(trade.time_us)
+    && trade.time_us >= range.start_us && trade.time_us < range.end_us && trade.time_us <= cursorUs)
+    .sort((left, right) => left.time_us - right.time_us || left.capture_seq - right.capture_seq)
+  const segments: ReplayTrade[][] = []
+  let previous: ReplayTrade | null = null
+  for (const trade of visible) {
+    if (trade.conflict || trade.price == null || !Number.isFinite(trade.price) || trade.price <= 0) { previous = null; continue }
+    if (marketGaps.some(gap => trade.time_us >= gap.start_us && trade.time_us < gap.end_us)) { previous = null; continue }
+    if (!previous || marketGaps.some(gap => previous!.time_us < gap.end_us && trade.time_us >= gap.start_us)) segments.push([])
+    segments[segments.length - 1].push(trade)
+    previous = trade
+  }
+  return segments
 }
 
 /** 同一屏幕格取峰值，显示压缩不能把瞬时大挂量平均掉。 */
 export function replayHeatCells(quotes: ReplayQuote[], range: ReplayRange, cursorUs: number, view: ReplayPriceView, layout: ReplayChartLayout, gaps: ReplayGap[]) {
-  const cells = new Map<string, { x: number; y: number; quantity: number }>()
+  const cells = new Map<string, { x: number; y: number; quantity: number | null; unknown: boolean; minPrice: number; maxPrice: number }>()
   const columnWidth = 3, rowHeight = Math.max(2, Math.min(18, (layout.bottom - layout.top) * view.tick / (view.max - view.min)))
   for (let index = 0; index < quotes.length; index++) {
     const quote = quotes[index]
@@ -84,11 +111,14 @@ export function replayHeatCells(quotes: ReplayQuote[], range: ReplayRange, curso
     const endX = Math.min(layout.right, replayTimeX(end, range, layout))
     if (end < range.start_us || fromX > layout.right) continue
     for (const level of [...quote.bids, ...quote.asks]) {
-      if (!Number.isFinite(level.price) || !Number.isFinite(level.quantity) || !(level.price > 0) || !(level.quantity >= 0) || level.price < view.min || level.price > view.max) continue
-      const y = replayPriceY(level.price, view, layout)
+      if (!Number.isFinite(level.price) || !(level.price > 0) || level.price < view.min || level.price > view.max) continue
+      const rawY = replayPriceY(level.price, view, layout)
+      const y = rowHeight === 2 ? Math.floor(rawY / 2) * 2 + 1 : rawY
       for (let x = Math.floor(fromX / columnWidth) * columnWidth; x <= Math.max(fromX, endX - 1); x += columnWidth) {
-        const key = `${x}:${level.price}`
-        if ((cells.get(key)?.quantity ?? -1) < level.quantity) cells.set(key, { x, y, quantity: level.quantity })
+        const key = `${x}:${y}`, previous = cells.get(key)
+        cells.set(key, { x, y, quantity: level.quantity == null ? previous?.quantity ?? null : Math.max(previous?.quantity ?? 0, level.quantity),
+          unknown: level.quantity == null || previous?.unknown === true,
+          minPrice: Math.min(previous?.minPrice ?? level.price, level.price), maxPrice: Math.max(previous?.maxPrice ?? level.price, level.price) })
       }
     }
   }

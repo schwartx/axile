@@ -76,7 +76,7 @@ export interface ReplayWindow {
   gaps: ReplayGap[]
   context: ReplayContext
 }
-export interface ReplayLevel { price: number; quantity: number }
+export interface ReplayLevel { price: number; quantity: number | null }
 export interface ReplayQuote {
   symbol: string
   bids: ReplayLevel[]

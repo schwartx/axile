@@ -21,13 +21,13 @@ function chart() {
 it('真实图表组件的可读ORD按归属列量，不把他单与未知归入本次', () => {
   const { window, projection } = chart()
   const html = renderToStaticMarkup(createElement(ReplayChart, { window, projection, symbol: 'X', executionId: 'E2',
-    range: window.coverage[0], selectedOrder: null, onSelectOrder: () => {}, onSeek: () => {} }))
+    range: window.coverage[0], selectedOrder: null, selectedTrade: null, onSelectTrade: () => {}, onInspect: () => {}, onSelectOrder: () => {}, onSeek: () => {} }))
   expect(html).toContain('本次执行 2 · 1单')
   expect(html).toContain('其他执行 3 · 1单')
   expect(html).toContain('人工 4 · 1单')
   expect(html).toContain('归属未知 未知 · 1单')
   expect(html).toContain('实线为本次，点线为账户上下文')
-  expect(html).toContain('本次仅含已识别归属')
+  expect(html).toContain('自有量包含账户全部有效单')
   expect(html).toContain('本次成交')
   expect(html).toContain('账户上下文成交')
 })
@@ -35,7 +35,7 @@ it('真实图表组件的可读ORD按归属列量，不把他单与未知归入�
 it('切换当前执行只改变归属展示，不改账户订单或数量', () => {
   const { window, projection } = chart(), before = JSON.stringify(projection)
   const html = renderToStaticMarkup(createElement(ReplayChart, { window, projection, symbol: 'X', executionId: 'E1',
-    range: window.coverage[0], selectedOrder: null, onSelectOrder: () => {}, onSeek: () => {} }))
+    range: window.coverage[0], selectedOrder: null, selectedTrade: null, onSelectTrade: () => {}, onInspect: () => {}, onSelectOrder: () => {}, onSeek: () => {} }))
   expect(html).toContain('本次执行 3 · 1单')
   expect(html).toContain('其他执行 2 · 1单')
   expect(JSON.stringify(projection)).toBe(before)

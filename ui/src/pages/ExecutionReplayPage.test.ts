@@ -10,6 +10,49 @@ function pageCase(scenario: string) {
   return JSON.parse(result.stdout.trim())
 }
 
+test('统一页头及多品种选择接入现有组件，不渲染原生下拉或range', () => {
+  const result = pageCase('controls')
+  expect(result.title).toMatchObject({ accountId: 7, name: 'demo', page: '执行回放', flip: false, back: { to: '/accounts/7/executions/E2' } })
+  expect(result.searchable).toBe(true)
+  expect(result.symbol).toBe('Y')
+  expect(result.nativeControl).toBe(false)
+})
+
+test('统一滑块拖动只预览，提交采用最终值并保持暂停', () => {
+  const result = pageCase('draft-commit')
+  expect(result.preview).toContain('08:00:05.000000')
+  expect(result.chartTimeBeforeCommit).toBe(0)
+  expect(result.cursor).toContain('08:00:07.000000')
+  expect(result.playing).toBe(false)
+})
+
+test('详情默认选中已观察的本次委托，并保留用户选择的账户上下文单', () => {
+  const result = pageCase('selection')
+  expect(result.initial).toBe(JSON.stringify(['X', 'O2']))
+  expect(result.selected).toBe(JSON.stringify(['X', 'M']))
+})
+
+test('首屏保持真实起点，显式定位首个盘口后才展示该观察且仍暂停', () => {
+  const result = pageCase('first-quote')
+  expect(result.before).toBe(false)
+  expect(result.after).toBe(true)
+  expect(result.cursor).toContain('08:00:01.000000')
+  expect(result.playing).toBe(false)
+})
+
+test('从后窗选择此前成交时，重新读取真实成交所在窗口而非夹到当前窗起点', () => {
+  const result = pageCase('trade-seek')
+  expect(result.cursor).toContain('08:00:05.000000')
+  expect(result.playing).toBe(false)
+})
+
+test('窗口播放结束后再次播放，从当前窗口起点重新开始', () => {
+  const result = pageCase('restart')
+  expect(result.stopped).toContain('08:00:39.999999')
+  expect(result.cursor).toContain('08:00:20.500000')
+  expect(result.playing).toBe(true)
+})
+
 test('跨窗口加载期间隐藏，加载完成与返回页面都保持暂停', () => {
   const result = pageCase('hidden')
   expect(result.hiddenPlaying).toBe(false)
@@ -70,4 +113,15 @@ test('实际订单列表及详情区分归属，冲突保留执行身份且不�
   expect(result.U.row).toContain('归属未知')
   expect(result.C.row).toContain('归属未知')
   expect(result.C.detail).toContain('归属未知 · 执行 E2')
+})
+
+
+test('点选图中成交暂停播放并关联委托及详情，但不改变游标或已应用观察', () => {
+  const result = pageCase('inspect')
+  expect(result.linked).toMatchObject({ order: JSON.stringify(['X', 'O1']), trade: '3:T', chartTrade: '3:T', tab: 'trades' })
+  expect(result.unchanged).toBe(true)
+  expect(result.playing).toBe(false)
+  expect(result.selectedOrder).toBe(JSON.stringify(['X', 'M']))
+  expect(result.selectedTrade).toBeNull()
+  expect(result.tab).toBe('orders')
 })

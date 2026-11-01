@@ -39,8 +39,8 @@ function quote(data: ReplayData, time: number, seq: number, topic = ''): ReplayQ
   const symbol = symbolOf(data, topic)
   if (!symbol) return null
   const levels = (value: unknown) => rows(value).flatMap(item => {
-    const row = replayObject(item), price = number(row.price), quantity = number(row.quantity)
-    return price != null && price > 0 && quantity != null && quantity >= 0 ? [{ price, quantity }] : []
+    const row = replayObject(item), price = number(known(row, 'price')), quantity = number(known(row, 'quantity'))
+    return price != null && price > 0 ? [{ price, quantity: quantity != null && quantity >= 0 ? quantity : null }] : []
   })
   const bids = levels(known(data, 'bids')), asks = levels(known(data, 'asks'))
   return {

@@ -2,12 +2,14 @@ import { useRef, useState } from 'react'
 import { sliderValueAt } from '@/components/ui/sliderValue'
 
 /** 自绘单值滑条：44px 操作区、指针捕获、刻度和完整键盘语义。 */
-export function ValueSlider({ value, min, max, step, onChange, label, unit = '', disabled = false, describedBy, invalid = false }: {
+export function ValueSlider({ value, min, max, step, onChange, onChangeEnd, formatValue, label, unit = '', disabled = false, describedBy, invalid = false }: {
   value: number
   min: number
   max: number
   step: number
   onChange: (value: number) => void
+  onChangeEnd?: (value: number) => void
+  formatValue?: (value: number) => string
   label: string
   unit?: string
   disabled?: boolean
@@ -16,21 +18,34 @@ export function ValueSlider({ value, min, max, step, onChange, label, unit = '',
 }) {
   const track = useRef<HTMLDivElement>(null)
   const pointer = useRef<number | null>(null)
+  const pending = useRef<number | null>(null)
   const [dragging, setDragging] = useState(false)
   const bounded = Math.max(min, Math.min(max, Number.isFinite(value) ? value : min))
   const fraction = (bounded - min) / (max - min)
+  const format = formatValue ?? ((next: number) => `${next}${unit}`)
   // 用易读的参考数值标刻度，位置仍按真实值计算，不改变参数精度。
   const marks = [...new Set([0.25, 0.5, 0.75].map((ratio) => Number((min + ratio * (max - min)).toPrecision(2))))]
     .filter((mark) => mark > min && mark < max)
+  const change = (next: number) => { pending.current = next; onChange(next) }
+  const commit = () => {
+    const next = pending.current
+    pending.current = null
+    if (next != null) onChangeEnd?.(next)
+  }
+  const finishPointer = () => {
+    pointer.current = null
+    setDragging(false)
+    commit()
+  }
   const changeAt = (clientX: number) => {
     const rect = track.current?.getBoundingClientRect()
     if (!rect || rect.width === 0) return
-    onChange(sliderValueAt((clientX - rect.left) / rect.width, min, max, step))
+    change(sliderValueAt((clientX - rect.left) / rect.width, min, max, step))
   }
   return <div className={`w-full ${disabled ? 'opacity-40' : ''}`}>
     <div role="slider" aria-label={label} aria-describedby={describedBy} aria-orientation="horizontal"
       aria-valuemin={min} aria-valuemax={max} aria-valuenow={bounded}
-      aria-valuetext={Number.isFinite(value) ? `${value}${unit}` : '请输入数值'}
+      aria-valuetext={Number.isFinite(value) ? format(value) : '请输入数值'}
       aria-disabled={disabled || undefined} aria-invalid={invalid || undefined} tabIndex={disabled ? -1 : 0}
       className={`group relative flex h-11 touch-pan-y select-none items-center rounded-lg px-3 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${disabled ? 'cursor-default' : dragging ? 'cursor-grabbing' : 'cursor-pointer'}`}
       onPointerDown={(event) => {
@@ -46,12 +61,13 @@ export function ValueSlider({ value, min, max, step, onChange, label, unit = '',
       }}
       onPointerUp={(event) => {
         if (pointer.current !== event.pointerId) return
-        pointer.current = null
-        setDragging(false)
+        if (!disabled) changeAt(event.clientX)
+        finishPointer()
         event.currentTarget.releasePointerCapture(event.pointerId)
       }}
-      onLostPointerCapture={() => { pointer.current = null; setDragging(false) }}
-      onPointerCancel={() => { pointer.current = null; setDragging(false) }}
+      onLostPointerCapture={finishPointer}
+      onPointerCancel={finishPointer}
+      onBlur={finishPointer}
       onKeyDown={(event) => {
         if (disabled) return
         let next: number
@@ -60,10 +76,13 @@ export function ValueSlider({ value, min, max, step, onChange, label, unit = '',
         else if (['ArrowLeft', 'ArrowDown', 'ArrowRight', 'ArrowUp', 'PageUp', 'PageDown'].includes(event.key)) {
           const direction = ['ArrowLeft', 'ArrowDown', 'PageDown'].includes(event.key) ? -1 : 1
           const delta = step * (event.key.startsWith('Page') || event.shiftKey ? 10 : 1)
-          next = Number(Math.max(min, Math.min(max, bounded + direction * delta)).toPrecision(15))
+          next = Number(Math.max(min, Math.min(max, (pending.current ?? bounded) + direction * delta)).toPrecision(15))
         } else return
         event.preventDefault()
-        onChange(next)
+        change(next)
+      }}
+      onKeyUp={(event) => {
+        if (['Home', 'End', 'ArrowLeft', 'ArrowDown', 'ArrowRight', 'ArrowUp', 'PageUp', 'PageDown'].includes(event.key)) commit()
       }}>
       <div ref={track} className="relative h-1.5 w-full rounded-full bg-ink-3/15">
         <div className={`absolute inset-y-0 left-0 rounded-full ${invalid ? 'bg-warn' : 'bg-accent'}`} style={{ width: `${fraction * 100}%` }} />
@@ -77,7 +96,7 @@ export function ValueSlider({ value, min, max, step, onChange, label, unit = '',
       </div>
     </div>
     <div aria-hidden="true" className="num flex justify-between px-3 text-[11px] text-ink-3">
-      <span>{min}{unit}</span><span>{marks.length === 3 ? `${marks[1]}${unit}` : ''}</span><span>{max}{unit}</span>
+      <span>{format(min)}</span><span>{marks.length === 3 ? format(marks[1]) : ''}</span><span>{format(max)}</span>
     </div>
   </div>
 }

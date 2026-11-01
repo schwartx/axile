@@ -35,10 +35,12 @@ const jsx = (type: any, props: any, key: any) => ({ type, props, key })
 mock.module('react/jsx-runtime', () => ({ jsx, jsxs: jsx, Fragment: 'fragment' }))
 mock.module('react/jsx-dev-runtime', () => ({ jsxDEV: jsx, Fragment: 'fragment' }))
 mock.module('react-router', () => ({ useParams: () => ({ id: '7', executionId: 'E2' }) }))
-mock.module('lucide-react', () => Object.fromEntries(['ChevronLeft', 'ChevronRight', 'Pause', 'Play', 'RefreshCw', 'SkipBack', 'SkipForward'].map(name => [name, () => null])))
-for (const [path, name] of [['components/ui/BackLink.tsx', 'BackLink'], ['components/ui/ErrorNotice.tsx', 'ErrorNotice'], ['components/ui/Segmented.tsx', 'Segmented'], ['features/replay/ReplayChart.tsx', 'ReplayChart']]) mock.module(ui + path, () => ({ [name]: () => null }))
+mock.module('lucide-react', () => Object.fromEntries(['ChevronLeft', 'ChevronRight', 'Info', 'Pause', 'Play', 'RefreshCw', 'SkipBack', 'SkipForward', 'X'].map(name => [name, () => null])))
+for (const [path, name] of [['features/account/pageHead.tsx', 'AccountPageTitle'], ['components/ui/Select.tsx', 'Select'], ['components/ui/ValueSlider.tsx', 'ValueSlider'], ['components/ui/BackLink.tsx', 'BackLink'], ['components/ui/ErrorNotice.tsx', 'ErrorNotice'], ['components/ui/Segmented.tsx', 'Segmented'], ['components/ui/OverflowText.tsx', 'OverflowText'], ['components/ui/InkRewrite.tsx', 'InkRewrite'], ['features/replay/ReplayChart.tsx', 'ReplayChart']]) mock.module(ui + path, () => ({ [name]: () => null }))
+mock.module(ui + 'stores/domain.ts', () => ({ useDomainStore: (select: any) => select({ accounts: [{ account_id: 7, name: 'demo', trade_channel: 'binance', market: 'crypto' }] }) }))
+mock.module(ui + 'lib/viewTransition.ts', () => ({ withViewTransition: (update: () => void) => update() }))
 
-const manifest = { account_id: 7, execution_id: 'E2', availability: 'partial', recordings: [{ recording_id: 'r', symbols: ['X'], symbols_complete: true, coverage: [{ start_us: 0, end_us: 40_000_000 }], context: { schema_version: 1, instrument: {} } }] }
+const manifest = { account_id: 7, execution_id: 'E2', availability: 'partial', recordings: [{ recording_id: 'r', symbols: scenario === 'controls' ? ['X', 'Y'] : ['X'], symbols_complete: true, coverage: [{ start_us: 0, end_us: 40_000_000 }], context: { schema_version: 1, instrument: {} } }] }
 mock.module(ui + 'lib/api/replay.ts', () => ({
   getReplayManifest: () => new Promise(resolve => { pendingManifest = () => resolve(manifest) }),
   readReplayWindow: async (_: string, request: any) => {
@@ -56,7 +58,10 @@ const make = (id: string, start: number) => ({ recording_id: 'r', window_id: id,
     conflict: { symbol: 'X', order_id: 'C', execution_id: 'E2', origin: 'external', status: 'working', confirmed_book: true, sync_generation: 1, quantity: 1, remaining_quantity: 1, price: 100 },
   } }, messages: [], coverage: [{ start_us: start, end_us: start + 20_000_000 }], gaps: [], next_cursor: null, complete: true })
 function windowAt(request: any) {
-  return { ...make(JSON.stringify(request), request.start_us), coverage: [{ start_us: request.start_us, end_us: request.end_us }] }
+  return { ...make(JSON.stringify(request), request.start_us), coverage: [{ start_us: request.start_us, end_us: request.end_us }],
+    ...(scenario === 'inspect' ? { messages: [{ schema_version: 1, recording_id: 'r', capture_seq: 3, time_us: 1_000_000, topic: '/trade', data: { symbol: 'X', trade_key: 'T', order_id: 'O1', execution_id: 'E1', quantity: 1, price: 100, direction: 'BUY', identity_quality: 'stable' } }, { schema_version: 1, recording_id: 'r', capture_seq: 4, time_us: 1_000_000, topic: '/noop', data: {} }] } : {}),
+    ...(scenario === 'first-quote' ? { messages: [{ schema_version: 1, recording_id: 'r', capture_seq: 3, time_us: 1_000_000,
+      topic: '/quote/X', data: { symbol: 'X', book_valid: true, bids: [{ price: 100, quantity: 1 }], asks: [{ price: 101, quantity: 2 }], valid_until_us: 2_000_000 } }] } : {}) }
 }
 const pageDocument = { hidden: false, addEventListener: (_: string, listener: () => void) => listeners.add(listener), removeEventListener: (_: string, listener: () => void) => listeners.delete(listener) }
 Object.assign(globalThis, { window: { setTimeout, clearTimeout }, document: pageDocument,
@@ -81,19 +86,67 @@ function find(node: any, predicate: (node: any) => boolean): any {
 }
 function text(node: any): string {
   if (node == null || typeof node === 'boolean') return ''
+  if (node?.props?.text != null) return String(node.props.text)
   if (Array.isArray(node)) return node.map(text).join(' ')
   return typeof node === 'object' ? text(node.props?.children) : String(node)
 }
 function button(label: string) { const node = find(tree, node => node.type === 'button' && text(node).includes(label)); if (!node) throw Error('missing button: ' + label); return node }
-function slider() { return find(tree, node => node.type === 'input' && node.props?.id === 'replay-time') }
+function slider() { return find(tree, node => node.props?.label === '录制定位') }
+function seekText() { const node = slider(); return node.props.formatValue(node.props.value) }
 function playing() { return Boolean(find(tree, node => node.props?.['aria-label'] === '暂停回放')) }
 function hide(hidden: boolean) { pageDocument.hidden = hidden; for (const listener of [...listeners]) listener(); flush() }
 function frame(now: number) { wall = now; const entry = frames.entries().next().value; if (entry) { frames.delete(entry[0]); entry[1](now); flush() } }
 flush(); pendingManifest!(); await settle()
-if (scenario === 'continue') {
+if (scenario === 'controls') {
+  const title = find(tree, node => node.props?.page === '执行回放').props
+  const chart = () => find(tree, node => node.props?.projection && node.props?.symbolControl)
+  const picker = chart().props.symbolControl
+  picker.props.onChange('Y'); await settle()
+  console.log(JSON.stringify({ title, searchable: picker.props.searchable, symbol: chart().props.symbol,
+    nativeControl: Boolean(find(tree, node => node.type === 'select' || node.type === 'input' && node.props?.type === 'range')) }))
+} else if (scenario === 'draft-commit') {
+  slider().props.onChange(5_000_000); flush()
+  const preview = seekText()
+  const chartTimeBeforeCommit = find(tree, node => node.props?.projection)?.props.projection.time_us
+  slider().props.onChangeEnd(7_000_000); await settle()
+  console.log(JSON.stringify({ preview, chartTimeBeforeCommit, cursor: seekText(), playing: playing() }))
+} else if (scenario === 'selection') {
+  const details = () => find(tree, node => typeof node.type === 'function' && node.type.name === 'OrdersAndTrades')
+  const initial = details().props.selected
+  details().props.onSelect(JSON.stringify(['X', 'M'])); flush()
+  console.log(JSON.stringify({ initial, selected: details().props.selected }))
+} else if (scenario === 'inspect') {
+  const chart = () => find(tree, node => node.props?.symbolControl && node.props?.projection)
+  const details = () => find(tree, node => typeof node.type === 'function' && node.type.name === 'OrdersAndTrades')
+  chart().props.onSeek(2_000_000); flush()
+  button('播放').props.onClick(); flush()
+  const before = JSON.stringify(chart().props.projection)
+  const trade = chart().props.projection.ownTrades[0]
+  chart().props.onSelectTrade(`${trade.capture_seq}:${trade.key}`); flush()
+  const linked = { order: details().props.selected, trade: details().props.selectedTradeKey, chartTrade: chart().props.selectedTrade, tab: details().props.tab }
+  const unchanged = before === JSON.stringify(chart().props.projection)
+  chart().props.onSelectOrder(JSON.stringify(['X', 'M'])); flush()
+  console.log(JSON.stringify({ linked, unchanged, playing: playing(), selectedOrder: details().props.selected, selectedTrade: chart().props.selectedTrade, tab: details().props.tab }))
+} else if (scenario === 'trade-seek') {
+  button('下一窗口').props.onClick(); await settle()
+  find(tree, node => typeof node.type === 'function' && node.type.name === 'OrdersAndTrades').props.onSeek(5_000_000)
+  await settle()
+  console.log(JSON.stringify({ cursor: seekText(), playing: playing() }))
+} else if (scenario === 'first-quote') {
+  const before = Boolean(find(tree, node => node.props?.projection)?.props.projection.quotes.X)
+  button('首个盘口').props.onClick(); flush()
+  console.log(JSON.stringify({ before, after: Boolean(find(tree, node => node.props?.projection)?.props.projection.quotes.X),
+    cursor: seekText(), playing: playing() }))
+} else if (scenario === 'restart') {
+  button('下一窗口').props.onClick(); await settle()
+  button('播放').props.onClick(); flush(); frame(20_001)
+  const stopped = seekText()
+  button('播放').props.onClick(); flush(); frame(20_501)
+  console.log(JSON.stringify({ stopped, cursor: seekText(), playing: playing() }))
+} else if (scenario === 'continue') {
   button('播放').props.onClick(); flush(); loadingNext = true; frame(20_001)
   await finishWindows()
-  console.log(JSON.stringify({ playing: playing(), cursor: slider().props['aria-valuetext'] }))
+  console.log(JSON.stringify({ playing: playing(), cursor: seekText() }))
 } else if (scenario.startsWith('hidden')) {
   button('播放').props.onClick(); flush(); loadingNext = true; frame(20_001)
   hide(true)
@@ -102,36 +155,36 @@ if (scenario === 'continue') {
   const hiddenPlaying = Boolean(find(tree, node => node.props?.['aria-label'] === '暂停回放'))
   hide(false); frame(50_001)
   console.log(JSON.stringify({ hiddenPlaying, playing: Boolean(find(tree, node => node.props?.['aria-label'] === '暂停回放')),
-    cursor: find(tree, node => node.type === 'input' && node.props?.id === 'replay-time').props['aria-valuetext'] }))
+    cursor: seekText() }))
 } else if (scenario === 'cached-seek') {
   find(tree, node => node.props?.onSeek && node.props?.projection).props.onSeek(10_000_000); flush()
-  const initial = slider().props['aria-valuetext']
+  const initial = seekText()
   loadingNext = true; button('下一窗口').props.onClick(); flush()
-  slider().props.onChange({ target: { value: '0' } }); flush()
-  slider().props.onPointerUp(); await settle()
-  const cursor = slider().props['aria-valuetext']
+  slider().props.onChange(0); flush()
+  slider().props.onChangeEnd(slider().props.value); await settle()
+  const cursor = seekText()
   await finishWindows()
-  const afterLateResponse = slider().props['aria-valuetext']
+  const afterLateResponse = seekText()
   find(tree, node => node.props?.onSeek && node.props?.projection).props.onSeek(5_000_000); flush()
-  console.log(JSON.stringify({ initial, cursor, afterLateResponse, afterNextSeek: slider().props['aria-valuetext'] }))
+  console.log(JSON.stringify({ initial, cursor, afterLateResponse, afterNextSeek: seekText() }))
 } else if (scenario.startsWith('pause-')) {
   button('播放').props.onClick(); flush(); loadingNext = true; frame(20_001)
-  if (scenario === 'pause-drag') slider().props.onChange({ target: { value: '25000000' } })
-  else find(tree, node => node.type === 'select' && node.props?.['aria-label'] === '窗口时长').props.onChange({ target: { value: '2' } })
+  if (scenario === 'pause-drag') slider().props.onChange(25000000)
+  else find(tree, node => node.props?.ariaLabel === '窗口时长').props.onChange('2')
   flush()
   const pausedBeforeLoad = !playing()
   await finishWindows()
-  console.log(JSON.stringify({ pausedBeforeLoad, playingAfterLoad: playing(), seekLabel: text(find(tree, node => node.type === 'label' && node.props?.htmlFor === 'replay-time')) }))
+  console.log(JSON.stringify({ pausedBeforeLoad, playingAfterLoad: playing(), seekLabel: text(find(tree, node => node.props?.id === 'replay-seek-description')) }))
 } else if (scenario.startsWith('missing')) {
-  const failed = { seek: Boolean(find(tree, node => node.type === 'input' && node.props?.id === 'replay-time')),
+  const failed = { seek: Boolean(slider()),
     playDisabled: button('播放').props.disabled, nextDisabled: button('下一窗口').props.disabled }
   if (scenario === 'missing-seek') {
-    find(tree, node => node.type === 'input' && node.props?.id === 'replay-time').props.onChange({ target: { value: '500000' } }); flush()
-    find(tree, node => node.type === 'input' && node.props?.id === 'replay-time').props.onPointerUp(); await settle()
+    slider().props.onChange(500000); flush()
+    slider().props.onChangeEnd(slider().props.value); await settle()
   } else { button('下一窗口').props.onClick(); await settle() }
   console.log(JSON.stringify({ failed, recovered: !find(tree, node => node.props?.title === '回放窗口读取失败')?.props.error,
     orders: Boolean(find(tree, node => typeof node.type === 'function' && node.type.name === 'OrdersAndTrades')),
-    cursor: find(tree, node => node.type === 'input' && node.props?.id === 'replay-time').props['aria-valuetext'] }))
+    cursor: seekText() }))
 } else if (scenario === 'ownership') {
   function expand(node: any): any {
     if (Array.isArray(node)) return node.map(expand)
@@ -146,7 +199,7 @@ if (scenario === 'continue') {
     find(tree, node => typeof node.type === 'function' && node.type.name === 'OrdersAndTrades').props.onSelect(JSON.stringify(['X', id])); flush()
     const section = find(expand(tree), node => node.type === 'section' && node.props?.['aria-label'] === '游标处自有委托')
     const row = find(section, node => node.type === 'tr' && Boolean(find(node.props.children, child => child.type === 'button' && text(child) === id)))
-    const detail = find(section, node => node.type === 'div' && Array.isArray(node.props.children)
+    const detail = find(expand(tree), node => node.type === 'div' && Array.isArray(node.props.children)
       && node.props.children.some((child: any) => child?.type === 'h3' && text(child).includes('委托详情')))
     rows[id] = { row: text(row).replace(/\s+/g, ' ').trim(), detail: text(detail).replace(/\s+/g, ' ').trim() }
   }

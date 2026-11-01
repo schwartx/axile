@@ -43,8 +43,8 @@ const TRIGGER_INLINE =
 /**
  * 受控单选下拉框（原生 `<select>` 的替代）。
  *
- * 触发器就地渲染，菜单经 `createPortal` 挂到 `document.body` 并按触发器矩形
- * 定位，故不受祖先 `overflow` 裁剪；空间不足时向上翻。仅用 `theme.css` 的语义
+ * 触发器就地渲染，菜单经 `createPortal` 挂到原生弹层或 `document.body`，按触发器矩形
+ * 定位，故不受祖先 `overflow` 裁剪；原生弹层内挂到同一 top layer，空间不足时向上翻。仅用 `theme.css` 的语义
  * token 着色，明暗主题自动跟随。支持键盘（↑/↓/Home/End/Enter/Esc）与可选搜索。
  *
  * 值以 `===` 比较，故 `T` 可为 `number | null` 等，用 `null` 承载「空/不绑定」哨兵。
@@ -344,7 +344,7 @@ export function Select<T>({
               })}
             </ul>
           </div>,
-          document.body,
+          triggerRef.current?.closest(':popover-open, dialog[open]') ?? document.body,
         )}
     </>
   )

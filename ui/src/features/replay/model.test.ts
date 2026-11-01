@@ -22,6 +22,20 @@ const fill = (id: string, quantity: number, rest: ReplayData = {}): ReplayData =
   identity_quality: 'stable', quantity, price: 99, direction: 'BUY', position_side: 'NET', execution_id: 'exec-1', ...rest })
 
 describe('回放按本地已观察前缀恢复', () => {
+  test('盘口档数来自每次观察，保留未知量和零量；连续播放与窗前恢复一致', () => {
+    const depth = { symbol: 'A', book_valid: true, valid_until_us: 1000,
+      bids: [{ price: 98, quantity: 0 }, { price: 97 }, { price: 96, quantity: 8, field_quality: { quantity: 'invalid' } }, { price: 95, quantity: -1 }, { price: 94, quantity: 4, field_quality: { price: 'missing' } }],
+      asks: [{ price: 99, quantity: 3 }, { price: 100, quantity: 4 }] }
+    const messages = [message(1, '/quote/A', { ...depth, bids: depth.bids.slice(0, 2) }), message(2, '/quote/A', depth)]
+    const before = projectReplay(windowOf(messages), { time_us: 100 })
+    expect(before.quotes.A.bids).toHaveLength(2)
+    const continuous = projectReplay(windowOf(messages), { time_us: 200 })
+    const recovered = projectReplay(windowOf([], { state_through_seq: 2, time_us: 200, quotes: { A: { ...depth, observed_at_us: 200 } } }), { time_us: 200 })
+    expect(continuous.quotes.A.bids.map(level => level.quantity)).toEqual([0, null, null, null])
+    expect(continuous.quotes.A.asks).toHaveLength(2)
+    expect(continuous.quotes.A.bids).toEqual(recovered.quotes.A.bids)
+    expect(continuous.quotes.A.asks).toEqual(recovered.quotes.A.asks)
+  })
   for (const complete of [false, true]) for (const scenario of positionMerges) {
     test(`持仓字段 ${scenario.name} complete=${complete} 连播与窗前/窗后恢复一致`, () => {
       const first = { symbol: 'X', position_side: 'LONG', quantity: 4, ...scenario.initial }
