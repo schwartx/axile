@@ -8,11 +8,11 @@ mock.module('react', () => ({
   useState: (initial: any) => { const i = at++; slots[i] ??= { value: initial }; return [slots[i].value, (next: any) => { slots[i].value = typeof next === 'function' ? next(slots[i].value) : next }] },
   useMemo: (fn: any) => fn(), useCallback: (fn: any) => fn, useLayoutEffect: () => {},
 }))
-const jsx = (type: any, props: any) => ({ type, props })
+const jsx = (type: any, props: any) => type?.name === 'ReplayInspector' ? type(props) : ({ type, props })
 mock.module('react/jsx-runtime', () => ({ jsx, jsxs: jsx, Fragment: 'fragment' }))
 mock.module('react/jsx-dev-runtime', () => ({ jsxDEV: jsx, Fragment: 'fragment' }))
 mock.module('lucide-react', () => Object.fromEntries(['Circle', 'Crosshair', 'Diamond', 'Info', 'Minus', 'Pin', 'Plus', 'RotateCcw', 'Square', 'X'].map(name => [name, () => null])))
-for (const name of ['Tooltip', 'ValueSlider', 'Segmented']) mock.module(ui + `components/ui/${name}.tsx`, () => ({ [name]: () => null }))
+for (const name of ['Tooltip', 'ValueSlider', 'Segmented', 'Select']) mock.module(ui + `components/ui/${name}.tsx`, () => ({ [name]: () => null }))
 mock.module(ui + 'features/replay/ReplayDepthLadder.tsx', () => ({ ReplayDepthLadder: () => null }))
 mock.module(ui + 'lib/viewTransition.ts', () => ({ withViewTransition: (fn: any) => fn() }))
 Object.assign(globalThis, { window: { setTimeout: (fn: () => void) => { timers.set(++nextTimer, fn); return nextTimer }, clearTimeout: (id: number) => timers.delete(id) } })
@@ -47,23 +47,33 @@ function hover() {
 hover()
 find(tree, n => n.type === 'canvas').props.onPointerLeave(); panel().props.onPointerEnter(); runTimers()
 const entered = Boolean(panel())
-const overlappingMarketAccessible = Boolean(find(panel(), n => n.type === 'button' && n.props.children === '市场记录 · 卖 · 08:00:00.000051 · #6'))
-const futureLabeled = find(panel(), n => n.type === 'p').props.children.startsWith('后续已录')
+const picker = () => find(panel(), n => n.props?.ariaLabel === '选择命中对象')
+const options = picker().props.options
+const overlappingMarketAccessible = options.filter((option: any) => option.label.startsWith('市场成交')).length === 3
+const futureLabeled = Boolean(find(panel(), n => n.type === 'span' && n.props.children === '后续已录 · '))
+const previewCompact = Boolean(find(panel(), n => n.props?.inert === true))
 button('固定详情').props.onClick(); draw(); panel().props.onPointerLeave(); runTimers()
 const pinned = button('取消固定详情').props['aria-pressed']
-const group = () => find(panel(), n => n.props?.['aria-label'] === '此处的原始记录').props.children
-let summaries = group().filter((n: any) => typeof n.props.children === 'string' && n.props.children.includes('条市场记录'))
-summaries[2].props.onClick(); draw()
-const oneSameDirectionSelected = group().filter((n: any) => n.props['aria-pressed']).length === 1
-summaries = group().filter((n: any) => typeof n.props.children === 'string' && n.props.children.includes('条市场记录'))
-summaries[1].props.onClick(); draw()
-const bubbleDirectionsDistinct = oneSameDirectionSelected && group().filter((n: any) => n.props['aria-pressed']).length === 1 && summaries.some((n: any) => n.props.children.includes('主动买')) && summaries.some((n: any) => n.props.children.includes('主动卖'))
-find(panel(), n => n.type === 'button' && typeof n.props.children === 'string' && n.props.children.startsWith('账户逐笔')).props.onClick(); draw()
+const markets = options.filter((option: any) => option.label.startsWith('市场成交'))
+picker().props.onChange(markets[2].value); draw()
+const oneSameDirectionSelected = picker().props.value === markets[2].value
+picker().props.onChange(markets[1].value); draw()
+const bubbleDirectionsDistinct = oneSameDirectionSelected && picker().props.value === markets[1].value && markets.some((option: any) => option.label.includes('主动买')) && markets.some((option: any) => option.label.includes('主动卖'))
+const marketClearsOrderIdentity = !String(picker().props.selectedValue.props.children).includes('委托') && !button('放大过程') && !button('查看委托')
+picker().props.onChange(options.find((option: any) => option.label.startsWith('账户委托')).value); draw()
+find(panel(), n => n.type === 'button' && Array.isArray(n.props.children) && n.props.children[0]?.props?.children?.startsWith?.('逐笔成交')).props.onClick(); draw()
 button('查看成交').props.onClick(); draw()
 const inspection = { seeks: [...seeks], selected: [...selected], pauses, unchanged: JSON.stringify(projection) === before }
 button('取消固定详情').props.onClick(); draw(); panel().props.onPointerLeave(); runTimers()
 const closedAfterUnpin = !panel()
-hover(); find(panel(), n => n.type === 'button' && typeof n.props.children === 'string' && n.props.children.startsWith('账户逐笔')).props.onClick(); draw(); button('定位此时刻').props.onClick(); draw()
+hover(); button('固定详情').props.onClick(); draw(); find(panel(), n => n.type === 'button' && Array.isArray(n.props.children) && n.props.children[0]?.props?.children?.startsWith?.('逐笔成交')).props.onClick(); draw(); button('定位此时刻').props.onClick(); draw()
 const located = { seeks: [...seeks], closed: !panel() }
+const beforeClickSeeks = seeks.length
+const target = { focus() {}, setPointerCapture() {}, hasPointerCapture: () => false, getBoundingClientRect: () => ({ left: 0, top: 0 }) }
+let chartCanvas = find(tree, n => n.type === 'canvas')
+const clickEvent = { button: 0, pointerId: 1, clientX: replayTimeX(50, props.range, layout), clientY: replayPriceY(100, view, layout), currentTarget: target }
+chartCanvas.props.onPointerDown(clickEvent); chartCanvas.props.onPointerUp(clickEvent); draw()
+const clickPinsWithoutSeek = seeks.length === beforeClickSeeks && Boolean(button('取消固定详情')?.props['aria-pressed'])
+
 hover(); panel().props.onKeyDown({ key: 'Escape', stopPropagation() {} }); draw()
-console.log(JSON.stringify({ entered, overlappingMarketAccessible, bubbleDirectionsDistinct, futureLabeled, pinned, inspection, closedAfterUnpin, located, escapeClosed: !panel() }))
+console.log(JSON.stringify({ entered, previewCompact, overlappingMarketAccessible, bubbleDirectionsDistinct, marketClearsOrderIdentity, futureLabeled, pinned, inspection, closedAfterUnpin, located, clickPinsWithoutSeek, escapeClosed: !panel() }))

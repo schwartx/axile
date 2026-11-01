@@ -12,7 +12,7 @@ it('悬浮详情可移入与固定，查看不定位，取消固定离开关闭�
   const script = `const ui=${JSON.stringify(new URL('../../', import.meta.url).pathname)};\n${source}`
   const result = spawnSync(process.execPath, ['-e', script], { cwd: new URL('../../../', import.meta.url), encoding: 'utf8', timeout: 10_000 })
   if (result.status !== 0) throw Error(result.stderr || result.stdout)
-  expect(JSON.parse(result.stdout.trim())).toEqual({ entered: true, overlappingMarketAccessible: true, bubbleDirectionsDistinct: true, futureLabeled: true, pinned: true, inspection: { seeks: [], selected: ['3:T'], pauses: 5, unchanged: true }, closedAfterUnpin: true, located: { seeks: [50, 3], closed: true }, escapeClosed: true })
+  expect(JSON.parse(result.stdout.trim())).toEqual({ entered: true, previewCompact: true, overlappingMarketAccessible: true, bubbleDirectionsDistinct: true, marketClearsOrderIdentity: true, futureLabeled: true, pinned: true, inspection: { seeks: [], selected: ['3:T'], pauses: 6, unchanged: true }, closedAfterUnpin: true, located: { seeks: [50, 3], closed: true }, clickPinsWithoutSeek: true, escapeClosed: true })
 })
 
 function chart() {

@@ -1,4 +1,4 @@
-import { replayOnBookOrder } from '@/features/replay/chartGeometry'
+import { replayOnBookOrder, replayPriceY, replayTimeX, type ReplayChartLayout } from '@/features/replay/chartGeometry'
 import type { ReplayCursor, ReplayOrder, ReplayProjection, ReplayRange, ReplayTrade } from '@/features/replay/types'
 import type { ReplayPriceView } from '@/features/replay/chartGeometry'
 
@@ -62,6 +62,16 @@ export function replayOrderFocus(order: ReplayOrder, projection: ReplayProjectio
 export type OrderMarkKind = 'placed' | 'changed' | 'filled' | 'canceled' | 'expired' | 'rejected'
 export interface OrderMark { order: ReplayOrder; kind: OrderMarkKind; time: number; price: number }
 export interface OrderSegment { order: ReplayOrder; start: number; end: number; next: ReplayOrder | undefined; entry: boolean }
+
+/** 同一委托的入场与终点挤在一起时保留终点；放大后恢复入场，原始观察不变。 */
+export function replayVisibleOrderMarks(marks: OrderMark[], range: ReplayRange, view: ReplayPriceView, layout: ReplayChartLayout): OrderMark[] {
+  const terminals = new Map<string, OrderMark[]>()
+  for (const mark of marks) if (['filled', 'canceled', 'expired', 'rejected'].includes(mark.kind)) {
+    const rows = terminals.get(mark.order.key) ?? []; rows.push(mark); terminals.set(mark.order.key, rows)
+  }
+  return marks.filter(mark => mark.kind !== 'changed' && (mark.kind !== 'placed' || !(terminals.get(mark.order.key) ?? []).some(end =>
+    Math.hypot(replayTimeX(end.time, range, layout) - replayTimeX(mark.time, range, layout), replayPriceY(end.price, view, layout) - replayPriceY(mark.price, view, layout)) < 13)))
+}
 
 function orderMarkKind(order: ReplayOrder, previous: ReplayOrder | undefined, entry: boolean, active: boolean): OrderMarkKind | null {
   if (order.terminal && order.status !== previous?.status && ['filled', 'canceled', 'expired', 'rejected'].includes(order.status ?? '')) return order.status as OrderMarkKind
