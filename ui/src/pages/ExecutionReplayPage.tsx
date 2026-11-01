@@ -103,10 +103,10 @@ export function ExecutionReplayPage() {
     }
   }, [windowData, range, initialCursor, cursorWindow, requestedSeek])
 
-  const pauseAndSeek = useCallback((timeUs: number) => {
+  const pauseAndSeek = useCallback((timeUs: number, captureSeq?: number) => {
     continuePlayback.current = null
     setPlaying(false)
-    if (range) setCursor({ time_us: Math.max(range.start_us, Math.min(range.end_us - 1, Math.round(timeUs))) })
+    if (range) setCursor({ time_us: Math.max(range.start_us, Math.min(range.end_us - 1, Math.round(timeUs))), capture_seq: captureSeq })
   }, [range])
   const seekRecording = (timeUs: number) => {
     continuePlayback.current = null

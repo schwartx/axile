@@ -4,6 +4,26 @@ import type { ReplayPriceView } from '@/features/replay/chartGeometry'
 
 export const replayTradeKey = (trade: ReplayTrade) => `${trade.capture_seq}:${trade.key}`
 
+export function replayOrderHistoryLabel(order: ReplayOrder, cursor: ReplayCursor): string {
+  const future = order.time_us > cursor.time_us || order.time_us === cursor.time_us && cursor.capture_seq != null && order.capture_seq > cursor.capture_seq
+  return `${future ? '后续' : ''}已录${order.terminal ? '终态' : '轨迹'}`
+}
+
+export interface ReplayOrderLayers { working: boolean; canceled: boolean; filled: boolean }
+
+/** 图层按已读取范围的最后状态筛选整条轨迹，不改变游标状态或原始事实。 */
+export function replayVisibleOrders(history: ReplayOrder[], layers: ReplayOrderLayers): ReplayOrder[] {
+  const latest = new Map<string, ReplayOrder>()
+  for (const order of history) {
+    const previous = latest.get(order.key)
+    if (!previous || order.time_us > previous.time_us || order.time_us === previous.time_us && order.capture_seq > previous.capture_seq) latest.set(order.key, order)
+  }
+  return history.filter(order => {
+    const last = latest.get(order.key)!
+    return last.status === 'filled' ? layers.filled : last.status === 'canceled' ? layers.canceled : replayOnBookOrder(last) ? layers.working : true
+  })
+}
+
 /** 浏览范围只覆盖当前已读取窗口，不改变回放游标。 */
 export function clampReplayView(view: ReplayRange, bounds: ReplayRange): ReplayRange {
   const duration = Math.max(1, Math.min(bounds.end_us - bounds.start_us, Math.round(view.end_us - view.start_us)))

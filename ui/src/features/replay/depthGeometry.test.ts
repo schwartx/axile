@@ -6,6 +6,7 @@ import { replayOrderFocus } from '@/features/replay/chartInteraction'
 import { recordedDepth, replayBestLevel, replayDepthBuckets, replayObservedPriceView, replayOrderBookPosition, replayOrderPositionContext, replayTradeLiquidity } from '@/features/replay/depthGeometry'
 import { ReplayDepthLadder } from '@/features/replay/ReplayDepthLadder'
 import type { ReplayOrder, ReplayProjection, ReplayQuote } from '@/features/replay/types'
+import type { ReactElement } from 'react'
 
 const quote = (bids = 2, asks = bids): ReplayQuote => ({ symbol: 'X', bids: Array.from({ length: bids }, (_, index) => ({ price: 100 - index, quantity: index + 1 })),
   asks: Array.from({ length: asks }, (_, index) => ({ price: 102 + index, quantity: index + 1 })), book_valid: true, valid_until_us: 1000,
@@ -52,6 +53,19 @@ describe('动态盘口及委托位置', () => {
     const heat = replayHeatCells([depth], range, 500, view, layout, [])
     expect(heat.cells.some(cell => cell.quantity === null && cell.unknown)).toBe(true)
     expect(heat.cells.some(cell => cell.quantity === 0 && !cell.unknown)).toBe(true)
+  })
+  it('同价多单显示数量与笔数，可选第二张；未知剩余量不被合计为零', () => {
+    const selected: string[] = [], orders = [order({ key: 'A', order_id: 'A', execution_id: 'E' }), order({ key: 'B', order_id: 'B', remaining_volume: null })]
+    const tree = ReplayDepthLadder({ quote: quote(), orders, view: { min: 95, max: 105, tick: 1 }, layout, height: 420, executionId: 'E', selected: 'A', onSelect: key => selected.push(key), onZoom: () => {}, priceText: String, quantityText: value => value == null ? '未知' : String(value) })
+    const nodes: ReactElement<Record<string, any>>[] = []
+    const visit = (node: any) => { if (Array.isArray(node)) node.forEach(visit); else if (node && typeof node === 'object' && node.props) { nodes.push(node); visit(node.props.children); visit(node.props.content) } }
+    visit(tree)
+    expect(nodes.find(node => node.type === 'button' && String(node.props['aria-label']).includes('展开 2 张同价挂单'))).toBeDefined()
+    expect(nodes.some(node => node.type === 'span' && node.props.children === '未知 (2)')).toBe(true)
+    const button = nodes.find(node => node.type === 'button' && Array.isArray(node.props.children) && node.props.children[0]?.props.children[0] === 'B')!
+    button.props.onClick()
+    expect(selected).toEqual(['B'])
+    expect(orders[1].remaining_volume).toBeNull()
   })
   it('密集热力以价格像素区间保留峰值与未知标记，不累加数量', () => {
     const depth = quote(2)

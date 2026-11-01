@@ -17,7 +17,7 @@ export function ReplayDepthLadder({ quote, orders, view, layout, height, executi
     const prices = bucket.minPrice === bucket.maxPrice ? priceText(bucket.minPrice) : `${priceText(bucket.minPrice)}–${priceText(bucket.maxPrice)}`
     const rank = bucket.levels.length === 1 ? `${bucket.levels[0].side}${bucket.levels[0].rank ?? '·0'}` : bucket.levels.length ? `${bucket.levels.length}档` : quote ? '档外' : '未知'
     const amount = bucket.quantity == null ? '未知' : `${quantityText(bucket.quantity)}${bucket.levels.length > 1 ? ' 峰' : ''}${bucket.unknown ? ' ?' : ''}`
-    const own = bucket.orders.length ? quantityText(replayRemainingQuantity(bucket.orders)) : '—'
+    const own = bucket.orders.length ? `${quantityText(replayRemainingQuantity(bucket.orders))}${bucket.orders.length > 1 ? ` (${bucket.orders.length})` : ''}` : '—'
     return { rank, prices, amount, own }
   }
   const select = (bucket: ReplayDepthBucket) => {
@@ -39,8 +39,10 @@ export function ReplayDepthLadder({ quote, orders, view, layout, height, executi
         const current = bucket.orders.filter(order => replayOwnership(order, executionId).kind === 'current')
         const title = `${row.rank} · ${row.prices} · ${grouped ? '区间峰值' : '市场挂量'} ${row.amount}${bucket.unknown ? '，含未知量' : ''} · 自有剩余 ${row.own}${current.length ? `，本次 ${quantityText(replayRemainingQuantity(current))}` : ''}${grouped ? '；点击放大看单档' : ''}；价位不代表排队顺序`
         const content = <><span className={bucket.levels[0]?.side === '买' ? 'replay-depth-bid' : 'replay-depth-ask'}>{row.rank}</span><span className={grouped ? 'replay-ladder-price-range' : ''}>{grouped ? <><span>{priceText(bucket.minPrice)}</span><span>– {priceText(bucket.maxPrice)}</span></> : row.prices}</span><span className="replay-ladder-amount"><i aria-hidden="true" className={bucket.levels[0]?.side === '买' ? 'replay-depth-bid' : 'replay-depth-ask'} style={{ width: `${(bucket.quantity ?? 0) / max * 100}%` }} /><span>{row.amount}</span></span><span className={bucket.orders.some(order => order.cancel_pending) ? 'text-warn' : 'text-accent'}>{row.own}</span></>
+        const multiple = !grouped && bucket.orders.length > 1
+        const button = <button type="button" title={multiple ? undefined : title} aria-label={multiple ? `${title}；展开 ${bucket.orders.length} 张同价挂单` : title} className={`replay-ladder-row ${grouped ? 'is-grouped' : ''} ${bucket.orders.some(order => order.key === selected) ? 'is-selected' : ''}`} style={{ top: bucket.labelY - (grouped ? 12 : 10) }} onClick={event => { if (multiple) event.currentTarget.focus(); else select(bucket) }}>{content}</button>
         return <div role="listitem" key={`${bucket.minPrice}:${bucket.maxPrice}`}>
-          {grouped || bucket.orders.length ? <button type="button" title={title} aria-label={title} className={`replay-ladder-row ${grouped ? 'is-grouped' : ''} ${bucket.orders.some(order => order.key === selected) ? 'is-selected' : ''}`} style={{ top: bucket.labelY - (grouped ? 12 : 10) }} onClick={() => select(bucket)}>{content}</button>
+          {multiple ? <Tooltip interactive delay={0} content={<div aria-label={`${row.prices} 的账户挂单`}><p>{row.prices} · {bucket.orders.length} 张挂单 · 剩余 {row.own}</p><div className="replay-ladder-orders">{bucket.orders.map(order => <button key={order.key} type="button" aria-pressed={order.key === selected} onClick={() => onSelect(order.key)}><span>{order.order_id} · {replayOwnership(order, executionId).label}</span><span>{order.direction === 'BUY' ? '买' : order.direction === 'SELL' ? '卖' : '方向未知'} · 剩余 {quantityText(order.remaining_volume)}{order.cancel_pending ? ' · 待撤' : ''}</span></button>)}</div><p>价格档位不代表排队顺序</p></div>}>{button}</Tooltip> : grouped || bucket.orders.length ? button
             : <div title={title} className="replay-ladder-row" style={{ top: bucket.labelY - 10 }}>{content}</div>}
         </div>
       })}

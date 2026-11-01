@@ -99,12 +99,21 @@
 .replay-hover-actions { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-top: 4px; }
 .replay-hover-actions button { gap: 4px; font-size: 12px; }
 .replay-hover-actions [aria-pressed="true"] { color: var(--color-accent); }
+.replay-hover-records { max-height: 112px; overflow: auto; margin-top: 6px; border-block: 1px solid var(--color-line); }
+.replay-hover-records button, .replay-ladder-orders button { display: block; width: 100%; padding: 4px; text-align: left; cursor: pointer; }
+.replay-hover-records button:hover, .replay-hover-records [aria-pressed="true"], .replay-ladder-orders button:hover, .replay-ladder-orders [aria-pressed="true"] { background: var(--color-accent-soft); }
+.replay-hover-records button:focus-visible, .replay-ladder-orders button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.replay-ladder-orders { max-height: 180px; overflow: auto; margin-block: 6px; }
+.replay-ladder-orders button span { display: block; }
+.replay-layer-options { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 12px; }
+.replay-layer-options label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.replay-layer-options input { accent-color: var(--color-accent); }
 .replay-depth-bid { color: var(--color-up); }
 .replay-depth-ask { color: var(--color-down); }
 .replay-ladder-row > .replay-depth-ask, .replay-chart-legend > .replay-depth-ask { color: color-mix(in oklab, var(--color-down) 80%, var(--color-ink-1) 20%); }
 .replay-depth-ladder { position: absolute; top: 0; right: 0; border-left: 1px solid var(--color-line); font-size: 11px; }
 .replay-ladder-head { display: flex; align-items: center; height: 28px; padding-left: 6px; color: var(--color-ink-2); }
-.replay-ladder-head > div, .replay-ladder-row { display: grid; grid-template-columns: 34px 66px minmax(76px, 1fr) 52px; gap: 4px; }
+.replay-ladder-head > div, .replay-ladder-row { display: grid; grid-template-columns: 28px 60px minmax(70px, 1fr) 66px; gap: 4px; }
 .replay-ladder-head > div { position: absolute; right: 8px; left: 82px; text-align: right; }
 .replay-ladder-head > div > :first-child, .replay-ladder-row > :first-child { text-align: left; }
 .replay-ladder-lines { position: absolute; inset: 0; pointer-events: none; }

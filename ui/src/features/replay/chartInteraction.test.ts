@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { clampReplayView, replayOrderTimeline, zoomReplayPriceAt, zoomReplayTime } from '@/features/replay/chartInteraction'
+import { clampReplayView, replayOrderHistoryLabel, replayOrderTimeline, replayVisibleOrders, zoomReplayPriceAt, zoomReplayTime } from '@/features/replay/chartInteraction'
 import type { ReplayOrder } from '@/features/replay/types'
 
 const bounds = { start_us: 0, end_us: 10_000_000 }
@@ -11,6 +11,13 @@ const order = (time_us: number, values: Partial<ReplayOrder> = {}): ReplayOrder 
 const timeline = (rows: ReplayOrder[], time_us = 999, capture_seq?: number) => replayOrderTimeline(rows, 'X', { start_us: 100, end_us: 1000 }, { time_us, capture_seq })
 
 describe('图表浏览与订单生命周期', () => {
+  it('整段标签直接区分已录终态和游标之后终态，包括同微秒序号', () => {
+    const filled = order(200, { terminal: true, status: 'filled', capture_seq: 3 })
+    expect(replayOrderHistoryLabel(filled, { time_us: 199 })).toBe('后续已录终态')
+    expect(replayOrderHistoryLabel(filled, { time_us: 200, capture_seq: 2 })).toBe('后续已录终态')
+    expect(replayOrderHistoryLabel(filled, { time_us: 200, capture_seq: 3 })).toBe('已录终态')
+    expect(replayOrderHistoryLabel(order(150), { time_us: 200 })).toBe('已录轨迹')
+  })
   it('时间缩放保持鼠标锚点比例，并夹在已读取窗口内', () => {
     const view = zoomReplayTime(bounds, .5, 2_000_000, bounds)
     expect(view).toEqual({ start_us: 1_000_000, end_us: 6_000_000 })
@@ -33,6 +40,20 @@ describe('图表浏览与订单生命周期', () => {
     const result = timeline([order(300, { terminal: true, status: 'filled', remaining_volume: 0 })])
     expect(result.segments).toEqual([])
     expect(result.marks.map(mark => mark.kind)).toEqual(['filled'])
+  })
+  it('部分成交与待撤保持有效线，确认撤销才终止，改价只连接确认后的价位', () => {
+    const rows = [order(150), order(200, { status: 'partial', filled_volume: 1, remaining_volume: 1 }), order(250, { cancel_pending: true }), order(300, { terminal: true, status: 'canceled' })]
+    const result = timeline(rows)
+    expect(result.marks.map(mark => mark.kind)).toEqual(['placed', 'canceled'])
+    expect(result.segments.map(segment => [segment.start, segment.end])).toEqual([[150, 200], [200, 250], [250, 300]])
+    expect(result.segments[1].order.remaining_volume).toBe(1)
+    expect(timeline([order(150), order(200, { confirmed: false, price: 101 })]).marks.map(mark => mark.kind)).toEqual(['placed'])
+  })
+  it('图层隐藏完整终态轨迹，保留原始事实与其他委托，不改变当前盘口状态', () => {
+    const rows = [order(150), order(250, { terminal: true, status: 'filled' }), order(300, { key: 'B', order_id: 'B' })], before = JSON.stringify(rows)
+    expect(replayVisibleOrders(rows, { working: true, canceled: true, filled: false })).toEqual([rows[2]])
+    expect(replayVisibleOrders(rows, { working: false, canceled: true, filled: true })).toEqual(rows.slice(0, 2))
+    expect(JSON.stringify(rows)).toBe(before)
   })
   it.each(['canceled', 'expired', 'rejected'])('%s 使用真实终态标记且不延长', status => {
     const result = timeline([order(150), order(250, { terminal: true, status })])
