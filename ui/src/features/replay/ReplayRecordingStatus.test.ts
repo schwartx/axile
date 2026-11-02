@@ -62,3 +62,11 @@ it('旧实例仍在录制而新实例等待时，聚合录制状态仍保留待�
   expect(html).toContain('设置尚待生效')
   expect(html).not.toContain('已关闭')
 })
+
+
+it('设置行保留实际状态，不展示冗长的录制段编号', () => {
+  const html = renderStatus({ desired: true, state: 'recording', config_version: 3, effective_version: 3,
+    recording_id: 'recording-internal-identifier' })
+  expect(html).toContain('正在记录')
+  expect(html).not.toContain('recording-internal-identifier')
+})

@@ -90,7 +90,7 @@ async function settle() { for (let index = 0; index < 4; index++) { await Promis
 async function finishWindows() { loadingNext = false; for (const resolve of pendingWindows.splice(0)) resolve(); await settle() }
 function find(node: any, predicate: (node: any) => boolean): any {
   if (Array.isArray(node)) { for (const child of node) { const match = find(child, predicate); if (match) return match } }
-  else if (node && typeof node === 'object') return predicate(node) ? node : find(node.props?.children, predicate)
+  else if (node && typeof node === 'object') return predicate(node) ? node : find([node.props?.children, node.props?.depthStatus], predicate)
   return null
 }
 function text(node: any): string {

@@ -13,7 +13,6 @@ export function ReplayRecordingStatus({ accountId, savedEnabled }: { accountId: 
   const pending = state && state.effective_version !== state.config_version
   return <div className="text-[12px] leading-5 text-ink-2">
     <span role="status">{state ? labels[state.state] ?? '状态未知' : result.loading ? '正在读取实际状态…' : '实际状态未知'}{pending ? ' · 设置尚待生效' : ''}</span>
-    {state?.recording_id && <span className="ml-2 text-ink-3">录制段 {state.recording_id}</span>}
     {(state?.reason || state?.error) && <p className="text-warn">{state.reason ?? state.error}</p>}
     <ErrorNotice intent="read" variant="compact" title="录制状态读取失败" error={result.error} contextKey={accountId} onRetry={result.refresh} />
   </div>

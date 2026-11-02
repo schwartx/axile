@@ -9,7 +9,7 @@
   padding: 20px;
   background: var(--color-bg);
 }
-.replay-desk-header, .replay-desk-status, .replay-dock-header,
+.replay-desk-header, .replay-dock-header,
 .replay-transport-row, .replay-play-controls, .replay-window-controls {
   display: flex;
   align-items: center;
@@ -24,11 +24,11 @@
 .replay-stage { display: grid; grid-template-columns: minmax(0, 1fr) 320px; grid-template-rows: minmax(0, 1fr) 128px; gap: 0; min-height: 0; flex: 1; }
 .replay-chart-area { grid-column: 1 / -1; grid-row: 1; display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
 .replay-chart-column { display: contents; }
-.replay-desk-status { min-height: 24px; flex-wrap: wrap; gap: 4px 12px; padding: 2px 12px; border: 1px solid var(--color-line); border-bottom: 0; border-radius: var(--radius-card) var(--radius-card) 0 0; background: var(--color-surface); }
 .replay-target { margin-left: auto; }
+.replay-depth-status { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; margin-left: auto; }
 .replay-read-errors { flex-shrink: 0; max-height: 24%; overflow: auto; }
 .replay-read-errors:empty, .replay-read-errors[hidden] { display: none; }
-.replay-main-chart { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; position: relative; border: 1px solid var(--color-line); border-top: 0; border-radius: 0; overflow: hidden; background: var(--color-surface); }
+.replay-main-chart { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; position: relative; border: 1px solid var(--color-line); border-radius: var(--radius-card) var(--radius-card) 0 0; overflow: hidden; background: var(--color-surface); }
 .replay-empty { display: flex; min-height: 0; flex: 1; flex-direction: column; align-items: center; justify-content: center; padding: 20px; text-align: center; color: var(--color-ink-2); font-size: 14px; }
 .replay-chart { display: flex; min-height: 0; height: 100%; flex: 1; flex-direction: column; }
 .replay-chart-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--color-ink-2); }

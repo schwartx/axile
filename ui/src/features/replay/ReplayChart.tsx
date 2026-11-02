@@ -20,6 +20,7 @@ interface Props {
   overviewLabel?: string
   children?: ReactNode
   scene?: ReplayProjection
+  depthStatus?: ReactNode
   symbolControl?: ReactNode
   window: ReplayWindow
   range: ReplayRange
@@ -94,7 +95,7 @@ function drawOrderHistory(ctx: CanvasRenderingContext2D, symbol: string, history
 }
 
 /** 同一画布中的历史深度、COB 与 ORD 只共享一份价位映射。 */
-export function ReplayChart({ window: replayWindow, range, projection, symbol, executionId, selectedOrder, onSelectOrder, onSeek, selectedTrade, onSelectTrade, onInspect, symbolControl, children, scene = projection, overviewLabel = '整段复盘' }: Props) {
+export function ReplayChart({ window: replayWindow, range, projection, symbol, executionId, selectedOrder, onSelectOrder, onSeek, selectedTrade, onSelectTrade, onInspect, symbolControl, depthStatus, children, scene = projection, overviewLabel = '整段复盘' }: Props) {
   const holder = useRef<HTMLDivElement>(null), canvas = useRef<HTMLCanvasElement>(null)
   const [size, setSize] = useState({ width: 900, height: 300, revision: 0 })
   const [manualView, setManualView] = useState<ReplayPriceView | null>(null)
@@ -355,7 +356,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
         <button className={controlClass} onClick={resetView} disabled={!manualView && !timeView} aria-label="恢复图表视图"><RotateCcw size={15} aria-hidden /></button>
       </div>
     </div>
-    <div className="replay-chart-meta"><div className="replay-chart-legend"><span className="replay-depth-bid"><Minus size={14} aria-hidden />买一</span><span className="replay-depth-ask"><Minus size={14} aria-hidden />卖一</span><span><Minus size={14} aria-hidden />成交价</span>{layers.market && <span><Circle size={10} aria-hidden />市场成交</span>}<span className="text-accent"><Minus size={14} aria-hidden />账户委托</span></div><span className="replay-heat-scale"><i aria-hidden />{heat?.cells.some(cell => cell.quantity != null) ? `挂量 0 → ${quantityText(maxHeat)}` : '挂量尚未知'}</span>{!cursorInside && <button type="button" className="text-accent" onClick={() => { const span = visibleRange.end_us - visibleRange.start_us; setTimeView(clampReplayView({ start_us: projection.time_us - span / 2, end_us: projection.time_us + span / 2 }, range)) }}>游标在{projection.time_us < visibleRange.start_us ? '左' : '右'}侧 · 回到游标</button>}</div>
+    <div className="replay-chart-meta"><div className="replay-chart-legend"><span className="replay-depth-bid"><Minus size={14} aria-hidden />买一</span><span className="replay-depth-ask"><Minus size={14} aria-hidden />卖一</span><span><Minus size={14} aria-hidden />成交价</span>{layers.market && <span><Circle size={10} aria-hidden />市场成交</span>}<span className="text-accent"><Minus size={14} aria-hidden />账户委托</span></div><div className="replay-depth-status">{depthStatus}<span className="replay-heat-scale"><i aria-hidden />{heat?.cells.some(cell => cell.quantity != null) ? `挂量 0 → ${quantityText(maxHeat)}` : '挂量尚未知'}</span></div>{!cursorInside && <button type="button" className="text-accent" onClick={() => { const span = visibleRange.end_us - visibleRange.start_us; setTimeView(clampReplayView({ start_us: projection.time_us - span / 2, end_us: projection.time_us + span / 2 }, range)) }}>游标在{projection.time_us < visibleRange.start_us ? '左' : '右'}侧 · 回到游标</button>}</div>
     <div ref={holder} className="replay-chart-plot">
       <p id="replay-scene-summary" className="sr-only">{mode === 'review' ? overviewLabel : '逐步回放'}，已录自有成交 {recorded.ownTrades.filter(trade => trade.symbol === symbol && trade.time_us >= visibleRange.start_us && trade.time_us < visibleRange.end_us).length} 笔。盘口与委托状态对应游标 {replayTime(projection.time_us)}。</p>
       <canvas ref={canvas} style={{ height }} className="block w-full touch-none cursor-crosshair focus-visible:outline-2 focus-visible:outline-accent" tabIndex={0}
