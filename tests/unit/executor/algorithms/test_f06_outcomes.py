@@ -52,10 +52,8 @@ def test_algorithm_outcome(monkeypatch, module, case, expected, termination_at=N
     executor.get_market_data.return_value = UnifiedPriceData(
         symbol="rb2610",
         last_price=100,
-        bid_price=99,
-        ask_price=101,
-        bid_volume=1,
-        ask_volume=1,
+        asks=[(101, 1)],
+        bids=[(99, 1)],
         volume=10,
         turnover=1000,
         timestamp=1,
@@ -70,6 +68,7 @@ def test_algorithm_outcome(monkeypatch, module, case, expected, termination_at=N
     now = [0.0]
     clock = MagicMock()
     clock.time.side_effect = lambda: now[0]
+    clock.time_us.side_effect = lambda: int(now[0] * 1_000_000)
     monkeypatch.setattr(clock_module, "_default_clock", clock)
 
     def submit(*args, **kwargs):
@@ -213,10 +212,8 @@ def test_algorithm_keeps_tracker_cancel_error(monkeypatch, module):
     executor.get_market_data.return_value = UnifiedPriceData(
         symbol="rb2610",
         last_price=100,
-        bid_price=99,
-        ask_price=101,
-        bid_volume=1,
-        ask_volume=1,
+        asks=[(101, 1)],
+        bids=[(99, 1)],
         volume=10,
         turnover=1000,
         timestamp=1,
@@ -240,6 +237,7 @@ def test_algorithm_keeps_tracker_cancel_error(monkeypatch, module):
     now = [0.0]
     clock = MagicMock()
     clock.time.side_effect = lambda: now[0]
+    clock.time_us.side_effect = lambda: int(now[0] * 1_000_000)
     monkeypatch.setattr(clock_module, "_default_clock", clock)
 
     def split_submit(*args, **kwargs):
@@ -339,10 +337,8 @@ def test_real_algorithm_crosses_zero_within_slice_budget(monkeypatch, module, mo
     price = UnifiedPriceData(
         symbol=executor.symbol,
         last_price=100,
-        bid_price=99,
-        ask_price=101,
-        bid_volume=10,
-        ask_volume=10,
+        asks=[(101, 10)],
+        bids=[(99, 10)],
         volume=0,
         timestamp=0,
         update_time="",

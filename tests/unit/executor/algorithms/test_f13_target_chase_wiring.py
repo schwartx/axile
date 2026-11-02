@@ -60,10 +60,8 @@ class _Exec:
         return UnifiedPriceData(
             symbol=self.symbol,
             last_price=3200,
-            bid_price=3199,
-            ask_price=3201,
-            bid_volume=10,
-            ask_volume=10,
+            asks=[(3201, 10)],
+            bids=[(3199, 10)],
             volume=100,
             turnover=1,
             timestamp=1,

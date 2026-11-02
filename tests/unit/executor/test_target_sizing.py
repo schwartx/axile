@@ -120,10 +120,8 @@ def test_invalid_market_price_is_not_silently_rendered_as_zero() -> None:
             "bad": UnifiedPriceData(
                 symbol="bad",
                 last_price=0.0,
-                bid_price=0.0,
-                ask_price=0.0,
-                bid_volume=0.0,
-                ask_volume=0.0,
+                asks=[(0.0, 0.0)],
+                bids=[(0.0, 0.0)],
                 volume=0.0,
                 timestamp=0,
                 update_time="2026-08-27T14:00:00",

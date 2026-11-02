@@ -41,29 +41,11 @@ def from_gm_price(
     if include_raw_data:
         extra["raw_data"] = tick
 
-    return UnifiedPriceData.model_construct(
+    return UnifiedPriceData(
         symbol=GM_SYMBOL_RESOLVER.to_axile(gm_symbol),
         last_price=float(tick["price"]),
-        bid_price=float(bid_prices[0]) if len(bid_prices) > 0 else 0.0,
-        bid_price_2=float(bid_prices[1]) if len(bid_prices) > 1 else 0.0,
-        bid_price_3=float(bid_prices[2]) if len(bid_prices) > 2 else 0.0,
-        bid_price_4=float(bid_prices[3]) if len(bid_prices) > 3 else 0.0,
-        bid_price_5=float(bid_prices[4]) if len(bid_prices) > 4 else 0.0,
-        ask_price=float(ask_prices[0]) if len(ask_prices) > 0 else 0.0,
-        ask_price_2=float(ask_prices[1]) if len(ask_prices) > 1 else 0.0,
-        ask_price_3=float(ask_prices[2]) if len(ask_prices) > 2 else 0.0,
-        ask_price_4=float(ask_prices[3]) if len(ask_prices) > 3 else 0.0,
-        ask_price_5=float(ask_prices[4]) if len(ask_prices) > 4 else 0.0,
-        bid_volume=float(bid_volumes[0]) if len(bid_volumes) > 0 else 0.0,
-        bid_volume_2=float(bid_volumes[1]) if len(bid_volumes) > 1 else 0.0,
-        bid_volume_3=float(bid_volumes[2]) if len(bid_volumes) > 2 else 0.0,
-        bid_volume_4=float(bid_volumes[3]) if len(bid_volumes) > 3 else 0.0,
-        bid_volume_5=float(bid_volumes[4]) if len(bid_volumes) > 4 else 0.0,
-        ask_volume=float(ask_volumes[0]) if len(ask_volumes) > 0 else 0.0,
-        ask_volume_2=float(ask_volumes[1]) if len(ask_volumes) > 1 else 0.0,
-        ask_volume_3=float(ask_volumes[2]) if len(ask_volumes) > 2 else 0.0,
-        ask_volume_4=float(ask_volumes[3]) if len(ask_volumes) > 3 else 0.0,
-        ask_volume_5=float(ask_volumes[4]) if len(ask_volumes) > 4 else 0.0,
+        bids=[(float(price), float(quantity)) for price, quantity in zip(bid_prices, bid_volumes) if float(price) > 0],
+        asks=[(float(price), float(quantity)) for price, quantity in zip(ask_prices, ask_volumes) if float(price) > 0],
         volume=float(tick["volume"]),
         turnover=0.0,
         timestamp=tick["timestamp"],

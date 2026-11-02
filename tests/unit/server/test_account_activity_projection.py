@@ -27,7 +27,7 @@ _FAT_RAW = {
             "error": None,
             "outcome": "success",
             "sizing": {"unit_multiplier": 10, "current_quantity": 0, "target_quantity": 1},
-            "first_tick": {"bid_price": 99, "ask_price": 101, "last_price": 100},
+            "first_tick": {"bids": [[99, 1]], "asks": [[101, 1]], "last_price": 100},
             "orders": [{"order_id": "o1", "direction": "BUY", "filled_volume": 1}],
             "trades": [
                 {

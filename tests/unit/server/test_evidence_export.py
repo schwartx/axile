@@ -783,6 +783,8 @@ def test_redaction_preserves_token_contracts_and_removes_complete_quoted_secrets
             "account_name": "PARTIAL",
             "account_id": 1,
             "curr_target": {"TOKENUSDT": 1},
+            "bids": [[99, 2]],
+            "asks": [[101, 3]],
             "actual_policy": {"operations": {"place_order": {"account": {"per_day": {"limit": 500}}}}},
         }
     )
@@ -791,6 +793,7 @@ def test_redaction_preserves_token_contracts_and_removes_complete_quoted_secrets
     assert "account_name" not in shared
     assert shared["account_id"] == "account-A"
     assert shared["curr_target"] == {"TOKENUSDT": 1}
+    assert shared["bids"] == [[99, 2]] and shared["asks"] == [[101, 3]]
     assert shared["actual_policy"]["operations"]["place_order"]["account"]["per_day"]["limit"] == 500
     aliases = EvidenceRedactor(EvidenceProfile.SHAREABLE, 1, "A").clean(
         [

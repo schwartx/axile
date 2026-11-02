@@ -290,10 +290,11 @@ def _calculate_order_price(
 
     # PASSIVE 使用本方最优价等待成交；ACTIVE 使用对手方最优价主动成交。
     if price_type.upper() == "PASSIVE":
-        quote_name = "bid_price" if direction == OrderDirection.BUY else "ask_price"
+        quote_name = "bids" if direction == OrderDirection.BUY else "asks"
     else:
-        quote_name = "ask_price" if direction == OrderDirection.BUY else "bid_price"
-    quote = float(getattr(price_data, quote_name, 0.0) or 0.0)
+        quote_name = "asks" if direction == OrderDirection.BUY else "bids"
+    levels = getattr(price_data, quote_name, [])
+    quote = float(levels[0][0]) if levels else 0.0
     return quote if quote > 0 else float(getattr(price_data, "last_price", 0.0) or 0.0)
 
 

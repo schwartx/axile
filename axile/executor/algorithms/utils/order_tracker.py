@@ -841,9 +841,9 @@ class OrderTracker:
             # 追单始终向“当前最佳对手价”靠拢，而不是在旧价格上机械加减 tick。
             # 这样可以让不同渠道在盘口缺一侧时也共享同一套兜底逻辑。
             if direction == OrderDirection.BUY:
-                new_price = latest_price.bid_price
+                new_price = latest_price.bids[0][0] if latest_price.bids else 0.0
             else:
-                new_price = latest_price.ask_price
+                new_price = latest_price.asks[0][0] if latest_price.asks else 0.0
 
             if new_price <= 0 or new_price == order.price:
                 continue
@@ -989,15 +989,15 @@ class OrderTracker:
                 # 永不触发——被动 maker 因此久挂不动、不发追价事件。此处改量本方触点以与重挂对齐。
                 tick_size = self._get_tick_size(symbol, order.price)
                 if direction == OrderDirection.BUY:
-                    if latest_price.bid_price > 0:
+                    if (latest_price.bids[0][0] if latest_price.bids else 0.0) > 0:
                         # best bid 上移越过挂单价 = 被更高买价超越，需追高到新 best bid。
-                        price_diff = latest_price.bid_price - order.price
+                        price_diff = (latest_price.bids[0][0] if latest_price.bids else 0.0) - order.price
                         if price_diff > self.chase_config.ticks * tick_size:
                             result.append((order_id, order, info))
                 else:
-                    if latest_price.ask_price > 0:
+                    if (latest_price.asks[0][0] if latest_price.asks else 0.0) > 0:
                         # best ask 下移越过挂单价 = 被更低卖价压过，需追低到新 best ask。
-                        price_diff = order.price - latest_price.ask_price
+                        price_diff = order.price - (latest_price.asks[0][0] if latest_price.asks else 0.0)
                         if price_diff > self.chase_config.ticks * tick_size:
                             result.append((order_id, order, info))
 
@@ -1282,7 +1282,11 @@ class OrderTracker:
             return False
 
         direction = chase_info["direction"]
-        reference_price = price_data.ask_price if direction == OrderDirection.BUY else price_data.bid_price
+        reference_price = (
+            (price_data.asks[0][0] if price_data.asks else 0.0)
+            if direction == OrderDirection.BUY
+            else (price_data.bids[0][0] if price_data.bids else 0.0)
+        )
         if reference_price <= 0:
             return False
 

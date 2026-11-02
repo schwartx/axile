@@ -21,9 +21,7 @@ def test_invalid_native_prices_are_cleaned_at_every_level(invalid):
     assert quote.extra["lower_limit_price"] == 0
     assert quote.extra["upper_limit_price"] == 0
     for side in ["bid", "ask"]:
-        assert getattr(quote, f"{side}_price") == 0
-        for level in range(2, 6):
-            assert getattr(quote, f"{side}_price_{level}") == 0
+        assert getattr(quote, f"{side}s") == []
 
 
 @pytest.mark.parametrize(
@@ -105,9 +103,9 @@ def test_real_executor_blocks_stale_or_invalid_quote_at_get_and_submit(monkeypat
         elif fault == "receive_stale":
             quote.extra["received_at"] -= 6
         elif fault == "one_sided":
-            quote.ask_volume = 0
+            quote.asks[0] = ((quote.asks[0][0] if quote.asks else 0.0), 0)
         elif fault == "tick":
-            quote.ask_price = 9000.5
+            quote.asks[0] = (9000.5, (quote.asks[0][1] if quote.asks else 0.0))
         elif fault == "limits":
             quote.extra["upper_limit_price"] = 8000
         else:

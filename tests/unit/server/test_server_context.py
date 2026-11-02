@@ -16,10 +16,8 @@ def _quote(symbol: str) -> UnifiedPriceData:
     return UnifiedPriceData(
         symbol=symbol,
         last_price=123.0,
-        bid_price=122.0,
-        ask_price=124.0,
-        bid_volume=1.0,
-        ask_volume=1.0,
+        asks=[(124.0, 1.0)],
+        bids=[(122.0, 1.0)],
         volume=10.0,
         timestamp=1,
         update_time="2026-08-28T10:00:00",

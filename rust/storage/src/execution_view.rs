@@ -182,8 +182,8 @@ fn tca(result: &Value, average: Option<f64>, sell: bool) -> Value {
     let orders = array(&result["orders"]);
     let trades = array(&result["trades"]);
     let tick = &result["first_tick"];
-    let bid = number(&tick["bid_price"]);
-    let ask = number(&tick["ask_price"]);
+    let bid = number(&tick["bids"][0][0]);
+    let ask = number(&tick["asks"][0][0]);
     let mid = bid
         .zip(ask)
         .filter(|(b, a)| *b > 0.0 && *a > 0.0)

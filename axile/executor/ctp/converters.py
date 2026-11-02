@@ -184,19 +184,21 @@ def quote_to_unified(row: object) -> UnifiedPriceData:
     return UnifiedPriceData(
         symbol=str(_value(row, "InstrumentID", "") or ""),
         last_price=_price(row, "LastPrice"),
-        bid_price=bid,
-        ask_price=ask,
-        bid_volume=_float(row, "BidVolume1"),
-        ask_volume=_float(row, "AskVolume1"),
+        bids=[
+            (price, _float(row, f"BidVolume{level}"))
+            for level in range(1, 6)
+            if (price := _price(row, f"BidPrice{level}")) > 0
+        ],
+        asks=[
+            (price, _float(row, f"AskVolume{level}"))
+            for level in range(1, 6)
+            if (price := _price(row, f"AskPrice{level}")) > 0
+        ],
         volume=_float(row, "Volume"),
         turnover=_float(row, "Turnover"),
         timestamp=timestamp,
         update_time=update_time,
         book_valid=0 < bid <= ask and _float(row, "BidVolume1") > 0 and _float(row, "AskVolume1") > 0,
-        **{f"bid_price_{level}": _price(row, f"BidPrice{level}") for level in range(2, 6)},
-        **{f"ask_price_{level}": _price(row, f"AskPrice{level}") for level in range(2, 6)},
-        **{f"bid_volume_{level}": _float(row, f"BidVolume{level}") for level in range(2, 6)},
-        **{f"ask_volume_{level}": _float(row, f"AskVolume{level}") for level in range(2, 6)},
         extra={
             "lower_limit_price": _price(row, "LowerLimitPrice"),
             "upper_limit_price": _price(row, "UpperLimitPrice"),

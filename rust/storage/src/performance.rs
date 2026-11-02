@@ -647,7 +647,7 @@ mod tests {
              CREATE TABLE business_asset_binding(record_id INTEGER,path TEXT,asset_id TEXT);
              CREATE TABLE business_asset_snapshot(asset_id TEXT,total_asset REAL,observation_valid INTEGER);
              CREATE TABLE execution_symbol_result(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER,tick_recorded INTEGER,sizing_recorded INTEGER);
-             CREATE TABLE execution_symbol_tick(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER,bid_price REAL,ask_price REAL,last_price REAL,book_valid INTEGER);
+             CREATE TABLE execution_symbol_tick(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER,bids JSON,asks JSON,last_price REAL,book_valid INTEGER);
              CREATE TABLE execution_symbol_sizing(record_id INTEGER,path TEXT,sizing_mode TEXT,status TEXT,target_quantity REAL,equity REAL,unit_notional REAL,reference_price REAL,unit_multiplier REAL,conversion_recorded INTEGER);
              CREATE TABLE execution_symbol_conversion(record_id INTEGER,path TEXT,rate REAL);
              CREATE TABLE execution_symbol_collection(record_id INTEGER,path TEXT,node_kind TEXT,member_count INTEGER);

@@ -6,7 +6,7 @@ import type { CostPage } from '@/lib/api/performance'
 import type { ExecuteRecord } from '@/types/api'
 
 const record: ExecuteRecord = { id: 5, account_id: 2, execution_id: 'e5', created_at: '2026-09-07T17:00:00', is_success: 1, input: null, result: { symbol_results: {
-  A: { sizing: { unit_multiplier: 10 }, first_tick: { bid_price: 99, ask_price: 101 }, orders: [{ order_id: '1', direction: 'buy' }], trades: [{ order_id: '1', trade_price: 101, trade_volume: 2 }] },
+  A: { sizing: { unit_multiplier: 10 }, first_tick: { bids: [[99, 1]], asks: [[101, 1]] }, orders: [{ order_id: '1', direction: 'buy' }], trades: [{ order_id: '1', trade_price: 101, trade_volume: 2 }] },
   B: { sizing: { unit_multiplier: 10 }, first_tick: { last_price: 100 }, trades: [{ trade_price: 99, trade_volume: 1, extra: { direction: 'sell' } }, { trade_price: 99, trade_volume: 1 }] },
   C: { trades: [{ trade_price: 10, trade_volume: 1 }] },
 } } }

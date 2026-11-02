@@ -115,7 +115,7 @@ def test_activity_symbol_query_uses_projected_columns_and_account_scope(database
             {
                 "symbol_results": {
                     "SHFE.rb2610": {
-                        "first_tick": {"bid_price": 100, "ask_price": 100},
+                        "first_tick": {"bids": [[100, 1]], "asks": [[100, 1]]},
                         "sizing": {"unit_multiplier": 10},
                         "trades": [
                             {

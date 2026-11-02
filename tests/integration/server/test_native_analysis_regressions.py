@@ -25,7 +25,7 @@ _RESULT = {
     "symbol_results": {
         "A": {
             "status": "SUCCEEDED",
-            "first_tick": {"bid_price": 99.0, "ask_price": 101.0, "last_price": 100.0},
+            "first_tick": {"bids": [[99.0, 1]], "asks": [[101.0, 1]], "last_price": 100.0},
             "sizing": {
                 "sizing_mode": "weight",
                 "status": "SIZED",
@@ -188,7 +188,7 @@ def test_published_legacy_attempt_and_symbol_match_the_public_execution_display(
 def test_daily_costs_use_execution_bounds_and_preserve_cross_day_unknown_amounts(database: Path) -> None:
     result = copy.deepcopy(_RESULT)
     symbol = result["symbol_results"]["A"]
-    symbol["first_tick"] = {"bid_price": 98.0, "ask_price": 98.0}
+    symbol["first_tick"] = {"bids": [[98.0, 1]], "asks": [[98.0, 1]]}
     symbol["trades"] = [
         {
             "order_id": "o",

@@ -358,6 +358,29 @@ def _seed_historical_records(connection, *, channel_documents=False):
     return expected
 
 
+def _array_result(result):
+    result = deepcopy(result)
+    if not isinstance(result, dict):
+        return result
+    ticks = list((result.get("first_ticks") or {}).values()) if isinstance(result.get("first_ticks"), dict) else []
+    if isinstance(result.get("symbol_results"), dict):
+        ticks += [s.get("first_tick") for s in result["symbol_results"].values() if isinstance(s, dict)]
+    for tick in ticks:
+        if not isinstance(tick, dict):
+            continue
+        for side in ("bid", "ask"):
+            levels = []
+            for i in range(1, 6):
+                suffix = "" if i == 1 else f"_{i}"
+                pk, qk = f"{side}_price{suffix}", f"{side}_volume{suffix}"
+                p, q = tick.get(pk), tick.get(qk)
+                if type(p) in (int, float) and type(q) in (int, float) and p > 0 and q >= 0:
+                    levels.append([tick.pop(pk), tick.pop(qk)])
+            if levels:
+                tick[side + "s"] = levels
+    return result
+
+
 def _assert_same_evidence(expected, actual, path=""):
     """Compare business facts and audit evidence; representation is not a storage contract."""
     assert business_evidence(actual) == business_evidence(expected), f"{path}: business evidence changed"
@@ -686,7 +709,7 @@ async def test_migration_preserves_historical_evidence_and_record_identity(tmp_p
             detail = read_view(database, "read_execution_detail", {"account_id": 2, "record_id": record_id})
             assert detail is not None
             _assert_same_evidence(source["raw_input"], detail["input"], f"{source['name']}/input")
-            _assert_same_evidence(source["raw_result"], detail["result"], f"{source['name']}/result")
+            _assert_same_evidence(_array_result(source["raw_result"]), detail["result"], f"{source['name']}/result")
     finally:
         engine.dispose()
 

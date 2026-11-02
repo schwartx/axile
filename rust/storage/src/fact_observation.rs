@@ -174,7 +174,7 @@ mod tests {
              CREATE TABLE business_asset_binding(record_id INTEGER,path TEXT,asset_id TEXT);
              CREATE TABLE business_asset_snapshot(asset_id TEXT,total_asset REAL,observation_valid INTEGER);
              CREATE TABLE execution_symbol_result(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER);
-             CREATE TABLE execution_symbol_tick(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER,bid_price REAL,ask_price REAL,last_price REAL,book_valid INTEGER);
+             CREATE TABLE execution_symbol_tick(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER,bids JSON,asks JSON,last_price REAL,book_valid INTEGER);
              CREATE TABLE execution_symbol_sizing(record_id INTEGER,path TEXT,sizing_mode TEXT,status TEXT,target_quantity REAL,equity REAL,unit_notional REAL,reference_price REAL,unit_multiplier REAL,conversion_recorded INTEGER);
              CREATE TABLE execution_symbol_conversion(record_id INTEGER,path TEXT,rate REAL);
              INSERT INTO executerecord(id,account_id,execution_id,created_at_us,execution_kind,input_id) VALUES(1,7,'one',1767229200000000,'clear_positions',NULL),(2,7,'two',1767315600000000,'clear_positions',NULL);

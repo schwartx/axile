@@ -334,7 +334,10 @@ fn validate_final_schema(connection: &Connection) -> Result<(), AnalysisError> {
         AND EXISTS(SELECT 1 FROM pragma_table_info('account_analysis') WHERE name='dirty_record')
         AND EXISTS(SELECT 1 FROM pragma_table_info('executerecord') WHERE name='result_staged')
         AND NOT EXISTS(SELECT 1 FROM pragma_table_info('executerecord') WHERE name IN ('raw_result','history_visible'))
-        AND NOT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='performance_snapshot')",
+        AND NOT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='performance_snapshot')
+        AND EXISTS(SELECT 1 FROM pragma_table_info('execution_symbol_tick') WHERE name='bids' AND upper(type)='JSON')
+        AND EXISTS(SELECT 1 FROM pragma_table_info('execution_symbol_tick') WHERE name='asks' AND upper(type)='JSON')
+        AND NOT EXISTS(SELECT 1 FROM pragma_table_info('execution_symbol_tick') WHERE name IN ('bid_price','ask_price'))",
         [], |row| row.get(0),
     ).map_err(sql)?;
     if !final_layout {

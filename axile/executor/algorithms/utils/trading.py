@@ -113,14 +113,30 @@ def determine_order_price(
 
     if price_strategy.upper() == "ACTIVE":
         if direction == OrderDirection.BUY:
-            price = tick.ask_price if tick.ask_price > 0 else tick.bid_price
+            price = (
+                (tick.asks[0][0] if tick.asks else 0.0)
+                if (tick.asks[0][0] if tick.asks else 0.0) > 0
+                else (tick.bids[0][0] if tick.bids else 0.0)
+            )
         else:
-            price = tick.bid_price if tick.bid_price > 0 else tick.ask_price
+            price = (
+                (tick.bids[0][0] if tick.bids else 0.0)
+                if (tick.bids[0][0] if tick.bids else 0.0) > 0
+                else (tick.asks[0][0] if tick.asks else 0.0)
+            )
     else:  # PASSIVE
         if direction == OrderDirection.BUY:
-            price = tick.bid_price if tick.bid_price > 0 else tick.ask_price
+            price = (
+                (tick.bids[0][0] if tick.bids else 0.0)
+                if (tick.bids[0][0] if tick.bids else 0.0) > 0
+                else (tick.asks[0][0] if tick.asks else 0.0)
+            )
         else:
-            price = tick.ask_price if tick.ask_price > 0 else tick.bid_price
+            price = (
+                (tick.asks[0][0] if tick.asks else 0.0)
+                if (tick.asks[0][0] if tick.asks else 0.0) > 0
+                else (tick.bids[0][0] if tick.bids else 0.0)
+            )
 
     if price <= 0:
         order_type = OrderType.MARKET

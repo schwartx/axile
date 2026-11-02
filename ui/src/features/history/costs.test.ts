@@ -6,7 +6,7 @@ import type { ExecuteRecord, ExecutionResultFacts } from '@/types/api'
 
 function record(trades: Record<string, unknown>[], result: Record<string, unknown> = {}): ExecuteRecord & { result: ExecutionResultFacts } {
   return { account_id: 1, id: 1, execution_id: 'test', created_at: '2026-01-01T09:00:00', is_success: 1, input: {},
-    result: { status: 'SUCCEEDED', symbol_results: { RB: { sizing: { unit_multiplier: 10 }, first_tick: { bid_price: 99, ask_price: 101 },
+    result: { status: 'SUCCEEDED', symbol_results: { RB: { sizing: { unit_multiplier: 10 }, first_tick: { bids: [[99, 1]], asks: [[101, 1]] },
       trades, orders: [{ order_id: 'b', direction: 'buy' }, { order_id: 's', direction: 'sell' }], ...result } } } }
 }
 const trade = (price: number, side = 'b', extra: Record<string, unknown> = {}) => ({ trade_price: price, trade_volume: 2, order_id: side, extra })
@@ -37,8 +37,8 @@ test('不从 trade_value 猜乘数，缺价格、方向、参考价时保留缺�
 
 test('最新价退化有来源，锁定盘口有效，倒挂盘口不作中间价', () => {
   expect(costTrades(record([trade(101)], { first_tick: { last_price: 100 } }))[0].referenceSource).toBe('last')
-  expect(costTrades(record([trade(101)], { first_tick: { bid_price: 100, ask_price: 100 } }))[0].referenceSource).toBe('mid')
-  expect(costTrades(record([trade(101)], { first_tick: { bid_price: 101, ask_price: 99 } }))[0].reference).toBeNull()
+  expect(costTrades(record([trade(101)], { first_tick: { bids: [[100, 1]], asks: [[100, 1]] } }))[0].referenceSource).toBe('mid')
+  expect(costTrades(record([trade(101)], { first_tick: { bids: [[101, 1]], asks: [[99, 1]] } }))[0].reference).toBeNull()
 })
 
 test('手续费缺失不补零，不同币种独立汇总，负收费返佣保留', () => {

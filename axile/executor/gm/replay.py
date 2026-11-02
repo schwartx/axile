@@ -247,7 +247,7 @@ def quote(row: object, *, source: str = "gm.tick") -> dict[str, object]:
     quotes = f.value("quotes")
     sides: dict[str, list[dict[str, float]]] = {"bids": [], "asks": []}
     for label, native in (("bids", "bid"), ("asks", "ask")):
-        for row_quote in quotes[:5] if isinstance(quotes, list | tuple) else []:
+        for row_quote in quotes if isinstance(quotes, list | tuple) else []:
             level = Fields(row_quote)
             price, quantity = level.number(f"{native}_p"), level.number(f"{native}_v")
             if price is not None and price > 0 and quantity is not None and quantity > 0:

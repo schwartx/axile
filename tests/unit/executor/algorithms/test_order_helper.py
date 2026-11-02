@@ -101,10 +101,8 @@ class TestSetupOrderTracker:
         return UnifiedPriceData(
             symbol="rb2610",
             last_price=50000,
-            bid_price=49990,
-            ask_price=50010,
-            bid_volume=1.0,
-            ask_volume=1.0,
+            asks=[(50010, 1.0)],
+            bids=[(49990, 1.0)],
             volume=10.0,
             turnover=1000.0,
             timestamp=1,
@@ -175,10 +173,8 @@ class TestIntegration:
                 UnifiedPriceData(
                     symbol="rb2610",
                     last_price=50000,
-                    bid_price=49990,
-                    ask_price=50010,
-                    bid_volume=1.0,
-                    ask_volume=1.0,
+                    asks=[(50010, 1.0)],
+                    bids=[(49990, 1.0)],
                     volume=10.0,
                     turnover=1000.0,
                     timestamp=1,
@@ -219,8 +215,8 @@ def _intent_executor(min_notional, last_price=0.0):
     if last_price:
         market = MagicMock()
         market.last_price = last_price
-        market.bid_price = last_price
-        market.ask_price = last_price
+        market.bids = [(last_price, 1.0)]
+        market.asks = [(last_price, 1.0)]
         executor.get_market_data = Mock(return_value=market)
     return executor
 
@@ -240,8 +236,8 @@ class TestResolveReduceIntent:
         executor = _intent_executor(50.0)
         market = MagicMock()
         market.last_price = 0.0
-        market.bid_price = 99.0
-        market.ask_price = 101.0
+        market.bids = [(99.0, 1.0)]
+        market.asks = [(101.0, 1.0)]
         executor.get_market_data = Mock(return_value=market)
         # 中值 100，纯减仓 0.3 * 100 = 30 < 50 → 借 reduceOnly 突破。
         decision = resolve_reduce_intent(executor, OrderDirection.SELL, 0.3, 0.0, 1.0, 0.0)
@@ -267,8 +263,8 @@ class TestSubmitAndTrackOrderProjection:
         executor.get_min_notional = Mock(return_value=min_notional)
         market = MagicMock()
         market.last_price = last_price
-        market.bid_price = last_price
-        market.ask_price = last_price
+        market.bids = [(last_price, 1.0)]
+        market.asks = [(last_price, 1.0)]
         executor.get_market_data = Mock(return_value=market)
         return executor
 

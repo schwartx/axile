@@ -71,6 +71,24 @@ def _rich_projection():
     return _project_rows([source])
 
 
+@pytest.mark.parametrize(
+    "tick,reference,source",
+    [
+        ({"bids": [[99, 1], [98, 2]], "asks": [[101, 1]]}, 100, "mid"),
+        ({"bids": [], "asks": [[101, 1]], "last_price": 98}, 98, "last"),
+        ({"bids": [[99, 1]], "asks": []}, None, None),
+        ({"bids": [[]], "asks": [[101, 1]]}, None, None),
+        ({"bids": [99], "asks": [[101, 1]]}, None, None),
+    ],
+)
+def test_cost_reference_reads_nested_book_and_preserves_missing_sides(tick, reference, source):
+    execution = record()
+    execution.result["symbol_results"]["A"]["first_tick"] = tick
+    _, trades = project_execution(execution)
+    assert trades[0]["reference"] == reference
+    assert trades[0]["referenceSource"] == source
+
+
 def _group_facts(projected, costs, batch_size=500):
     result = defaultdict(list)
     for table, rows in iter_cost_fact_batches("snapshot", projected, costs, _ranges(), batch_size=batch_size):

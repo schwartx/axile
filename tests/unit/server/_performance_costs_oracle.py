@@ -53,7 +53,9 @@ def side_of(value: Any) -> str:
 def _trade(raw: Any, symbol: str, result: dict, orders: dict, created_at: str) -> dict:
     trade = mapping(raw)
     extra, tick = mapping(trade.get("extra")), mapping(result.get("first_tick"))
-    bid, ask = positive(tick.get("bid_price")), positive(tick.get("ask_price"))
+    bids, asks = sequence(tick.get("bids")), sequence(tick.get("asks"))
+    bid = positive(bids[0][0]) if bids and sequence(bids[0]) else None
+    ask = positive(asks[0][0]) if asks and sequence(asks[0]) else None
     mid = (bid + ask) / 2 if bid is not None and ask is not None and ask >= bid else None
     reference = mid if mid is not None else positive(tick.get("last_price"))
     multiplier = positive(mapping(result.get("sizing")).get("unit_multiplier"))

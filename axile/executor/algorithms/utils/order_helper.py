@@ -164,8 +164,8 @@ def _reference_price(executor: ExecutorProtocol, price: float) -> float:
         return 0.0
     if market.last_price > 0:
         return market.last_price
-    if market.bid_price > 0 and market.ask_price > 0:
-        return (market.bid_price + market.ask_price) / 2
+    if (market.bids[0][0] if market.bids else 0.0) > 0 and (market.asks[0][0] if market.asks else 0.0) > 0:
+        return ((market.bids[0][0] if market.bids else 0.0) + (market.asks[0][0] if market.asks else 0.0)) / 2
     return 0.0
 
 
