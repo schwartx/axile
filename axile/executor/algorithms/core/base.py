@@ -245,7 +245,7 @@ class ExecutorProtocol(Protocol):
         ...
 
     def cancel_order(self, order_id: str) -> bool:
-        """撤销当前品种的指定订单."""
+        """提交撤单；True 不代表终态，明确未发送且禁止撤单时抛出 CancelNotAllowedError。"""
         ...
 
 

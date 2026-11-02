@@ -12,7 +12,7 @@ from axile.server._native import _core
 from axile.server.db.models.account_connection import AccountConnectionPublic, AccountConnectionState
 from axile.server.db.models.account_notification import AccountNotificationState, AccountNotificationStatePublic
 from axile.server.db.models.account_runtime_sync import AccountRuntimeSyncPublic
-from axile.server.db.models.account_settings import SupplementSettings
+from axile.server.db.models.account_settings import GMSessionSettings, SupplementSettings
 from axile.server.db.models.account_validation import (
     _MAX_EXECUTION_TIMEOUT,
     _validate_algorithm_config,
@@ -47,6 +47,7 @@ class AccountBase(BaseModel):
     )
     account_config: Dict[str, Any] = Field(description="账户配置, JSON格式, 包含登录信息、API密钥等, 必填")
     is_started: bool = Field(description="账户是否已启动, 布尔值, 必填")
+    gm_sessions: GMSessionSettings | None = None
     supplement: SupplementSettings | None = None
     cron_expr: str = Field(description="定时任务表达式, 符合crontab语法, 必填")
     remark: Optional[str] = Field(description="账户备注信息, 可选")
@@ -170,6 +171,7 @@ class AccountPublic(Model):
     connection_values: dict[str, Any] = Field(default_factory=dict)
     is_started: bool
     cron_expr: str
+    gm_sessions: GMSessionSettings | None = None
     supplement: SupplementSettings | None = None
     has_pending_supplement: bool = False
     remark: Optional[str] = None
@@ -370,6 +372,7 @@ class AccountUpdate(Model):
     account_config: Optional[Dict[str, Any]] = None
     is_started: Optional[bool] = None
     cron_expr: Optional[str] = None
+    gm_sessions: GMSessionSettings | None = None
     supplement: SupplementSettings | None = None
     remark: Optional[str] = None
     brokerage: Optional[str] = None

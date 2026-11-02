@@ -117,3 +117,15 @@ test('摘要失败可重试，快速换间隔时旧响应不能覆盖新值', as
   expect(mock.requests.filter((request) => !request.scheduled_ats)).toHaveLength(baseRequests)
   await expect(list.locator('[aria-label="仅补 1 次"]').first()).toBeAttached()
 })
+
+
+test('股票阶段开关传入预览，盘后保持禁用', async ({ page }) => {
+  const mock = await mockPreview(page)
+  await page.goto('/e2e/timer.html?channel=gm')
+  const opening = page.getByRole('switch', { name: '早盘集合竞价 · 可撤单阶段', exact: true })
+  await expect(opening).toHaveAttribute('aria-checked', 'false')
+  await opening.click()
+  await expect(opening).toHaveAttribute('aria-checked', 'true')
+  await expect.poll(() => mock.requests.some(request => (request as PreviewRequest & { gm_sessions?: { opening_cancelable?: { enabled: boolean } } }).gm_sessions?.opening_cancelable?.enabled === true)).toBe(true)
+  await expect(page.getByRole('switch', { name: '盘后定价交易', exact: true })).toBeDisabled()
+})

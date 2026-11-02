@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Literal, TypeAlias
 
-from gm.api import (  # type: ignore  # pyright: ignore[reportUnknownVariableType]
+from gm.api import (
+    OrderType_Limit,  # type: ignore  # pyright: ignore[reportUnknownVariableType]
     current,
     get_cash,  # pyright: ignore[reportUnknownVariableType, reportAttributeAccessIssue]
     get_execution_reports,
@@ -14,6 +15,9 @@ from gm.api import (  # type: ignore  # pyright: ignore[reportUnknownVariableTyp
     order_cancel,
     order_volume,
 )
+
+from axile.channels.gm_sessions import SHANGHAI, check_gm_operation
+from axile.executor.algorithms.utils.clock import clock_now
 
 GMSdkOperation: TypeAlias = Literal[
     "get_cash",
@@ -70,6 +74,13 @@ class GMApiBridge:
     @staticmethod
     def execute_request(operation: GMSdkOperation, **kwargs: Any) -> Any:
         """按白名单执行 GM SDK 请求，省略未指定的账户参数。"""
+        context = kwargs.pop("session", None)
+        if operation == "order_cancel":
+            check_gm_operation(clock_now(tz=SHANGHAI), cancel=True)
+        elif operation == "order_volume":
+            check_gm_operation(
+                clock_now(tz=SHANGHAI), limit=kwargs.get("order_type") == OrderType_Limit, context=context
+            )
         try:
             method = {
                 "get_cash": get_cash,

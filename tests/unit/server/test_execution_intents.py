@@ -6,16 +6,19 @@ import asyncio
 import tempfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
+from axile.channels.gm_sessions import SHANGHAI, gm_session_context
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
 from axile.server.core import db
 from axile.server.db.models import Account
+from axile.server.db.models.account_settings import GMSessionSettings
 from axile.server.execution import intents as intents_module
 from axile.server.execution import registry as execution_registry
 from axile.server.execution.intents import (
@@ -91,6 +94,44 @@ def test_submit_intent_creates_queued_rebalance(monkeypatch: pytest.MonkeyPatch)
     assert result.outcome == "created"
     assert result.execution_id
     assert queued_id == result.execution_id
+
+
+@pytest.mark.parametrize("cross_boundary", [False, True])
+def test_gm_intent_keeps_original_phase_and_settings(monkeypatch, cross_boundary):
+    planned = datetime(2026, 9, 1, 9, 19, tzinfo=SHANGHAI)
+    settings = GMSessionSettings(
+        opening_cancelable={"enabled": True, "time": "09:15"},
+        opening_locked={"enabled": True, "time": "09:20"},
+    )
+    context = gm_session_context(settings.model_dump(), planned)
+    now = planned.replace(minute=20) if cross_boundary else planned
+    monkeypatch.setattr("axile.executor.algorithms.utils.clock.clock_now", lambda **_: now)
+
+    async def run():
+        async with _intent_db(monkeypatch):
+            await native_operation(
+                "account_update",
+                {
+                    "account_id": 1,
+                    "patch": {"trade_channel": "gm", "gm_sessions": settings.model_dump()},
+                    "now": now.isoformat(),
+                },
+            )
+            if cross_boundary:
+                with pytest.raises(ValueError, match="所属交易阶段已结束"):
+                    await submit_intent(1, ExecutionKind.REBALANCE, "scheduler", payload={"gm_session": context})
+                assert get_queued_execution_id(1) is None
+                return
+            result = await submit_intent(1, ExecutionKind.REBALANCE, "scheduler", payload={"gm_session": context})
+            await native_operation(
+                "account_update",
+                {"account_id": 1, "patch": {"gm_sessions": GMSessionSettings().model_dump()}, "now": now.isoformat()},
+            )
+            saved = await get_intent(result.execution_id)
+            assert saved.payload["gm_session"] == context
+            assert saved.payload["gm_session"]["sessions"]["opening_cancelable"]["enabled"] is True
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("running", [False, True])

@@ -653,3 +653,22 @@ it('详情保留未知原因，不猜测或隐藏诊断信息', () => {
   expect(model.conclusion.reason).toBe('UNKNOWN_CODE')
   expect(JSON.stringify(model.failure)).toContain('UNKNOWN_CODE')
 })
+
+for (const observed of [false, true]) it(`正常休市跳过不标成异常，保留实际持仓证据 ${observed}`, () => {
+  const model = buildExecutionDetail([
+    ev({ event_type: 'symbol_skipped', symbol: 'A', reason_code: 'COMMON.SESSION.CLOSED' }),
+  ], [], null, {
+    status: 'NOOP', reason_code: 'COMMON.SESSION.CLOSED', success: true,
+    symbol_results: { A: { status: 'NOOP', reason_code: 'COMMON.SESSION.CLOSED', target_volume: 2,
+      final_volume: null, outcome_reason: '非交易时段，已跳过', orders: [], trades: [] } },
+    reconciliation: { account: { source_before: 'real', source_after: observed ? 'real' : 'unavailable' },
+      symbols: [{ symbol: 'A', before: 0, after: observed ? 0 : null,
+      target: 2, reached: observed ? false : null }] },
+  })
+  expect(model.symbols[0]).toMatchObject({ action: 'skipped', broken: false,
+    observedAfter: observed ? 0 : null, reached: observed ? false : null, reason: '非交易时段，已跳过' })
+  expect(model.conclusion.warning).toBe(false)
+  expect(model.failure).toBeNull()
+  expect(model.spine.find(node => node.key === 'phase')).toMatchObject({ detail: '1 只休市跳过', broken: false })
+  expect(model.spine.some(node => node.key === 'phase1' || node.key === 'phase2')).toBe(false)
+})

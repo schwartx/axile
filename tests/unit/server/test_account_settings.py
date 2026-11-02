@@ -129,3 +129,27 @@ def test_notification_result_preserves_success_and_ignores_older_results(monkeyp
     assert state.last_attempt_ok is False
     assert state.last_attempt_error == "timeout"
     notification_state.record_notification_result(999, "missing", "2026-09-30T12:00:00", True, None)
+
+
+def test_gm_sessions_persist_and_roundtrip_in_public_snapshot(native_database):
+    from axile.server.db.models.account_settings import GMSessionSettings
+
+    sessions = GMSessionSettings(opening_cancelable={"enabled": True, "time": "09:15"})
+    data = account_data() | {"trade_channel": "gm", "gm_sessions": sessions.model_dump()}
+    created = native_store_call(
+        native_database,
+        "account_create",
+        {"account": Account(**data).model_dump(mode="json"), "now": "2026-09-01T09:00:00+08:00"},
+    )
+    account_id = created["account"]["id"]
+    loaded = Account.model_validate(native_store_call(native_database, "account_get", {"account_id": account_id}))
+    assert loaded.gm_sessions == sessions
+    assert AccountSnapshot.model_validate(loaded.model_dump()).gm_sessions == sessions
+    scheduled = native_store_call(native_database, "runtime_sync_scheduler_account", {"account_id": account_id})
+    assert scheduled["gm_sessions"] == sessions.model_dump()
+    native_store_call(
+        native_database,
+        "account_update",
+        {"account_id": account_id, "patch": {"gm_sessions": None}, "now": "2026-09-01T09:01:00+08:00"},
+    )
+    assert native_store_call(native_database, "account_get", {"account_id": account_id})["gm_sessions"] is None

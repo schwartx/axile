@@ -17,6 +17,7 @@ from axile.executor.models.unified_input import DEFAULT_EXECUTION_TIMEOUT_SECOND
 from axile.executor.models.unified_input_support import as_timeout_int
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_output import UnifiedStandardOutput
+from axile.executor.order_cancellation import CancelNotAllowedError, cancel_orders
 from axile.executor.order_input_validation import normalize_order_enums
 
 if TYPE_CHECKING:
@@ -164,22 +165,40 @@ class AbstractExecutorFacadeMixin:
             当存在订单撤销失败时抛出。
         """
         executor = _executor(self)
-        failed_order_ids: list[str] = []
+        executor.get_pending_orders(None)
+        result = cancel_orders(
+            executor.account_orders.snapshot()["data"],
+            cancel=executor.cancel_order,
+            reconcile=executor.reconcile_terminal_order,
+        )
+        for order in result.terminal_orders:
+            executor.account_orders.apply(order)
+            executor.get_execution_query_runtime_bridge().handle_order_update(order)
+        for order in executor.account_orders.snapshot()["resolved"]:
+            if order.is_completed():
+                item = result.orders.get((order.symbol, order.order_id))
+                if item is not None:
+                    item.terminal_order = order
+        if result.unconfirmed:
+            message = "旧委托尚未确认结束，停止新增委托: " + "; ".join(
+                f"{key} {reason}" for key, reason in result.details.items()
+            )
+            error = CancelNotAllowedError(message) if result.only_restricted else RuntimeError(message)
+            setattr(error, "execution_error", message)
+            raise error
 
-        for order in executor.get_pending_orders(None):
-            try:
-                canceled = executor.cancel_order(order.symbol, order.order_id)
-            except Exception as exc:
-                if bool(getattr(exc, "requires_session_recovery", False)):
-                    raise
-                failed_order_ids.append(order.order_id)
-                continue
-
-            if not canceled:
-                failed_order_ids.append(order.order_id)
-
-        if failed_order_ids:
-            raise RuntimeError(f"部分订单撤销失败: {'; '.join(failed_order_ids)}")
+    def reconcile_terminal_order(self, symbol: str, order_id: str) -> UnifiedOrder | None:
+        """默认使用已收到的真实终态回报；不以挂单查询缺失推断撤单成功。"""
+        executor = _executor(self)
+        normalized = executor._normalize_symbol(symbol)
+        return next(
+            (
+                order
+                for order in executor.account_orders.snapshot()["resolved"]
+                if order.symbol == normalized and order.order_id == order_id and order.is_completed()
+            ),
+            None,
+        )
 
     def handle_termination_checkpoint(self, symbol: str | None = None) -> None:
         """
@@ -389,6 +408,11 @@ class AbstractExecutorFacadeMixin:
         -------
         bool
             撤单提交成功时返回 ``True``。
+
+        Raises
+        ------
+        CancelNotAllowedError
+            当前明确禁止撤单且请求未发送；原委托仍须跟踪。
         """
         executor = _executor(self)
         normalized_symbol = executor._normalize_symbol(symbol)
@@ -400,6 +424,7 @@ class AbstractExecutorFacadeMixin:
                 normalized_symbol,
                 order_id,
                 getattr(exc, "execution_error", None) or "撤单未确认成功，请核对订单状态",
+                outcome="blocked" if isinstance(exc, CancelNotAllowedError) else "unknown",
             )
             raise
         if not canceled:

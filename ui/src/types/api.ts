@@ -1,3 +1,4 @@
+import type { GMSessions } from '@/features/setup/cron'
 import type { ConnectionRun } from '@/lib/api/connectionProgress'
 /**
  * 手写 API DTO —— 对齐后端 `axile/server/db/models` 的 *Public 模型。
@@ -228,6 +229,7 @@ export interface Account {
   connection_values?: Record<string, unknown>
   is_started: boolean
   cron_expr: string
+  gm_sessions?: GMSessions | null
   supplement?: { count: number; interval_minutes: number } | null
   has_pending_supplement?: boolean
   remark: string | null

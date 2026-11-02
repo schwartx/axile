@@ -41,6 +41,12 @@ def test_futures_clock_punches_lunch_and_keeps_tea_break(moment: datetime, expec
 @pytest.mark.parametrize(
     ("moment", "expected"),
     [
+        (datetime(2026, 9, 18, 9, 14, tzinfo=_SHANGHAI), False),
+        (datetime(2026, 9, 18, 9, 15, tzinfo=_SHANGHAI), True),
+        (datetime(2026, 9, 18, 9, 20, tzinfo=_SHANGHAI), True),
+        (datetime(2026, 9, 18, 9, 24, tzinfo=_SHANGHAI), True),
+        (datetime(2026, 9, 18, 9, 25, tzinfo=_SHANGHAI), False),
+        (datetime(2026, 9, 18, 9, 29, tzinfo=_SHANGHAI), False),
         (datetime(2026, 9, 18, 9, 30, tzinfo=_SHANGHAI), True),
         (datetime(2026, 9, 18, 11, 30, tzinfo=_SHANGHAI), False),
         (datetime(2026, 9, 18, 12, 0, tzinfo=_SHANGHAI), False),
@@ -59,7 +65,8 @@ def test_empty_windows_are_always_open() -> None:
 
 def test_stock_m15_clamps_session_close_and_keeps_lunch_out() -> None:
     times = rhythm_hhmm(day_windows(CN_STOCK_WINDOWS), 15)
-    assert times[0] == "09:30"
+    assert times[:3] == ["09:15", "09:30", "09:45"]
+    assert "09:25" not in times
     assert "11:15" in times
     assert "11:29" in times
     assert "11:30" not in times
@@ -91,7 +98,7 @@ def test_replenish_offsets_do_not_cross_lunch() -> None:
 
 
 def test_stock_m120_uses_open_and_last_open_minute() -> None:
-    assert rhythm_hhmm(day_windows(CN_STOCK_WINDOWS), 120) == ["09:30", "11:29", "13:00", "14:59"]
+    assert rhythm_hhmm(day_windows(CN_STOCK_WINDOWS), 120) == ["09:15", "09:30", "11:29", "13:00", "14:59"]
 
 
 def test_night_close_is_last_open_minute() -> None:

@@ -96,7 +96,7 @@ exchange_rate native_currency native_value account_currency account_value valuat
 reason value limit on_trigger per_minute per_day min_interval_ms account symbol_overrides
 operations groups operation_groups priority policy fingerprint actual_policy actual_fingerprint
 account_control_hit account_control_wait_hits scope rule waited_ms wait_ms estimated_wait_ms
-cancel_failed_order_ids cancel_unconfirmed cancel_attempted forced trigger acked_at requested_at
+termination cancel_failed_order_ids cancel_unconfirmed cancel_attempted cancel_details cancel_outcomes request_status terminal query_error forced trigger acked_at requested_at
 execution_version environment python_version axile_version packages executor_module executor_class
 algorithm implementation_sha256 captured_at version distribution entry_point name provider
 n_orders n_trades ordered executed fill_ratio arrival_mid slippage_bps tca price_data
@@ -113,6 +113,8 @@ max_wait_seconds order_timeout_seconds order_volume order_price strategy_name
 """.split()
 )
 _DYNAMIC_MAPS = {
+    "cancel_details",
+    "cancel_outcomes",
     "symbol_results",
     "curr_target",
     "last_target",
@@ -238,7 +240,7 @@ class EvidenceRedactor:
         """动态键是合约或分发包名，不能误把含 TOKEN 的合约当作密钥字段。"""
         if parent in {"curr_target", "last_target", "strategy_target", "account_target"}:
             return value is None or isinstance(value, (int, float))
-        if parent == "packages":
+        if parent in {"packages", "cancel_details"}:
             return value is None or isinstance(value, str)
         if parent == "operation_groups":
             return isinstance(value, list) and all(isinstance(item, str) for item in value)

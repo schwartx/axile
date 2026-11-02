@@ -31,7 +31,8 @@ def test_chase_cancel_wait_uses_remaining_budget(monkeypatch) -> None:
     tracker.latest_prices[order.symbol] = price
     monkeypatch.setattr(tracker, "_usable_price", lambda _: price)
 
-    assert tracker.wait_for_completion(timeout=1.2) is False
+    with pytest.raises(RuntimeError, match="订单终态尚未确认"):
+        tracker.wait_for_completion(timeout=1.2)
 
     assert clock.time() == pytest.approx(1.2)
     assert executor._placed == 0

@@ -5,31 +5,35 @@
  * 壳与 :component:`ImportModal` 同级（居中 dialog + scrim），不进完整 :component:`TimerEditor`。
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Check } from 'lucide-react'
 import { Link } from '@/components/ui/nav'
 import { CenteredModal } from '@/components/ui/CenteredModal'
+import { ScheduleTimeRow } from '@/components/ui/ScheduleTimeRow'
+import { GMSessionControls } from '@/features/setup/GMSessionControls'
 import { SupplementControls } from '@/features/setup/SupplementControls'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { MOTION_LAYOUT, useRemountFade } from '@/lib/viewTransition'
+import { executionReasonText } from '@/features/account/executionReason'
+import { schedulePreviewItemPresentation } from '@/features/setup/previewTimeline'
 import {
   DEFAULT_PRESET,
   PRESETS,
   cronExprEqual,
+  gmTimerSessions,
+  type GMSessions,
   defaultTimerEditorState,
-  fmtFire,
-  nextFires,
   parseSavedTimer,
+  timerEditorError,
   timerSupplement,
   type Supplement,
-  resolveCronList,
   ruleFromPreset,
   timerStateToCronExpr,
   type NightSchedule,
   type ScheduleKind,
   type TimerEditorState,
 } from '@/features/setup/cron'
-import { updateAccount } from '@/lib/api/accounts'
+import { previewSchedule, updateAccount, type SchedulePreview } from '@/lib/api/accounts'
 import { useToastStore } from '@/stores/ui'
 import { useChannelDescriptor } from '@/stores/channels'
 
@@ -62,8 +66,9 @@ function draftFromCron(
   cronExpr: string,
   night?: NightSchedule | null,
   supplement?: Supplement | null,
+  gmSessions?: GMSessions | null,
 ): { state: TimerEditorState; fromComplex: boolean } {
-  const parsed = parseSavedTimer(market, cronExpr, night, supplement)
+  const parsed = parseSavedTimer(market, cronExpr, night, supplement, gmSessions)
   const quick = parsed.timerTab === 'quick'
   if (quick) return { state: { ...parsed, timerTab: 'quick', rawCron: '' }, fromComplex: false }
 
@@ -73,6 +78,7 @@ function draftFromCron(
     state: {
       ...base,
       autoOn: parsed.autoOn,
+      gm_sessions: parsed.gm_sessions,
       timerTab: 'quick',
       rawCron: '',
     },
@@ -102,6 +108,7 @@ export interface TimerQuickModalProps {
   /** 当前存储的 cron_expr。 */
   cronExpr: string
   supplement?: Supplement | null
+  gmSessions?: GMSessions | null
   onClose: () => void
   /** 保存成功后刷新详情 / next_run / 仪表盘。 */
   onSaved: () => void
@@ -118,28 +125,30 @@ function TimerQuickModalReady({
   nightSchedule,
   cronExpr,
   supplement,
+  gmSessions,
+  tradeChannel,
   onClose,
   onSaved,
 }: TimerQuickModalProps & { scheduleKind: ScheduleKind; nightSchedule?: NightSchedule | null }) {
   const toast = useToastStore((s) => s.toast)
   const market = scheduleKind
-  const [state, setState] = useState<TimerEditorState>(() => draftFromCron(market, cronExpr, nightSchedule, supplement).state)
+  const [state, setState] = useState<TimerEditorState>(() => draftFromCron(market, cronExpr, nightSchedule, supplement, gmSessions).state)
   // 开关切到「开」的那一帧才播入场；初次以开挂载不播（首帧就位）。
   const autoOnFade = useRemountFade(state.autoOn)
   const [fromComplex, setFromComplex] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<Error | null>(null)
+  const [preview, setPreview] = useState<SchedulePreview | null>(null)
+  const [previewError, setPreviewError] = useState<Error | null>(null)
 
   useEffect(() => {
     if (!open) return
-    const d = draftFromCron(market, cronExpr, nightSchedule, supplement)
+    const d = draftFromCron(market, cronExpr, nightSchedule, supplement, gmSessions)
     setState(d.state)
     setFromComplex(d.fromComplex)
     setSaving(false)
     setSaveError(null)
-  }, [open, market, cronExpr, nightSchedule, supplement])
-
-
+  }, [open, market, cronExpr, nightSchedule, supplement, gmSessions])
   const patch = (p: Partial<TimerEditorState>) => {
     setSaveError(null)
     setState((prev) => ({ ...prev, ...p }))
@@ -159,11 +168,29 @@ function TimerQuickModalReady({
 
   const intent = asQuickIntent(market, state)
   const cronNext = fromComplex && state.autoOn ? cronExpr : timerStateToCronExpr(market, intent, nightSchedule)
-  const nextSupplement = timerSupplement(state)
-  const dirty = !cronExprEqual(cronNext, cronExpr) || JSON.stringify(nextSupplement) !== JSON.stringify(supplement ?? null)
-  const fires = state.autoOn ? nextFires(resolveCronList(market, { ...intent, supN: 0 }, nightSchedule), 4) : []
+  const nextSupplement = useMemo(() => timerSupplement({ autoOn: state.autoOn, supN: state.supN, supM: state.supM }), [state.autoOn, state.supN, state.supM])
+  const nextSessions = useMemo(() => gmTimerSessions(tradeChannel, { gm_sessions: state.gm_sessions }), [tradeChannel, state.gm_sessions])
+  const dirty = !cronExprEqual(cronNext, cronExpr) || JSON.stringify(nextSupplement) !== JSON.stringify(supplement ?? null) || JSON.stringify(nextSessions) !== JSON.stringify(gmTimerSessions(tradeChannel, { gm_sessions: gmSessions }))
+  const validationError = timerEditorError(state)
+  useEffect(() => {
+    setPreview(null)
+    setPreviewError(null)
+    if (!open || !cronNext || validationError) return
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
+      void previewSchedule(tradeChannel, cronNext, {
+        limit: 4, gm_sessions: nextSessions, supplement: nextSupplement,
+      }, controller.signal).then((result) => {
+        if (!controller.signal.aborted) setPreview(result)
+      }).catch((error) => {
+        if (!controller.signal.aborted) setPreviewError(error instanceof Error ? error : new Error(String(error)))
+      })
+    }, 250)
+    return () => { window.clearTimeout(timer); controller.abort() }
+  }, [open, tradeChannel, cronNext, nextSessions, nextSupplement, validationError])
 
   const save = async () => {
+    if (validationError) return
     if (!dirty) {
       onClose()
       return
@@ -175,7 +202,7 @@ function TimerQuickModalReady({
     setSaving(true)
     setSaveError(null)
     try {
-      await updateAccount(accountId, { cron_expr: cronNext, supplement: nextSupplement })
+      await updateAccount(accountId, { cron_expr: cronNext, supplement: nextSupplement, gm_sessions: nextSessions })
       toast(cronNext ? '节奏已更新' : '已关闭自动调仓节奏')
       onSaved()
       onClose()
@@ -211,7 +238,7 @@ function TimerQuickModalReady({
             type="button"
             className="cursor-pointer rounded-[9px] border border-ink-1 bg-ink-1 px-[18px] py-2 text-sm font-[550] text-surface disabled:opacity-45"
             onClick={() => void save()}
-            disabled={saving || !dirty}
+            disabled={saving || !dirty || Boolean(validationError)}
           >
             {saving ? '保存中…' : '保存'}
           </button>
@@ -284,6 +311,8 @@ function TimerQuickModalReady({
                 </div>
               )}
 
+              <GMSessionControls channel={tradeChannel} value={state.gm_sessions} onChange={(gm_sessions) => patch({ gm_sessions })} />
+
               <SupplementControls
                 supN={state.supN}
                 supM={state.supM}
@@ -295,17 +324,15 @@ function TimerQuickModalReady({
                 <div className="mb-1 text-sm font-[640]">
                   下次排程 <span className="text-xs font-normal text-ink-3">预览 · 北京时间</span>
                 </div>
-                <div className="flex flex-wrap gap-x-3 gap-y-1">
-                  {fires.length ? (
-                    fires.map((f, i) => (
-                      <span key={i} className={`text-sm ${i === 0 ? 'font-[640]' : 'text-ink-3'}`}>
-                        {fmtFire(f)}
-                      </span>
-                    ))
-                  ) : (
-                    <span className="text-sm text-ink-3">— 选择节奏后显示 —</span>
-                  )}
+                <div className="space-y-1" role="list" aria-label="未来排程">
+                  {preview?.items.map((item) => {
+                    const presentation = schedulePreviewItemPresentation(item, executionReasonText, nextSupplement?.interval_minutes)
+                    return <ScheduleTimeRow key={item.scheduled_at} scheduledAt={item.scheduled_at}
+                      now={Date.parse(preview.evaluated_at)} tone={presentation.tone}
+                      trailing={[item.phase_label, presentation.text].filter(Boolean).join(' · ')} />
+                  }) ?? <span className="text-sm text-ink-3">{validationError ?? (cronNext ? '正在预览…' : '选择节奏后显示')}</span>}
                 </div>
+                <ErrorNotice intent="read" title="未来排程预览失败" error={previewError} />
               </div>
             </div>
           </div>

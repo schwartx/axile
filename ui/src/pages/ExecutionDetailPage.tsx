@@ -287,7 +287,8 @@ function SymbolChainRow({
       <NumberTicker value={s.attainedRatio * 100} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />
     )
   const result = executionRecordView({ status: s.status })
-  const outcome = { cls: result.warning ? 'text-warn' : 'text-ink-3', node: result.title }
+  const normalSkip = s.action === 'skipped' && !s.broken
+  const outcome = { cls: result.warning ? 'text-warn' : 'text-ink-3', node: normalSkip ? '休市跳过' : result.title }
   const sideText = s.side === 'sell' ? '卖' : s.side === 'buy' ? '买' : ''
   const driftNotable = Math.abs(s.drift) > 1e-6
   // 浮盈：当前水平取 after（无则回退 before）。未成交时前→后 Δ 纯为行情漂移、与执行无关，
@@ -312,7 +313,7 @@ function SymbolChainRow({
         <div className="mt-1">
           <SizingEvidence row={s.sizing} quantityLabel={units.quantity_label} currency={currency} />
         </div>
-      ) : (
+      ) : !normalSkip && (
         <div className="mt-1 text-[12.5px] text-warn">当时未记录换算依据</div>
       )}
       <div className="num mt-0.5 text-[13px] text-ink-3">

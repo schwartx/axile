@@ -38,7 +38,7 @@ const EXECUTION: &[&str] = &[
     "write_empty_record",
     "execution_timeout",
 ];
-const SCHEDULE: &[&str] = &["is_started", "cron_expr", "supplement"];
+const SCHEDULE: &[&str] = &["is_started", "cron_expr", "gm_sessions", "supplement"];
 const NOTIFICATION: &[&str] = &["feishu_key", "execution_notification_code"];
 const BACKTEST: &[&str] = &["backtest_weight_type", "backtest_fee_rate"];
 const GROUPS: &[(&str, &[&str])] = &[
@@ -663,7 +663,7 @@ pub fn account_update(path: &str, request: &Value) -> Result<Value, AnalysisErro
             data.get(*name)
                 .is_some_and(|value| value != &previous[*name])
         });
-        let schedule_changed = ["cron_expr", "supplement", "trade_channel", "portfolio_id"]
+        let schedule_changed = ["cron_expr", "supplement", "gm_sessions", "trade_channel", "portfolio_id"]
             .iter()
             .any(|name| {
                 data.get(*name)

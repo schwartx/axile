@@ -125,3 +125,16 @@ def _cron_trigger_fingerprint(trigger: object) -> tuple[str, ...]:
     if isinstance(children, (list, tuple)) and children:
         return tuple(str(child) for child in children)
     return (str(trigger),)
+
+
+def effective_triggers(cron_expr: str, channel: object, sessions=None) -> list[CronTrigger]:
+    """合并普通节奏与独立 GM 阶段触发；空 Cron 始终表示关闭自动调仓。"""
+    if is_blank_cron_expr(cron_expr):
+        return []
+    triggers = parse_cron_expr(cron_expr)
+    if str(channel) == "gm" and sessions is not None:
+        for value in sessions.model_dump().values():
+            if value["enabled"]:
+                hour, minute = value["time"].split(":")
+                triggers.extend(parse_cron_expr(f"{int(minute)} {int(hour)} * * *"))
+    return list({str(trigger): trigger for trigger in triggers}.values())

@@ -1,12 +1,14 @@
 """调仓执行场景测试。"""
 
 import asyncio
+from datetime import datetime
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
 
+from axile.channels.gm_sessions import SHANGHAI, gm_session_context
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionArtifactType, ExecutionEventStatus, ExecutionEventType
 from axile.executor.abstract_executor.base import AbstractExecutor
@@ -15,6 +17,7 @@ from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import ExecutionStatus, UnifiedStandardOutput
 from axile.executor.models.unified_price import UnifiedPriceData
 from axile.server.db.models import Account
+from axile.server.db.models.account_settings import GMSessionSettings
 from axile.server.execution import intents as execution_intents
 from axile.server.execution import rebalance as rebalance_execution
 from axile.server.execution.worker_backend import worker_audit, worker_state
@@ -255,6 +258,7 @@ def test_trade_defaults_gm_ashare_short_leverage_to_zero_when_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """GM+A股 且未显式配置 short_leverage 时，应默认按 long-only 处理负目标。"""
+    monkeypatch.setattr(rebalance_execution, "clock_now", lambda **_: datetime(2026, 9, 1, 9, 30, tzinfo=SHANGHAI))
     account = build_account(
         name="gm-ashare-account",
         market="A股",
@@ -961,6 +965,10 @@ def test_standard_input_accepts_database_trade_channel_string() -> None:
         }
     )
     account.trade_channel = cast("TradeChannel", "gm")
+    context = gm_session_context(
+        GMSessionSettings(opening_cancelable={"enabled": True, "time": "09:15"}).model_dump(),
+        datetime(2026, 9, 1, 9, 15, tzinfo=SHANGHAI),
+    )
 
     standard_input = rebalance_execution._build_rebalance_standard_input(
         account=account,
@@ -968,12 +976,14 @@ def test_standard_input_accepts_database_trade_channel_string() -> None:
         last_target={"SZSE.000001": 0.2},
         execution_id="exec-db-channel-1",
         trigger_source="scheduler",
+        gm_session=context,
     )
 
     assert standard_input.channel_type == TradeChannel.GM
     assert standard_input.curr_target == {"600000.SH": 0.1}
     assert standard_input.last_target == {"000001.SZ": 0.2}
     assert cast("dict[str, object]", standard_input.extra["audit"])["channel"] == "gm"
+    assert standard_input.extra["audit"]["gm_session"] == context
 
 
 def test_account_execution_timeout_flows_into_standard_input() -> None:

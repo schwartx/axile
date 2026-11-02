@@ -82,6 +82,8 @@ class _TerminationSnapshot:
     forced: bool
     cancel_attempted: bool | None
     cancel_unconfirmed: bool
+    cancel_details: dict[str, str]
+    cancel_outcomes: dict[str, dict[str, object]]
 
 
 def _resolve_termination_snapshot(
@@ -115,6 +117,8 @@ def _resolve_termination_snapshot(
         forced=exc.forced,
         cancel_attempted=exc.cancel_attempted,
         cancel_unconfirmed=exc.cancel_unconfirmed,
+        cancel_details=exc.cancel_details,
+        cancel_outcomes=exc.cancel_outcomes,
     )
 
 
@@ -282,6 +286,8 @@ async def _record_terminated_execution(
         trigger=termination.trigger,
         forced=termination.forced,
         cancel_unconfirmed=termination.cancel_unconfirmed,
+        cancel_details=termination.cancel_details,
+        cancel_outcomes=termination.cancel_outcomes,
     )
     # 先落内存态再发告警：告警链路里的 get_external_ip 会串行探测多个外网服务，
     # 而超时终止恰恰常发生在网络劣化时——放在前面会把 TERMINATED 的可见时间拖上几十秒。
@@ -307,6 +313,8 @@ async def _record_terminated_execution(
                     "cancel_failed_order_ids": termination.cancel_failed_order_ids,
                     "forced": termination.forced,
                     "cancel_unconfirmed": termination.cancel_unconfirmed,
+                    "cancel_details": termination.cancel_details,
+                    "cancel_outcomes": termination.cancel_outcomes,
                 }
             },
         )

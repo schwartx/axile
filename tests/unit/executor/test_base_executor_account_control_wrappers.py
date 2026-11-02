@@ -21,6 +21,7 @@ from axile.executor.ctp.ctp_execute import CtpSessionRecoveryRequired
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
+from axile.executor.order_cancellation import CancelNotAllowedError
 from tests.unit.executor._account_control_test_support import normalize_account_control_override
 
 
@@ -423,19 +424,23 @@ def test_place_order_never_invalidates_trade_snapshot_even_if_order_payload_show
     assert invalidations == []
 
 
-def test_cancel_order_success_removes_runtime_pending_order() -> None:
-    """公开撤单成功后应直接从 runtime pending snapshot 移除订单。"""
+def test_cancel_order_submission_retains_runtime_pending_order() -> None:
+    """公开撤单提交仅使快照失效，未收到终态不能移除原单。"""
     executor = _WrapperExecutor(_build_guard({"cancel_order": {"per_day": 1}}))
     removed_orders: list[tuple[str, str]] = []
+    invalidated: list[str] = []
 
     class _Runtime:
         def remove_pending_order(self, symbol: str, order_id: str) -> None:
             removed_orders.append((symbol, order_id))
 
-    executor.set_active_execution_query_runtime(_Runtime())
+        def invalidate_orders(self, symbol: str) -> None:
+            invalidated.append(symbol)
 
+    executor.set_active_execution_query_runtime(_Runtime())
     assert executor.cancel_order("SHSE.600000", "order-1") is True
-    assert removed_orders == [("SHSE.600000", "order-1")]
+    assert removed_orders == []
+    assert invalidated == ["SHSE.600000"]
 
 
 def test_passive_order_update_patches_runtime_without_trade_invalidation() -> None:
@@ -536,7 +541,7 @@ def test_cancel_order_consumes_single_cancel_order_attempt() -> None:
     assert events[0].decision == AccountControlDecision.ALLOWED
 
 
-def test_cancel_all_orders_queries_once_and_cancels_every_pending_order() -> None:
+def test_cancel_all_orders_queries_once_and_cancels_every_pending_order(monkeypatch) -> None:
     """公开 cancel_all_orders 应查询一次账户挂单并逐笔撤单。"""
     executor = _WrapperExecutor(
         _build_guard(
@@ -557,6 +562,15 @@ def test_cancel_all_orders_queries_once_and_cancels_every_pending_order() -> Non
         _make_pending_order("SZSE.000001", "order-2"),
     ]
 
+    monkeypatch.setattr(
+        executor,
+        "reconcile_terminal_order",
+        lambda symbol, order_id: next(
+            order.model_copy(update={"status": "已撤销"})
+            for order in executor.pending_orders
+            if order.symbol == symbol and order.order_id == order_id
+        ),
+    )
     executor.cancel_all_orders()
 
     assert executor.raw_calls == [
@@ -605,7 +619,7 @@ def test_cancel_all_orders_aggregates_false_and_exception_failures() -> None:
         "order-3": RuntimeError("downstream exploded"),
     }
 
-    with pytest.raises(RuntimeError, match="order-2; order-3"):
+    with pytest.raises(RuntimeError, match="order-1.*order-2.*order-3"):
         executor.cancel_all_orders()
 
     assert executor.raw_calls == [
@@ -669,3 +683,49 @@ def _make_trade(symbol: str, order_id: str, trade_id: str) -> TradeRecord:
         trade_price=12.3,
         extra={"symbol": symbol, "order_id": order_id},
     )
+
+
+def test_startup_cleanup_keeps_missing_old_order_until_actual_terminal():
+    executor = _WrapperExecutor(_build_guard({}))
+    old = _make_pending_order("SHSE.600000", "old-from-previous-execution")
+    executor.account_orders.apply(old)
+    executor.cancel_results[old.order_id] = CancelNotAllowedError("当前不可撤单")
+    # 下一轮查询不再返回旧单；缺失不能被解释为已撤销。
+    executor.pending_orders = []
+    with pytest.raises(RuntimeError, match="当前不可撤单"):
+        executor.cancel_all_orders()
+    assert executor.account_orders.snapshot()["data"][0].order_id == old.order_id
+    assert ("cancel", f"{old.symbol}:{old.order_id}") in executor.raw_calls
+    executor.account_orders.apply(old.model_copy(update={"status": "已成交", "filled_volume": old.volume}))
+    executor.set_account_control_guard(None)
+    executor.cancel_all_orders()
+    assert executor.account_orders.snapshot()["data"] == []
+
+
+def test_startup_cleanup_does_not_treat_submitted_cancel_as_terminal():
+    executor = _WrapperExecutor(_build_guard({}))
+    executor.pending_orders = [_make_pending_order("SHSE.600000", "submitted-only")]
+    with pytest.raises(RuntimeError, match="请求已提交"):
+        executor.cancel_all_orders()
+    assert executor.account_orders.snapshot()["data"][0].order_id == "submitted-only"
+
+
+@pytest.mark.parametrize("same_symbol", [True, False])
+def test_startup_cleanup_rechecks_terminal_callback_after_channel_query(monkeypatch, same_symbol):
+    executor = _WrapperExecutor(_build_guard({}))
+    old = _make_pending_order("SHSE.600000", "old")
+    executor.pending_orders = [old]
+
+    def reconcile(symbol, order_id):
+        terminal = old.model_copy(update={"status": "已成交", "filled_volume": old.volume})
+        if not same_symbol:
+            terminal = terminal.model_copy(update={"symbol": "SZSE.000001"})
+        executor.account_orders.apply(terminal)
+        return None
+
+    monkeypatch.setattr(executor, "reconcile_terminal_order", reconcile)
+    if same_symbol:
+        executor.cancel_all_orders()
+    else:
+        with pytest.raises(RuntimeError, match="终态尚未确认"):
+            executor.cancel_all_orders()

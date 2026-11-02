@@ -5,9 +5,10 @@ import { parseSavedTimer } from '../src/features/setup/cron'
 import '../src/styles/theme.css'
 
 export function Fixture() {
-  const [value, onChange] = useState(() => parseSavedTimer('cn_futures', '55 14 * * *', null, { count: 2, interval_minutes: 1 }))
+  const stock = new URLSearchParams(location.search).get('channel') === 'gm'
+  const [value, onChange] = useState(() => parseSavedTimer(stock ? 'cn_stock' : 'cn_futures', '55 14 * * *', null, { count: 2, interval_minutes: 1 }))
   return <main style={{ height: 600, padding: 24 }}>
-    <TimerEditor tradeChannel="ctp" scheduleKind="cn_futures" value={value} onChange={onChange} layout="page" />
+    <TimerEditor tradeChannel={stock ? 'gm' : 'ctp'} scheduleKind={stock ? 'cn_stock' : 'cn_futures'} value={value} onChange={onChange} layout="page" />
   </main>
 }
 createRoot(document.getElementById('root')!).render(<Fixture />)

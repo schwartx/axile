@@ -14,6 +14,7 @@ import { useToastStore } from '@/stores/ui'
 import { AccountPageTitle } from '@/features/account/pageHead'
 import {
   cronExprEqual,
+  gmTimerSessions,
   describeCron,
   parseSavedTimer,
   timerSupplement,
@@ -63,7 +64,7 @@ export function AccountEditTimerPage() {
   /** 草稿重置为服务端当前节奏；数据未就绪时返回 false（供首帧初始化门控）。 */
   const resetTimer = useCallback(() => {
     if (!acc || !descriptor) return false
-    setTimer(parseSavedTimer(descriptor.schedule.kind, acc.cron_expr ?? '', descriptor.schedule.night, acc.supplement))
+    setTimer(parseSavedTimer(descriptor.schedule.kind, acc.cron_expr ?? '', descriptor.schedule.night, acc.supplement, acc.gm_sessions))
     setSaveError(null)
     return true
   }, [acc, descriptor])
@@ -73,11 +74,11 @@ export function AccountEditTimerPage() {
   }, [ready, resetTimer])
 
   if (account.error && !acc)
-    return <EditError error={account.error} onRetry={account.refresh} />
+    return <div className="px-4 pt-5 md:px-5"><EditError error={account.error} onRetry={account.refresh} /></div>
 
   if (account.loading || !ready || !acc || !timer || !descriptor)
     return (
-      <section className="pb-24">
+      <section className="px-4 pt-5 md:px-5">
         {title}
         <EditLoading bare />
       </section>
@@ -87,14 +88,15 @@ export function AccountEditTimerPage() {
   const cronNext = timerStateToCronExpr(scheduleKind, timer, descriptor.schedule.night)
   const cronPrev = acc.cron_expr ?? ''
   const supplement = timerSupplement(timer)
-  const dirty = !cronExprEqual(cronNext, cronPrev) || JSON.stringify(supplement) !== JSON.stringify(acc.supplement ?? null)
+  const gmSessions = gmTimerSessions(acc.trade_channel, timer)
+  const dirty = !cronExprEqual(cronNext, cronPrev) || JSON.stringify(supplement) !== JSON.stringify(acc.supplement ?? null) || JSON.stringify(gmSessions) !== JSON.stringify(gmTimerSessions(acc.trade_channel, { gm_sessions: acc.gm_sessions }))
   const err = timerEditorError(timer)
   const changes = dirty ? [cronNext ? '定时任务已改' : '关闭自动调仓节奏'] : []
 
   // 与总览入口同构摘要（随草稿变）。
   const timerSummary = !cronNext.trim()
     ? '已关 · 仅手动'
-    : (describeCron(scheduleKind, cronNext, descriptor.schedule.night) ?? '自定义执行节奏')
+    : (describeCron(scheduleKind, cronNext, descriptor.schedule.night, gmSessions) ?? '自定义执行节奏')
 
   const save = async () => {
     if (err) return toast(`执行节奏有误：${err}`)
@@ -102,7 +104,7 @@ export function AccountEditTimerPage() {
     setSaving(true)
     setSaveError(null)
     try {
-      await updateAccount(accountId, { cron_expr: cronNext, supplement })
+      await updateAccount(accountId, { cron_expr: cronNext, supplement, gm_sessions: gmSessions })
       toast(cronNext ? '节奏已更新' : '已关闭自动调仓节奏')
       void refreshAccounts()
       account.refresh()
@@ -115,9 +117,9 @@ export function AccountEditTimerPage() {
 
   // 宽视口下撑起高度链（h-full → flex-1 min-h-0），让 TimerEditor 的预览右列通高；
   // 标题 / 当前配置经 leading 进左列，预览与标题顶对齐。
-  // EditSaveBar 自己按实际高度占位，窄视口保持自然流。
+  // 此页不叠加外壳的底部留白，EditSaveBar 按实际高度占位；窄视口保持自然流。
   return (
-    <section className="min-[1120px]:flex min-[1120px]:h-full min-[1120px]:flex-col">
+    <section className="px-4 pt-5 md:px-5 min-[1120px]:flex min-[1120px]:h-full min-[1120px]:flex-col">
       <div className="min-[1120px]:min-h-0 min-[1120px]:flex-1">
         <TimerEditor
           tradeChannel={acc.trade_channel}

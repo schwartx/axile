@@ -9,10 +9,12 @@ from typing import Any, cast
 
 import loguru
 
+from axile.channels.gm_sessions import SHANGHAI, gm_session_context
 from axile.common.gm_symbols import normalize_gm_standard_input
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind
 from axile.executor.algorithms.exceptions import execution_error_message
+from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.termination import ExecutionTerminated
 from axile.server.core.log_config import execution_log_context
@@ -218,6 +220,7 @@ def _build_rebalance_standard_input(
     last_target: dict[str, object],
     execution_id: str | None,
     trigger_source: str,
+    gm_session: dict[str, Any] | None = None,
 ) -> UnifiedStandardInput:
     """
     构造调仓执行器所需的标准输入模型.
@@ -280,6 +283,13 @@ def _build_rebalance_standard_input(
         }
     )
     if account.trade_channel == TradeChannel.GM:
+        if trigger_source == "scheduler":
+            from axile.server.db.models.account_settings import GMSessionSettings
+
+            sessions = getattr(account, "gm_sessions", None) or GMSessionSettings()
+            standard_input.extra["audit"]["gm_session"] = gm_session or gm_session_context(
+                sessions.model_dump(), clock_now(tz=SHANGHAI)
+            )
         return normalize_gm_standard_input(standard_input)
     return standard_input
 
@@ -380,6 +390,12 @@ async def trade(
         normalized_target = _normalize_rebalance_target(account, curr_target)
     last_target = await _load_last_target_snapshot(account)
     notification_snapshot = await load_notification_snapshot(account)
+    gm_session = None
+    if execution_id and str(account.trade_channel) == "gm" and trigger_source == "scheduler":
+        from axile.server.execution.intents import get_intent
+
+        intent = await get_intent(execution_id)
+        gm_session = intent.payload.get("gm_session") if intent else None
     # 审计输入、执行器输入与回传给调用方的 curr_target 必须共享同一份
     # 规范化结果，避免回放执行时出现“显示目标”和“实际下单目标”不一致。
     standard_input = _build_rebalance_standard_input(
@@ -388,6 +404,7 @@ async def trade(
         last_target=last_target,
         execution_id=execution_id,
         trigger_source=trigger_source,
+        gm_session=gm_session,
     )
     if execution_id and account.supplement:
         if await native_operation("supplement_has_execution_steps", {"execution_id": execution_id}):

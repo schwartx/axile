@@ -313,7 +313,7 @@ def account_settings_values(account: Account) -> dict[str, object]:
             "write_empty_record",
             "execution_timeout",
         ),
-        "schedule": ("is_started", "cron_expr", "supplement"),
+        "schedule": ("is_started", "cron_expr", "gm_sessions", "supplement"),
         "notification": ("feishu_key", "execution_notification_code"),
         "backtest": ("backtest_weight_type", "backtest_fee_rate"),
     }

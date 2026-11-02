@@ -310,5 +310,10 @@ class AbstractExecutor(
         Returns
         -------
         bool
-            撤单提交成功时返回 ``True``，否则返回 ``False``。
+            仅表示请求提交成功，不代表订单已撤销；未确认成功时返回 ``False``。
+
+        Raises
+        ------
+        CancelNotAllowedError
+            当前明确禁止撤单且请求未发送，原委托仍须跟踪。
         """

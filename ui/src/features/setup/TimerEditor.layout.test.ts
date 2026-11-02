@@ -28,7 +28,7 @@ test('page 布局把 leading 放进左列，预览仍是同一网格的右列', 
   expect(html).toContain('排程预览')
   expect(html.indexOf('定时任务 · TQ')).toBeLessThan(html.indexOf('排程预览'))
   expect(html.indexOf('定时任务 · TQ')).toBeLessThan(html.indexOf('自动调仓'))
-  expect(html).toContain('min-[1120px]:grid-cols-[minmax(0,1fr)_300px]')
+  expect(html).toContain('min-[1120px]:grid-cols-[minmax(0,1fr)_clamp(360px,33%,520px)]')
   expect(html).toContain('<aside')
 })
 
@@ -43,14 +43,14 @@ test('向导标题作为 leading 与预览顶对齐，走同一套右栏卡片',
   )
   expect(html.indexOf('什么时候自动执行？')).toBeLessThan(html.indexOf('排程预览'))
   expect(html.indexOf('什么时候自动执行？')).toBeLessThan(html.indexOf('自动调仓'))
-  expect(html).toContain('min-[1120px]:grid-cols-[minmax(0,1fr)_300px]')
+  expect(html).toContain('min-[1120px]:grid-cols-[minmax(0,1fr)_clamp(360px,33%,520px)]')
   expect(html).toContain('<aside')
   expect(html).not.toContain('border-y border-line')
 })
 
 test('step 布局预览沉底，没有右栏网格', () => {
   const html = renderEditor('step')
-  expect(html).not.toContain('min-[1120px]:grid-cols-[minmax(0,1fr)_300px]')
+  expect(html).not.toContain('min-[1120px]:grid-cols-[minmax(0,1fr)_clamp(360px,33%,520px)]')
   expect(html).toContain('border-y border-line')
   expect(html).not.toContain('<aside')
   expect(html.indexOf('自动调仓')).toBeLessThan(html.indexOf('排程预览'))
