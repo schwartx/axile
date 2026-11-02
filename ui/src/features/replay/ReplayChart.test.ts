@@ -37,9 +37,9 @@ it('真实图表组件的可读ORD按归属列量，不把他单与未知归入�
   expect(html).toContain('人工 4 · 1单')
   expect(html).toContain('归属未知 未知 · 1单')
   expect(html).toContain('实线为本次，点线为账户上下文')
-  expect(html).toContain('账户挂单是游标时刻该账户在此价位有效委托的未成交剩余量，包含其他执行')
-  expect(html).toContain('账户逐笔详情与选中标注')
-  expect(html).toContain('不再叠菱形、方框或选中圆环')
+  expect(html).toContain('账户挂单为当前时刻的未成交剩余量，包含其他执行')
+  expect(html).toContain('账户成交标注')
+  expect(html).toContain('轨迹不代表排队顺序')
 })
 
 it('切换当前执行只改变归属展示，不改账户订单或数量', () => {

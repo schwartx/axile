@@ -47,7 +47,7 @@ export function Acceptance() {
     <OrdersAndTrades projection={projection} scene={scene} context={replayWindow.context} symbol="SYNTHETIC" selected={selected} selectedTradeKey={selectedTrade}
       onSelect={setSelected} onSelectTrade={setSelectedTrade} executionId="synthetic" tab={tab} onTabChange={setTab} onSeek={setCursor} coverage={[range]}>
     <div className="replay-main-chart"><ReplayChart window={replayWindow} range={range} projection={projection} scene={scene} symbol="SYNTHETIC" executionId="synthetic" selectedOrder={selected} selectedTrade={selectedTrade}
-      onSelectOrder={setSelected} onSelectTrade={setSelectedTrade} onInspect={() => {}} onSeek={setCursor} symbolControl={<strong className="text-sm">SYNTHETIC</strong>} /></div>
+      onSelectOrder={setSelected} onSelectTrade={setSelectedTrade} onInspect={() => {}} onSeek={setCursor} firstQuoteControl={<button type="button" className="replay-first-quote cursor-pointer rounded-chip text-ink-2 hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent" onClick={() => setCursor(100_000)}>跳到首个盘口</button>} symbolControl={<strong className="text-sm">SYNTHETIC</strong>} /></div>
     </OrdersAndTrades>
     <ValueSlider label="合成回放游标" min={0} max={999_999} step={1} value={cursor} onChange={setCursor} formatValue={value => `${(value / 1_000_000).toFixed(3)} 秒`} />
   </main>

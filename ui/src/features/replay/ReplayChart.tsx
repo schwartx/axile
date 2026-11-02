@@ -1,5 +1,5 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react'
-import { ArrowLeft, ArrowRight, Circle, Crosshair, Info, Minus, Plus, RotateCcw, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Check, Circle, Crosshair, Info, Minus, RotateCcw, X } from 'lucide-react'
 import { ValueSlider } from '@/components/ui/ValueSlider'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { canvasLine, prepareCanvas, readCanvasTheme, type CanvasTheme } from '@/components/viz/chartCanvas'
@@ -17,6 +17,7 @@ import type { ReplayCursor, ReplayOrder, ReplayProjection, ReplayRange, ReplayWi
 interface Props {
   children?: ReactNode
   scene?: ReplayProjection
+  firstQuoteControl?: ReactNode
   symbolControl?: ReactNode
   window: ReplayWindow
   range: ReplayRange
@@ -80,7 +81,7 @@ function drawOrderHistory(ctx: CanvasRenderingContext2D, symbol: string, history
 }
 
 /** 同一画布中的历史深度、COB 与 ORD 只共享一份价位映射。 */
-export function ReplayChart({ window: replayWindow, range, projection, symbol, executionId, selectedOrder, onSelectOrder, onSeek, selectedTrade, onSelectTrade, onInspect, symbolControl, children, scene = projection }: Props) {
+export function ReplayChart({ window: replayWindow, range, projection, symbol, executionId, selectedOrder, onSelectOrder, onSeek, selectedTrade, onSelectTrade, onInspect, firstQuoteControl, symbolControl, children, scene = projection }: Props) {
   const holder = useRef<HTMLDivElement>(null), canvas = useRef<HTMLCanvasElement>(null)
   const [size, setSize] = useState({ width: 900, height: 300, revision: 0 })
   const [manualView, setManualView] = useState<ReplayPriceView | null>(null)
@@ -339,14 +340,13 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
 
   return <section aria-label="历史深度与自有委托" className="replay-chart" >
     <div className="replay-chart-playback">{symbolControl}{children}</div>
-    <div className="replay-chart-meta" style={{ gridTemplateColumns: layout.columns ? `minmax(0, ${layout.priceX - 8}px) minmax(0, 1fr)` : undefined }}><div className="replay-chart-meta-main"><div className="replay-chart-legend"><span className="replay-depth-bid"><Minus size={14} aria-hidden />买一</span><span className="replay-depth-ask"><Minus size={14} aria-hidden />卖一</span><span><Minus size={14} aria-hidden />成交价</span>{layers.market && <span><Circle size={10} aria-hidden />市场成交</span>}<span className="text-accent"><Minus size={14} aria-hidden />账户委托</span><span><Minus size={14} aria-hidden />未到达</span></div>{activeHover && activeHover.id !== 'pointer' && <span className="replay-hover-readout num" aria-label="悬停读数">{activeHover.future ? '未到达 · ' : ''}{activeHover.title} · {activeHover.headline} · {activeHover.status}</span>}      <div className="replay-chart-view-controls replay-chart-navigation" role="group" aria-label="图表缩放">
-        <Tooltip content="缩小图表"><button type="button" className={controlClass} onClick={() => zoom(1.4)} disabled={!view} aria-label="缩小图表"><Minus size={15} aria-hidden /></button></Tooltip>
-        <Tooltip content="放大图表"><button type="button" className={controlClass} onClick={() => zoom(0.7)} disabled={!view} aria-label="放大图表"><Plus size={15} aria-hidden /></button></Tooltip>
-        <Tooltip content="恢复图表视图"><button type="button" className={controlClass} onClick={resetView} disabled={!manualView && !timeView} aria-label="恢复图表视图"><RotateCcw size={15} aria-hidden /></button></Tooltip>
-      </div>
+    <div className="replay-chart-meta" style={{ gridTemplateColumns: layout.columns ? `minmax(0, ${layout.priceX - 8}px) minmax(0, 1fr)` : undefined }}><div className="replay-chart-meta-main" style={{ paddingRight: Math.max(0, layout.priceX + 4 - layout.right) }}><div className="replay-chart-legend"><span className="replay-depth-bid"><Minus size={14} aria-hidden />买一</span><span className="replay-depth-ask"><Minus size={14} aria-hidden />卖一</span><span><Minus size={14} aria-hidden />成交价</span>{layers.market && <span><Circle size={10} aria-hidden />市场成交</span>}<span className="text-accent"><Minus size={14} aria-hidden />账户委托</span><span><Minus size={14} aria-hidden />未到达</span></div>{activeHover && activeHover.id !== 'pointer' && <span className="replay-hover-readout num" aria-label="悬停读数">{activeHover.future ? '未到达 · ' : ''}{activeHover.title} · {activeHover.headline} · {activeHover.status}</span>}      <div className="replay-chart-view-controls replay-chart-navigation" role="group" aria-label="图表导航">
       <div className="replay-chart-return-slot">      {!cursorInside && <div className="replay-chart-return">
         <Tooltip content={`游标在${projection.time_us < visibleRange.start_us ? '左' : '右'}侧 · 回到游标`}><button type="button" className={controlClass} aria-label="回到游标" onClick={() => { const span = visibleRange.end_us - visibleRange.start_us; setTimeView(clampReplayView({ start_us: projection.time_us - span / 2, end_us: projection.time_us + span / 2 }, range)) }}>{projection.time_us < visibleRange.start_us ? <ArrowLeft size={15} aria-hidden /> : <ArrowRight size={15} aria-hidden />}</button></Tooltip>
       </div>}
+      </div>
+        {firstQuoteControl}
+        <Tooltip content="恢复视图"><button type="button" className={controlClass} onClick={resetView} disabled={!manualView && !timeView} aria-label="恢复视图"><RotateCcw size={15} aria-hidden /></button></Tooltip>
       </div>
     </div><div className="replay-depth-status"><span className="replay-depth-fit-slot"><span style={{ visibility: outsideDepth > 0 ? 'hidden' : 'visible' }}>{depthLabel}</span><Tooltip content={`当前视野外有 ${outsideDepth} 个已录档位`}><button type="button" className="text-accent focus-visible:outline-2 focus-visible:outline-accent" style={{ visibility: outsideDepth > 0 ? 'visible' : 'hidden' }} disabled={outsideDepth === 0} onClick={() => setManualView(null)}>显示全部档位</button></Tooltip></span><span className="replay-heat-scale"><i aria-hidden />{heat?.cells.some(cell => cell.quantity != null) ? `挂量 0 → ${quantityText(maxHeat)}` : '挂量尚未知'}</span></div></div>
     <div ref={holder} className="replay-chart-plot">
@@ -399,16 +399,19 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       return <tr key={`${level.side}:${level.price}:${index}`} className="border-t border-line"><th className="py-2 text-left font-normal">{level.side}</th><td>{priceText(level.price)}</td><td>{quantityText(level.quantity)}</td><td>{own.length ? replayOrderOwnershipGroups(own, executionId).map(group => <span key={group.kind} className="block">{group.label} {quantityText(replayRemainingQuantity(group.orders))} · {group.orders.length}单</span>) : '—'}</td></tr>
     })}</tbody></table>{!displayQuote && <p className="py-3 text-xs text-ink-2">盘口未记录／已失效；自有委托仍可在订单表查看。</p>}</div>
     <div id="replay-chart-legend" popover="auto" className="replay-chart-help" aria-label="图层与图例说明">
-      <div className="mb-3 flex items-center justify-between"><h2 className="text-sm font-medium">图层与图例</h2><button type="button" popoverTarget="replay-chart-legend" popoverTargetAction="hide" className={controlClass} aria-label="关闭图例"><X size={15} aria-hidden /></button></div>
-      <fieldset className="replay-layer-options"><legend className="sr-only">显示图层</legend>{([['working', '在途委托'], ['canceled', '已撤销委托'], ['filled', '已全成委托'], ['market', '市场成交气泡'], ['execution', '账户逐笔详情与选中标注']] as const).map(([key, label]) => <label key={key}><input type="checkbox" checked={layers[key]} onChange={event => { setLayers({ ...layers, [key]: event.target.checked }); setHover(null) }} />{label}</label>)}</fieldset>
-      <p className="mb-2">按已录终态筛选整条委托轨迹。右侧盘口与明细列表不受图层开关影响。</p>
-      <p>显示每帧实际录到的全部买卖档位，档数可随时间变化。热力图由浅至深表示挂量从少到多，竖纹表示量未知；零量只留淡痕。有限盘口不代表完整深度。</p><p className="mt-2">买一、卖一是盘口两侧额外强调的边界，白线只连接已录制的市场成交。三者共用线性价格轴；缺口或过期时盘口边界断开。</p><p className="mt-2">右侧圆点与引导线标明真实价格位置；挂量柱与价格、数量在同一读数行，行间距仅为阅读避让，不是价格距离。档位太多时按价格区间明确聚合，显示区间峰值与档数，点击可放大。热力图每个像素价区间也取峰值，均不把挂量相加。</p><p className="mt-2">委托轨迹：实心点为首次场内确认，线表示有效存续，确认改价后呈阶梯；部分成交继续画线并保留剩余量，全成以买向上、卖向下的三角结束，撤销以空心端点结束，拒绝与过期用文字。实线为本次，点线为账户上下文；长虚线为待撤。未观察到入场时不补起点。入场与终点在当前缩放下碰撞时，优先显示终点，放大后恢复；原始记录始终保留。这段线不是排队顺序。</p>
-      <p className="mt-2">市场成交气泡按当前时间像素、真实价格与主动方向聚合，面积相对当前视野的成交量缩放，最小两像素；缩放后重新计算。缺口与游标前后分开；不混入账户成交，条数是已录记录数，源聚合记录不拆逐笔。不复刻 Bookmap Smart 算法。点击后可在下方详情逐条查看及定位原始记录。</p>
-      <p className="mt-2">账户逐笔成交保留在“成交”列表与下方选中详情中；选中后仅在图顶显示时间、量价文字，不再叠菱形、方框或选中圆环。隐藏已全成委托也隐藏其逐笔标注。报单请求保留在“报撤观察”，不表示已入场。</p>
-      <p className="mt-2">拖动主图平移；滚轮以鼠标位置缩放；拖动价格轴可单独缩放价位。拖动浏览不改变游标；点击标记在附近查看详情；拖动图内时间游标或点击“定位此时刻”才定位。展示已读取时段的全部记录；未来记录灰显并标记未到达，游标经过后恢复正常。首个盘口之前灰显首个已录快照。</p>
-      <p className="mt-2">账户挂单是游标时刻该账户在此价位有效委托的未成交剩余量，包含其他执行；不代表持仓或排队位置，缺少剩余量时保持未知。悬停盘口行可看本次数量。</p>
-      <p className="mt-2">悬停查看轴标签与读数；点击图中记录，在附近打开详情。点击空白处或按 Escape 关闭浮卡。查看不改变游标，点击详情中的定位才恢复对应时刻。画布获得焦点后按 Enter 可查看当前价位记录。</p>
-      <div className="mt-3 max-h-64 overflow-auto"><table className="num w-full text-right text-xs"><caption className="mb-2 text-left">{futureDepth ? '未到达 · 首个已录盘口' : '当前游标盘口'}</caption><thead><tr><th>方向</th><th>价格</th><th>市场量</th></tr></thead><tbody>{bookRows.map((level, index) => <tr key={`${level.side}:${level.price}:${index}`} className="border-t border-line"><td className="py-1">{level.side}</td><td>{priceText(level.price)}</td><td>{quantityText(level.quantity)}</td></tr>)}</tbody></table></div>
+      <header className="replay-help-header"><h2 className="text-sm font-medium">图层与图例</h2><button type="button" popoverTarget="replay-chart-legend" popoverTargetAction="hide" className={controlClass} aria-label="关闭图例"><X size={15} aria-hidden /></button></header>
+      <div className="replay-help-body">
+        <fieldset className="replay-layer-options"><legend className="sr-only">显示图层</legend>{([['working', '在途委托'], ['canceled', '已撤销委托'], ['filled', '已全成委托'], ['market', '市场成交气泡'], ['execution', '账户成交标注']] as const).map(([key, label]) => <label key={key}><span className="relative inline-flex shrink-0 items-center justify-center"><input type="checkbox" checked={layers[key]} onChange={event => { setLayers({ ...layers, [key]: event.target.checked }); setHover(null) }} className="peer size-4 cursor-pointer appearance-none rounded-[3px] border border-ink-3 bg-transparent checked:border-accent checked:bg-accent-soft hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent forced-colors:appearance-auto" /><Check size={12} strokeWidth={2} aria-hidden="true" className="pointer-events-none absolute text-accent opacity-0 peer-checked:opacity-100 forced-colors:hidden" /></span>{label}</label>)}</fieldset>
+        <p className="replay-help-note">只影响主图，委托按已录终态筛选。</p>
+        <div className="replay-help-grid">
+          <section><h3>盘口</h3><p>颜色越深挂量越多，竖纹表示未知。</p><p>仅含已录档位，聚合取峰值；引导线对应真实价格。</p></section>
+          <section><h3>委托</h3><p><span aria-hidden>● → △ / ○</span> 入场确认 → 全成 / 撤销</p><p>实线为本次，点线为账户上下文，长虚线为待撤。</p><p>轨迹不代表排队顺序。</p></section>
+          <section><h3>成交</h3><p><span aria-hidden>━ ○</span> 白线和气泡表示市场成交。</p><p>账户成交见“成交”。</p></section>
+          <section><h3>账户挂单</h3><p>账户挂单为当前时刻的未成交剩余量，包含其他执行，不代表持仓。</p></section>
+        </div>
+        <p className="replay-help-note">查看不改变游标，定位才切换时刻。未来记录灰显。</p>
+      </div>
+      <footer className="replay-help-footer">拖动平移 · 滚轮缩放 · 点击查看 · Esc 关闭</footer>
     </div>
   </section>
 }

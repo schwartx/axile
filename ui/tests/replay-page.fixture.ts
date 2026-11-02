@@ -190,11 +190,11 @@ if (scenario === 'overview') {
   console.log(JSON.stringify({ cursor: seekText(), playing: playing() }))
 } else if (scenario === 'first-quote') {
   const before = Boolean(find(tree, node => node.props?.projection)?.props.projection.quotes.X)
-  const controls = find(tree, node => node.props?.className === 'replay-play-controls')
-  const entry = find(controls, node => node.type === 'button' && text(node) === '跳到首个盘口')
-  const prominent = Boolean(entry && entry.props['data-recommended'] && !entry.props.disabled)
+  const chart = find(tree, node => node.props?.firstQuoteControl)
+  const entry = chart.props.firstQuoteControl
+  const prominent = Boolean(entry && !entry.props.disabled)
   entry.props.onClick(); flush()
-  console.log(JSON.stringify({ before, prominent, retained: Boolean(button('跳到首个盘口')), after: Boolean(find(tree, node => node.props?.projection)?.props.projection.quotes.X),
+  console.log(JSON.stringify({ before, prominent, retained: Boolean(find(tree, node => node.props?.firstQuoteControl)), after: Boolean(find(tree, node => node.props?.projection)?.props.projection.quotes.X),
     cursor: seekText(), playing: playing() }))
 } else if (scenario === 'restart') {
   button('下一窗口').props.onClick(); await settle()
