@@ -434,7 +434,9 @@ def test_custom_source_is_valid_through_real_algorithm(monkeypatch, module, sour
 
 
 @pytest.mark.parametrize("module", [twap, pov], ids=["twap", "pov"])
-@pytest.mark.parametrize("case", ["fills_later", "still_restricted", "cancel_failed", "query_failed"])
+@pytest.mark.parametrize(
+    "case", ["fills_later", "fills_near_deadline", "still_restricted", "cancel_failed", "query_failed"]
+)
 def test_real_tracker_handles_restriction_within_original_budget(monkeypatch, module, case):
     from axile.common.order_param_model import OrderParamModel
     from axile.executor.algorithms.utils import clock as clock_module
@@ -484,7 +486,7 @@ def test_real_tracker_handles_restriction_within_original_budget(monkeypatch, mo
         order = place(*args, **kwargs)
         submissions.append((clock.time(), order.volume))
         live[order.order_id] = order
-        if len(submissions) > 1:
+        if len(submissions) > 1 and case != "fills_near_deadline":
             filled(order)
         return order
 
@@ -500,7 +502,8 @@ def test_real_tracker_handles_restriction_within_original_budget(monkeypatch, mo
 
     def advance(duration):
         clock.sleep(duration)
-        if case == "fills_later" and clock.time() >= 2.5 and live:
+        fill_at = 5 if case == "fills_near_deadline" else 2.5
+        if case in {"fills_later", "fills_near_deadline"} and clock.time() >= fill_at and live:
             for order in list(live.values()):
                 filled(order)
             for callback in callbacks["price"]:
@@ -519,12 +522,16 @@ def test_real_tracker_handles_restriction_within_original_budget(monkeypatch, mo
         entry, params = (
             pov.pov,
             pov.PovParams(
-                participation_rate=1, max_duration=6, interval_seconds=1, max_wait_seconds=1, complete_on_timeout=True
+                participation_rate=1,
+                max_duration=6,
+                interval_seconds=1,
+                max_wait_seconds=1,
+                complete_on_timeout=case != "fills_near_deadline",
             ),
         )
     result = entry(executor, AlgorithmInput(symbol=executor.symbol, target_volume=3, trade_rule={}, params=params))
     assert clock.time() <= 6
-    if case == "fills_later":
+    if case in {"fills_later", "fills_near_deadline"}:
         assert result.status == ExecutionStatus.SUCCEEDED
         assert result.error is None
         assert current[0] == 3

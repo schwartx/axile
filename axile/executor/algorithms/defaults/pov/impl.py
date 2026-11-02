@@ -547,17 +547,28 @@ def _run_participation_loop(
             break
 
         want = compute_participation_want(params.participation_rate, accumulator.total, filled, total_qty)
+        remaining = deadline - clock.time()
+        if remaining <= 0:
+            break
         if want > 0:
             executor.logger.info(
                 f"{executor.symbol} 参与下单 {want}（已见市场量 {accumulator.total:.4f}, 已成交 {filled}/{total_qty}）"
             )
             detail = _place_participation_slice(
-                executor, tracker, direction, want, params, account_assets, current_volume, target_volume, fill_wait
+                executor,
+                tracker,
+                direction,
+                want,
+                params,
+                account_assets,
+                current_volume,
+                target_volume,
+                min(fill_wait, remaining),
             )
             detail["market_seen"] = accumulator.total
             slice_details.append(detail)
 
-        executor.sleep_or_terminate(interval)
+        executor.sleep_or_terminate(min(interval, max(0.0, deadline - clock.time())))
 
     _maybe_complete_on_timeout(
         executor, tracker, params, direction, total_qty, start_volume, target_volume, fill_wait, slice_details
