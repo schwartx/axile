@@ -1,5 +1,6 @@
 import { ReplayStage } from '@/features/replay/ReplayStage'
 import { Fragment, type ReactNode } from 'react'
+import { ContentSwap } from '@/components/ui/ContentSwap'
 import { Segmented } from '@/components/ui/Segmented'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { replayTradeKey } from '@/features/replay/chartInteraction'
@@ -71,7 +72,7 @@ export function OrdersAndTrades({ projection, scene = projection, context, symbo
         <div className="replay-dock-header">
           <Segmented value={tab} options={[{ value: 'orders', label: '委托' }, { value: 'trades', label: '成交' }, { value: 'commands', label: '报撤观察' }, { value: 'positions', label: '持仓' }]} onChange={onTabChange} size="sm" />
         </div>
-        <div className="replay-detail-panels" data-tab={tab}>
+        <ContentSwap identity={tab} animateHeight={false}><div className="replay-detail-panels" data-tab={tab}>
     <section className="replay-order-section" aria-label="已录自有委托，未来记录标记未到达">
       <div className="sr-only"><h2 className="font-semibold text-ink-1">自己的委托</h2><span className="text-[12px] text-ink-2">选择一张单查看轨迹</span></div>
       <div className="replay-detail-list"><table className="num w-full text-left text-[12px]"><thead className="text-ink-2"><tr><th className="pb-2 font-medium">委托</th><th className="pb-2 font-medium">归属</th><th className="pb-2 font-medium">买卖 / 开平</th><th className="pb-2 text-right font-medium">价格</th><th className="pb-2 text-right font-medium">已成 / 委托</th><th className="pb-2 pl-3 font-medium">当时状态</th></tr></thead><tbody>
@@ -117,7 +118,7 @@ export function OrdersAndTrades({ projection, scene = projection, context, symbo
       <table className="num w-full text-right text-xs"><thead className="text-ink-2"><tr><th className="text-left font-normal">方向</th>{['原生持仓', '今仓', '昨仓', '可卖 / 可平', '冻结', '有证据的推导'].map(label => <th key={label} className="whitespace-nowrap px-2 font-normal">{label}</th>)}</tr></thead><tbody>{Object.values(projection.observedPositions).filter(row => row.symbol === symbol).map(position => <tr key={position.direction ?? 'unknown'} className="border-t border-line"><th className="py-2 text-left font-normal">{({ LONG: '多头', SHORT: '空头', NET: '净持仓' } as Record<string, string>)[position.direction ?? ''] ?? '方向未知'}</th>{[position.volume, position.today_volume, position.yesterday_volume, position.available_volume, position.frozen_volume, Object.values(projection.derivedPositions).find(value => value.symbol === symbol && value.direction === position.direction)?.volume].map((value, index) => <td key={index} className="whitespace-nowrap px-2">{replayNumber(value, instrument.quantity_decimals)}</td>)}</tr>)}</tbody></table>
       {!Object.values(projection.observedPositions).some(row => row.symbol === symbol) && <p className="py-3 text-xs text-ink-2">当前持仓尚未观察到，或该层不可用。</p>}
     </section>
-        </div>
+        </div></ContentSwap>
       </section>
     </div>
   </ReplayStage>

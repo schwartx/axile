@@ -13,7 +13,7 @@ import '@/features/replay/replay.css'
 
 const range = { start_us: 0, end_us: 1_000_000 }
 const scenarios = [{ value: 'records', label: '委托与成交定位' }, { value: 'two', label: '买2 / 卖2' }, { value: 'four', label: '买4 / 卖4' }, { value: 'asym', label: '买2 / 卖7' },
-  { value: 'many', label: '买120 / 卖120 · 聚合' }, { value: 'changing', label: '档数随时间变化' }, { value: 'unknown', label: '未知挂量与零量' }, { value: 'expiry', label: '盘口过期' }, { value: 'gap', label: '盘口缺口' }]
+  { value: 'many', label: '买120 / 卖120 · 聚合' }, { value: 'motion', label: '盘口动效' }, { value: 'changing', label: '档数随时间变化' }, { value: 'unknown', label: '未知挂量与零量' }, { value: 'expiry', label: '盘口过期' }, { value: 'gap', label: '盘口缺口' }]
 
 function fixture(scenario: string): ReplayWindow {
   const dense = scenario === 'many', step = dense ? .0001 : 1
@@ -22,6 +22,12 @@ function fixture(scenario: string): ReplayWindow {
     bids: Array.from({ length: bids }, (_, index) => ({ price: 100 - index * step, quantity: index + 1 })),
     asks: Array.from({ length: asks }, (_, index) => ({ price: 100 + 2 * step + index * step, quantity: index + 2 })) })
   const frames = scenario === 'changing' ? [depth(2, 2), depth(4, 3), depth(1, 6)] : [depth(dense ? 120 : scenario === 'four' ? 4 : 2, dense ? 120 : scenario === 'asym' ? 7 : scenario === 'four' ? 4 : 2)]
+  if (scenario === 'motion') {
+    frames.splice(0, frames.length, ...[1, 4, 2].map((amount, index) => ({ ...depth(2, 2),
+      bids: [{ price: 100, quantity: amount }, ...(index === 1 ? [{ price: 99.99, quantity: 2 }] : []), { price: 99.98, quantity: 3 }, { price: 95, quantity: 5 }],
+      asks: [{ price: 100.01, quantity: 2 }, { price: 100.02, quantity: 3 }, { price: 105, quantity: 5 }],
+    })))
+  }
   if (scenario === 'unknown') frames[0].bids = [{ price: 100, quantity: null }, { price: 99, quantity: 0 }, { price: 98, quantity: 3 }]
   return { recording_id: 'synthetic', window_id: scenario, context: { schema_version: 1, instruments: { SYNTHETIC: { price_tick: step, price_decimals: dense ? 4 : 2, quantity_decimals: 2 } } },
     complete: true, coverage: [range], gaps: scenario === 'gap' ? [{ start_us: 500_000, end_us: 700_000, topic: 'depth', symbol: 'SYNTHETIC', reason: '合成缺口' }] : [],
@@ -49,6 +55,7 @@ export function Acceptance() {
     <div className="replay-main-chart"><ReplayChart window={replayWindow} range={range} projection={projection} scene={scene} symbol="SYNTHETIC" executionId="synthetic" selectedOrder={selected} selectedTrade={selectedTrade}
       onSelectOrder={setSelected} onSelectTrade={setSelectedTrade} onInspect={() => {}} onSeek={setCursor} firstQuoteControl={<button type="button" className="replay-first-quote cursor-pointer rounded-chip text-ink-2 hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent" onClick={() => setCursor(100_000)}>跳到首个盘口</button>} symbolControl={<strong className="text-sm">SYNTHETIC</strong>} /></div>
     </OrdersAndTrades>
+    {scenario === 'motion' && <div className="flex gap-4">{[100_000, 400_000, 700_000].map((time, index) => <button key={time} type="button" onClick={() => setCursor(time)}>行情帧 {index + 1}</button>)}</div>}
     <ValueSlider label="合成回放游标" min={0} max={999_999} step={1} value={cursor} onChange={setCursor} formatValue={value => `${(value / 1_000_000).toFixed(3)} 秒`} />
   </main>
 }

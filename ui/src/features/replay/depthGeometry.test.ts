@@ -57,7 +57,12 @@ describe('动态盘口及委托位置', () => {
   })
   it('同价多单显示数量与笔数，可选第二张；未知剩余量不被合计为零', () => {
     const selected: string[] = [], orders = [order({ key: 'A', order_id: 'A', execution_id: 'E' }), order({ key: 'B', order_id: 'B', remaining_volume: null })]
-    const tree = ReplayDepthLadder({ quote: quote(), orders, view: { min: 95, max: 105, tick: 1 }, layout, height: 420, executionId: 'E', selected: 'A', onSelect: key => selected.push(key), onZoom: () => {}, priceText: String, quantityText: value => value == null ? '未知' : String(value) })
+    let tree!: ReactElement
+    function Render() {
+      tree = ReplayDepthLadder({ quote: quote(), orders, view: { min: 95, max: 105, tick: 1 }, layout, height: 420, executionId: 'E', selected: 'A', onSelect: key => selected.push(key), onZoom: () => {}, priceText: String, quantityText: value => value == null ? '未知' : String(value) })
+      return tree
+    }
+    renderToStaticMarkup(createElement(Render))
     const nodes: ReactElement<Record<string, any>>[] = []
     const visit = (node: any) => { if (Array.isArray(node)) node.forEach(visit); else if (node && typeof node === 'object' && node.props) { nodes.push(node); visit(node.props.children); visit(node.props.content) } }
     visit(tree)
