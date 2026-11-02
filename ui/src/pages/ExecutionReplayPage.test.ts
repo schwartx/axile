@@ -26,6 +26,17 @@ test('主图时间轴定位实时更新游标，采用最终位置并保持暂�
   expect(result.playing).toBe(false)
 })
 
+test('五档倍速保持游标与播放状态，慢放及播放中调速按新倍率连续推进', () => {
+  const result = pageCase('speed')
+  expect(result.options).toEqual(['0.1', '0.25', '0.5', '1', '2'].map(value => ({ value, label: `${value}×` })))
+  expect(result.initial).toBe('1')
+  expect(result.paused).toMatchObject({ playing: false, speed: '0.1' })
+  expect(result.paused.cursor).toContain('08:00:05.000000')
+  expect(result.slow).toContain('08:00:05.100000')
+  expect(result.switched).toEqual({ cursor: result.slow, playing: true })
+  expect(result.fast).toContain('08:00:07.100000')
+})
+
 test('详情默认选中已观察的本次委托，并保留用户选择的账户上下文单', () => {
   const result = pageCase('selection')
   expect(result.initial).toBe(JSON.stringify(['X', 'O2']))

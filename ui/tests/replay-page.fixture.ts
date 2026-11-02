@@ -30,7 +30,7 @@ function useEffect(fn: any, deps: any[]) {
     slots[index] = { deps, cleanup }; effects.push({ index, fn, cleanup })
   }
 }
-mock.module('react', () => ({ Fragment: 'fragment', useState, useRef, useMemo: memoValue, useEffect, useCallback: (fn: any, deps: any[]) => memoValue(() => fn, deps) }))
+mock.module('react', () => ({ Fragment: 'fragment', useState, useRef, useMemo: memoValue, useEffect, useLayoutEffect: useEffect, useCallback: (fn: any, deps: any[]) => memoValue(() => fn, deps) }))
 const jsx = (type: any, props: any, key: any) => ({ type, props, key })
 mock.module('react/jsx-runtime', () => ({ jsx, jsxs: jsx, Fragment: 'fragment' }))
 mock.module('react/jsx-dev-runtime', () => ({ jsxDEV: jsx, Fragment: 'fragment' }))
@@ -160,6 +160,20 @@ if (scenario === 'overview') {
   picker.props.onChange('Y'); await settle()
   console.log(JSON.stringify({ title, searchable: picker.props.searchable, symbol: chart().props.symbol,
     nativeControl: Boolean(find(tree, node => node.type === 'select' || node.type === 'input' && node.props?.type === 'range')) }))
+} else if (scenario === 'speed') {
+  const picker = () => find(tree, node => node.props?.['aria-label'] === '播放速度').props.children
+  const options = picker().props.options
+  const initial = picker().props.value
+  slider().props.onChange(5_000_000); flush()
+  picker().props.onChange('0.1'); flush()
+  const paused = { cursor: seekText(), playing: playing(), speed: picker().props.value }
+  find(tree, node => node.props?.['aria-label'] === '播放回放').props.onClick(); flush()
+  frame(1000)
+  const slow = seekText()
+  picker().props.onChange('2'); flush()
+  const switched = { cursor: seekText(), playing: playing() }
+  frame(2000)
+  console.log(JSON.stringify({ options, initial, paused, slow, switched, fast: seekText() }))
 } else if (scenario === 'draft-commit') {
   slider().props.onChange(5_000_000); flush()
   const preview = seekText()

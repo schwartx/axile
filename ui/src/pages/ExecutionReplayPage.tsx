@@ -4,6 +4,7 @@ import { ChevronLeft, ChevronRight, Info, Pause, Play, RefreshCw, SkipBack, Skip
 import { AccountPageTitle } from '@/features/account/pageHead'
 import { useDomainStore } from '@/stores/domain'
 import { Select } from '@/components/ui/Select'
+import { Segmented } from '@/components/ui/Segmented'
 import { ValueSlider } from '@/components/ui/ValueSlider'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
@@ -199,9 +200,9 @@ export function ExecutionReplayPage() {
             <Tooltip content="前一观察"><button type="button" className={`${buttonClass} replay-transport-button`} onClick={() => step(-1)} disabled={!readReady || eventIndex < 0} aria-label="前一观察"><SkipBack size={14} aria-hidden /><span className="sr-only">上一步</span></button></Tooltip>
             <Tooltip content={playing ? '暂停回放' : '播放回放'}><button type="button" className={`${buttonClass} replay-transport-button replay-play-button`} aria-label={playing ? '暂停回放' : '播放回放'} aria-pressed={playing} onClick={() => { continuePlayback.current = null; if (!playing && navigationTime >= range.end_us - 1) pauseAndSeek(range.start_us); setPlaying(value => !value) }} disabled={!readReady}>{playing ? <Pause size={14} aria-hidden /> : <Play size={14} aria-hidden />}<span className="sr-only"><InkRewrite text={playing ? '暂停' : '播放'} tone="label" /></span></button></Tooltip>
             <Tooltip content="后一观察"><button type="button" className={`${buttonClass} replay-transport-button`} onClick={() => step(1)} disabled={!readReady || eventIndex >= events.length - 1} aria-label="后一观察"><SkipForward size={14} aria-hidden /><span className="sr-only">下一步</span></button></Tooltip>
-            <label className="replay-speed-picker"><span className="sr-only">倍速</span><Select ariaLabel="播放速度" className={selectClass} value={speed} onChange={setSpeed} options={['0.5', '1', '2', '4'].map(value => ({ value, label: `${value}×` }))} /></label>
           </div>
-          <time className="replay-cursor-time num text-xs text-ink-1">{replayTime(navigationTime)} <span className="text-ink-2">{playing ? '播放中' : '已暂停'} · 上海时间</span></time>
+          <div role="group" aria-label="播放速度" className="replay-speed-picker"><Segmented size="sm" className="num" value={speed} onChange={setSpeed} options={['0.1', '0.25', '0.5', '1', '2'].map(value => ({ value, label: `${value}×` }))} /></div>
+          <time className="replay-cursor-time num text-xs text-ink-1">{replayTime(navigationTime)} <span className="text-ink-2">{playing ? '播放中' : '已暂停'}</span></time>
           <span className="replay-target num text-xs text-ink-2">目标 {replayNumber(target, unit?.quantity_decimals)} / 本次成交 {replayNumber(ownQuantity, unit?.quantity_decimals)} {unit?.quantity_label}</span>
 
   </div>
