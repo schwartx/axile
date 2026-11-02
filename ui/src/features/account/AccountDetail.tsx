@@ -17,7 +17,7 @@ import { executionOutcome } from '@/features/account/executionOutcome'
 import { formatRecentExecution } from '@/lib/scheduleTime'
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
 import { useViewTransitionState } from 'react-router'
-import { ArrowLeftRight, Circle, RefreshCw } from 'lucide-react'
+import { ArrowLeftRight, RefreshCw, Video, VideoOff } from 'lucide-react'
 import { cardPerformance, currentEquity } from '@/features/dashboard/performance'
 import { Link, useNavigate } from '@/components/ui/nav'
 import { Card, Chip } from '@/components/ui/Card'
@@ -662,14 +662,27 @@ export function AccountDetail({
             value={configLoading ? null : (symbolsText ?? '—')}
             vtName={tEditSymbols ? accountConfigVtName(accountId, 'symbols') : undefined}
           />
-          <HeroConfigItem
-            label="算法"
-            to={`/accounts/${accountId}/edit/algorithm`}
-            title="执行算法"
-            value={configLoading ? null : (algorithmText ?? '—')}
-            vtName={tEditAlgorithm && algorithmTransitionSlot(accountId) === 'trade' && algorithmRefOf(acc?.algorithm) ? accountConfigVtName(accountId, 'algorithm') : undefined}
-            onActivate={(event) => activateAlgorithm('trade', event)}
-          />
+          <div className="flex min-w-0 items-center gap-1.5">
+            <HeroConfigItem
+              label="算法"
+              to={`/accounts/${accountId}/edit/algorithm`}
+              title="执行算法"
+              value={configLoading ? null : (algorithmText ?? '—')}
+              vtName={tEditAlgorithm && algorithmTransitionSlot(accountId) === 'trade' && algorithmRefOf(acc?.algorithm) ? accountConfigVtName(accountId, 'algorithm') : undefined}
+              onActivate={(event) => activateAlgorithm('trade', event)}
+            />
+            {acc && <Tooltip content={acc.replay_recording_enabled ? '执行回放录制已开启，点击设置' : '执行回放录制已关闭，点击设置'}>
+              <Link
+                to={`/accounts/${accountId}/edit/algorithm`}
+                aria-label={acc.replay_recording_enabled ? '执行回放录制已开启，点击设置' : '执行回放录制已关闭，点击设置'}
+                className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-sm text-ink-3 hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
+              >
+                {acc.replay_recording_enabled
+                  ? <Video size={16} aria-hidden="true" />
+                  : <VideoOff size={16} aria-hidden="true" />}
+              </Link>
+            </Tooltip>}
+          </div>
           <HeroConfigItem
             label="清仓"
             to={`/accounts/${accountId}/edit/algorithm`}
@@ -679,16 +692,6 @@ export function AccountDetail({
             onActivate={(event) => activateAlgorithm('empty', event)}
           />
           <AccountControlSummary accountId={accountId} />
-          {acc && <Tooltip content={acc.replay_recording_enabled ? '执行回放录制已开启' : '执行回放录制已关闭'}>
-            <span
-              tabIndex={0}
-              role="img"
-              aria-label={acc.replay_recording_enabled ? '执行回放录制已开启' : '执行回放录制已关闭'}
-              className="inline-flex size-6 shrink-0 items-center justify-center rounded-sm text-ink-3 focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
-            >
-              <Circle size={14} fill={acc.replay_recording_enabled ? 'currentColor' : 'none'} aria-hidden="true" />
-            </span>
-          </Tooltip>}
         </div>
       </Card>
       <CopyAccountDialog accountId={accountId} name={item.name} isStarted={isStarted} isBusy={isBusy} open={copyOpen} onClose={() => setCopyOpen(false)} />

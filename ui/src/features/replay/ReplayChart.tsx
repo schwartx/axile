@@ -230,7 +230,6 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
     const cursorX = replayTimeX(projection.time_us, visibleRange, layout)
     if (mode === 'review' && cursorInside) {
       ctx.fillStyle = theme.accent; ctx.globalAlpha = .045; ctx.fillRect(cursorX, layout.top, layout.right - cursorX, layout.bottom - layout.top); ctx.globalAlpha = 1
-      if (layout.right - cursorX > 160) { ctx.fillStyle = theme.ink; ctx.fillText('游标之后 · 已录数据', cursorX + 10, layout.top + 18) }
     }
     ctx.restore()
     if (cursorInside) canvasLine(ctx, cursorX, layout.top, cursorX, height - 18, theme.accent)
