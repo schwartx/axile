@@ -12,7 +12,7 @@ it('悬停只显示轴标签与行内读数，点击打开附近浮卡且不定�
   const script = `const ui=${JSON.stringify(new URL('../../', import.meta.url).pathname)};\n${source}`
   const result = spawnSync(process.execPath, ['-e', script], { cwd: new URL('../../../', import.meta.url), encoding: 'utf8', timeout: 10_000 })
   if (result.status !== 0) throw Error(result.stderr || result.stdout)
-  expect(JSON.parse(result.stdout.trim())).toEqual({ noFloatingCard: true, axisLabels: true, hasReadout: true, hoverDoesNotPause: true, clearedOnLeave: true, clickSelectsWithoutSeek: true, overlappingRecords: true, futureLabeled: true, clearedOnDrag: true, marketIdentity: true, explicitSeek: true, noPin: true, anchoredBesideClick: true, fixedDuringHover: true, staysOnLeave: true, escapeCloses: true, edgeFlips: true, emptyClickCloses: true })
+  expect(JSON.parse(result.stdout.trim())).toEqual({ noFloatingCard: true, axisLabels: true, hasReadout: true, hoverDoesNotPause: true, clearedOnLeave: true, clickSelectsWithoutSeek: true, overlappingRecords: true, futureLabeled: true, clearedOnDrag: true, marketIdentity: true, explicitSeek: true, noPin: true, anchoredBesideClick: true, fixedDuringHover: true, staysOnLeave: true, escapeCloses: true, edgeFlips: true, emptyClickCloses: true, returnsToCursor: true, resetsView: true })
 })
 
 function chart() {

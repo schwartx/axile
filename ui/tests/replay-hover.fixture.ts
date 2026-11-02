@@ -11,7 +11,7 @@ mock.module('react', () => ({
 const jsx = (type: any, props: any) => ({ type, props })
 mock.module('react/jsx-runtime', () => ({ jsx, jsxs: jsx, Fragment: 'fragment' }))
 mock.module('react/jsx-dev-runtime', () => ({ jsxDEV: jsx, Fragment: 'fragment' }))
-mock.module('lucide-react', () => Object.fromEntries(['Circle', 'Crosshair', 'Diamond', 'Info', 'Minus', 'Pin', 'Plus', 'RotateCcw', 'Square', 'X'].map(name => [name, () => null])))
+mock.module('lucide-react', () => Object.fromEntries(['ArrowLeft', 'ArrowRight', 'Circle', 'Crosshair', 'Diamond', 'Info', 'Minus', 'Pin', 'Plus', 'RotateCcw', 'Square', 'X'].map(name => [name, () => null])))
 for (const name of ['Tooltip', 'ValueSlider', 'Segmented', 'Select']) mock.module(ui + `components/ui/${name}.tsx`, () => ({ [name]: () => null }))
 mock.module(ui + 'features/replay/ReplayDepthLadder.tsx', () => ({ ReplayDepthLadder: () => null }))
 mock.module(ui + 'lib/viewTransition.ts', () => ({ withViewTransition: (fn: any) => fn() }))
@@ -40,7 +40,7 @@ const panel = () => find(tree, n => n.props?.['aria-label'] === '图中记录浮
 draw()
 const layout = replayChartLayout(900, 300), view = replayObservedPriceView(scene.quoteHistory, [], [], .01)!
 function hover() {
-  find(tree, n => n.type === 'canvas').props.onPointerMove({ clientX: replayTimeX(49, props.range, layout), clientY: replayPriceY(100, view, layout), currentTarget: { getBoundingClientRect: () => ({ left: 0, top: 0 }) } }); draw()
+  find(tree, n => n.type === 'canvas').props.onPointerMove({ clientX: replayTimeX(49, props.range, layout), clientY: replayPriceY(100, view, layout), currentTarget: { style: {}, getBoundingClientRect: () => ({ left: 0, top: 0 }) } }); draw()
 }
 hover()
 const noFloatingCard = !panel()
@@ -50,7 +50,7 @@ const hasReadout = Boolean(readout())
 const hoverDoesNotPause = pauses === 0
 find(tree, n => n.type === 'canvas').props.onPointerLeave(); draw()
 const clearedOnLeave = !readout() && !find(tree, n => n.props?.className === 'replay-crosshair-price num')
-const target = { focus() {}, setPointerCapture() {}, hasPointerCapture: () => false, getBoundingClientRect: () => ({ left: 0, top: 0 }) }
+const target = { style: {}, focus() {}, setPointerCapture() {}, hasPointerCapture: () => false, getBoundingClientRect: () => ({ left: 0, top: 0 }) }
 const clickEvent = { button: 0, pointerId: 1, clientX: replayTimeX(50, props.range, layout), clientY: replayPriceY(100, view, layout), currentTarget: target }
 let chartCanvas = find(tree, n => n.type === 'canvas')
 chartCanvas.props.onPointerDown(clickEvent); chartCanvas.props.onPointerUp(clickEvent); draw()
@@ -100,4 +100,15 @@ const seeksBeforeEmptyClick = seeks.length
 chartCanvas = find(tree, n => n.type === 'canvas')
 chartCanvas.props.onPointerDown(emptyClick); chartCanvas.props.onPointerUp(emptyClick); draw()
 const emptyClickCloses = !panel() && seeks.length === seeksBeforeEmptyClick
-console.log(JSON.stringify({ noFloatingCard, axisLabels, hasReadout, hoverDoesNotPause, clearedOnLeave, clickSelectsWithoutSeek, overlappingRecords, futureLabeled, clearedOnDrag, marketIdentity, explicitSeek, noPin, anchoredBesideClick, fixedDuringHover, staysOnLeave, escapeCloses, edgeFlips, emptyClickCloses }))
+props.range = { start_us: 0, end_us: 1_000_000 }; draw()
+const button = (label: string) => find(tree, n => n.type === 'button' && n.props?.['aria-label'] === label)
+button('放大图表').props.onClick(); draw()
+button('放大图表').props.onClick(); draw()
+const seeksBeforeReturn = seeks.length
+const returnButton = button('回到游标')
+if (!returnButton) throw Error('缩放后应能返回视野外的游标')
+returnButton.props.onClick(); draw()
+const returnsToCursor = !button('回到游标') && seeks.length === seeksBeforeReturn
+button('恢复图表视图').props.onClick(); draw()
+const resetsView = button('恢复图表视图').props.disabled
+console.log(JSON.stringify({ noFloatingCard, axisLabels, hasReadout, hoverDoesNotPause, clearedOnLeave, clickSelectsWithoutSeek, overlappingRecords, futureLabeled, clearedOnDrag, marketIdentity, explicitSeek, noPin, anchoredBesideClick, fixedDuringHover, staysOnLeave, escapeCloses, edgeFlips, emptyClickCloses, returnsToCursor, resetsView }))

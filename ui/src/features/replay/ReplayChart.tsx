@@ -1,5 +1,5 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react'
-import { Circle, Crosshair, Info, Minus, Plus, RotateCcw, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Circle, Crosshair, Info, Minus, Plus, RotateCcw, X } from 'lucide-react'
 import { ValueSlider } from '@/components/ui/ValueSlider'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { canvasLine, prepareCanvas, readCanvasTheme, type CanvasTheme } from '@/components/viz/chartCanvas'
@@ -338,16 +338,17 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   }
 
   return <section aria-label="历史深度与自有委托" className="replay-chart" >
-    <div className="replay-chart-playback">{symbolControl}{children}
-      <div className="replay-chart-view-controls" role="group" aria-label="共享价位范围">
-        <Tooltip content="聚焦委托过程"><button type="button" className={controlClass} aria-label="聚焦委托过程" disabled={!view || !selected} onClick={focusOrder}><Crosshair size={14} aria-hidden /></button></Tooltip>
-        <button type="button" className={controlClass} popoverTarget="replay-chart-legend" aria-label="图层与图例说明"><Info size={15} aria-hidden /></button>
-        <button className={controlClass} onClick={() => zoom(0.7)} disabled={!view} aria-label="放大图表"><Plus size={15} aria-hidden /></button>
-        <button className={controlClass} onClick={() => zoom(1.4)} disabled={!view} aria-label="缩小图表"><Minus size={15} aria-hidden /></button>
-        <button className={controlClass} onClick={resetView} disabled={!manualView && !timeView} aria-label="恢复图表视图"><RotateCcw size={15} aria-hidden /></button>
+    <div className="replay-chart-playback">{symbolControl}{children}</div>
+    <div className="replay-chart-meta" style={{ gridTemplateColumns: layout.columns ? `minmax(0, ${layout.priceX - 8}px) minmax(0, 1fr)` : undefined }}><div className="replay-chart-meta-main"><div className="replay-chart-legend"><span className="replay-depth-bid"><Minus size={14} aria-hidden />买一</span><span className="replay-depth-ask"><Minus size={14} aria-hidden />卖一</span><span><Minus size={14} aria-hidden />成交价</span>{layers.market && <span><Circle size={10} aria-hidden />市场成交</span>}<span className="text-accent"><Minus size={14} aria-hidden />账户委托</span><span><Minus size={14} aria-hidden />未到达</span></div>{activeHover && activeHover.id !== 'pointer' && <span className="replay-hover-readout num" aria-label="悬停读数">{activeHover.future ? '未到达 · ' : ''}{activeHover.title} · {activeHover.headline} · {activeHover.status}</span>}      <div className="replay-chart-view-controls replay-chart-navigation" role="group" aria-label="图表缩放">
+        <Tooltip content="缩小图表"><button type="button" className={controlClass} onClick={() => zoom(1.4)} disabled={!view} aria-label="缩小图表"><Minus size={15} aria-hidden /></button></Tooltip>
+        <Tooltip content="放大图表"><button type="button" className={controlClass} onClick={() => zoom(0.7)} disabled={!view} aria-label="放大图表"><Plus size={15} aria-hidden /></button></Tooltip>
+        <Tooltip content="恢复图表视图"><button type="button" className={controlClass} onClick={resetView} disabled={!manualView && !timeView} aria-label="恢复图表视图"><RotateCcw size={15} aria-hidden /></button></Tooltip>
       </div>
-    </div>
-    <div className="replay-chart-meta"><div className="replay-chart-legend"><span className="replay-depth-bid"><Minus size={14} aria-hidden />买一</span><span className="replay-depth-ask"><Minus size={14} aria-hidden />卖一</span><span><Minus size={14} aria-hidden />成交价</span>{layers.market && <span><Circle size={10} aria-hidden />市场成交</span>}<span className="text-accent"><Minus size={14} aria-hidden />账户委托</span><span><Minus size={14} aria-hidden />未到达</span></div>{activeHover && activeHover.id !== 'pointer' && <span className="replay-hover-readout num" aria-label="悬停读数">{activeHover.future ? '未到达 · ' : ''}{activeHover.title} · {activeHover.headline} · {activeHover.status}</span>}<div className="replay-depth-status"><span className="text-xs text-ink-2">{depthLabel}</span><span className="replay-heat-scale"><i aria-hidden />{heat?.cells.some(cell => cell.quantity != null) ? `挂量 0 → ${quantityText(maxHeat)}` : '挂量尚未知'}</span></div>{!cursorInside && <button type="button" className="text-accent" onClick={() => { const span = visibleRange.end_us - visibleRange.start_us; setTimeView(clampReplayView({ start_us: projection.time_us - span / 2, end_us: projection.time_us + span / 2 }, range)) }}>游标在{projection.time_us < visibleRange.start_us ? '左' : '右'}侧 · 回到游标</button>}</div>
+      <div className="replay-chart-return-slot">      {!cursorInside && <div className="replay-chart-return">
+        <Tooltip content={`游标在${projection.time_us < visibleRange.start_us ? '左' : '右'}侧 · 回到游标`}><button type="button" className={controlClass} aria-label="回到游标" onClick={() => { const span = visibleRange.end_us - visibleRange.start_us; setTimeView(clampReplayView({ start_us: projection.time_us - span / 2, end_us: projection.time_us + span / 2 }, range)) }}>{projection.time_us < visibleRange.start_us ? <ArrowLeft size={15} aria-hidden /> : <ArrowRight size={15} aria-hidden />}</button></Tooltip>
+      </div>}
+      </div>
+    </div><div className="replay-depth-status"><span className="text-xs text-ink-2">{depthLabel}</span><span className="replay-heat-scale"><i aria-hidden />{heat?.cells.some(cell => cell.quantity != null) ? `挂量 0 → ${quantityText(maxHeat)}` : '挂量尚未知'}</span></div></div>
     <div ref={holder} className="replay-chart-plot">
       <p id="replay-scene-summary" className="sr-only">已读取时段，游标之后的记录灰显为未到达，已录自有成交 {recorded.ownTrades.filter(trade => trade.symbol === symbol && trade.time_us >= visibleRange.start_us && trade.time_us < visibleRange.end_us).length} 笔。盘口与委托状态对应游标 {replayTime(projection.time_us)}。</p>
       <canvas ref={canvas} style={{ height }} className="block w-full touch-none cursor-crosshair focus-visible:outline-2 focus-visible:outline-accent" tabIndex={0}
@@ -365,6 +366,10 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
           else if (event.key === 'Enter' && view) { event.preventDefault(); inspectAt(replayTimeX(projection.time_us, visibleRange, layout), replayPriceY(selected?.price ?? (view.min + view.max) / 2, view, layout), true) }
           else if (event.key === 'Escape') { setHover(null); setInspection(null) }
         }} />
+      <div className="replay-chart-view-controls replay-chart-tools" role="group" aria-label="图表工具" style={{ left: layout.left + 8, top: layout.top + 8 }}>
+        <Tooltip content="聚焦委托过程"><button type="button" className={controlClass} aria-label="聚焦委托过程" disabled={!view || !selected} onClick={focusOrder}><Crosshair size={14} aria-hidden /></button></Tooltip>
+        <Tooltip content="图层与图例说明"><button type="button" className={controlClass} popoverTarget="replay-chart-legend" aria-label="图层与图例说明"><Info size={15} aria-hidden /></button></Tooltip>
+      </div>
       <div className="replay-chart-axis" data-outside={!cursorInside || undefined} style={{ left: layout.left - 12, right: size.width - layout.right - 12, top: height - 30 }}>
         <ValueSlider variant="axis" label="录制定位" min={0} max={Math.max(1, visibleRange.end_us - visibleRange.start_us - 1)} step={1} value={projection.time_us - visibleRange.start_us}
           formatValue={offset => cursorInside ? replayTime(visibleRange.start_us + offset) : `游标在当前视野之外，${replayTime(projection.time_us)}`} onChange={offset => { setHover(null); onSeek(visibleRange.start_us + offset) }} />

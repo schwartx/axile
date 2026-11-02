@@ -34,10 +34,17 @@
 .replay-chart-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--color-ink-2); }
 .replay-chart-legend > span { display: inline-flex; align-items: center; gap: 4px; }
 .replay-chart-view-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.replay-chart-tools { position: absolute; z-index: 2; padding: 2px; border: 1px solid var(--color-line); border-radius: var(--radius-chip); background: var(--color-surface); }
+.replay-chart-meta-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.replay-chart-meta-main .replay-chart-legend { flex-wrap: nowrap; min-width: 0; overflow: hidden; white-space: nowrap; }
+.replay-chart-meta-main .replay-chart-legend > span { flex-shrink: 0; }
+.replay-chart-navigation { flex-wrap: nowrap; flex-shrink: 0; margin-left: auto; }
+.replay-chart-return-slot { width: 24px; flex-shrink: 0; }
+.replay-chart-meta-main button { min-height: 24px; min-width: 24px; }
 .replay-chart-help { max-width: min(90vw, 430px); max-height: 70dvh; overflow: auto; margin: auto; padding: 20px; border: 1px solid var(--color-line); border-radius: var(--radius-card); background: var(--color-surface); color: var(--color-ink-1); font-size: 13px; }
 .replay-chart-help::backdrop, .replay-information::backdrop { background: var(--color-scrim); }
 .replay-chart-plot { position: relative; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
-.replay-chart-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; min-height: 24px; flex-shrink: 0; padding-inline: 12px; font-size: 11px; color: var(--color-ink-2); }
+.replay-chart-meta { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px 12px; min-height: 24px; flex-shrink: 0; padding-inline: 12px; font-size: 11px; color: var(--color-ink-2); }
 .replay-heat-scale { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
 .replay-heat-scale i { display: inline-block; width: 60px; height: 5px; background: linear-gradient(to right, transparent, var(--color-accent)); }
 .replay-outside-orders { flex-shrink: 0; max-height: 62px; overflow: auto; padding-inline: 12px; }
