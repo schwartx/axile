@@ -192,6 +192,9 @@ class AbstractExecutorFacadeMixin:
         for order in result.terminal_orders:
             executor.account_orders.apply(order)
             executor.get_execution_query_runtime_bridge().handle_order_update(order)
+        for order in executor.account_orders.snapshot()["resolved"]:
+            if order.is_completed():
+                result.unconfirmed.pop((order.symbol, order.order_id), None)
         if result.unconfirmed:
             message = "旧委托尚未确认结束，停止新增委托: " + "; ".join(
                 f"{key} {reason}" for key, reason in result.details.items()

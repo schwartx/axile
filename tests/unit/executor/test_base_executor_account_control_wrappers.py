@@ -708,3 +708,24 @@ def test_startup_cleanup_does_not_treat_submitted_cancel_as_terminal():
     with pytest.raises(RuntimeError, match="请求已提交"):
         executor.cancel_all_orders()
     assert executor.account_orders.snapshot()["data"][0].order_id == "submitted-only"
+
+
+@pytest.mark.parametrize("same_symbol", [True, False])
+def test_startup_cleanup_rechecks_terminal_callback_after_channel_query(monkeypatch, same_symbol):
+    executor = _WrapperExecutor(_build_guard({}))
+    old = _make_pending_order("SHSE.600000", "old")
+    executor.pending_orders = [old]
+
+    def reconcile(symbol, order_id):
+        terminal = old.model_copy(update={"status": "已成交", "filled_volume": old.volume})
+        if not same_symbol:
+            terminal = terminal.model_copy(update={"symbol": "SZSE.000001"})
+        executor.account_orders.apply(terminal)
+        return None
+
+    monkeypatch.setattr(executor, "reconcile_terminal_order", reconcile)
+    if same_symbol:
+        executor.cancel_all_orders()
+    else:
+        with pytest.raises(RuntimeError, match="终态尚未确认"):
+            executor.cancel_all_orders()

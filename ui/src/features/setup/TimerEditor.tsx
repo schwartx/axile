@@ -13,7 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 import { GMSessionControls } from '@/features/setup/GMSessionControls'
 import { SupplementControls } from '@/features/setup/SupplementControls'
-import type { SupplementPreviewValue } from '@/features/setup/SupplementPreviewSummary'
+import { SupplementPreviewSummary, type SupplementPreviewValue } from '@/features/setup/SupplementPreviewSummary'
 import { ScheduleTimeRow } from '@/components/ui/ScheduleTimeRow'
 import { MOTION_LAYOUT, useRemountFade } from '@/lib/viewTransition'
 import { executionReasonText } from '@/features/account/executionReason'
@@ -492,12 +492,15 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
       {visiblePreviewRows.map((item, index) => {
         const presentation = schedulePreviewItemPresentation(item, executionReasonText, v.supN > 0 ? v.supM : undefined)
         const supplement = supplementSummaries.get(Date.parse(item.scheduled_at))
-        const executionLabel = [
-          item.phase_label || '常规调仓',
-          supplement && supplement.configuredCount > 0
-            ? (supplement.count > 0 ? `补发 ${supplement.count} 次` : '无补发')
-            : null,
-        ].filter(Boolean).join(' · ')
+        const executionLabel = <span className="inline-flex flex-wrap items-baseline gap-x-1">
+          <span>{item.phase_label || '常规调仓'}</span>
+          {supplement && supplement.configuredCount > 0 && <>
+            <span aria-hidden="true">·</span>
+            {supplement.count < supplement.configuredCount
+              ? <SupplementPreviewSummary value={supplement} />
+              : <span>补发 {supplement.count} 次</span>}
+          </>}
+        </span>
         return (
           <ScheduleTimeRow
             key={schedulePreviewRowKey(item)}

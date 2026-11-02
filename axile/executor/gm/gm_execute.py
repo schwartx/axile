@@ -71,6 +71,7 @@ from axile.executor.models.unified_callback import (
 )
 from axile.executor.models.unified_input import AccountConfig, GMAccountConfig, UnifiedStandardInput
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
+from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.models.unified_price import UnifiedPriceData
 from axile.executor.order_cancellation import CancelNotAllowedError
 from axile.executor.position_attributes import native_position_attributes
@@ -177,6 +178,19 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
     def _normalize_symbol(self, symbol: str) -> str:
         """将 GM 或 Tushare A 股代码统一为 Tushare 格式."""
         return GM_SYMBOL_RESOLVER.to_axile(GM_SYMBOL_RESOLVER.to_gm(symbol))
+
+    def execute(
+        self,
+        standard_input: UnifiedStandardInput,
+        cleanup: bool = True,
+        retain_runtime: bool = False,
+        notification_snapshot: dict[str, object] | None = None,
+    ) -> UnifiedStandardOutput:
+        """执行交易，并在所有退出路径清除本次阶段权限。"""
+        try:
+            return super().execute(standard_input, cleanup, retain_runtime, notification_snapshot)
+        finally:
+            self._gm_session = None
 
     def _normalize_standard_input(self, standard_input: UnifiedStandardInput) -> UnifiedStandardInput:
         """在 planning 前统一标准输入中的 A 股代码."""
