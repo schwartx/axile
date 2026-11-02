@@ -286,6 +286,16 @@ async def _insert_intent(
     trigger_source: str,
     payload: dict[str, object],
 ) -> IntentSnapshot:
+    if str(account.trade_channel) == "gm" and kind == ExecutionKind.REBALANCE and trigger_source == "scheduler":
+        from axile.channels.gm_sessions import SHANGHAI, check_gm_operation, gm_session_context
+        from axile.executor.algorithms.utils.clock import clock_now
+        from axile.server.db.models.account_settings import GMSessionSettings
+
+        sessions = account.gm_sessions or GMSessionSettings()
+        now = clock_now(tz=SHANGHAI)
+        context = cast("dict[str, Any]", payload.get("gm_session")) or gm_session_context(sessions.model_dump(), now)
+        check_gm_operation(now, context=context)
+        payload = {**payload, "gm_session": context}
     algorithm = resolve_execution_algorithm_name(
         account,
         kind,
@@ -313,7 +323,11 @@ async def _insert_intent(
 def _request_context(account: AccountContext, payload: dict[str, object]) -> dict[str, object]:
     from axile.server.execution.supplements import calendar_context
 
-    return calendar_context(str(account.trade_channel) if payload.get("supplement_step_id") is not None else None)
+    return (
+        calendar_context(str(account.trade_channel), account.gm_sessions)
+        if payload.get("supplement_step_id") is not None
+        else calendar_context(None)
+    )
 
 
 async def _supersede_queued_with_clear(

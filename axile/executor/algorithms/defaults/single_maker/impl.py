@@ -344,7 +344,8 @@ def single_maker_callback(
             target_volume,
             orders,
             trades,
-            explicit_error=tracker.explicit_error if isinstance(tracker.explicit_error, str) else None,
+            explicit_error=(tracker.explicit_error if isinstance(tracker.explicit_error, str) else None)
+            or (tracker.pending_reason if isinstance(tracker.pending_reason, str) else None),
             explicit_blocked_error=tracker.explicit_blocked_error
             if isinstance(tracker.explicit_blocked_error, str)
             else None,

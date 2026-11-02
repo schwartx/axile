@@ -290,6 +290,8 @@ struct Schedule {
     #[serde(default)]
     cron_expr: String,
     #[serde(default)]
+    gm_sessions: Option<Value>,
+    #[serde(default)]
     supplement: Option<Value>,
 }
 
@@ -313,7 +315,7 @@ pub fn scheduler_account(path: &str, value: &Value) -> Result<Value, AnalysisErr
         .map_err(|error| AnalysisError::new("INVALID_DATA", error.to_string()))?;
     Ok(
         json!({"trade_channel":channel,"is_started":schedule.is_started,
-        "cron_expr":schedule.cron_expr,"supplement":schedule.supplement,"portfolio_id":portfolio_id}),
+        "cron_expr":schedule.cron_expr,"gm_sessions":schedule.gm_sessions,"supplement":schedule.supplement,"portfolio_id":portfolio_id}),
     )
 }
 

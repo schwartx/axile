@@ -1,5 +1,6 @@
 """补发开跑前的日历判断；终态通知在原生 intent 事务内产生。"""
 
+from axile.server.db.models.account_settings import GMSessionSettings
 from axile.server.execution.supplements import calendar_context
 from axile.server.native_store import native_operation
 
@@ -9,8 +10,10 @@ async def validate_execution_requests(execution_id: str) -> bool:
     snapshot = await native_operation("supplement_execution_requests", {"execution_id": execution_id})
     if not snapshot["steps"]:
         return True
+    sessions = GMSessionSettings.model_validate(snapshot["gm_sessions"]) if snapshot.get("gm_sessions") else None
     result = await native_operation(
-        "supplement_validate_requests", {"execution_id": execution_id, **calendar_context(snapshot["channel"])}
+        "supplement_validate_requests",
+        {"execution_id": execution_id, **calendar_context(snapshot["channel"], sessions)},
     )
     from axile.server.execution.notification_outbox import wake_notifications
 

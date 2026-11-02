@@ -17,6 +17,12 @@ from axile.executor.models.order_channel_health import OrderChannelHealth
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
+from axile.executor.order_cancellation import (
+    CancellationResult,
+    CancelNotAllowedError,
+    CancelRequestStatus,
+    OrderCancellation,
+)
 from axile.executor.termination import ExecutionTerminated
 from tests.fixtures.algorithm_fakes import ClockStub
 
@@ -274,9 +280,15 @@ def test_wait_for_completion_cancel_failure_keeps_execution_error(monkeypatch: p
     tracker.add_order(_build_pending_order("gm-order-1"))
     monkeypatch.setattr(
         "axile.executor.algorithms.utils.order_tracker.cancel_pending_orders_via_query",
-        lambda _executor: ["gm-order-1"],
+        lambda _executor: CancellationResult(
+            orders={
+                ("SHSE.600000", "gm-order-1"): OrderCancellation(
+                    CancelRequestStatus.FAILED, "撤单失败，订单终态尚未确认"
+                )
+            }
+        ),
     )
-    with pytest.raises(RuntimeError, match="部分订单撤销失败") as raised:
+    with pytest.raises(RuntimeError, match="订单终态尚未确认") as raised:
         tracker.wait_for_completion(timeout=0)
     assert raised.value.execution_error == "撤单失败，订单终态尚未确认"
     assert tracker.explicit_error == "撤单失败，订单终态尚未确认"
@@ -415,7 +427,8 @@ def test_timeout_cancel_does_not_extend_deadline_for_delayed_terminal() -> None:
     tracker = OrderTracker(executor=executor, clock=clock)
     tracker.add_order(order)
 
-    tracker.wait_for_completion(timeout=0)
+    with pytest.raises(RuntimeError, match="订单终态尚未确认"):
+        tracker.wait_for_completion(timeout=0)
 
     assert len(executor.reconcile_calls) == 1
     assert executor.cancel_calls == [order.order_id]
@@ -433,11 +446,12 @@ def test_timeout_cancel_keeps_unknown_when_confirmation_unavailable(query_error:
     tracker = OrderTracker(executor=executor, clock=clock)
     tracker.add_order(order)
 
-    tracker.wait_for_completion(timeout=0)
+    with pytest.raises(RuntimeError, match="订单终态尚未确认"):
+        tracker.wait_for_completion(timeout=0)
 
     assert order.order_id in tracker.pending_orders
     assert not tracker.completed_orders
-    assert len(executor.reconcile_calls) == (0 if query_error else 1)
+    assert len(executor.reconcile_calls) == 1
     assert clock.time() == 0
     outcome = summarize_outcome(0, 0, order.volume, tracker.get_all_orders(), tracker.get_all_trades())
     assert outcome["error"] == "订单最终状态尚未确认（含撤单结果未知）"
@@ -1015,3 +1029,78 @@ def test_resident_account_does_not_poll_even_if_legacy_interval_is_configured():
     executor.account_orders = AccountOrderBook()
     tracker = OrderTracker(executor=executor, order_refresh_interval=30)
     assert tracker._current_query_interval(600, 1) == float("inf")
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+def test_cancel_restriction_keeps_old_order_then_fill_clears_error(monkeypatch, fallback):
+    executor = _ChaseExecutor()
+    executor.channel_type = TradeChannel.CTP
+    tracker = OrderTracker(
+        executor=executor,
+        chase_config=ChaseConfig(enabled=True, ticks=1, max_count=0 if fallback else 5, interval=0),
+    )
+    executor.tracker = tracker
+    order = _build_pending_order("restricted")
+    tracker.add_order(order, direction=OrderDirection.BUY)
+    tracker.latest_prices[order.symbol] = _wide_spread_price(order.symbol)
+    cancel = MagicMock(side_effect=CancelNotAllowedError("交易场所当前禁止撤单"))
+    monkeypatch.setattr(executor, "cancel_order", cancel)
+
+    tracker._check_and_chase()
+
+    assert executor._placed == 0
+    assert order.order_id in tracker.pending_orders
+    assert tracker.explicit_error is None
+    assert tracker.waiting_on_restriction()
+    assert tracker._chasing_order_id is None
+    assert not tracker._chase_info[order.order_id].get("market_order_fallback_pending_cancel")
+    assert not tracker._chase_info[order.order_id].get("market_order_fallback_failed")
+    with pytest.raises(RuntimeError):
+        tracker.assert_ready_for_submission()
+    tracker.on_order_update(order.model_copy(update={"status": OrderStatus.FILLED, "filled_volume": order.volume}))
+    assert tracker.explicit_error is None
+    assert tracker.wait_for_completion(timeout=0) is True
+    assert executor._placed == 0
+
+
+def test_absence_from_both_tracker_collections_is_not_cancel_confirmation():
+    tracker = OrderTracker(executor=_FakeExecutor(), chase_config=ChaseConfig(cancel_confirm_timeout=1))
+    assert tracker._await_cancel_confirmed("missing") is False
+
+
+def test_timeout_preserves_cancel_restriction_until_real_terminal(monkeypatch):
+    order = _build_pending_order("restricted-at-timeout")
+    executor = _TimeoutCancelExecutor(order)
+    monkeypatch.setattr(executor, "cancel_order", MagicMock(side_effect=CancelNotAllowedError("当前不可撤单")))
+    tracker = OrderTracker(executor=executor, clock=ClockStub())
+    tracker.add_order(order)
+    assert tracker.wait_for_completion(timeout=0) is False
+    assert tracker.explicit_error is None
+    assert tracker.waiting_on_restriction()
+    assert order.order_id in tracker.pending_orders
+    tracker.on_order_update(order.model_copy(update={"status": OrderStatus.FILLED, "filled_volume": order.volume}))
+    assert tracker.explicit_error is None
+
+
+@pytest.mark.parametrize("fill_before_cleanup_result", [False, True])
+def test_terminal_alias_clears_cancellation_reason_without_touching_other_orders(fill_before_cleanup_result):
+    tracker = OrderTracker(executor=_FakeExecutor())
+    order = _build_pending_order("local-id")
+    order.extra["exchange_order_id"] = "exchange-id"
+    tracker.add_order(order)
+    tracker._set_order_error("other-order", "另一笔委托仍不可撤")
+    cancellation = CancellationResult(
+        orders={(order.symbol, "exchange-id"): OrderCancellation(CancelRequestStatus.RESTRICTED, "当前不可撤单")}
+    )
+    terminal = order.model_copy(
+        update={"order_id": "exchange-id", "status": OrderStatus.FILLED, "filled_volume": order.volume}
+    )
+
+    if fill_before_cleanup_result:
+        tracker.on_order_update(terminal)
+    tracker.record_cancellation_result(cancellation)
+    if not fill_before_cleanup_result:
+        tracker.on_order_update(terminal)
+
+    assert tracker._order_errors == {"other-order": "另一笔委托仍不可撤"}
+    assert tracker.get_pending_count() == 0

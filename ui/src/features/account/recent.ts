@@ -51,6 +51,7 @@ function assetAmount(r: ActivityExecutionRecord): string {
  */
 function kindOf(r: ActivityExecutionRecord): Kind {
   const { state, sessionScope } = executionOutcome(r)
+  if (['SUCCEEDED', 'NOOP'].includes(state) && sessionScope) return 'fill'
   if (sessionScope === 'partial') return 'partial'
   if (state === 'UNKNOWN') return 'unknown'
   if (state === 'BLOCKED') return 'blocked'
@@ -69,7 +70,7 @@ function fillRow(r: ActivityExecutionRecord, i: number, kind: 'fill' | 'clear'):
     key: `${kind === 'clear' ? 'c' : 'f'}${r.id ?? r.execution_id ?? i}`,
     time: r.created_at,
     executionId: r.execution_id ?? null,
-    desc: executionOutcome(r, kind === 'clear').text,
+    desc: [executionOutcome(r, kind === 'clear').text, executionOutcome(r).sessionScope ? executionOutcome(r).reason : ''].filter(Boolean).join(' · '),
     amount: amount || '—',
   }
 }

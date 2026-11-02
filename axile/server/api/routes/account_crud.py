@@ -38,6 +38,7 @@ from axile.server.db.models import (
     PortfolioAccountListPublic,
 )
 from axile.server.db.models.account_connection import AccountConnectionDetail
+from axile.server.db.models.account_settings import GMSessionSettings
 from axile.server.db.models.account_validation import _check_algorithm_channel_compat
 from axile.server.db.models.base import now_str
 from axile.server.execution.account_runtime_sync import reconcile_account_runtime
@@ -53,7 +54,7 @@ from axile.server.execution.scheduler import delete_job
 from axile.server.integrity import plan_executable_target
 from axile.server.native_store import native_operation
 from axile.server.performance import close_before, local_time
-from axile.server.trading_calendar import CalendarDecisionStatus, evaluate_channel_calendar_moment
+from axile.server.trading_calendar import CalendarDecisionStatus, evaluate_channel_calendar_moment, schedule_windows
 
 router = APIRouter()
 
@@ -137,7 +138,9 @@ def _next_job_run_times(job: Any, *, limit: int = 3) -> list[str]:
     return result
 
 
-def _next_job_execution_times(job: Any, channel: TradeChannel | str, *, limit: int = 3) -> list[str]:
+def _next_job_execution_times(
+    job: Any, channel: TradeChannel | str, *, gm_sessions: GMSessionSettings | None = None, limit: int = 3
+) -> list[str]:
     """按轻量交易日历过滤未来真正会执行的触发时间。"""
     current = getattr(job, "next_run_time", None)
     trigger = getattr(job, "trigger", None)
@@ -152,8 +155,8 @@ def _next_job_execution_times(job: Any, channel: TradeChannel | str, *, limit: i
         calendar_day = local_time.date()
         if calendar_day > last_day:
             break
-        decision = evaluate_channel_calendar_moment(channel, local_time)
-        if decision.status is not CalendarDecisionStatus.AVAILABLE_CLOSED:
+        decision = evaluate_channel_calendar_moment(channel, local_time, windows=schedule_windows(channel, gm_sessions))
+        if decision.status not in {CalendarDecisionStatus.AVAILABLE_CLOSED, CalendarDecisionStatus.UNAVAILABLE}:
             result.append(current.isoformat())
             if trigger is None:
                 break
@@ -265,6 +268,8 @@ async def create_account(
                 return await _account_response(existing, sync)
         ensure_account_control_preset_compatible(account.account_control_preset, account.trade_channel)
         account.futures_close_policy.validate_channel(account.trade_channel)
+        if account.gm_sessions is not None:
+            account.gm_sessions.validate_channel(account.trade_channel)
         account_config = _validate_channel_account_config(account.trade_channel, account.account_config)
         _check_algorithm_channel_compat(account.algorithm, str(account.trade_channel), "下单算法")
         _check_algorithm_channel_compat(account.empty_positions_algorithm, str(account.trade_channel), "清仓算法")
@@ -604,7 +609,11 @@ async def account_next_run_time(
     account = Account.model_validate(context["account"])
     job = sched.get_job(str(account_id))  # type: ignore[no-untyped-call]
     next_run_times = _next_job_run_times(job) if job is not None else []
-    next_execution_times = _next_job_execution_times(job, account.trade_channel) if job is not None else []
+    next_execution_times = (
+        _next_job_execution_times(job, account.trade_channel, gm_sessions=account.gm_sessions)
+        if job is not None
+        else []
+    )
     if account.supplement and job is not None:
         from axile.server.api.routes.account_schedule import SchedulePreviewRequest, schedule_preview
 
@@ -613,6 +622,7 @@ async def account_next_run_time(
                 trade_channel=account.trade_channel,
                 cron_expr=account.cron_expr,
                 supplement=account.supplement,
+                gm_sessions=account.gm_sessions,
                 limit=30,
             )
         )
@@ -680,6 +690,9 @@ async def _update_account(
         # 算法与渠道按"更新后的目标状态"配对校验:PATCH 可能只改其一,必须取生效后的组合。
         next_close_policy = account.futures_close_policy or db_account.futures_close_policy
         next_close_policy.validate_channel(next_trade_channel)
+        next_gm_sessions = account.gm_sessions if "gm_sessions" in account.model_fields_set else db_account.gm_sessions
+        if next_gm_sessions is not None:
+            next_gm_sessions.validate_channel(next_trade_channel)
         next_algorithm = account.algorithm if account.algorithm is not None else db_account.algorithm
         next_empty_algorithm = (
             account.empty_positions_algorithm

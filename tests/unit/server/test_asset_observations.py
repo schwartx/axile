@@ -138,10 +138,12 @@ def test_non_trading_producer_does_not_claim_zero_balance():
 
     from axile.common.trade_channel import TradeChannel
     from axile.executor.abstract_executor.capability import AbstractExecutorCapabilityMixin
+    from axile.executor.account_orders import AccountOrderBook
     from axile.executor.models.unified_input import GMAccountConfig, UnifiedStandardInput
 
     executor = SimpleNamespace(
         channel_type=TradeChannel.GM,
+        account_orders=AccountOrderBook(),
         require_execution_runtime=lambda: SimpleNamespace(elapsed_seconds=lambda: 0.1),
     )
     result = AbstractExecutorCapabilityMixin._create_non_trading_output(
@@ -154,8 +156,9 @@ def test_non_trading_producer_does_not_claim_zero_balance():
             curr_target={"SHSE.600000": 1},
         ),
     )
-    assert result.status == "BLOCKED"
-    assert result.error == "非交易时段"
+    assert result.status == "NOOP"
+    assert result.success
+    assert result.error is None
     assert result.reason_code == "COMMON.SESSION.CLOSED"
     assert result.account_assets.source == "unavailable"
     assert not is_asset_observation(result.account_assets.model_dump())

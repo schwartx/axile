@@ -55,7 +55,7 @@ def execute(path, sql, args=()):
         connection.execute(sql, args)
 
 
-def open_moment(channel, moment):
+def open_moment(channel, moment, **_kwargs):
     return CalendarDayDecision(channel=str(channel), day=moment.date(), status=CalendarDecisionStatus.NOT_REQUIRED)
 
 
@@ -294,8 +294,15 @@ async def save_closed_record(execution_id, *, scope="all"):
         raw["symbol_results"]["ag2612"] = {"status": "NOOP", "target_volume": -6, "final_volume": -6}
     elif scope == "error":
         raw["symbol_results"]["ag2612"] = {"status": "FAILED", "reason_code": "CHANNEL.QUERY_FAILED"}
+    normal = scope.startswith("normal_")
+    if normal:
+        raw.update(status="NOOP", error=None, success=True)
+        raw["symbol_results"]["m2701"]["status"] = "NOOP"
+        if scope == "normal_partial":
+            raw["status"] = "SUCCEEDED"
+            raw["symbol_results"]["ag2612"] = {"status": "SUCCEEDED"}
     return await records._persist_execute_record(
-        account_id=1, execution_id=execution_id, raw_input={}, raw_result=raw, is_success=0
+        account_id=1, execution_id=execution_id, raw_input={}, raw_result=raw, is_success=int(normal)
     )
 
 
@@ -436,7 +443,7 @@ def test_failed_execution_keeps_future_supplements(database):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("scope", ["all", "partial", "error"])
+@pytest.mark.parametrize("scope", ["all", "partial", "error", "normal_all", "normal_partial"])
 def test_session_closed_completion_cancels_only_its_group(database, scope):
     path, now = database
 
@@ -451,17 +458,19 @@ def test_session_closed_completion_cancels_only_its_group(database, scope):
             "all": ExecutionTaskStatus.SKIPPED,
             "partial": ExecutionTaskStatus.PARTIAL,
             "error": ExecutionTaskStatus.FAILED,
+            "normal_all": ExecutionTaskStatus.SUCCEEDED,
+            "normal_partial": ExecutionTaskStatus.SUCCEEDED,
         }[scope]
         await intents.mark_intent_finished(execution_id, terminal)
         await intents.mark_intent_finished(execution_id, terminal)
-        assert group(path, planned.id)["status"] == ("cancelled" if scope == "all" else "active")
+        assert group(path, planned.id)["status"] == ("cancelled" if scope in {"all", "normal_all"} else "active")
         assert step(path, steps[0].id)["status"] == "finished"
-        assert step(path, steps[-1].id)["status"] == ("cancelled" if scope == "all" else "pending")
+        assert step(path, steps[-1].id)["status"] == ("cancelled" if scope in {"all", "normal_all"} else "pending")
         assert group(path, next_group.id)["status"] == "active"
         assert [row["event_type"] for row in events(path)] == (
-            ["execution.finished", "supplement.cancelled"] if scope == "all" else ["execution.finished"]
+            ["execution.finished", "supplement.cancelled"] if scope in {"all", "normal_all"} else ["execution.finished"]
         )
-        if scope == "all":
+        if scope in {"all", "normal_all"}:
             await supplements.fire_step(steps[-1].id)
             now[0] = BASE + timedelta(minutes=15)
             await supplements.fire_step(next_steps[0].id)
@@ -600,7 +609,7 @@ def test_plan_cuts_next_base_and_session(monkeypatch):
     import axile.server.supplement_plan as planner
 
     monkeypatch.setattr(planner, "evaluate_channel_calendar_moment", open_moment)
-    monkeypatch.setattr(planner, "session_end", lambda _channel, _base: BASE + timedelta(minutes=2))
+    monkeypatch.setattr(planner, "session_end", lambda _channel, _base, _sessions: BASE + timedelta(minutes=2))
     points, expires = plan_supplements("ctp", "*/15 * * * *", SupplementSettings(count=4, interval_minutes=1), BASE)
     assert points == [BASE, BASE + timedelta(minutes=1)]
     assert expires == BASE + timedelta(minutes=2)

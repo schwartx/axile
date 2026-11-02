@@ -1010,3 +1010,18 @@ def test_copy_normalizes_legacy_blank_notification_without_changing_source(accou
     assert response.status_code == 201, response.text
     assert _load_account(database, response.json()["id"]).execution_notification_code is None
     assert _load_account(database).execution_notification_code == "  "
+
+
+@pytest.mark.parametrize("creating", [True, False])
+def test_non_gm_account_rejects_special_sessions_without_mutation(account_client, creating):
+    client, database = account_client
+    account_id = _seed_account(database).id
+    patch = {"gm_sessions": {"opening_cancelable": {"enabled": True, "time": "09:15"}}}
+    response = (
+        client.post("/account/", json={**_account_payload(), **patch})
+        if creating
+        else client.patch(f"/account/{account_id}", json=patch)
+    )
+    assert response.status_code == 422
+    assert "仅适用于股票" in response.json()["detail"]
+    assert native_store_call(database, "account_get", {"account_id": account_id})["gm_sessions"] is None

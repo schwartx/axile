@@ -5,6 +5,7 @@ import {
   compileScheduleRule,
   defaultNightOn,
   defaultTimerEditorState,
+  defaultGMSessions,
   describeCron,
   describeRule,
   makeEmptySlot,
@@ -18,6 +19,17 @@ import {
   type TimerIntent,
 } from './cron'
 import { timerEditorError } from './cron'
+
+it('GM 阶段触发时间固定，盘后暂不能开启', () => {
+  const state = { ...defaultTimerEditorState('cn_stock'), autoOn: true, gm_sessions: defaultGMSessions() }
+  expect(timerEditorError(state)).toBeNull()
+  state.gm_sessions.opening_cancelable = { enabled: true, time: '09:20' }
+  expect(timerEditorError(state)).toContain('固定为 09:15')
+  state.gm_sessions.opening_cancelable.time = '09:15'
+  expect(timerEditorError(state)).toBeNull()
+  state.gm_sessions.after_hours.enabled = true
+  expect(timerEditorError(state)).toContain('暂不能启用')
+})
 
 /** 构造一个定时意图，默认无补发（supN=0）便于断言精确值。 */
 function intent(patch: Partial<TimerIntent> = {}): TimerIntent {
@@ -82,7 +94,6 @@ describe('compileScheduleRule · 时段市场', () => {
       '0 13 * * *',
       '29 11 * * *',
       '30 9 * * *',
-      '59 14 * * *',
     ])
   })
 })
@@ -365,5 +376,24 @@ describe('独立补发配置', () => {
     expect(timerStateToCronExpr('continuous', state)).not.toContain('0,1,2,')
     expect(timerSupplement(state)).toEqual({ count: 2, interval_minutes: 1 })
     expect(timerSupplement({ ...state, supN: 0 })).toBeNull()
+  })
+})
+
+describe('GM 独立交易阶段', () => {
+  it('阶段配置单独回显，不写入普通 Cron', () => {
+    const sessions = {
+      opening_cancelable: { enabled: true, time: '09:15' },
+      opening_locked: { enabled: true, time: '09:20' },
+      closing_auction: { enabled: false, time: '14:57' },
+      after_hours: { enabled: false, time: '15:05' },
+    }
+    const cron = buildCronList('cn_stock', ['m15'], 0, 1).join(' | ')
+    const state = parseSavedTimer('cn_stock', cron, null, null, sessions)
+    expect(state.timerTab).toBe('quick')
+    expect(state.gm_sessions).toEqual(sessions)
+    expect(timerStateToCronExpr('cn_stock', state)).toBe(cron)
+    expect(cron).not.toContain('15 9')
+    expect(cron).not.toContain('59 14')
+    expect(resolveCronList('cn_stock', intent({ timerTab: 'custom', rawCron: '20 9 * * *', gm_sessions: sessions }))).toEqual(['20 9 * * *'])
   })
 })

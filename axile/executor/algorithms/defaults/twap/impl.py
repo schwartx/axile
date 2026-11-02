@@ -54,6 +54,7 @@ from axile.executor.algorithms.utils import (
 )
 from axile.executor.algorithms.utils.final_position import read_final_position
 from axile.executor.algorithms.utils.order_helper import execute_order_slice
+from axile.executor.algorithms.utils.order_tracker import OrderTracker
 from axile.executor.algorithms.utils.outcome import summarize_outcome
 from axile.executor.algorithms.utils.trading import (
     create_empty_result,
@@ -197,6 +198,21 @@ def compute_slice_quantity(
     return max(scheduled_cum - filled, 0.0)
 
 
+def _wait_restricted_slice(
+    executor: ExecutorProtocol, tracker: OrderTracker, fill_wait: float, deadline: float, last_slice: bool
+) -> bool:
+    """受限单沿用当前片的截止时间，仍未终态时跳过本片报单。"""
+    if not tracker.waiting_on_restriction():
+        return False
+    clock = get_default_clock()
+    tracker.wait_for_completion(timeout=min(fill_wait, max(0.0, deadline - clock.time())))
+    if not tracker.get_pending_count():
+        return False
+    if not last_slice:
+        executor.sleep_or_terminate(max(0.0, deadline - clock.time()))
+    return True
+
+
 @register_algorithm(
     ALGORITHM_NAME,
     order_param_models=ALL_ORDER_PARAM_MODELS,
@@ -262,16 +278,23 @@ def twap(
     tracker = setup_order_tracker(executor, executor.get_market_data(), None)
     slice_details: list[dict[str, Any]] = []
 
+    started = clock.time()
     try:
         for slice_index in range(1, params.slices + 1):
             executor.handle_termination_checkpoint()
 
+            slice_deadline = started + slice_index * interval
+            if clock.time() >= slice_deadline:
+                continue
+            if _wait_restricted_slice(executor, tracker, fill_wait, slice_deadline, slice_index == params.slices):
+                slice_details.append(
+                    {"slice_index": slice_index, "skipped": True, "reason": "原委托撤单受限，继续跟踪"}
+                )
+                continue
             account_assets = executor.get_account_assets()
             current_volume = executor.get_current_volume(account_assets)
             filled = abs(current_volume - start_volume)
             slice_qty = compute_slice_quantity(total_qty, params.slices, slice_index, filled)
-
-            slice_deadline = clock.time() + interval
 
             if slice_qty > 0:
                 executor.logger.info(
@@ -285,7 +308,7 @@ def twap(
                     params.price_strategy,
                     current_volume,
                     target_volume,
-                    fill_wait,
+                    min(fill_wait, max(0.0, slice_deadline - clock.time())),
                 )
             else:
                 detail = {"skipped": True, "reason": "累计进度已达标，本片无需下单"}
@@ -325,7 +348,8 @@ def twap(
             target_volume,
             orders,
             trades,
-            explicit_error=tracker.explicit_error if isinstance(tracker.explicit_error, str) else None,
+            explicit_error=(tracker.explicit_error if isinstance(tracker.explicit_error, str) else None)
+            or (tracker.pending_reason if isinstance(tracker.pending_reason, str) else None),
             explicit_blocked_error=tracker.explicit_blocked_error
             if isinstance(tracker.explicit_blocked_error, str)
             else None,

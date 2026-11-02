@@ -11,7 +11,7 @@ import pytest
 
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind
-from axile.server.api.routes import account_schedule, account_support
+from axile.server.api.routes import account_crud, account_schedule, account_support
 from axile.server.cron import SCHEDULER_TIMEZONE, combine_cron_triggers, parse_cron_expr
 from axile.server.execution import intents as execution_intents
 from axile.server.execution import scheduler as execution_scheduler
@@ -71,7 +71,7 @@ def test_scheduled_rebalance_delegates_on_open_day(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(
         execution_scheduler,
         "evaluate_channel_calendar_moment",
-        lambda *_args: _decision(CalendarDecisionStatus.AVAILABLE_OPEN),
+        lambda *_args, **_kwargs: _decision(CalendarDecisionStatus.AVAILABLE_OPEN),
     )
     submitted: list[tuple[object, ...]] = []
 
@@ -90,7 +90,7 @@ def test_scheduled_rebalance_skips_closed_day_and_records_reason(monkeypatch: py
     monkeypatch.setattr(
         execution_scheduler,
         "evaluate_channel_calendar_moment",
-        lambda *_args: _decision(CalendarDecisionStatus.AVAILABLE_CLOSED),
+        lambda *_args, **_kwargs: _decision(CalendarDecisionStatus.AVAILABLE_CLOSED),
     )
     submit_intent = MagicMock()
     monkeypatch.setattr(execution_intents, "submit_intent", submit_intent)
@@ -108,7 +108,7 @@ def test_scheduled_rebalance_skips_session_gap(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(
         execution_scheduler,
         "evaluate_channel_calendar_moment",
-        lambda *_args: _decision(CalendarDecisionStatus.AVAILABLE_CLOSED).model_copy(
+        lambda *_args, **_kwargs: _decision(CalendarDecisionStatus.AVAILABLE_CLOSED).model_copy(
             update={"reason_code": "CALENDAR.SESSION_CLOSED"}
         ),
     )
@@ -125,10 +125,54 @@ def test_scheduled_rebalance_is_fail_closed_when_calendar_is_unavailable(monkeyp
     monkeypatch.setattr(
         execution_scheduler,
         "evaluate_channel_calendar_moment",
-        lambda *_args: _decision(CalendarDecisionStatus.UNAVAILABLE),
+        lambda *_args, **_kwargs: _decision(CalendarDecisionStatus.UNAVAILABLE),
     )
     asyncio.run(execution_scheduler.execute_scheduled_rebalance(7))
     assert session.added[0].reason_code == "CALENDAR.UNAVAILABLE"
+
+
+@pytest.mark.parametrize("available", [True, False])
+def test_delayed_gm_trigger_cannot_cross_phase_or_hide_calendar_failure(monkeypatch, available):
+    from axile.server.db.models.account_settings import GMSessionSettings
+
+    account = _account()
+    account.trade_channel = TradeChannel.GM
+    account.gm_sessions = GMSessionSettings(
+        opening_cancelable={"enabled": True, "time": "09:15"},
+        opening_locked={"enabled": True, "time": "09:20"},
+    )
+    session = _NativeContext(account)
+    planned = datetime(2026, 9, 1, 9, 19, tzinfo=SCHEDULER_TIMEZONE)
+    monkeypatch.setattr(execution_scheduler, "native_operation", session.call)
+    monkeypatch.setattr(execution_scheduler, "clock_now", lambda **_: planned.replace(minute=20))
+    monkeypatch.setattr(
+        execution_scheduler,
+        "evaluate_channel_calendar_moment",
+        lambda *_, **__: _decision(
+            CalendarDecisionStatus.AVAILABLE_OPEN if available else CalendarDecisionStatus.UNAVAILABLE
+        ),
+    )
+    submit = MagicMock(side_effect=AssertionError("过期任务不得入队"))
+    monkeypatch.setattr("axile.server.execution.intents.submit_intent", submit)
+    asyncio.run(execution_scheduler.execute_scheduled_rebalance(7, planned.isoformat()))
+    assert session.added[0].reason_code == ("CALENDAR.SESSION_CLOSED" if available else "CALENDAR.UNAVAILABLE")
+    submit.assert_not_called()
+
+
+def test_next_execution_skips_unavailable_calendar_days(monkeypatch):
+    planned = datetime(2026, 9, 1, 9, 30, tzinfo=SCHEDULER_TIMEZONE)
+    trigger = combine_cron_triggers(parse_cron_expr("30 9 * * *"))
+    job = SimpleNamespace(next_run_time=planned, trigger=trigger)
+    monkeypatch.setattr(
+        account_crud,
+        "evaluate_channel_calendar_moment",
+        lambda _, moment, **__: _decision(
+            CalendarDecisionStatus.UNAVAILABLE
+            if moment.date() == planned.date()
+            else CalendarDecisionStatus.AVAILABLE_OPEN
+        ),
+    )
+    assert account_crud._next_job_execution_times(job, "gm", limit=1) == ["2026-09-02T09:30:00+08:00"]
 
 
 def test_scheduled_rebalance_records_calendar_evaluator_failure(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -151,7 +195,9 @@ def test_closed_day_without_reason_uses_closed_fallback(monkeypatch: pytest.Monk
     monkeypatch.setattr(
         execution_scheduler,
         "evaluate_channel_calendar_moment",
-        lambda *_args: _decision(CalendarDecisionStatus.AVAILABLE_CLOSED).model_copy(update={"reason_code": None}),
+        lambda *_args, **_kwargs: _decision(CalendarDecisionStatus.AVAILABLE_CLOSED).model_copy(
+            update={"reason_code": None}
+        ),
     )
     asyncio.run(execution_scheduler.execute_scheduled_rebalance(7))
 
@@ -165,7 +211,7 @@ def test_closed_day_stays_skipped_when_audit_write_fails(monkeypatch: pytest.Mon
     monkeypatch.setattr(
         execution_scheduler,
         "evaluate_channel_calendar_moment",
-        lambda *_args: _decision(CalendarDecisionStatus.AVAILABLE_CLOSED),
+        lambda *_args, **_kwargs: _decision(CalendarDecisionStatus.AVAILABLE_CLOSED),
     )
     submit_intent = MagicMock()
     monkeypatch.setattr(execution_intents, "submit_intent", submit_intent)
@@ -188,7 +234,7 @@ def test_closed_day_stays_skipped_when_audit_session_cannot_open(monkeypatch: py
     monkeypatch.setattr(
         execution_scheduler,
         "evaluate_channel_calendar_moment",
-        lambda *_args: _decision(CalendarDecisionStatus.AVAILABLE_CLOSED),
+        lambda *_args, **_kwargs: _decision(CalendarDecisionStatus.AVAILABLE_CLOSED),
     )
 
     asyncio.run(execution_scheduler.execute_scheduled_rebalance(7))
@@ -209,7 +255,7 @@ def test_busy_schedule_records_skip_after_intent_submission(monkeypatch: pytest.
     monkeypatch.setattr(
         execution_scheduler,
         "evaluate_channel_calendar_moment",
-        lambda *_args: _decision(CalendarDecisionStatus.AVAILABLE_OPEN),
+        lambda *_args, **_kwargs: _decision(CalendarDecisionStatus.AVAILABLE_OPEN),
     )
 
     async def submit(*_args, **_kwargs):
@@ -224,7 +270,7 @@ def test_native_schedule_reads_settings_and_commits_calendar_skip(tmp_path, monk
     monkeypatch.setattr(
         execution_scheduler,
         "evaluate_channel_calendar_moment",
-        lambda *_args: _decision(CalendarDecisionStatus.AVAILABLE_CLOSED),
+        lambda *_args, **_kwargs: _decision(CalendarDecisionStatus.AVAILABLE_CLOSED),
     )
 
     async def scenario():
@@ -289,3 +335,97 @@ def test_schedule_preview_returns_raw_cron_points_with_cursor(monkeypatch: pytes
         account_schedule.schedule_preview(payload.model_copy(update={"after": response.next_cursor}))
     )
     assert continued.items[0].scheduled_at.isoformat() == "2026-08-28T09:30:00+08:00"
+
+
+@pytest.mark.parametrize(
+    ("hour", "minute", "auction", "after_hours", "expected"),
+    [
+        (9, 14, True, True, False),
+        (9, 15, False, False, False),
+        (9, 15, True, False, True),
+        (9, 30, False, False, True),
+        (11, 30, True, True, False),
+        (15, 0, True, False, False),
+        (15, 0, False, True, False),
+        (15, 29, False, True, False),
+        (15, 30, True, True, False),
+    ],
+)
+def test_gm_schedule_preview_and_trigger_share_selected_phases(
+    monkeypatch, hour, minute, auction, after_hours, expected
+):
+    from axile.server import trading_calendar
+    from axile.server.db.models.account_settings import GMSessionSettings
+
+    sessions = GMSessionSettings(opening_cancelable={"enabled": auction, "time": "09:15"})
+    moment = datetime(2026, 10, 9, hour, minute, tzinfo=SCHEDULER_TIMEZONE)
+    monkeypatch.setattr(execution_scheduler, "clock_now", lambda **_kw: moment)
+    day_decision = _decision(CalendarDecisionStatus.AVAILABLE_OPEN)
+    monkeypatch.setattr(trading_calendar, "evaluate_channel_calendar_day", lambda *_a, **_kw: day_decision)
+    account = _account()
+    account.trade_channel = TradeChannel.GM
+    account.gm_sessions = sessions
+    context = _NativeContext(account)
+    monkeypatch.setattr(execution_scheduler, "native_operation", context.call)
+    submitted = []
+
+    async def submit(*args, **kwargs):
+        submitted.append(args)
+        return SimpleNamespace(outcome="created")
+
+    monkeypatch.setattr("axile.server.execution.intents.submit_intent", submit)
+    asyncio.run(execution_scheduler.execute_scheduled_rebalance(7, moment.isoformat()))
+    assert bool(submitted) is expected
+    preview = asyncio.run(
+        account_schedule.schedule_preview(
+            account_schedule.SchedulePreviewRequest(
+                trade_channel="gm",
+                cron_expr=f"{minute} {hour} * * *",
+                gm_sessions=sessions,
+                scheduled_ats=[moment],
+            )
+        )
+    )
+    assert preview.items[0].action == ("execute" if expected else "skip")
+    if hour == 9 and minute == 15:
+        assert preview.items[0].phase_label == "早盘集合竞价 · 可撤单"
+
+
+def test_gm_supplements_stop_at_each_phase_boundary(monkeypatch):
+    from axile.server import supplement_plan
+    from axile.server.db.models.account_settings import GMSessionSettings, SupplementSettings
+
+    monkeypatch.setattr(
+        supplement_plan,
+        "evaluate_channel_calendar_moment",
+        lambda *_a, **_kw: _decision(CalendarDecisionStatus.AVAILABLE_OPEN),
+    )
+    sessions = GMSessionSettings(
+        opening_cancelable={"enabled": True, "time": "09:15"},
+        opening_locked={"enabled": True, "time": "09:20"},
+        closing_auction={"enabled": True, "time": "14:57"},
+    )
+    for hour, minute, end_hour, end_minute in [(9, 18, 9, 20), (9, 23, 9, 25), (14, 58, 15, 0)]:
+        base = datetime(2026, 10, 9, hour, minute, tzinfo=SCHEDULER_TIMEZONE)
+        points, expires = supplement_plan.plan_supplements(
+            "gm", f"{minute} {hour} * * *", SupplementSettings(count=3, interval_minutes=1), base, sessions
+        )
+        assert [point.minute for point in points] == [minute, minute + 1]
+        assert (expires.hour, expires.minute) == (end_hour, end_minute)
+
+
+def test_special_sessions_rejected_for_non_gm_preview():
+    from fastapi import HTTPException
+
+    from axile.server.db.models.account_settings import GMSessionSettings
+
+    with pytest.raises(HTTPException, match="仅适用于股票"):
+        asyncio.run(
+            account_schedule.schedule_preview(
+                account_schedule.SchedulePreviewRequest(
+                    trade_channel="ctp",
+                    cron_expr="15 9 * * *",
+                    gm_sessions=GMSessionSettings(opening_cancelable={"enabled": True, "time": "09:15"}),
+                )
+            )
+        )

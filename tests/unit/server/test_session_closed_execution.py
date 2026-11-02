@@ -176,3 +176,17 @@ def test_skipped_task_is_terminal_and_cannot_be_terminated_again(terminal):
         assert registry.get_execution_task_state(execution_id).status == terminal
     finally:
         registry._execution_tasks.pop(execution_id, None)
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_new_session_skip_is_success_without_inventing_final_position(native_database, partial):
+    raw = closed_result()
+    raw.update(status="NOOP", error=None, success=True)
+    raw["symbol_results"]["m2701"].update(status="NOOP")
+    if partial:
+        raw["status"] = "SUCCEEDED"
+        raw["symbol_results"]["ag2612"] = {"status": "SUCCEEDED", "final_volume": 1, "target_volume": 1}
+    assert session_closed_scope(raw) == ("partial" if partial else "all")
+    record = _record(native_database, raw, is_success=1)
+    assert status_view(record)["status"] == ExecutionTaskStatus.SUCCEEDED
+    assert raw["symbol_results"]["m2701"]["final_volume"] is None

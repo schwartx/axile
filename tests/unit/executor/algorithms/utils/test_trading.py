@@ -54,5 +54,6 @@ def test_cancel_pending_orders_propagates_ctp_session_recovery_without_continuin
 def test_cancel_pending_orders_keeps_common_failure_aggregation() -> None:
     executor = _Executor({"order-failed": RuntimeError("cancel failed"), "order-cancelled": True})
 
-    assert cancel_pending_orders_via_query(executor) == ["order-failed"]  # type: ignore[arg-type]
+    result = cancel_pending_orders_via_query(executor)  # type: ignore[arg-type]
+    assert set(result.unconfirmed) == {("rb2610", "order-failed"), ("rb2610", "order-cancelled")}
     assert executor.cancelled == ["order-failed", "order-cancelled"]

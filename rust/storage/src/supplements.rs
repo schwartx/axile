@@ -157,12 +157,18 @@ fn fingerprint_wire(value: &Value) -> Result<String, AnalysisError> {
 }
 
 fn fingerprint(account: &Value) -> Result<String, AnalysisError> {
-    let value = json!([
+    let mut value = json!([
         account["schedule"]["cron_expr"],
         account["schedule"]["supplement"],
         account["trade_channel"],
         account["portfolio_id"]
     ]);
+    if !account["schedule"]["gm_sessions"].is_null() {
+        value
+            .as_array_mut()
+            .unwrap()
+            .push(account["schedule"]["gm_sessions"].clone());
+    }
     Ok(format!(
         "{:x}",
         Sha256::digest(fingerprint_wire(&value)?.as_bytes())
@@ -276,7 +282,7 @@ pub fn step(path: &str, request: &Value) -> Result<Value, AnalysisError> {
         };
         let account = account_schedule(connection, integer(&group, "account_id")?)?;
         Ok(
-            json!({"step":step,"group":group,"channel":account.as_ref().map(|account| &account["trade_channel"])}),
+            json!({"step":step,"group":group,"channel":account.as_ref().map(|account| &account["trade_channel"]),"gm_sessions":account.as_ref().map(|account| &account["schedule"]["gm_sessions"])}),
         )
     })
 }
@@ -305,7 +311,7 @@ pub fn execution_requests(path: &str, request: &Value) -> Result<Value, Analysis
             .transpose()?
             .flatten();
         Ok(
-            json!({"steps":steps,"channel":account.as_ref().map(|account| &account["trade_channel"])}),
+            json!({"steps":steps,"channel":account.as_ref().map(|account| &account["trade_channel"]),"gm_sessions":account.as_ref().map(|account| &account["schedule"]["gm_sessions"])}),
         )
     })
 }
@@ -612,7 +618,7 @@ fn recover_in_connection(connection: &Connection, request: &Value) -> Result<Val
 
 fn session_closed_all(result: &Value) -> bool {
     if result["reason_code"] != "COMMON.SESSION.CLOSED"
-        || result["status"] != "BLOCKED"
+        || !matches!(result["status"].as_str(), Some("BLOCKED" | "NOOP"))
         || result["task_status"] == "TERMINATED"
         || truthy(&result["orders"])
         || truthy(&result["trades"])
@@ -623,7 +629,7 @@ fn session_closed_all(result: &Value) -> bool {
         return result.get("symbol_results").is_none();
     };
     symbols.values().all(|symbol| {
-        symbol["status"] == "BLOCKED"
+        matches!(symbol["status"].as_str(), Some("BLOCKED" | "NOOP"))
             && symbol["reason_code"] == "COMMON.SESSION.CLOSED"
             && !truthy(&symbol["orders"])
             && !truthy(&symbol["trades"])
@@ -678,12 +684,12 @@ fn enqueue_execution_finished(
     } else {
         None
     };
-    let needs_result = (ran && existing.is_none()) || row["status"] == "SKIPPED";
+    let needs_result = (ran && existing.is_none()) || matches!(row["status"].as_str(), Some("SKIPPED" | "SUCCEEDED"));
     let detail = record
         .filter(|_| needs_result)
         .map(|record_id| crate::notifications::execution_detail(connection, account_id, record_id))
         .transpose()?;
-    let session_closed = row["status"] == "SKIPPED"
+    let session_closed = matches!(row["status"].as_str(), Some("SKIPPED" | "SUCCEEDED"))
         && detail
             .as_ref()
             .is_some_and(|detail| session_closed_all(&detail["result"]));

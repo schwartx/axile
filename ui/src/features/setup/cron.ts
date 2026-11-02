@@ -7,6 +7,17 @@
  * 多条规则用 ``|`` 拼接（后端 `parse_cron_expr` 支持）。
  */
 
+export type GMSessions = Record<'opening_cancelable' | 'opening_locked' | 'closing_auction' | 'after_hours', { enabled: boolean; time: string }>
+
+export function defaultGMSessions(): GMSessions {
+  return {
+    opening_cancelable: { enabled: false, time: '09:15' },
+    opening_locked: { enabled: false, time: '09:20' },
+    closing_auction: { enabled: false, time: '14:57' },
+    after_hours: { enabled: false, time: '15:05' },
+  }
+}
+
 export type ScheduleKind = 'continuous' | 'cn_stock' | 'cn_futures'
 
 export interface NightSchedule {
@@ -51,7 +62,7 @@ const CLOCK_WINDOWS: Record<ScheduleKind, SessionWindow[]> = {
   continuous: [],
   cn_stock: [
     { start: '09:30', end: '11:30' },
-    { start: '13:00', end: '15:00' },
+    { start: '13:00', end: '14:57' },
   ],
   cn_futures: [
     { start: '09:00', end: '11:30' },
@@ -424,6 +435,7 @@ export function compileScheduleRules(
  */
 export interface TimerIntent {
   presetIds: string[]
+  gm_sessions?: GMSessions | null
   nightOn?: boolean
   supN: number
   supM: number
@@ -649,6 +661,7 @@ export function describeCron(
   market: ScheduleKind,
   cronExpr: string,
   night?: NightSchedule | null,
+  gmSessions?: GMSessions | null,
 ): string | null {
   const target = normCronSet(cronExpr)
   if (!target) return null
@@ -658,13 +671,15 @@ export function describeCron(
         for (const nightOn of night ? [false, true] : [false]) {
           if (normCronSet(buildCronList(market, [p.id], n, m, night, nightOn).join(' | ')) !== target) continue
           const time = p.sub && /^\d{1,2}:\d{2}$/.test(p.sub) ? ` ${p.sub}` : ''
-          const nightText = nightOn ? ` · ${night?.label ?? '夜盘'}` : ''
+          const nightText = (nightOn ? ` · ${night?.label ?? '夜盘'}` : '')
+            + gmSessionsSummary(gmSessions)
           return n > 0 ? `${p.label}${time}${nightText} · 补发 ${n} 次` : `${p.label}${time}${nightText}`
         }
       }
     }
   }
-  return describeCommonCron(target)
+  const description = describeCommonCron(target)
+  return description ? description + gmSessionsSummary(gmSessions) : null
 }
 
 /* ------------------ cron → 编辑器意图反解（账户编辑页） ------------------ */
@@ -861,19 +876,35 @@ export function cronExprEqual(a: string, b: string): boolean {
 
 /** 自定义模式的内容错误；无则 null。 */
 export function timerEditorError(state: TimerEditorState): string | null {
-  if (!state.autoOn || state.timerTab !== 'custom') return null
-  return state.rawCron.trim() ? cronError(state.rawCron) : '自定义节奏不能为空。'
+  if (!state.autoOn) return null
+  const fixed = defaultGMSessions()
+  for (const [key, value] of Object.entries(state.gm_sessions ?? {})) {
+    const time = fixed[key as keyof GMSessions].time
+    if (value.time !== time) return `特殊阶段触发时间固定为 ${time}。`
+    if (key === 'after_hours' && value.enabled) return '当前渠道尚未验证盘后定价交易能力，暂不能启用。'
+  }
+  return state.timerTab === 'custom' ? (state.rawCron.trim() ? cronError(state.rawCron) : '自定义节奏不能为空。') : null
 }
 
+
+export function gmTimerSessions(channel: string | null | undefined, state: Pick<TimerIntent, 'gm_sessions'>): GMSessions | null {
+  return channel === 'gm' ? state.gm_sessions ?? defaultGMSessions() : null
+}
 
 export type Supplement = { count: number; interval_minutes: number }
 
 /** 读取独立配置；旧表达式绝不反推补发关系。 */
-export function parseSavedTimer(market: ScheduleKind, cronExpr: string, night?: NightSchedule | null, supplement?: Supplement | null): TimerEditorState {
+export function parseSavedTimer(market: ScheduleKind, cronExpr: string, night?: NightSchedule | null, supplement?: Supplement | null, gmSessions?: GMSessions | null): TimerEditorState {
   const parsed = parseTimerIntent(market, cronExpr, night)
-  return { ...parsed, supN: supplement?.count ?? 0, supM: supplement?.interval_minutes ?? 1 }
+  return { ...parsed, gm_sessions: gmSessions, supN: supplement?.count ?? 0, supM: supplement?.interval_minutes ?? 1 }
 }
 
 export function timerSupplement(state: Pick<TimerEditorState, 'autoOn' | 'supN' | 'supM'>): Supplement | null {
   return state.autoOn && state.supN > 0 ? { count: state.supN, interval_minutes: state.supM } : null
+}
+
+function gmSessionsSummary(sessions?: GMSessions | null): string {
+  const labels = { opening_cancelable: '早盘可撤', opening_locked: '早盘不可撤', closing_auction: '收盘竞价', after_hours: '盘后定价' }
+  return sessions ? Object.entries(sessions).filter(([, value]) => value.enabled)
+    .map(([key, value]) => ` · ${labels[key as keyof GMSessions]} ${value.time}`).join('') : ''
 }

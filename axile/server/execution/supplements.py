@@ -9,13 +9,14 @@ from typing import Any
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.server.core.scheduler import scheduler
-from axile.server.cron import SCHEDULER_TIMEZONE, combine_cron_triggers, is_blank_cron_expr, parse_cron_expr
+from axile.server.cron import SCHEDULER_TIMEZONE, combine_cron_triggers, effective_triggers, is_blank_cron_expr
 from axile.server.db.models import AccountSnapshot
+from axile.server.db.models.account_settings import GMSessionSettings
 from axile.server.db.models.base import new_execution_id
 from axile.server.native_store import native_operation
 from axile.server.repositories import get_account_snapshot
 from axile.server.supplement_plan import plan_supplements
-from axile.server.trading_calendar import CalendarDecisionStatus, evaluate_channel_calendar_moment
+from axile.server.trading_calendar import CalendarDecisionStatus, evaluate_channel_calendar_moment, schedule_windows
 
 _locks: dict[int, asyncio.Lock] = {}
 
@@ -33,13 +34,23 @@ def fingerprint(account: AccountSnapshot) -> str:
     """仅调度身份、渠道和绑定参与组去重。"""
     assert account.supplement is not None
     value = [account.cron_expr, account.supplement.model_dump(), str(account.trade_channel), account.portfolio_id]
+    if account.gm_sessions is not None:
+        value.append(account.gm_sessions.model_dump())
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
-def calendar_context(channel: str | None) -> dict[str, Any]:
+def calendar_context(channel: str | None, gm_sessions: GMSessionSettings | None = None) -> dict[str, Any]:
     """在事务外读取日历；原生准入仍重验当前账户配置。"""
     now = clock_now(tz=SCHEDULER_TIMEZONE)
-    statuses = {} if channel is None else {channel: str(evaluate_channel_calendar_moment(channel, now).status)}
+    statuses = (
+        {}
+        if channel is None
+        else {
+            channel: str(
+                evaluate_channel_calendar_moment(channel, now, windows=schedule_windows(channel, gm_sessions)).status
+            )
+        }
+    )
     return {"now": now.isoformat(), "calendar_status_by_channel": statuses}
 
 
@@ -51,10 +62,14 @@ async def create_group(account_id: int, base: datetime) -> None:
             return
         if is_blank_cron_expr(account.cron_expr):
             return
-        trigger = combine_cron_triggers(parse_cron_expr(account.cron_expr))
+        trigger = combine_cron_triggers(
+            effective_triggers(account.cron_expr, account.trade_channel, getattr(account, "gm_sessions", None))
+        )
         if trigger.get_next_fire_time(None, base) != base:
             return
-        planned, expires = plan_supplements(account.trade_channel, account.cron_expr, account.supplement, base)
+        planned, expires = plan_supplements(
+            account.trade_channel, account.cron_expr, account.supplement, base, account.gm_sessions
+        )
         group = {
             "id": new_execution_id(),
             "account_id": account_id,
@@ -122,7 +137,8 @@ async def fire_step(step_id: str) -> None:
     if snapshot is None or snapshot["step"]["status"] != "pending" or snapshot["group"]["status"] != "active":
         return
     group = snapshot["group"]
-    context = calendar_context(snapshot["channel"])
+    sessions = GMSessionSettings.model_validate(snapshot["gm_sessions"]) if snapshot.get("gm_sessions") else None
+    context = calendar_context(snapshot["channel"], sessions)
     status = context["calendar_status_by_channel"].get(snapshot["channel"])
     if status in {CalendarDecisionStatus.AVAILABLE_CLOSED, CalendarDecisionStatus.UNAVAILABLE}:
         await cancel_groups(group["account_id"], "schedule_interrupted", group_id=group["id"])

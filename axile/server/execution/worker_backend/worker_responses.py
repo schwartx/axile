@@ -105,6 +105,8 @@ def _build_terminated_response(
         forced=exc.forced,
         cancel_attempted=exc.cancel_attempted,
         cancel_unconfirmed=exc.cancel_unconfirmed,
+        cancel_details=exc.cancel_details,
+        cancel_outcomes=exc.cancel_outcomes,
     )
 
 
