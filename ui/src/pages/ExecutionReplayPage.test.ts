@@ -35,6 +35,8 @@ test('详情默认选中已观察的本次委托，并保留用户选择的账�
 test('首屏保持真实起点，显式定位首个盘口后才展示该观察且仍暂停', () => {
   const result = pageCase('first-quote')
   expect(result.before).toBe(false)
+  expect(result.prominent).toBe(true)
+  expect(result.retained).toBe(true)
   expect(result.after).toBe(true)
   expect(result.cursor).toContain('08:00:01.000000')
   expect(result.playing).toBe(false)
@@ -132,7 +134,8 @@ test('默认读取整段，后续图层与游标状态独立，未来选择和�
   expect(result.earlyBook).toBe(1)
   expect(result.lateBook).toBe(9)
   expect(result.restoredBook).toBe(1)
-  expect(result.pending).toBe(true)
+  expect(result.preview).toContain('未到达')
+  expect(result.preview).not.toContain('已成交')
   expect(result.future).toEqual({ selected: '5:future', currentTrades: 0 })
 })
 

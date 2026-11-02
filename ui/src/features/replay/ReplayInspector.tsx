@@ -14,10 +14,10 @@ export function ReplayInspector({ record, records, onChoose, onView, onSeek, onC
         selectedValue={<span>{record.name ? `委托 ${record.name}` : objects.find(item => item.object === record.object)?.status}</span>}
         options={objects.map(item => ({ value: item.object, label: `${item.title}${item.name ? ' · ' + item.name : ''} · ${replayTime(item.time)}` }))}
         onChange={value => { const chosen = objects.find(item => item.object === value); if (chosen) onChoose(chosen) }} />}
-      <div className="replay-inspector-summary"><strong>{record.headline}</strong><p>{record.future && <span className="text-accent">后续已录 · </span>}{record.status}</p><time>{replayTime(record.time)}</time></div>
+      <div className="replay-inspector-summary"><strong>{record.headline}</strong><p>{record.future && <span className="text-ink-2">未到达 · </span>}{record.status}</p><time>{replayTime(record.time)}</time></div>
 
         <div className="replay-hover-records" role="group" aria-label={record.kind === 'order' ? '委托过程' : record.kind === 'market' ? '市场原始记录' : '盘口观察'}>
-          {related.map(item => <button key={item.id} type="button" aria-pressed={item.id === record.id} onClick={() => onChoose(item)}><span>{item.label}</span><time>{replayTime(item.time)}{item.future ? ' · 后续' : ''}</time></button>)}
+          {related.map(item => <button key={item.id} type="button" aria-pressed={item.id === record.id} onClick={() => onChoose(item)}><span>{item.label}</span><time>{replayTime(item.time)}{item.future ? ' · 未到达' : ''}</time></button>)}
         </div>
         <details className="replay-inspector-raw"><summary>原始记录</summary><p>{record.raw}</p><p>{replayTime(record.time)}{record.seq != null ? ` · #${record.seq}` : ''}</p></details>
 

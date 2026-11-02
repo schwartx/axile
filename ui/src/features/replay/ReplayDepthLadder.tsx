@@ -4,8 +4,8 @@ import { replayOwnership } from '@/features/replay/ownership'
 import { Tooltip } from '@/components/ui/Tooltip'
 import type { ReplayOrder, ReplayQuote } from '@/features/replay/types'
 
-export function ReplayDepthLadder({ quote, orders, view, layout, height, executionId, selected, onSelect, onZoom, priceText, quantityText }: {
-  quote: ReplayQuote | null; orders: ReplayOrder[]; view: ReplayPriceView; layout: ReplayChartLayout; height: number
+export function ReplayDepthLadder({ quote, future = false, orders, view, layout, height, executionId, selected, onSelect, onZoom, priceText, quantityText }: {
+  quote: ReplayQuote | null; future?: boolean; orders: ReplayOrder[]; view: ReplayPriceView; layout: ReplayChartLayout; height: number
   executionId: string; selected: string | null; onSelect: (key: string) => void; onZoom: (view: ReplayPriceView) => void
   priceText: (price: number | null) => string; quantityText: (quantity: number | null) => string
 }) {
@@ -24,7 +24,7 @@ export function ReplayDepthLadder({ quote, orders, view, layout, height, executi
     if (bucket.minPrice !== bucket.maxPrice) onZoom({ ...view, min: bucket.minPrice - view.tick * 2, max: bucket.maxPrice + view.tick * 2 })
     else if (bucket.orders.length) onSelect((bucket.orders.find(order => order.key === selected) ?? bucket.orders[0]).key)
   }
-  return <div className="replay-depth-ladder num" style={{ left: layout.right + 8, height }} aria-label="与大图同价对齐的当前盘口">
+  return <div className="replay-depth-ladder num" data-future={future} style={{ left: layout.right + 8, height }} aria-label={future ? '未到达的首个已录盘口' : '与大图同价对齐的当前盘口'}>
     <div className="replay-ladder-head"><span>价位映射</span><div><span>档位</span><span>价格</span><span>市场量</span><Tooltip content="回放游标时刻，账户在该价位的有效委托未成交剩余量，包含其他执行；不代表持仓或排队位置。"><button type="button" className="text-right" aria-label="账户挂单说明">账户挂单</button></Tooltip></div></div>
     <svg className="replay-ladder-lines" width="100%" height={height} aria-hidden="true">
       {buckets.map(bucket => <g key={`${bucket.minPrice}:${bucket.maxPrice}`}>
@@ -33,7 +33,7 @@ export function ReplayDepthLadder({ quote, orders, view, layout, height, executi
       </g>)}
       {orders.map(order => order.price != null && order.price >= view.min && order.price <= view.max ? <path key={order.key} d={`M 0 ${replayPriceY(order.price, view, layout)} h 59`} stroke={order.cancel_pending ? 'var(--color-warn)' : 'var(--color-accent)'} strokeWidth={order.key === selected ? 3 : 1.5} /> : null)}
     </svg>
-    <div role="list" aria-label="当前已录价位">
+    <div role="list" aria-label={future ? '未到达的已录价位' : '当前已录价位'}>
       {buckets.map(bucket => {
         const row = describe(bucket), grouped = bucket.minPrice !== bucket.maxPrice
         const current = bucket.orders.filter(order => replayOwnership(order, executionId).kind === 'current')
@@ -47,7 +47,7 @@ export function ReplayDepthLadder({ quote, orders, view, layout, height, executi
         </div>
       })}
     </div>
-    {!quote && <p className="replay-ladder-empty">盘口未知／已失效<br />自有委托独立显示</p>}
+    {!quote && <p className="replay-ladder-empty">盘口未记录／已失效<br />自有委托独立显示</p>}
     {(aggregated || outside > 0) && <p className="replay-ladder-note">{aggregated ? '按价区间聚合 · 峰值 · 点击展开' : ''}{outside ? ` · 视野外 ${outside} 档` : ''}</p>}
   </div>
 }

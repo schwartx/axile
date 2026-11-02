@@ -90,7 +90,7 @@ async function settle() { for (let index = 0; index < 4; index++) { await Promis
 async function finishWindows() { loadingNext = false; for (const resolve of pendingWindows.splice(0)) resolve(); await settle() }
 function find(node: any, predicate: (node: any) => boolean): any {
   if (Array.isArray(node)) { for (const child of node) { const match = find(child, predicate); if (match) return match } }
-  else if (node && typeof node === 'object') return predicate(node) ? node : find([node.props?.children, node.props?.depthStatus], predicate)
+  else if (node && typeof node === 'object') return predicate(node) ? node : find(node.props?.children, predicate)
   return null
 }
 function text(node: any): string {
@@ -115,6 +115,14 @@ function playing() { return Boolean(find(tree, node => node.props?.['aria-label'
 function hide(hidden: boolean) { pageDocument.hidden = hidden; for (const listener of [...listeners]) listener(); flush() }
 function frame(now: number) { wall = now; const entry = frames.entries().next().value; if (entry) { frames.delete(entry[0]); entry[1](now); flush() } }
 flush(); pendingManifest!(); await settle()
+function expand(node: any): any {
+  if (Array.isArray(node)) return node.map(expand)
+  if (node && typeof node === 'object') {
+    if (typeof node.type === 'function' && ['OrdersAndTrades', 'RecordedFields'].includes(node.type.name)) return expand(node.type(node.props))
+    return { ...node, props: { ...node.props, children: expand(node.props?.children) } }
+  }
+  return node
+}
 if (scenario !== 'overview') {
   find(tree, node => node.props?.ariaLabel === '窗口时长').props.onChange('20'); await settle()
 }
@@ -126,13 +134,14 @@ if (scenario === 'overview') {
   chart().props.onSeek(2_000_000); flush()
   const earlyBook = chart().props.projection.quotes.X.bids[0].quantity
   chart().props.onSelectOrder(JSON.stringify(['X','F'])); flush()
-  const pending = details().props.selectionPending
+  const futureOrder = find(expand(details()), node => node.type === 'tr' && node.props?.['data-future'] === true)
+  const preview = text(futureOrder)
   chart().props.onSelectTrade('5:future'); flush()
   const future = { selected: details().props.selectedTradeKey, currentTrades: chart().props.projection.ownTrades.length }
   chart().props.onSeek(39_000_000); flush()
   const lateBook = chart().props.projection.quotes.X.bids[0].quantity
   chart().props.onSeek(2_000_000); flush()
-  console.log(JSON.stringify({ initial, earlyBook, lateBook, restoredBook: chart().props.projection.quotes.X.bids[0].quantity, pending, future }))
+  console.log(JSON.stringify({ initial, earlyBook, lateBook, restoredBook: chart().props.projection.quotes.X.bids[0].quantity, preview, future }))
 } else if (scenario === 'whole-after-window') {
   const ranges = []
   for (const start of [0, 60_000_000]) {
@@ -181,8 +190,11 @@ if (scenario === 'overview') {
   console.log(JSON.stringify({ cursor: seekText(), playing: playing() }))
 } else if (scenario === 'first-quote') {
   const before = Boolean(find(tree, node => node.props?.projection)?.props.projection.quotes.X)
-  button('首个盘口').props.onClick(); flush()
-  console.log(JSON.stringify({ before, after: Boolean(find(tree, node => node.props?.projection)?.props.projection.quotes.X),
+  const controls = find(tree, node => node.props?.className === 'replay-play-controls')
+  const entry = find(controls, node => node.type === 'button' && text(node) === '跳到首个盘口')
+  const prominent = Boolean(entry && entry.props['data-recommended'] && !entry.props.disabled)
+  entry.props.onClick(); flush()
+  console.log(JSON.stringify({ before, prominent, retained: Boolean(button('跳到首个盘口')), after: Boolean(find(tree, node => node.props?.projection)?.props.projection.quotes.X),
     cursor: seekText(), playing: playing() }))
 } else if (scenario === 'restart') {
   button('下一窗口').props.onClick(); await settle()
@@ -233,18 +245,10 @@ if (scenario === 'overview') {
     orders: Boolean(find(tree, node => typeof node.type === 'function' && node.type.name === 'OrdersAndTrades')),
     cursor: seekText() }))
 } else if (scenario === 'ownership') {
-  function expand(node: any): any {
-    if (Array.isArray(node)) return node.map(expand)
-    if (node && typeof node === 'object') {
-      if (typeof node.type === 'function' && ['OrdersAndTrades', 'RecordedFields'].includes(node.type.name)) return expand(node.type(node.props))
-      return { ...node, props: { ...node.props, children: expand(node.props?.children) } }
-    }
-    return node
-  }
   const rows: Record<string, { row: string; detail: string }> = {}
   for (const id of ['O1', 'O2', 'M', 'U', 'C']) {
     find(tree, node => typeof node.type === 'function' && node.type.name === 'OrdersAndTrades').props.onSelect(JSON.stringify(['X', id])); flush()
-    const section = find(expand(tree), node => node.type === 'section' && node.props?.['aria-label'] === '游标处自有委托')
+    const section = find(expand(tree), node => node.type === 'section' && node.props?.className === 'replay-order-section')
     const row = find(section, node => node.type === 'tr' && Boolean(find(node.props.children, child => child.type === 'button' && text(child) === id)))
     const detail = find(section, node => node.props?.id === `replay-order-extra-${encodeURIComponent(JSON.stringify(['X', id]))}`)
     rows[id] = { row: text(row).replace(/\s+/g, ' ').trim(), detail: text(detail).replace(/\s+/g, ' ').trim() }

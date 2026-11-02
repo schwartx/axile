@@ -51,16 +51,47 @@ it('切换当前执行只改变归属展示，不改账户订单或数量', () =
   expect(JSON.stringify(projection)).toBe(before)
 })
 
-it('默认整段图含后续成交，盘口可读状态仍只取游标前缀，定位轴位于主图内', () => {
+it('同一时间轴包含未来成交并标记未到达，不修改游标状态', () => {
   const { window } = chart()
   window.messages = [{ schema_version: 1, recording_id: 'r', capture_seq: 6, time_us: 150, topic: '/trade', data: { symbol: 'X', order_id: 'F', trade_key: 'F', identity_quality: 'stable', price: 100, quantity: 1 } }]
   const projection = projectReplay(window, { time_us: 100 }), scene = projectReplay(window, { time_us: 199 })
   const before = JSON.stringify(projection)
   const html = renderToStaticMarkup(createElement(ReplayChart, { window, projection, scene, symbol: 'X', executionId: 'E', range: window.coverage[0], selectedOrder: null, selectedTrade: null, onSelectTrade: () => {}, onInspect: () => {}, onSelectOrder: () => {}, onSeek: () => {} }))
-  expect(html).toContain('data-review-mode="review"')
+  expect(html).not.toContain('整段复盘')
+  expect(html).not.toContain('逐步回放')
+  expect(html).toContain('未到达')
   expect(html).toContain('已录自有成交 1 笔')
   expect(html).toContain('class="replay-chart-axis"')
   expect(html).toContain('aria-label="录制定位"')
   expect(projection.ownTrades).toHaveLength(0)
   expect(JSON.stringify(projection)).toBe(before)
+})
+
+it('首个盘口到达前灰显预览，同刻按采集序号生效，过期或缺口不借用未来盘口', () => {
+  const window: ReplayWindow = { recording_id: 'r', window_id: 'w', context: { schema_version: 1 },
+    complete: true, next_cursor: null, state_before_start: { time_us: 0, state_through_seq: 0 }, coverage: [{ start_us: 0, end_us: 300 }], gaps: [],
+    messages: [100, 200].map((time, index) => ({ schema_version: 1, recording_id: 'r', capture_seq: index + 1, time_us: time,
+      topic: '/quote/X', data: { symbol: 'X', book_valid: true, valid_until_us: time + 50,
+        bids: [{ price: 99, quantity: index ? 9 : 3 }], asks: [{ price: 101, quantity: index ? 8 : 4 }] } })) }
+  const render = (time_us: number, capture_seq?: number) => {
+    const projection = projectReplay(window, { time_us, capture_seq }), before = JSON.stringify(projection)
+    const html = renderToStaticMarkup(createElement(ReplayChart, { window, projection, scene: projectReplay(window, { time_us: 299 }),
+      range: window.coverage[0], symbol: 'X', executionId: 'E', selectedOrder: null, selectedTrade: null,
+      onSelectOrder() {}, onSelectTrade() {}, onInspect() {}, onSeek() {} }))
+    expect(JSON.stringify(projection)).toBe(before)
+    return html
+  }
+  const early = render(50)
+  expect(early).toContain('未到达 · 已录买 1 / 卖 1 档')
+  expect(early).toContain('class="replay-depth-ladder num" data-future="true"')
+  expect(early).toContain('市场挂量 3')
+  expect(early).not.toContain('市场挂量 9')
+  expect(render(100, 0)).toContain('class="replay-depth-ladder num" data-future="true"')
+  expect(render(100, 1)).toContain('class="replay-depth-ladder num" data-future="false"')
+  expect(render(175)).toContain('盘口未记录／已失效')
+  expect(render(175)).not.toContain('未到达 · 已录买')
+  expect(render(200)).toContain('市场挂量 9')
+  window.gaps = [{ start_us: 110, end_us: 130, topic: 'depth', symbol: 'X' }]
+  expect(render(120)).toContain('盘口未记录／已失效')
+  expect(render(120)).not.toContain('市场挂量 9')
 })

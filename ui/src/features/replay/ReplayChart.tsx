@@ -1,9 +1,7 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react'
 import { Circle, Crosshair, Info, Minus, Plus, RotateCcw, X } from 'lucide-react'
 import { ValueSlider } from '@/components/ui/ValueSlider'
-import { Segmented } from '@/components/ui/Segmented'
 import { Tooltip } from '@/components/ui/Tooltip'
-import { withViewTransition } from '@/lib/viewTransition'
 import { canvasLine, prepareCanvas, readCanvasTheme, type CanvasTheme } from '@/components/viz/chartCanvas'
 import { centerReplayPrice, currentReplayQuote, replayChartLayout, replayHeatCells, replayMarketPriceSegments, replayOnBookOrder, replayPriceTicks, replayPriceY, replayQuoteEnd, replayRemainingQuantity, replayTimeX, replayXTime, replayYPrice, zoomReplayPrice, type ReplayChartLayout, type ReplayPriceView } from '@/features/replay/chartGeometry'
 import { clampReplayView, replayOrderFocus, replayOrderHistoryLabel, replayOrderTimeline, replayTradeKey, replayVisibleOrderMarks, replayVisibleOrders, zoomReplayPriceAt, zoomReplayTime } from '@/features/replay/chartInteraction'
@@ -17,10 +15,8 @@ import { replayInstrument, replayNumber, replayTime, replayStatusLabels } from '
 import type { ReplayCursor, ReplayOrder, ReplayProjection, ReplayRange, ReplayWindow } from '@/features/replay/types'
 
 interface Props {
-  overviewLabel?: string
   children?: ReactNode
   scene?: ReplayProjection
-  depthStatus?: ReactNode
   symbolControl?: ReactNode
   window: ReplayWindow
   range: ReplayRange
@@ -52,9 +48,9 @@ function drawTimeAxis(ctx: CanvasRenderingContext2D, height: number, range: Repl
   ctx.textAlign = 'left'
 }
 
-function drawOrderHistory(ctx: CanvasRenderingContext2D, symbol: string, history: ReplayOrder[], projection: ReplayProjection, range: ReplayRange, view: ReplayPriceView, layout: ReplayChartLayout, selected: string | null, executionId: string, theme: CanvasTheme, priceText: (price: number | null) => string, quantityText: (quantity: number | null) => string, cursor: ReplayCursor, overview = false, hovered: string | undefined = undefined) {
+function drawOrderHistory(ctx: CanvasRenderingContext2D, symbol: string, history: ReplayOrder[], projection: ReplayProjection, range: ReplayRange, view: ReplayPriceView, layout: ReplayChartLayout, selected: string | null, executionId: string, theme: CanvasTheme, priceText: (price: number | null) => string, quantityText: (quantity: number | null) => string, cursor: ReplayCursor, hovered: string | undefined = undefined) {
   const { segments, marks } = replayOrderTimeline(history, symbol, range, projection)
-  const color = (order: ReplayOrder) => order.cancel_pending ? theme.warn : replayOwnership(order, executionId).kind === 'current' ? theme.accent : theme.ink
+  const color = (order: ReplayOrder) => replayFutureRecord(order.time_us, order.capture_seq, cursor) ? theme.ink : order.cancel_pending ? theme.warn : replayOwnership(order, executionId).kind === 'current' ? theme.accent : theme.ink
   for (const { order, start, end, next } of segments) {
     if (order.price == null) continue
     const x = replayTimeX(start, range, layout), right = replayTimeX(end, range, layout), y = replayPriceY(order.price, view, layout)
@@ -84,7 +80,7 @@ function drawOrderHistory(ctx: CanvasRenderingContext2D, symbol: string, history
     .filter(item => item.order.key === selected && item.order.price != null).sort((a, b) => b.time - a.time || b.order.capture_seq - a.order.capture_seq)[0]
   if (last && last.order.price! >= view.min && last.order.price! <= view.max) {
     const { order, time } = last
-    const text = `${overview ? replayOrderHistoryLabel(order, cursor) + ' · ' : ''}${order.carry_in ? '窗前已存在 · ' : ''}${order.direction === 'BUY' ? '买' : order.direction === 'SELL' ? '卖' : '委托'} ${quantityText(order.volume)} @ ${priceText(order.price)} · ${order.cancel_pending ? '撤单待确认' : replayStatusLabels[order.status ?? 'unknown'] ?? '状态未知'}${replayOnBookOrder(order) ? ` · 剩余 ${quantityText(order.remaining_volume)}` : ''}`
+    const text = `${replayOrderHistoryLabel(order, cursor)} · ${order.carry_in ? '窗前已存在 · ' : ''}${order.direction === 'BUY' ? '买' : order.direction === 'SELL' ? '卖' : '委托'} ${quantityText(order.volume)} @ ${priceText(order.price)} · ${order.cancel_pending ? '撤单待确认' : replayStatusLabels[order.status ?? 'unknown'] ?? '状态未知'}${replayOnBookOrder(order) ? ` · 剩余 ${quantityText(order.remaining_volume)}` : ''}`
     const width = Math.min(layout.right - layout.left - 16, ctx.measureText(text).width)
     const x = Math.max(layout.left + 8, Math.min(replayTimeX(time, range, layout) - width - 8, layout.right - width - 8))
     const y = replayPriceY(order.price!, view, layout), labelY = y < layout.top + 24 ? y + 20 : y - 12
@@ -95,15 +91,14 @@ function drawOrderHistory(ctx: CanvasRenderingContext2D, symbol: string, history
 }
 
 /** 同一画布中的历史深度、COB 与 ORD 只共享一份价位映射。 */
-export function ReplayChart({ window: replayWindow, range, projection, symbol, executionId, selectedOrder, onSelectOrder, onSeek, selectedTrade, onSelectTrade, onInspect, symbolControl, depthStatus, children, scene = projection, overviewLabel = '整段复盘' }: Props) {
+export function ReplayChart({ window: replayWindow, range, projection, symbol, executionId, selectedOrder, onSelectOrder, onSeek, selectedTrade, onSelectTrade, onInspect, symbolControl, children, scene = projection }: Props) {
   const holder = useRef<HTMLDivElement>(null), canvas = useRef<HTMLCanvasElement>(null)
   const [size, setSize] = useState({ width: 900, height: 300, revision: 0 })
   const [manualView, setManualView] = useState<ReplayPriceView | null>(null)
   const [timeView, setTimeView] = useState<ReplayRange | null>(null)
   const visibleRange = timeView ?? range
-  const [mode, setMode] = useState<'review' | 'step'>('review')
   const [layers, setLayers] = useState({ working: true, canceled: true, filled: true, market: true, execution: true })
-  const recorded = mode === 'review' ? scene : projection
+  const recorded = scene
   const drawThrough = recorded.time_us
   const cursorInside = projection.time_us >= visibleRange.start_us && projection.time_us < visibleRange.end_us
   const [hover, setHover] = useState<(InspectionRecord & { cursor: string; x: number; y: number; records: InspectionRecord[];  }) | null>(null)
@@ -115,6 +110,10 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   const currentQuote = useMemo(() => currentReplayQuote(projection.quotes[symbol], projection.time_us, replayWindow.gaps), [projection.quotes, symbol, projection.time_us, replayWindow.gaps])
   const historyQuotes = useMemo(() => recorded.quoteHistory.filter(quote => quote.symbol === symbol && quote.time_us <= drawThrough), [recorded.quoteHistory, symbol, drawThrough])
   const historyOrders = useMemo(() => recorded.orderHistory.filter(order => order.symbol === symbol && order.time_us <= drawThrough), [recorded.orderHistory, symbol, drawThrough])
+  const firstQuote = historyQuotes.find(quote => currentReplayQuote(quote, quote.time_us, replayWindow.gaps))
+  const futureDepth = Boolean(firstQuote && replayFutureRecord(firstQuote.time_us, firstQuote.capture_seq, projection))
+  const displayQuote = currentQuote ?? (futureDepth ? firstQuote! : null)
+  const depthLabel = displayQuote ? `${futureDepth ? '未到达 · ' : ''}已录买 ${displayQuote.bids.length} / 卖 ${displayQuote.asks.length} 档` : '盘口未记录／已失效'
   const visibleOrders = useMemo(() => replayVisibleOrders(historyOrders, layers), [historyOrders, layers])
   const marketSegments = useMemo(() => replayWindow.context.streams?.[symbol]?.market_trade?.availability === 'unavailable' ? [] : replayMarketPriceSegments(recorded.marketTrades, symbol, visibleRange, drawThrough, replayWindow.gaps), [replayWindow, recorded.marketTrades, drawThrough, symbol, visibleRange])
   const initialView = useMemo(() => replayObservedPriceView(historyQuotes, historyOrders, recorded.marketTrades.filter(trade => trade.symbol === symbol), instrument?.price_tick), [historyQuotes, historyOrders, recorded.marketTrades, symbol, instrument?.price_tick])
@@ -130,6 +129,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   const bubbles = useMemo(() => !layers.market || replayWindow.context.streams?.[symbol]?.market_trade?.availability === 'unavailable' ? [] : replayMarketBubbles(recorded.marketTrades, symbol, visibleRange, layout, projection, replayWindow.gaps).filter(bubble => !view || bubble.price >= view.min && bubble.price <= view.max), [layers.market, replayWindow, recorded.marketTrades, symbol, visibleRange, layout, projection, view])
   const maxBubble = bubbles.reduce((max, bubble) => Math.max(max, bubble.quantity), 1)
   const ownOrders = useMemo(() => orders.filter(replayOnBookOrder), [orders])
+  const depthOrders = futureDepth ? [] : ownOrders
   const decimals = instrument?.price_decimals ?? 6
   const priceText = useCallback((price: number | null) => replayNumber(price, decimals), [decimals])
   const quantityText = useCallback((quantity: number | null) => replayNumber(quantity, instrument?.quantity_decimals ?? 6), [instrument?.quantity_decimals])
@@ -157,81 +157,83 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
     const ctx = prepareCanvas(canvas.current, size.width, height)
     if (!ctx) return
     const theme = readCanvasTheme(holder.current), css = getComputedStyle(holder.current)
-    const up = css.getPropertyValue('--color-up').trim(), down = css.getPropertyValue('--color-down').trim()
     ctx.font = `12px ${theme.font}`; ctx.fillStyle = theme.surface; ctx.fillRect(0, 0, size.width, height)
     ctx.fillStyle = theme.ink
     const measuredAxisWidth = Math.max(76, Math.ceil(Math.max(0, ...priceTicks.map(price => ctx.measureText(priceText(price)).width))) + 16)
     if (measuredAxisWidth !== priceAxisWidth) { setPriceAxisWidth(measuredAxisWidth); return }
-    if (!view || !heat) { ctx.fillText(mode === 'step' ? '游标之前尚无有效价位。' : '这段记录尚无有效价位。', layout.left, height / 2); drawTimeAxis(ctx, height, visibleRange, layout, theme); return }
-    const maxQuantity = Math.max(1, maxHeat)
-    ctx.save(); ctx.beginPath(); ctx.rect(layout.left, layout.top, layout.right - layout.left, layout.bottom - layout.top); ctx.clip()
-    ctx.save(); ctx.beginPath(); ctx.rect(layout.left, layout.top, Math.max(0, replayTimeX(drawThrough, visibleRange, layout) - layout.left), layout.bottom - layout.top); ctx.clip()
-    ctx.fillStyle = theme.accent
-    for (const cell of heat.cells) {
-      ctx.globalAlpha = cell.quantity == null ? 0.12 : cell.quantity === 0 ? 0.025 : 0.06 + Math.sqrt(cell.quantity / maxQuantity) * 0.57
-      ctx.fillRect(cell.x, cell.y - heat.rowHeight / 2, heat.columnWidth, heat.rowHeight)
-      if (cell.unknown) { ctx.globalAlpha = 0.5; ctx.fillRect(cell.x, cell.y - heat.rowHeight / 2, 1, heat.rowHeight) }
-    }
-    ctx.globalAlpha = 1
-    ctx.restore()
-    for (const gap of replayWindow.gaps) {
-      if ((gap.symbol && gap.symbol !== symbol) || gap.start_us > drawThrough || (gap.topic && gap.topic !== 'depth' && !gap.topic.startsWith('/quote'))) continue
-      const x = replayTimeX(Math.max(visibleRange.start_us, gap.start_us), visibleRange, layout), end = replayTimeX(Math.min(drawThrough, gap.end_us), visibleRange, layout)
-      ctx.fillStyle = theme.fill; ctx.fillRect(x, layout.top, Math.max(1, end - x), layout.bottom - layout.top)
-    }
-    for (const side of ['买', '卖'] as const) {
-      ctx.strokeStyle = side === '买' ? up : down; ctx.lineWidth = 1.3
-      historyQuotes.forEach((quote, index) => {
-        const best = replayBestLevel(quote, side), next = historyQuotes[index + 1]
-        if (!best || !currentReplayQuote(quote, quote.time_us, replayWindow.gaps)) return
-        const end = replayQuoteEnd(quote, next?.time_us ?? drawThrough, drawThrough, replayWindow.gaps)
-        if (end < visibleRange.start_us || quote.time_us >= visibleRange.end_us || !quote.book_valid) return
-        const x = replayTimeX(Math.max(visibleRange.start_us, quote.time_us), visibleRange, layout), right = replayTimeX(Math.min(visibleRange.end_us, end), visibleRange, layout)
-        const y = replayPriceY(best.price, view, layout)
-        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(Math.max(x + 1, right), y)
-        const nextBest = next && currentReplayQuote(next, next.time_us, replayWindow.gaps) && replayBestLevel(next, side)
-        if (nextBest && end === next.time_us) ctx.lineTo(right, replayPriceY(nextBest.price, view, layout))
-        ctx.stroke()
-      })
-      ctx.lineWidth = 1
-    }
-    if (marketSegments.length) {
-      ctx.strokeStyle = css.getPropertyValue('--color-ink-1').trim(); ctx.lineWidth = 1.5
-      for (const segment of marketSegments) {
-        ctx.beginPath()
-        segment.forEach((trade, index) => {
-          const x = replayTimeX(trade.time_us, visibleRange, layout), y = replayPriceY(trade.price!, view, layout)
-          if (index === 0) ctx.moveTo(x, y)
-          else ctx.lineTo(x, y)
-        })
-        ctx.stroke()
-      }
-      ctx.lineWidth = 1
-    }
-    for (const bubble of bubbles) {
-      ctx.fillStyle = ctx.strokeStyle = bubble.direction === 'BUY' ? up : bubble.direction === 'SELL' ? down : theme.ink
-      ctx.save(); ctx.shadowColor = theme.bg; ctx.shadowBlur = 3; ctx.shadowOffsetY = 2; ctx.globalAlpha = .85; ctx.beginPath()
-      ctx.arc(replayTimeX(bubble.time_us, visibleRange, layout), replayPriceY(bubble.price, view, layout), replayBubbleRadius(bubble.quantity, maxBubble), 0, Math.PI * 2)
-      const stable = bubble.trades.every(trade => trade.identity_quality === 'stable' && !trade.conflict)
-      if (stable) ctx.fill()
-      ctx.shadowBlur = 0; ctx.globalAlpha = 1
-      const hovered = activeHover?.object === `bubble:${bubble.trades[0].capture_seq}:${bubble.price}:${bubble.direction}`
-      if (hovered) ctx.strokeStyle = theme.accent
-      else if (stable) ctx.strokeStyle = theme.surface
-      ctx.lineWidth = hovered ? 2 : 1.5; ctx.stroke(); ctx.restore()
-    }
-    ctx.globalAlpha = 1
-    drawOrderHistory(ctx, symbol, visibleOrders, recorded, visibleRange, view, layout, selectedOrder, executionId, theme, priceText, quantityText, projection, mode === 'review', activeHover?.object)
+    if (!view || !heat) { ctx.fillText('这段记录尚无有效价位。', layout.left, height / 2); drawTimeAxis(ctx, height, visibleRange, layout, theme); return }
     const cursorX = replayTimeX(projection.time_us, visibleRange, layout)
-    if (mode === 'review' && cursorInside) {
-      ctx.fillStyle = theme.accent; ctx.globalAlpha = .045; ctx.fillRect(cursorX, layout.top, layout.right - cursorX, layout.bottom - layout.top); ctx.globalAlpha = 1
+    const splitX = Math.max(layout.left, Math.min(layout.right, cursorX))
+    for (const future of [false, true]) {
+      const paint = future ? { ...theme, accent: theme.ink, warn: theme.ink } : theme
+      const up = future ? theme.ink : css.getPropertyValue('--color-up').trim()
+      const down = future ? theme.ink : css.getPropertyValue('--color-down').trim()
+      ctx.save(); ctx.beginPath(); ctx.rect(future ? splitX : layout.left, layout.top, future ? layout.right - splitX : splitX - layout.left, layout.bottom - layout.top); ctx.clip()
+      const maxQuantity = Math.max(1, maxHeat)
+      ctx.save(); ctx.beginPath(); ctx.rect(layout.left, layout.top, Math.max(0, replayTimeX(drawThrough, visibleRange, layout) - layout.left), layout.bottom - layout.top); ctx.clip()
+      ctx.fillStyle = paint.accent
+      for (const cell of heat.cells) {
+        ctx.globalAlpha = cell.quantity == null ? 0.12 : cell.quantity === 0 ? 0.025 : 0.06 + Math.sqrt(cell.quantity / maxQuantity) * 0.57
+        ctx.fillRect(cell.x, cell.y - heat.rowHeight / 2, heat.columnWidth, heat.rowHeight)
+        if (cell.unknown) { ctx.globalAlpha = 0.5; ctx.fillRect(cell.x, cell.y - heat.rowHeight / 2, 1, heat.rowHeight) }
+      }
+      ctx.globalAlpha = 1
+      ctx.restore()
+      for (const gap of replayWindow.gaps) {
+        if ((gap.symbol && gap.symbol !== symbol) || gap.start_us > drawThrough || (gap.topic && gap.topic !== 'depth' && !gap.topic.startsWith('/quote'))) continue
+        const x = replayTimeX(Math.max(visibleRange.start_us, gap.start_us), visibleRange, layout), end = replayTimeX(Math.min(drawThrough, gap.end_us), visibleRange, layout)
+        ctx.fillStyle = theme.fill; ctx.fillRect(x, layout.top, Math.max(1, end - x), layout.bottom - layout.top)
+      }
+      for (const side of ['买', '卖'] as const) {
+        ctx.strokeStyle = side === '买' ? up : down; ctx.lineWidth = 1.3
+        historyQuotes.forEach((quote, index) => {
+          const best = replayBestLevel(quote, side), next = historyQuotes[index + 1]
+          if (!best || !currentReplayQuote(quote, quote.time_us, replayWindow.gaps)) return
+          const end = replayQuoteEnd(quote, next?.time_us ?? drawThrough, drawThrough, replayWindow.gaps)
+          if (end < visibleRange.start_us || quote.time_us >= visibleRange.end_us || !quote.book_valid) return
+          const x = replayTimeX(Math.max(visibleRange.start_us, quote.time_us), visibleRange, layout), right = replayTimeX(Math.min(visibleRange.end_us, end), visibleRange, layout)
+          const y = replayPriceY(best.price, view, layout)
+          ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(Math.max(x + 1, right), y)
+          const nextBest = next && currentReplayQuote(next, next.time_us, replayWindow.gaps) && replayBestLevel(next, side)
+          if (nextBest && end === next.time_us) ctx.lineTo(right, replayPriceY(nextBest.price, view, layout))
+          ctx.stroke()
+        })
+        ctx.lineWidth = 1
+      }
+      if (marketSegments.length) {
+        ctx.strokeStyle = future ? theme.ink : css.getPropertyValue('--color-ink-1').trim(); ctx.lineWidth = 1.5
+        for (const segment of marketSegments) {
+          ctx.beginPath()
+          segment.forEach((trade, index) => {
+            const x = replayTimeX(trade.time_us, visibleRange, layout), y = replayPriceY(trade.price!, view, layout)
+            if (index === 0) ctx.moveTo(x, y)
+            else ctx.lineTo(x, y)
+          })
+          ctx.stroke()
+        }
+        ctx.lineWidth = 1
+      }
+      for (const bubble of bubbles) {
+        ctx.fillStyle = ctx.strokeStyle = replayFutureRecord(bubble.time_us, bubble.trades[0].capture_seq, projection) ? theme.ink : bubble.direction === 'BUY' ? up : bubble.direction === 'SELL' ? down : theme.ink
+        ctx.save(); ctx.shadowColor = theme.bg; ctx.shadowBlur = 3; ctx.shadowOffsetY = 2; ctx.globalAlpha = .85; ctx.beginPath()
+        ctx.arc(replayTimeX(bubble.time_us, visibleRange, layout), replayPriceY(bubble.price, view, layout), replayBubbleRadius(bubble.quantity, maxBubble), 0, Math.PI * 2)
+        const stable = bubble.trades.every(trade => trade.identity_quality === 'stable' && !trade.conflict)
+        if (stable) ctx.fill()
+        ctx.shadowBlur = 0; ctx.globalAlpha = 1
+        const hovered = activeHover?.object === `bubble:${bubble.trades[0].capture_seq}:${bubble.price}:${bubble.direction}`
+        if (hovered) ctx.strokeStyle = replayFutureRecord(bubble.time_us, bubble.trades[0].capture_seq, projection) ? theme.ink : paint.accent
+        else if (stable) ctx.strokeStyle = theme.surface
+        ctx.lineWidth = hovered ? 2 : 1.5; ctx.stroke(); ctx.restore()
+      }
+      ctx.globalAlpha = 1
+      drawOrderHistory(ctx, symbol, visibleOrders, recorded, visibleRange, view, layout, selectedOrder, executionId, paint, priceText, quantityText, projection, activeHover?.object)
+      ctx.restore()
     }
-    ctx.restore()
     if (cursorInside) canvasLine(ctx, cursorX, layout.top, cursorX, height - 18, theme.accent)
     if (selectedExecution) {
-      ctx.fillStyle = theme.accent
-      const future = selectedExecution.time_us > projection.time_us || selectedExecution.time_us === projection.time_us && selectedExecution.capture_seq > projection.capture_seq
-      ctx.fillText(`${future ? '后续已录 · ' : ''}选中逐笔 ${replayTime(selectedExecution.time_us)} · ${quantityText(selectedExecution.quantity)} @ ${priceText(selectedExecution.price)}`, layout.left, 18, layout.right - layout.left)
+      const future = replayFutureRecord(selectedExecution.time_us, selectedExecution.capture_seq, projection)
+      ctx.fillStyle = future ? theme.ink : theme.accent
+      ctx.fillText(`${future ? '未到达 · ' : ''}选中逐笔 ${replayTime(selectedExecution.time_us)} · ${quantityText(selectedExecution.quantity)} @ ${priceText(selectedExecution.price)}`, layout.left, 18, layout.right - layout.left)
     }
     for (const price of priceTicks) {
       const y = replayPriceY(price, view, layout)
@@ -239,7 +241,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       ctx.fillStyle = theme.ink; ctx.textAlign = 'right'; ctx.fillText(priceText(price), layout.priceX, Math.max(12, Math.min(layout.bottom, y + 4))); ctx.textAlign = 'left'
     }
     drawTimeAxis(ctx, height, visibleRange, layout, theme)
-  }, [priceAxisWidth, priceTicks, size, height, projection, replayWindow, visibleRange, symbol, executionId, selectedOrder, selectedExecution, view, layout, historyQuotes, visibleOrders, marketSegments, priceText, quantityText, heat, maxHeat, recorded, drawThrough, mode, cursorInside, bubbles, maxBubble, activeHover?.object])
+  }, [priceAxisWidth, priceTicks, size, height, projection, replayWindow, visibleRange, symbol, executionId, selectedOrder, selectedExecution, view, layout, historyQuotes, visibleOrders, marketSegments, priceText, quantityText, heat, maxHeat, recorded, drawThrough, cursorInside, bubbles, maxBubble, activeHover?.object])
 
   const resetView = () => { setManualView(null); setTimeView(null); setHover(null) }
   const zoom = (factor: number) => {
@@ -335,18 +337,18 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
     return () => element.removeEventListener('wheel', wheel)
   }, [view, visibleRange, range, layout, size.height])
   const outside = view ? ownOrders.filter(order => order.price != null && (order.price < view.min || order.price > view.max)) : []
-  const bookRows: { price: number; quantity: number | null; side: string }[] = currentQuote ? [...currentQuote.asks.map(level => ({ ...level, side: '卖' })), ...currentQuote.bids.map(level => ({ ...level, side: '买' }))] : []
-  for (const order of ownOrders) if (order.price != null && !bookRows.some(level => level.price === order.price)) bookRows.push({ price: order.price, quantity: null, side: '档外' })
+  const bookRows: { price: number; quantity: number | null; side: string }[] = displayQuote ? [...displayQuote.asks.map(level => ({ ...level, side: '卖' })), ...displayQuote.bids.map(level => ({ ...level, side: '买' }))] : []
+  for (const order of depthOrders) if (order.price != null && !bookRows.some(level => level.price === order.price)) bookRows.push({ price: order.price, quantity: null, side: '档外' })
   bookRows.sort((a, b) => b.price - a.price)
-  const outsideDepth = currentQuote && view ? recordedDepth(currentQuote).filter(level => level.price < view.min || level.price > view.max).length : 0
+  const outsideDepth = displayQuote && view ? recordedDepth(displayQuote).filter(level => level.price < view.min || level.price > view.max).length : 0
   const focusOrder = () => {
     if (!selected || !view) return
     onInspect(); setTimeView(replayOrderFocus(selected, scene, range)); setHover(null)
     if (selected.price != null && (selected.price < view.min || selected.price > view.max)) setManualView({ ...view, min: Math.min(view.min, selected.price - view.tick * 2), max: Math.max(view.max, selected.price + view.tick * 2) })
   }
 
-  return <section aria-label="历史深度与自有委托" className="replay-chart" data-review-mode={mode}>
-    <div className="replay-chart-playback">{symbolControl}{children}<Segmented value={mode} options={[{ value: 'review', label: overviewLabel }, { value: 'step', label: '逐步回放' }]} onChange={value => withViewTransition(() => { onInspect(); setMode(value); setHover(null) })} size="sm" />
+  return <section aria-label="历史深度与自有委托" className="replay-chart" >
+    <div className="replay-chart-playback">{symbolControl}{children}
       <div className="replay-chart-view-controls" role="group" aria-label="共享价位范围">
         <Tooltip content="聚焦委托过程"><button type="button" className={controlClass} aria-label="聚焦委托过程" disabled={!view || !selected} onClick={focusOrder}><Crosshair size={14} aria-hidden /></button></Tooltip>
         <button type="button" className={controlClass} popoverTarget="replay-chart-legend" aria-label="图层与图例说明"><Info size={15} aria-hidden /></button>
@@ -355,9 +357,9 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
         <button className={controlClass} onClick={resetView} disabled={!manualView && !timeView} aria-label="恢复图表视图"><RotateCcw size={15} aria-hidden /></button>
       </div>
     </div>
-    <div className="replay-chart-meta"><div className="replay-chart-legend"><span className="replay-depth-bid"><Minus size={14} aria-hidden />买一</span><span className="replay-depth-ask"><Minus size={14} aria-hidden />卖一</span><span><Minus size={14} aria-hidden />成交价</span>{layers.market && <span><Circle size={10} aria-hidden />市场成交</span>}<span className="text-accent"><Minus size={14} aria-hidden />账户委托</span></div>{activeHover && activeHover.id !== 'pointer' && <span className="replay-hover-readout num" aria-label="悬停读数">{activeHover.future ? '后续已录 · ' : ''}{activeHover.title} · {activeHover.headline} · {activeHover.status}</span>}<div className="replay-depth-status">{depthStatus}<span className="replay-heat-scale"><i aria-hidden />{heat?.cells.some(cell => cell.quantity != null) ? `挂量 0 → ${quantityText(maxHeat)}` : '挂量尚未知'}</span></div>{!cursorInside && <button type="button" className="text-accent" onClick={() => { const span = visibleRange.end_us - visibleRange.start_us; setTimeView(clampReplayView({ start_us: projection.time_us - span / 2, end_us: projection.time_us + span / 2 }, range)) }}>游标在{projection.time_us < visibleRange.start_us ? '左' : '右'}侧 · 回到游标</button>}</div>
+    <div className="replay-chart-meta"><div className="replay-chart-legend"><span className="replay-depth-bid"><Minus size={14} aria-hidden />买一</span><span className="replay-depth-ask"><Minus size={14} aria-hidden />卖一</span><span><Minus size={14} aria-hidden />成交价</span>{layers.market && <span><Circle size={10} aria-hidden />市场成交</span>}<span className="text-accent"><Minus size={14} aria-hidden />账户委托</span><span><Minus size={14} aria-hidden />未到达</span></div>{activeHover && activeHover.id !== 'pointer' && <span className="replay-hover-readout num" aria-label="悬停读数">{activeHover.future ? '未到达 · ' : ''}{activeHover.title} · {activeHover.headline} · {activeHover.status}</span>}<div className="replay-depth-status"><span className="text-xs text-ink-2">{depthLabel}</span><span className="replay-heat-scale"><i aria-hidden />{heat?.cells.some(cell => cell.quantity != null) ? `挂量 0 → ${quantityText(maxHeat)}` : '挂量尚未知'}</span></div>{!cursorInside && <button type="button" className="text-accent" onClick={() => { const span = visibleRange.end_us - visibleRange.start_us; setTimeView(clampReplayView({ start_us: projection.time_us - span / 2, end_us: projection.time_us + span / 2 }, range)) }}>游标在{projection.time_us < visibleRange.start_us ? '左' : '右'}侧 · 回到游标</button>}</div>
     <div ref={holder} className="replay-chart-plot">
-      <p id="replay-scene-summary" className="sr-only">{mode === 'review' ? overviewLabel : '逐步回放'}，已录自有成交 {recorded.ownTrades.filter(trade => trade.symbol === symbol && trade.time_us >= visibleRange.start_us && trade.time_us < visibleRange.end_us).length} 笔。盘口与委托状态对应游标 {replayTime(projection.time_us)}。</p>
+      <p id="replay-scene-summary" className="sr-only">已读取时段，游标之后的记录灰显为未到达，已录自有成交 {recorded.ownTrades.filter(trade => trade.symbol === symbol && trade.time_us >= visibleRange.start_us && trade.time_us < visibleRange.end_us).length} 笔。盘口与委托状态对应游标 {replayTime(projection.time_us)}。</p>
       <canvas ref={canvas} style={{ height }} className="block w-full touch-none cursor-crosshair focus-visible:outline-2 focus-visible:outline-accent" tabIndex={0}
         aria-describedby="replay-scene-summary"
         aria-label="历史盘口热力图与共享价格轴；拖动浏览，滚轮缩放，方向键平移，正负键缩放，Home 复位" role="group"
@@ -377,7 +379,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
         <ValueSlider variant="axis" label="录制定位" min={0} max={Math.max(1, visibleRange.end_us - visibleRange.start_us - 1)} step={1} value={projection.time_us - visibleRange.start_us}
           formatValue={offset => cursorInside ? replayTime(visibleRange.start_us + offset) : `游标在当前视野之外，${replayTime(projection.time_us)}`} onChange={offset => { setHover(null); onSeek(visibleRange.start_us + offset) }} />
       </div>
-      {view && layout.columns && <ReplayDepthLadder quote={currentQuote} orders={ownOrders} view={view} layout={layout} height={height} executionId={executionId} selected={selectedOrder} onSelect={key => { onInspect(); onSelectOrder(key) }} onZoom={setManualView} priceText={priceText} quantityText={quantityText} />}
+      {view && layout.columns && <ReplayDepthLadder quote={displayQuote} future={futureDepth} orders={depthOrders} view={view} layout={layout} height={height} executionId={executionId} selected={selectedOrder} onSelect={key => { onInspect(); onSelectOrder(key) }} onZoom={setManualView} priceText={priceText} quantityText={quantityText} />}
       {inspection && <div className="replay-inspection-float" aria-label="图中记录浮卡" style={{
         width: inspectionWidth,
         left: Math.max(8, Math.min(layout.right - inspectionWidth - 8, inspection.x + 12 + inspectionWidth <= layout.right ? inspection.x + 12 : inspection.x - 12 - inspectionWidth)),
@@ -398,21 +400,21 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
     </div>
     {outsideDepth > 0 && <button className="replay-depth-outside text-accent" type="button" onClick={() => setManualView(null)}>视野外还有 {outsideDepth} 个已录档位 · 显示全部</button>}
     <div className="replay-outside-orders flex flex-wrap gap-2" aria-label="价位范围之外的自有委托">{outside.map(order => <button key={order.key} className="min-h-8 cursor-pointer rounded-chip bg-fill px-2 text-xs text-ink-2 focus-visible:outline-2 focus-visible:outline-accent" onClick={() => { onSelectOrder(order.key); if (view && order.price != null) setManualView(centerReplayPrice(view, order.price)) }}>{order.price! > view!.max ? '上方' : '下方'} {order.order_id} · {replayOwnership(order, executionId).label} · {priceText(order.price)} · 定位</button>)}</div>
-    <div className={'sr-only'}><table className="num w-full text-right text-xs"><caption className="mb-2 text-left text-ink-2">当前游标 · 价格 / COB / ORD{instrument?.quantity_label ? `（${instrument.quantity_label}）` : ''}</caption><thead><tr className="text-ink-2"><th className="py-2 text-left">方向</th><th>价格</th><th>市场量</th><th>账户挂单</th></tr></thead><tbody>{bookRows.map((level, index) => {
-      const own = ownOrders.filter(order => order.price === level.price)
+    <div className={'sr-only'}><table className="num w-full text-right text-xs"><caption className="mb-2 text-left text-ink-2">{futureDepth ? '未到达 · 首个已录盘口' : '当前游标'} · 价格 / COB / ORD{instrument?.quantity_label ? `（${instrument.quantity_label}）` : ''}</caption><thead><tr className="text-ink-2"><th className="py-2 text-left">方向</th><th>价格</th><th>市场量</th><th>账户挂单</th></tr></thead><tbody>{bookRows.map((level, index) => {
+      const own = depthOrders.filter(order => order.price === level.price)
       return <tr key={`${level.side}:${level.price}:${index}`} className="border-t border-line"><th className="py-2 text-left font-normal">{level.side}</th><td>{priceText(level.price)}</td><td>{quantityText(level.quantity)}</td><td>{own.length ? replayOrderOwnershipGroups(own, executionId).map(group => <span key={group.kind} className="block">{group.label} {quantityText(replayRemainingQuantity(group.orders))} · {group.orders.length}单</span>) : '—'}</td></tr>
-    })}</tbody></table>{!currentQuote && <p className="py-3 text-xs text-ink-2">盘口未知／已失效；自有委托仍可在订单表查看。</p>}</div>
+    })}</tbody></table>{!displayQuote && <p className="py-3 text-xs text-ink-2">盘口未记录／已失效；自有委托仍可在订单表查看。</p>}</div>
     <div id="replay-chart-legend" popover="auto" className="replay-chart-help" aria-label="图层与图例说明">
       <div className="mb-3 flex items-center justify-between"><h2 className="text-sm font-medium">图层与图例</h2><button type="button" popoverTarget="replay-chart-legend" popoverTargetAction="hide" className={controlClass} aria-label="关闭图例"><X size={15} aria-hidden /></button></div>
       <fieldset className="replay-layer-options"><legend className="sr-only">显示图层</legend>{([['working', '在途委托'], ['canceled', '已撤销委托'], ['filled', '已全成委托'], ['market', '市场成交气泡'], ['execution', '账户逐笔详情与选中标注']] as const).map(([key, label]) => <label key={key}><input type="checkbox" checked={layers[key]} onChange={event => { setLayers({ ...layers, [key]: event.target.checked }); setHover(null) }} />{label}</label>)}</fieldset>
-      <p className="mb-2">{mode === 'review' ? '整段复盘按该段已录终态筛选整条委托轨迹。' : '逐步回放按游标处已知状态筛选。'}右侧盘口与明细列表不受图层开关影响。</p>
+      <p className="mb-2">按已录终态筛选整条委托轨迹。右侧盘口与明细列表不受图层开关影响。</p>
       <p>显示每帧实际录到的全部买卖档位，档数可随时间变化。热力图由浅至深表示挂量从少到多，竖纹表示量未知；零量只留淡痕。有限盘口不代表完整深度。</p><p className="mt-2">买一、卖一是盘口两侧额外强调的边界，白线只连接已录制的市场成交。三者共用线性价格轴；缺口或过期时盘口边界断开。</p><p className="mt-2">右侧圆点与引导线标明真实价格位置；挂量柱与价格、数量在同一读数行，行间距仅为阅读避让，不是价格距离。档位太多时按价格区间明确聚合，显示区间峰值与档数，点击可放大。热力图每个像素价区间也取峰值，均不把挂量相加。</p><p className="mt-2">委托轨迹：实心点为首次场内确认，线表示有效存续，确认改价后呈阶梯；部分成交继续画线并保留剩余量，全成以买向上、卖向下的三角结束，撤销以空心端点结束，拒绝与过期用文字。实线为本次，点线为账户上下文；长虚线为待撤。未观察到入场时不补起点。入场与终点在当前缩放下碰撞时，优先显示终点，放大后恢复；原始记录始终保留。这段线不是排队顺序。</p>
       <p className="mt-2">市场成交气泡按当前时间像素、真实价格与主动方向聚合，面积相对当前视野的成交量缩放，最小两像素；缩放后重新计算。缺口与游标前后分开；不混入账户成交，条数是已录记录数，源聚合记录不拆逐笔。不复刻 Bookmap Smart 算法。点击后可在下方详情逐条查看及定位原始记录。</p>
       <p className="mt-2">账户逐笔成交保留在“成交”列表与下方选中详情中；选中后仅在图顶显示时间、量价文字，不再叠菱形、方框或选中圆环。隐藏已全成委托也隐藏其逐笔标注。报单请求保留在“报撤观察”，不表示已入场。</p>
-      <p className="mt-2">拖动主图平移；滚轮以鼠标位置缩放；拖动价格轴可单独缩放价位。拖动浏览不改变游标；点击标记在附近查看详情；拖动图内时间游标或点击“定位此时刻”才定位。整段复盘展示已读取时段的全部记录，逐步回放只展示游标之前；右侧盘口与底部状态始终对应游标。</p>
+      <p className="mt-2">拖动主图平移；滚轮以鼠标位置缩放；拖动价格轴可单独缩放价位。拖动浏览不改变游标；点击标记在附近查看详情；拖动图内时间游标或点击“定位此时刻”才定位。展示已读取时段的全部记录；未来记录灰显并标记未到达，游标经过后恢复正常。首个盘口之前灰显首个已录快照。</p>
       <p className="mt-2">账户挂单是游标时刻该账户在此价位有效委托的未成交剩余量，包含其他执行；不代表持仓或排队位置，缺少剩余量时保持未知。悬停盘口行可看本次数量。</p>
       <p className="mt-2">悬停查看轴标签与读数；点击图中记录，在附近打开详情。点击空白处或按 Escape 关闭浮卡。查看不改变游标，点击详情中的定位才恢复对应时刻。画布获得焦点后按 Enter 可查看当前价位记录。</p>
-      <div className="mt-3 max-h-64 overflow-auto"><table className="num w-full text-right text-xs"><caption className="mb-2 text-left">当前游标盘口</caption><thead><tr><th>方向</th><th>价格</th><th>市场量</th></tr></thead><tbody>{bookRows.map((level, index) => <tr key={`${level.side}:${level.price}:${index}`} className="border-t border-line"><td className="py-1">{level.side}</td><td>{priceText(level.price)}</td><td>{quantityText(level.quantity)}</td></tr>)}</tbody></table></div>
+      <div className="mt-3 max-h-64 overflow-auto"><table className="num w-full text-right text-xs"><caption className="mb-2 text-left">{futureDepth ? '未到达 · 首个已录盘口' : '当前游标盘口'}</caption><thead><tr><th>方向</th><th>价格</th><th>市场量</th></tr></thead><tbody>{bookRows.map((level, index) => <tr key={`${level.side}:${level.price}:${index}`} className="border-t border-line"><td className="py-1">{level.side}</td><td>{priceText(level.price)}</td><td>{quantityText(level.quantity)}</td></tr>)}</tbody></table></div>
     </div>
   </section>
 }

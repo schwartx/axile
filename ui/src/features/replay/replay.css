@@ -150,3 +150,16 @@ button.replay-ladder-row:focus-visible { outline: 2px solid var(--color-accent);
 .replay-recorded-fields { display: flow-root; padding: 4px 8px; }
 .replay-fields-trigger { float: right; }
 @media (prefers-reduced-motion: reduce) { .replay-row-expansion { transition: none; } }
+
+.replay-first-quote { min-height: 28px; margin-inline: 6px; white-space: nowrap; }
+.replay-first-quote[data-recommended="true"] { color: var(--color-accent); border-color: var(--color-accent); background: var(--color-accent-soft); }
+@media (pointer: coarse) { .replay-first-quote { min-height: 44px; } }
+
+/* Future previews stay readable and interactive, without direction or status colors. */
+.replay-depth-ladder[data-future="true"] .replay-ladder-row,
+.replay-depth-ladder[data-future="true"] .replay-ladder-row > span,
+.replay-depth-ladder[data-future="true"] .replay-ladder-amount > i,
+.replay-dock [data-future="true"],
+.replay-dock [data-future="true"] button,
+.replay-dock [data-future="true"] span { color: var(--color-ink-2); }
+.replay-dock tr[data-future="true"] { background: var(--color-fill); }

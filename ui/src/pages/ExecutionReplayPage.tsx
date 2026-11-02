@@ -10,7 +10,6 @@ import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { getReplayManifest } from '@/lib/api/replay'
 import { projectReplay } from '@/features/replay/model'
 import { replayTradeKey } from '@/features/replay/chartInteraction'
-import { currentReplayQuote } from '@/features/replay/chartGeometry'
 import { ReplayChart } from '@/features/replay/ReplayChart'
 import { appliedEventIndex, playbackCursor } from '@/features/replay/playback'
 import { replayOwnership } from '@/features/replay/ownership'
@@ -177,8 +176,6 @@ export function ExecutionReplayPage() {
   const unit = context ? replayInstrument(context, symbol) : undefined
   const target = projection?.targetsByExecution[executionId]?.[symbol]
   const ownQuantity = projection?.executionSymbolComplete[executionId]?.[symbol] ? projection.executionTotals[executionId]?.[symbol] ?? 0 : null
-  const depth = projection ? currentReplayQuote(projection.quotes[symbol], projection.time_us, windowData?.gaps ?? []) : null
-  const depthLabel = depth ? `已录买 ${depth.bids.length} / 卖 ${depth.asks.length} 档` : '盘口未知／已失效'
   const warnings = [...new Set([...(projection?.warnings ?? []), ...(windowData?.gaps ?? recording?.gaps ?? []).map(gap => gap.reason ?? '存在记录缺口')])]
   const canPrevWindow = Boolean(range && recording?.coverage.some(item => item.start_us < range.start_us))
   const canNextWindow = Boolean(range && recording?.coverage.some(item => item.end_us > range.end_us))
@@ -202,6 +199,7 @@ export function ExecutionReplayPage() {
             <Tooltip content="前一观察"><button type="button" className={`${buttonClass} replay-transport-button`} onClick={() => step(-1)} disabled={!readReady || eventIndex < 0} aria-label="前一观察"><SkipBack size={14} aria-hidden /><span className="sr-only">上一步</span></button></Tooltip>
             <Tooltip content={playing ? '暂停回放' : '播放回放'}><button type="button" className={`${buttonClass} replay-transport-button replay-play-button`} aria-label={playing ? '暂停回放' : '播放回放'} aria-pressed={playing} onClick={() => { continuePlayback.current = null; if (!playing && navigationTime >= range.end_us - 1) pauseAndSeek(range.start_us); setPlaying(value => !value) }} disabled={!readReady}>{playing ? <Pause size={14} aria-hidden /> : <Play size={14} aria-hidden />}<span className="sr-only"><InkRewrite text={playing ? '暂停' : '播放'} tone="label" /></span></button></Tooltip>
             <Tooltip content="后一观察"><button type="button" className={`${buttonClass} replay-transport-button`} onClick={() => step(1)} disabled={!readReady || eventIndex >= events.length - 1} aria-label="后一观察"><SkipForward size={14} aria-hidden /><span className="sr-only">下一步</span></button></Tooltip>
+            <button type="button" className={`${buttonClass} replay-first-quote`} data-recommended={Boolean(firstQuote && navigationTime < firstQuote.time_us)} disabled={!readReady || !firstQuote} onClick={() => { if (firstQuote) pauseAndSeek(firstQuote.time_us) }}>跳到首个盘口</button>
             <label className="replay-speed-picker"><span className="sr-only">倍速</span><Select ariaLabel="播放速度" className={selectClass} value={speed} onChange={setSpeed} options={['0.5', '1', '2', '4'].map(value => ({ value, label: `${value}×` }))} /></label>
           </div>
           <time className="replay-cursor-time num text-xs text-ink-1">{replayTime(navigationTime)} <span className="text-ink-2">{playing ? '播放中' : '已暂停'} · 上海时间</span></time>
@@ -223,13 +221,10 @@ export function ExecutionReplayPage() {
     {manifestLoading && <p className="replay-empty" role="status">正在查找这次执行的录制…</p>}
     {manifest && !manifest.recordings.length && <div className="replay-empty"><h2 className="font-medium text-ink-1">{availabilityLabels[manifest.availability] ?? '暂无可回放记录'}</h2><p className="mt-2 max-w-xl text-sm text-ink-2">{manifest.reason ?? '这次执行没有已封口的录制。账户录制默认关闭，开启前的数据不会补录。'}</p></div>}
     {recording && context && <>
-      {projection && reviewed.value && windowData && !loaded.loading ? <OrdersAndTrades projection={projection} context={context} symbol={symbol} selected={activeOrder} onSelect={inspectOrder} selectedTradeKey={selectedTrade} onSelectTrade={inspectTrade} executionId={executionId} tab={detailTab} onTabChange={setDetailTab} onSeek={seekRecording} coverage={recording.coverage} gaps={windowData.gaps} selectionPending={Boolean(activeOrder && !projection.orders[activeOrder])}>
+      {projection && reviewed.value && windowData && !loaded.loading ? <OrdersAndTrades projection={projection} scene={reviewed.value} context={context} symbol={symbol} selected={activeOrder} onSelect={inspectOrder} selectedTradeKey={selectedTrade} onSelectTrade={inspectTrade} executionId={executionId} tab={detailTab} onTabChange={setDetailTab} onSeek={seekRecording} coverage={recording.coverage} gaps={windowData.gaps}>
       <div className="replay-main-chart">
         {loaded.loading && <div className="replay-empty" role="status">正在恢复所选时刻的状态，回放已暂停…</div>}
-        {projection && windowData && range && !loaded.loading && <ReplayChart window={windowData} range={range} projection={projection} scene={reviewed.value ?? projection} overviewLabel={windowDuration === 'all' ? '整段复盘' : '窗口复盘'} symbol={symbol} selectedOrder={activeOrder} onSelectOrder={inspectOrder} selectedTrade={selectedTrade} onSelectTrade={inspectTrade} onInspect={inspect} onSeek={pauseAndSeek} executionId={executionId} depthStatus={<>
-        <span className="text-xs text-ink-2">{depthLabel}</span>
-        {firstQuote && navigationTime < firstQuote.time_us && <button type="button" className="text-xs text-accent underline-offset-4 hover:underline" onClick={() => pauseAndSeek(firstQuote.time_us)}>首个盘口</button>}
-      </>} symbolControl={symbols.length > 1 ? <Select ariaLabel="选择回放品种" searchable className={selectClass} value={symbol} options={symbols.map(value => ({ value, label: value }))} onChange={value => { continuePlayback.current = null; setPlaying(false); setSelectedOrder(null); setSelectedTrade(null); setSymbol(value) }} /> : <span className="text-[13px] font-semibold text-ink-1">{symbol || '无已录品种'}</span>}>{transport}</ReplayChart>}
+        {projection && windowData && range && !loaded.loading && <ReplayChart window={windowData} range={range} projection={projection} scene={reviewed.value ?? projection} symbol={symbol} selectedOrder={activeOrder} onSelectOrder={inspectOrder} selectedTrade={selectedTrade} onSelectTrade={inspectTrade} onInspect={inspect} onSeek={pauseAndSeek} executionId={executionId} symbolControl={symbols.length > 1 ? <Select ariaLabel="选择回放品种" searchable className={selectClass} value={symbol} options={symbols.map(value => ({ value, label: value }))} onChange={value => { continuePlayback.current = null; setPlaying(false); setSelectedOrder(null); setSelectedTrade(null); setSymbol(value) }} /> : <span className="text-[13px] font-semibold text-ink-1">{symbol || '无已录品种'}</span>}>{transport}</ReplayChart>}
         {!range && <p className="replay-empty">该录制段没有可读取的封口覆盖区间。</p>}
         {!loaded.loading && range && !readReady && <p className="replay-empty text-ink-2">所选窗口暂不可用。可在录制信息中切换窗口或重试。</p>}
       </div>
@@ -251,7 +246,7 @@ export function ExecutionReplayPage() {
         <p className="mb-3 text-xs text-ink-2">{environmentLabels[context.environment ?? ''] ?? context.environment ?? '环境未知'} · {context.account_mode ?? '账户模式未知'} · {positionModeLabels[context.position_mode ?? ''] ?? '持仓模式未知'} · 上海时间</p>
         <div className="space-y-2 border-t border-line py-3 text-xs text-ink-2">{['depth', 'market_trade', 'own_order', 'own_trade', 'position'].map((name, index) => { const stream = replayStream(context, symbol, name); return <p key={name}>{['盘口', '市场成交', '自有委托', '自有成交', '持仓'][index]}：{stream ? availabilityLabels[stream.availability] : '未说明'}{stream?.reason ? ` · ${stream.reason === 'waiting_observation' ? '等待观察' : stream.reason}` : ''}{stream?.delivery ? ` · ${stream.delivery}` : ''}</p> })}</div>
         {warnings.length > 0 && <div className="mb-3 space-y-2 text-xs text-warn" role="status">{warnings.map(warning => <p key={warning}>{warning}</p>)}</div>}
-        <p className="border-t border-line pt-3 text-xs text-ink-2">整段复盘展示已读取时段的完整记录；盘口与委托状态只恢复到游标时刻。超出读取预算时可选择较短窗口。热力颜色表示挂量，有限盘口不代表排队位置；完整性与缺失以本次录制说明为准。</p>
+        <p className="border-t border-line pt-3 text-xs text-ink-2">展示已读取时段的完整记录，未来记录灰显为未到达；委托当前状态按游标恢复。超出读取预算时可选择较短窗口。热力颜色表示挂量，有限盘口不代表排队位置；完整性与缺失以本次录制说明为准。</p>
       </>}
     </div>
   </section>
