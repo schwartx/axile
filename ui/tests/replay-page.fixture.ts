@@ -30,7 +30,7 @@ function useEffect(fn: any, deps: any[]) {
     slots[index] = { deps, cleanup }; effects.push({ index, fn, cleanup })
   }
 }
-mock.module('react', () => ({ useState, useRef, useMemo: memoValue, useEffect, useCallback: (fn: any, deps: any[]) => memoValue(() => fn, deps) }))
+mock.module('react', () => ({ Fragment: 'fragment', useState, useRef, useMemo: memoValue, useEffect, useCallback: (fn: any, deps: any[]) => memoValue(() => fn, deps) }))
 const jsx = (type: any, props: any, key: any) => ({ type, props, key })
 mock.module('react/jsx-runtime', () => ({ jsx, jsxs: jsx, Fragment: 'fragment' }))
 mock.module('react/jsx-dev-runtime', () => ({ jsxDEV: jsx, Fragment: 'fragment' }))
@@ -246,8 +246,7 @@ if (scenario === 'overview') {
     find(tree, node => typeof node.type === 'function' && node.type.name === 'OrdersAndTrades').props.onSelect(JSON.stringify(['X', id])); flush()
     const section = find(expand(tree), node => node.type === 'section' && node.props?.['aria-label'] === '游标处自有委托')
     const row = find(section, node => node.type === 'tr' && Boolean(find(node.props.children, child => child.type === 'button' && text(child) === id)))
-    const detail = find(expand(tree), node => node.type === 'div' && Array.isArray(node.props.children)
-      && node.props.children.some((child: any) => child?.type === 'h3' && text(child).includes('委托详情')))
+    const detail = find(section, node => node.props?.id === `replay-order-extra-${encodeURIComponent(JSON.stringify(['X', id]))}`)
     rows[id] = { row: text(row).replace(/\s+/g, ' ').trim(), detail: text(detail).replace(/\s+/g, ' ').trim() }
   }
   console.log(JSON.stringify(rows))

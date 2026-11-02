@@ -7,12 +7,12 @@ import type { ReplayWindow } from '@/features/replay/types'
 import { readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 
-it('悬浮详情可移入与固定，查看不定位，取消固定离开关闭，显式定位精确成交时间', () => {
+it('悬停只显示轴标签与行内读数，点击打开附近浮卡且不定位，移出和拖动清理读数', () => {
   const source = readFileSync(new URL('../../../tests/replay-hover.fixture.ts', import.meta.url), 'utf8')
   const script = `const ui=${JSON.stringify(new URL('../../', import.meta.url).pathname)};\n${source}`
   const result = spawnSync(process.execPath, ['-e', script], { cwd: new URL('../../../', import.meta.url), encoding: 'utf8', timeout: 10_000 })
   if (result.status !== 0) throw Error(result.stderr || result.stdout)
-  expect(JSON.parse(result.stdout.trim())).toEqual({ entered: true, previewCompact: true, overlappingMarketAccessible: true, bubbleDirectionsDistinct: true, marketClearsOrderIdentity: true, futureLabeled: true, pinned: true, inspection: { seeks: [], selected: ['3:T'], pauses: 6, unchanged: true }, closedAfterUnpin: true, located: { seeks: [50, 3], closed: true }, clickPinsWithoutSeek: true, escapeClosed: true })
+  expect(JSON.parse(result.stdout.trim())).toEqual({ noFloatingCard: true, axisLabels: true, hasReadout: true, hoverDoesNotPause: true, clearedOnLeave: true, clickSelectsWithoutSeek: true, overlappingRecords: true, futureLabeled: true, clearedOnDrag: true, marketIdentity: true, explicitSeek: true, noPin: true, anchoredBesideClick: true, fixedDuringHover: true, staysOnLeave: true, escapeCloses: true, edgeFlips: true, emptyClickCloses: true })
 })
 
 function chart() {

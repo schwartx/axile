@@ -106,14 +106,8 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   const recorded = mode === 'review' ? scene : projection
   const drawThrough = recorded.time_us
   const cursorInside = projection.time_us >= visibleRange.start_us && projection.time_us < visibleRange.end_us
-  const [hover, setHover] = useState<(InspectionRecord & { cursor: string; x: number; y: number; records: InspectionRecord[]; pinned?: boolean }) | null>(null)
-  const hoverCloseTimer = useRef<number | undefined>(undefined)
-  const keepHover = () => { window.clearTimeout(hoverCloseTimer.current); hoverCloseTimer.current = undefined }
-  const leaveHover = () => {
-    keepHover()
-    hoverCloseTimer.current = window.setTimeout(() => { hoverCloseTimer.current = undefined; setHover(current => current?.pinned ? current : null) }, 200)
-  }
-  useLayoutEffect(() => () => window.clearTimeout(hoverCloseTimer.current), [])
+  const [hover, setHover] = useState<(InspectionRecord & { cursor: string; x: number; y: number; records: InspectionRecord[];  }) | null>(null)
+  const [inspection, setInspection] = useState<{ record: InspectionRecord; records: InspectionRecord[]; x: number; y: number } | null>(null)
   const gesture = useRef<{ id: number; x: number; y: number; view: ReplayPriceView; range: ReplayRange; mode: 'chart' | 'price' | 'time' | 'seek'; moved: boolean } | null>(null)
   const instrument = replayInstrument(replayWindow.context, symbol)
   const orders = useMemo(() => Object.values(projection.orders).filter(order => order.symbol === symbol), [projection.orders, symbol])
@@ -131,6 +125,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   const height = size.height
   const [priceAxisWidth, setPriceAxisWidth] = useState(76)
   const layout = useMemo(() => ({ ...replayChartLayout(size.width, height, priceAxisWidth), top: selectedExecution ? 28 : 0 }), [size.width, height, priceAxisWidth, selectedExecution])
+  const inspectionWidth = Math.min(320, layout.right - 16)
   const priceTicks = useMemo(() => view ? replayPriceTicks(view, layout.bottom - layout.top) : [], [view, layout.bottom, layout.top])
   const bubbles = useMemo(() => !layers.market || replayWindow.context.streams?.[symbol]?.market_trade?.availability === 'unavailable' ? [] : replayMarketBubbles(recorded.marketTrades, symbol, visibleRange, layout, projection, replayWindow.gaps).filter(bubble => !view || bubble.price >= view.min && bubble.price <= view.max), [layers.market, replayWindow, recorded.marketTrades, symbol, visibleRange, layout, projection, view])
   const maxBubble = bubbles.reduce((max, bubble) => Math.max(max, bubble.quantity), 1)
@@ -141,7 +136,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   const heat = useMemo(() => view ? replayHeatCells(historyQuotes, visibleRange, drawThrough, view, layout, replayWindow.gaps) : null, [historyQuotes, visibleRange, drawThrough, view, layout, replayWindow.gaps])
   const maxHeat = heat?.cells.reduce((maximum, cell) => Math.max(maximum, cell.quantity ?? 0), 0) ?? 0
 
-  useLayoutEffect(() => { setManualView(null); setTimeView(null); setHover(null); gesture.current = null }, [replayWindow.window_id, symbol])
+  useLayoutEffect(() => { setManualView(null); setTimeView(null); setHover(null); setInspection(null); gesture.current = null }, [replayWindow.window_id, symbol])
   useLayoutEffect(() => {
     if (!holder.current) return
     const element = holder.current
@@ -257,10 +252,10 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
     setTimeView(clampReplayView({ start_us: visibleRange.start_us + offset, end_us: visibleRange.end_us + offset }, range))
   }
   const timeline = useMemo(() => replayOrderTimeline(visibleOrders, symbol, visibleRange, recorded), [visibleOrders, symbol, visibleRange, recorded])
-  const inspectAt = (x: number, y: number, pinned = false) => {
-    if (!view || y < layout.top || y > layout.bottom || x < layout.left) { setHover(null); return }
+  const inspectAt = (x: number, y: number, select = false) => {
+    if (!view || y < layout.top || y > layout.bottom || x < layout.left) { setHover(null); if (select) setInspection(null); return }
     const time = x > layout.right ? projection.time_us : replayXTime(x, visibleRange, layout)
-    if (time > drawThrough) { setHover(null); return }
+    if (time > drawThrough) { setHover(null); if (select) setInspection(null); return }
     const price = replayYPrice(y, view, layout)
     const format = { executionId, cursor: projection, unit: instrument.quantity_label ?? '', price: priceText, quantity: quantityText }
     let records: InspectionRecord[] = [], candidates: InspectionRecord[] = []
@@ -294,22 +289,25 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
     }
     const quote = x > layout.right ? currentQuote : currentReplayQuote(historyQuotes.findLast(item => item.time_us <= time), time, replayWindow.gaps)
     const level = quote && recordedDepth(quote).find(item => Math.abs(replayPriceY(item.price, view, layout) - y) <= Math.max(3, (layout.bottom - layout.top) * view.tick / (view.max - view.min) / 2))
-    const fallback: InspectionRecord = { id: 'depth', object: 'depth', kind: 'depth', title: `${x > layout.right ? '游标盘口' : '历史盘口'}${level ? ` · ${level.side}${level.rank ?? '·0'}` : ''}`,
-      headline: priceText(level?.price ?? Math.round(price / view.tick) * view.tick), status: level ? `挂量 ${quantityText(level.quantity)} ${format.unit}` : '挂量未知／未覆盖', label: '盘口观察', raw: '仅表示该时刻已录到的档位；档位不代表排队顺序。',
+    const fallback: InspectionRecord = { id: level ? 'depth' : 'pointer', object: 'depth', kind: 'depth', title: level ? `${x > layout.right ? '游标盘口' : '历史盘口'} · ${level.side}${level.rank ?? '·0'}` : '指针价格',
+      headline: priceText(level?.price ?? Math.round(price / (instrument.price_tick ?? 10 ** -decimals)) * (instrument.price_tick ?? 10 ** -decimals)), status: level ? `挂量 ${quantityText(level.quantity)} ${format.unit}` : '挂量未知／未覆盖', label: '盘口观察', raw: '仅表示该时刻已录到的档位；档位不代表排队顺序。',
       time, future: replayFutureRecord(time, 0, projection), x, y: level ? replayPriceY(level.price, view, layout) : y }
     const hit = nearestReplayInspection(candidates, x, y, activeHover?.id) ?? fallback
-    const next = { cursor: hoverCursor, ...hit, records: [hit, ...records.filter(record => record.id !== hit.id)], pinned }
+    const next = { cursor: hoverCursor, ...hit, records: [hit, ...records.filter(record => record.id !== hit.id)] }
     setHover(next)
-    if (pinned) { onInspect(); if (next.trade) onSelectTrade(next.trade); else if (next.order) onSelectOrder(next.order) }
+    if (select) {
+      if (next.id === 'pointer') setInspection(null)
+      else { onInspect(); setInspection({ record: next, records: next.records, x, y }) }
+    }
     return next
   }
   const pointerPosition = (event: PointerEvent<HTMLCanvasElement>) => { const bounds = event.currentTarget.getBoundingClientRect(); return { x: event.clientX - bounds.left, y: event.clientY - bounds.top } }
   const pointerMove = (event: PointerEvent<HTMLCanvasElement>) => {
     const { x, y } = pointerPosition(event), drag = gesture.current
-    if (!drag) { if (!activeHover?.pinned && hoverCloseTimer.current == null) inspectAt(x, y); return }
+    if (!drag) { inspectAt(x, y); return }
     const dx = x - drag.x, dy = y - drag.y
     if (!drag.moved && Math.hypot(dx, dy) < 3) return
-    drag.moved = true; setHover(null)
+    drag.moved = true; setHover(null); setInspection(null)
     if (drag.mode === 'seek') { onSeek(replayXTime(x, drag.range, layout)); return }
     if (drag.mode === 'price') setManualView(zoomReplayPriceAt(drag.view, Math.exp(dy / 160), replayYPrice(drag.y, drag.view, layout)))
     else if (drag.mode === 'time') setTimeView(zoomReplayTime(drag.range, Math.exp(dx / 200), replayXTime(drag.x, drag.range, layout), range))
@@ -327,7 +325,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       if (!view) return
       const bounds = element.getBoundingClientRect(), x = event.clientX - bounds.left, y = event.clientY - bounds.top
       if (x < 0 || x > layout.right || y < layout.top) return
-      event.preventDefault(); setHover(null)
+      event.preventDefault(); setHover(null); setInspection(null)
       const delta = (event.deltaY || event.deltaX) * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? size.height : 1)
       const factor = Math.exp(Math.max(-1, Math.min(1, delta / 400)))
       if (x >= layout.left && x <= layout.right) setTimeView(zoomReplayTime(visibleRange, factor, replayXTime(x, visibleRange, layout), range))
@@ -357,14 +355,14 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
         <button className={controlClass} onClick={resetView} disabled={!manualView && !timeView} aria-label="恢复图表视图"><RotateCcw size={15} aria-hidden /></button>
       </div>
     </div>
-    <div className="replay-chart-meta"><div className="replay-chart-legend"><span className="replay-depth-bid"><Minus size={14} aria-hidden />买一</span><span className="replay-depth-ask"><Minus size={14} aria-hidden />卖一</span><span><Minus size={14} aria-hidden />成交价</span>{layers.market && <span><Circle size={10} aria-hidden />市场成交</span>}<span className="text-accent"><Minus size={14} aria-hidden />账户委托</span></div><div className="replay-depth-status">{depthStatus}<span className="replay-heat-scale"><i aria-hidden />{heat?.cells.some(cell => cell.quantity != null) ? `挂量 0 → ${quantityText(maxHeat)}` : '挂量尚未知'}</span></div>{!cursorInside && <button type="button" className="text-accent" onClick={() => { const span = visibleRange.end_us - visibleRange.start_us; setTimeView(clampReplayView({ start_us: projection.time_us - span / 2, end_us: projection.time_us + span / 2 }, range)) }}>游标在{projection.time_us < visibleRange.start_us ? '左' : '右'}侧 · 回到游标</button>}</div>
+    <div className="replay-chart-meta"><div className="replay-chart-legend"><span className="replay-depth-bid"><Minus size={14} aria-hidden />买一</span><span className="replay-depth-ask"><Minus size={14} aria-hidden />卖一</span><span><Minus size={14} aria-hidden />成交价</span>{layers.market && <span><Circle size={10} aria-hidden />市场成交</span>}<span className="text-accent"><Minus size={14} aria-hidden />账户委托</span></div>{activeHover && activeHover.id !== 'pointer' && <span className="replay-hover-readout num" aria-label="悬停读数">{activeHover.future ? '后续已录 · ' : ''}{activeHover.title} · {activeHover.headline} · {activeHover.status}</span>}<div className="replay-depth-status">{depthStatus}<span className="replay-heat-scale"><i aria-hidden />{heat?.cells.some(cell => cell.quantity != null) ? `挂量 0 → ${quantityText(maxHeat)}` : '挂量尚未知'}</span></div>{!cursorInside && <button type="button" className="text-accent" onClick={() => { const span = visibleRange.end_us - visibleRange.start_us; setTimeView(clampReplayView({ start_us: projection.time_us - span / 2, end_us: projection.time_us + span / 2 }, range)) }}>游标在{projection.time_us < visibleRange.start_us ? '左' : '右'}侧 · 回到游标</button>}</div>
     <div ref={holder} className="replay-chart-plot">
       <p id="replay-scene-summary" className="sr-only">{mode === 'review' ? overviewLabel : '逐步回放'}，已录自有成交 {recorded.ownTrades.filter(trade => trade.symbol === symbol && trade.time_us >= visibleRange.start_us && trade.time_us < visibleRange.end_us).length} 笔。盘口与委托状态对应游标 {replayTime(projection.time_us)}。</p>
       <canvas ref={canvas} style={{ height }} className="block w-full touch-none cursor-crosshair focus-visible:outline-2 focus-visible:outline-accent" tabIndex={0}
         aria-describedby="replay-scene-summary"
         aria-label="历史盘口热力图与共享价格轴；拖动浏览，滚轮缩放，方向键平移，正负键缩放，Home 复位" role="group"
         onPointerDown={event => { if (!view || event.button !== 0) return; const { x, y } = pointerPosition(event); if (y < layout.top) return; if (x > layout.right) return; event.currentTarget.focus(); event.currentTarget.setPointerCapture(event.pointerId); gesture.current = { id: event.pointerId, x, y, view, range: visibleRange, mode: x < layout.left ? 'price' : cursorInside && Math.abs(x - replayTimeX(projection.time_us, visibleRange, layout)) <= 8 ? 'seek' : y > layout.bottom ? 'time' : 'chart', moved: false } }}
-        onPointerMove={pointerMove} onPointerLeave={() => { if (!gesture.current) leaveHover() }}
+        onPointerMove={pointerMove} onPointerLeave={() => { if (!gesture.current) setHover(null) }}
         onPointerUp={event => { const drag = gesture.current; gesture.current = null; if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); if (drag && !drag.moved) { const { x, y } = pointerPosition(event); if (x >= layout.left && x <= layout.right) inspectAt(x, y, true) } }}
         onPointerCancel={() => { gesture.current = null; setHover(null) }} onLostPointerCapture={() => { gesture.current = null }}
         onKeyDown={event => {
@@ -373,26 +371,29 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
           else if (event.key === '-') { event.preventDefault(); zoom(1.4) }
           else if (event.key === 'Home') { event.preventDefault(); resetView() }
           else if (event.key === 'Enter' && view) { event.preventDefault(); inspectAt(replayTimeX(projection.time_us, visibleRange, layout), replayPriceY(selected?.price ?? (view.min + view.max) / 2, view, layout), true) }
-          else if (event.key === 'Escape') setHover(null)
+          else if (event.key === 'Escape') { setHover(null); setInspection(null) }
         }} />
       <div className="replay-chart-axis" data-outside={!cursorInside || undefined} style={{ left: layout.left - 12, right: size.width - layout.right - 12, top: height - 30 }}>
         <ValueSlider variant="axis" label="录制定位" min={0} max={Math.max(1, visibleRange.end_us - visibleRange.start_us - 1)} step={1} value={projection.time_us - visibleRange.start_us}
           formatValue={offset => cursorInside ? replayTime(visibleRange.start_us + offset) : `游标在当前视野之外，${replayTime(projection.time_us)}`} onChange={offset => { setHover(null); onSeek(visibleRange.start_us + offset) }} />
       </div>
       {view && layout.columns && <ReplayDepthLadder quote={currentQuote} orders={ownOrders} view={view} layout={layout} height={height} executionId={executionId} selected={selectedOrder} onSelect={key => { onInspect(); onSelectOrder(key) }} onZoom={setManualView} priceText={priceText} quantityText={quantityText} />}
+      {inspection && <div className="replay-inspection-float" aria-label="图中记录浮卡" style={{
+        width: inspectionWidth,
+        left: Math.max(8, Math.min(layout.right - inspectionWidth - 8, inspection.x + 12 + inspectionWidth <= layout.right ? inspection.x + 12 : inspection.x - 12 - inspectionWidth)),
+        ...(inspection.y <= height / 2 ? { top: inspection.y + 12 } : { bottom: height - inspection.y + 12 }),
+        maxHeight: Math.max(0, (inspection.y <= height / 2 ? height - inspection.y : inspection.y) - 20),
+      }}>
+        <ReplayInspector record={inspection.record} records={inspection.records} onChoose={record => setInspection({ ...inspection, record })}
+          onClose={() => { setInspection(null); canvas.current?.focus() }}
+          onView={() => { if (inspection.record.trade) onSelectTrade(inspection.record.trade); else if (inspection.record.order) onSelectOrder(inspection.record.order); setInspection(null) }}
+          onSeek={() => { onSeek(inspection.record.time, inspection.record.seq); setInspection(null) }} />
+      </div>}
       {activeHover && <>
         {activeHover.x <= layout.right && <div className="replay-crosshair" aria-hidden style={{ left: activeHover.x, top: layout.top, height: layout.bottom - layout.top }} />}
         <div className="replay-crosshair-horizontal" aria-hidden style={{ left: layout.left, right: 6, top: activeHover.y }} />
-        <ReplayInspector record={activeHover} records={activeHover.records} pinned={Boolean(activeHover.pinned)} width={size.width} height={height}
-          onEnter={keepHover} onLeave={leaveHover} onClose={() => { keepHover(); setHover(null); canvas.current?.focus() }}
-          onPin={() => { keepHover(); onInspect(); setHover({ ...activeHover, pinned: !activeHover.pinned }) }}
-          onChoose={record => { keepHover(); onInspect(); setHover({ cursor: activeHover.cursor, records: activeHover.records, pinned: activeHover.pinned, ...record }) }}
-          onView={() => { onInspect(); if (activeHover.trade) onSelectTrade(activeHover.trade); else if (activeHover.order) onSelectOrder(activeHover.order) }}
-          onSeek={() => { keepHover(); onSeek(activeHover.time, activeHover.seq); setHover(null) }}
-          onZoom={activeHover.kind === 'order' ? () => {
-            const order = historyOrders.findLast(order => `order:${order.key}` === activeHover.object)
-            if (order) { onInspect(); setTimeView(replayOrderFocus(order, recorded, range)); setHover(null) }
-          } : undefined} />
+        <span className="replay-crosshair-price num" style={{ left: 0, width: layout.left - 2, top: Math.max(0, Math.min(layout.bottom - 20, activeHover.y - 10)) }}>{view && priceText(Math.round(replayYPrice(activeHover.y, view, layout) / (instrument.price_tick ?? 10 ** -decimals)) * (instrument.price_tick ?? 10 ** -decimals))}</span>
+        <time className="replay-crosshair-time num" style={{ left: Math.max(layout.left, Math.min(layout.right - 140, activeHover.x - 70)), top: height - 24 }}>{replayTime(activeHover.time)}</time>
       </>}
     </div>
     {outsideDepth > 0 && <button className="replay-depth-outside text-accent" type="button" onClick={() => setManualView(null)}>视野外还有 {outsideDepth} 个已录档位 · 显示全部</button>}
@@ -406,11 +407,11 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       <fieldset className="replay-layer-options"><legend className="sr-only">显示图层</legend>{([['working', '在途委托'], ['canceled', '已撤销委托'], ['filled', '已全成委托'], ['market', '市场成交气泡'], ['execution', '账户逐笔详情与选中标注']] as const).map(([key, label]) => <label key={key}><input type="checkbox" checked={layers[key]} onChange={event => { setLayers({ ...layers, [key]: event.target.checked }); setHover(null) }} />{label}</label>)}</fieldset>
       <p className="mb-2">{mode === 'review' ? '整段复盘按该段已录终态筛选整条委托轨迹。' : '逐步回放按游标处已知状态筛选。'}右侧盘口与明细列表不受图层开关影响。</p>
       <p>显示每帧实际录到的全部买卖档位，档数可随时间变化。热力图由浅至深表示挂量从少到多，竖纹表示量未知；零量只留淡痕。有限盘口不代表完整深度。</p><p className="mt-2">买一、卖一是盘口两侧额外强调的边界，白线只连接已录制的市场成交。三者共用线性价格轴；缺口或过期时盘口边界断开。</p><p className="mt-2">右侧圆点与引导线标明真实价格位置；挂量柱与价格、数量在同一读数行，行间距仅为阅读避让，不是价格距离。档位太多时按价格区间明确聚合，显示区间峰值与档数，点击可放大。热力图每个像素价区间也取峰值，均不把挂量相加。</p><p className="mt-2">委托轨迹：实心点为首次场内确认，线表示有效存续，确认改价后呈阶梯；部分成交继续画线并保留剩余量，全成以买向上、卖向下的三角结束，撤销以空心端点结束，拒绝与过期用文字。实线为本次，点线为账户上下文；长虚线为待撤。未观察到入场时不补起点。入场与终点在当前缩放下碰撞时，优先显示终点，放大后恢复；原始记录始终保留。这段线不是排队顺序。</p>
-      <p className="mt-2">市场成交气泡按当前时间像素、真实价格与主动方向聚合，面积相对当前视野的成交量缩放，最小两像素；缩放后重新计算。缺口与游标前后分开；不混入账户成交，条数是已录记录数，源聚合记录不拆逐笔。不复刻 Bookmap Smart 算法。悬停可逐条定位原始记录。</p>
-      <p className="mt-2">账户逐笔成交保留在“成交”列表与委托悬停详情中；选中后仅在图顶显示时间、量价文字，不再叠菱形、方框或选中圆环。隐藏已全成委托也隐藏其逐笔标注。报单请求保留在“报撤观察”，不表示已入场。</p>
-      <p className="mt-2">拖动主图平移；滚轮以鼠标位置缩放；拖动价格轴可单独缩放价位。拖动浏览不改变游标；点击标记固定详情；拖动图内时间游标或点击“定位此时刻”才定位。整段复盘展示已读取时段的全部记录，逐步回放只展示游标之前；右侧盘口与底部状态始终对应游标。</p>
+      <p className="mt-2">市场成交气泡按当前时间像素、真实价格与主动方向聚合，面积相对当前视野的成交量缩放，最小两像素；缩放后重新计算。缺口与游标前后分开；不混入账户成交，条数是已录记录数，源聚合记录不拆逐笔。不复刻 Bookmap Smart 算法。点击后可在下方详情逐条查看及定位原始记录。</p>
+      <p className="mt-2">账户逐笔成交保留在“成交”列表与下方选中详情中；选中后仅在图顶显示时间、量价文字，不再叠菱形、方框或选中圆环。隐藏已全成委托也隐藏其逐笔标注。报单请求保留在“报撤观察”，不表示已入场。</p>
+      <p className="mt-2">拖动主图平移；滚轮以鼠标位置缩放；拖动价格轴可单独缩放价位。拖动浏览不改变游标；点击标记在附近查看详情；拖动图内时间游标或点击“定位此时刻”才定位。整段复盘展示已读取时段的全部记录，逐步回放只展示游标之前；右侧盘口与底部状态始终对应游标。</p>
       <p className="mt-2">账户挂单是游标时刻该账户在此价位有效委托的未成交剩余量，包含其他执行；不代表持仓或排队位置，缺少剩余量时保持未知。悬停盘口行可看本次数量。</p>
-      <p className="mt-2">悬停详情可移入操作或固定；查看与固定不改变游标，点击定位才恢复对应时刻。画布获得焦点后按 Enter 可固定当前价位详情，Escape 关闭。</p>
+      <p className="mt-2">悬停查看轴标签与读数；点击图中记录，在附近打开详情。点击空白处或按 Escape 关闭浮卡。查看不改变游标，点击详情中的定位才恢复对应时刻。画布获得焦点后按 Enter 可查看当前价位记录。</p>
       <div className="mt-3 max-h-64 overflow-auto"><table className="num w-full text-right text-xs"><caption className="mb-2 text-left">当前游标盘口</caption><thead><tr><th>方向</th><th>价格</th><th>市场量</th></tr></thead><tbody>{bookRows.map((level, index) => <tr key={`${level.side}:${level.price}:${index}`} className="border-t border-line"><td className="py-1">{level.side}</td><td>{priceText(level.price)}</td><td>{quantityText(level.quantity)}</td></tr>)}</tbody></table></div>
     </div>
   </section>
