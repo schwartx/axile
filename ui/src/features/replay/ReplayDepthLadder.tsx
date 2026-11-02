@@ -24,7 +24,7 @@ export function ReplayDepthLadder({ quote, future = false, orders, view, layout,
     if (bucket.minPrice !== bucket.maxPrice) onZoom({ ...view, min: bucket.minPrice - view.tick * 2, max: bucket.maxPrice + view.tick * 2 })
     else if (bucket.orders.length) onSelect((bucket.orders.find(order => order.key === selected) ?? bucket.orders[0]).key)
   }
-  return <div className="replay-depth-ladder num" data-future={future} style={{ left: layout.right + 8, height }} aria-label={future ? '未到达的首个已录盘口' : '与大图同价对齐的当前盘口'}>
+  return <div className="replay-depth-ladder num" data-future={future} style={{ left: layout.priceX + 16, height }} aria-label={future ? '未到达的首个已录盘口' : '与大图同价对齐的当前盘口'}>
     <div className="replay-ladder-head"><div><span>档位</span><span>价格</span><span>市场量</span><Tooltip content="回放游标时刻，账户在该价位的有效委托未成交剩余量，包含其他执行；不代表持仓或排队位置。"><button type="button" className="text-right" aria-label="账户挂单说明">账户挂单</button></Tooltip></div></div>
     <svg className="replay-ladder-lines" width="100%" height={height} aria-hidden="true">
       {buckets.map(bucket => <g key={`${bucket.minPrice}:${bucket.maxPrice}`}>

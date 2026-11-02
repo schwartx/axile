@@ -14,8 +14,9 @@ export function replayRemainingQuantity(orders: Pick<ReplayOrder, 'remaining_vol
 
 export function replayChartLayout(width: number, height: number, priceAxisWidth = 76): ReplayChartLayout {
   const columns = width >= 600
-  return { left: priceAxisWidth, right: width - (columns ? 346 : 12), top: 0, bottom: height - 30,
-    priceX: priceAxisWidth - 8, cobX: width - 334, ordX: width - 68, columns }
+  const right = width - (columns ? 346 : 12) - priceAxisWidth
+  return { left: 12, right, top: 0, bottom: height - 30,
+    priceX: right + priceAxisWidth - 8, cobX: width - 334, ordX: width - 68, columns }
 }
 
 /** 坐标刻度使用规整间隔，按序号计算以避免反复累加浮点价差。 */

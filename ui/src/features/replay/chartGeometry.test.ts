@@ -42,7 +42,7 @@ describe('回放共用价格与观测边界', () => {
     expect(focused).toEqual({ min: 85.5, max: 94.5, tick: 1 })
     expect(replayPriceY(90, focused, layout)).toBe((layout.top + layout.bottom) / 2)
     expect(layout.columns).toBe(true)
-    expect(layout.priceX).toBeLessThan(layout.left)
+    expect(layout.priceX).toBeGreaterThan(layout.right)
     expect(layout.cobX).toBeGreaterThan(layout.right)
   })
   it('场内单剩余量未知时保留身份，同价聚合不把未知量当零', () => {
@@ -78,8 +78,16 @@ describe('回放共用价格与观测边界', () => {
 
 it('价格轴容纳完整读数，刻度规整且不累加推算价差的浮点尾数', () => {
   const layout = replayChartLayout(1100, 440, 124)
-  expect(layout.left).toBe(124)
-  expect(layout.priceX).toBe(116)
+  expect(layout.left).toBe(12)
+  expect(layout.right).toBe(630)
+  expect(layout.priceX).toBe(746)
+  expect(layout.priceX + 16).toBe(replayChartLayout(1100, 440).priceX + 16)
+  const narrow = replayChartLayout(390, 380, 100)
+  expect(narrow.left).toBe(12)
+  expect(narrow.right).toBe(278)
+  expect(narrow.priceX).toBe(370)
+  expect(replayXTime(narrow.left, range, narrow)).toBe(0)
+  expect(replayXTime(narrow.right, range, narrow)).toBe(999)
   expect(layout.top).toBe(0)
   expect(replayPriceTicks({ min: 90100, max: 90140, tick: 0.09999999999126885 }, 240)).toEqual([90100, 90105, 90110, 90115, 90120, 90125, 90130, 90135, 90140])
   expect(replayPriceTicks({ min: 0.00000001, max: 0.00000005, tick: 0.00000001 }, 240)).toEqual([0.00000001, 0.00000002, 0.00000003, 0.00000004, 0.00000005])

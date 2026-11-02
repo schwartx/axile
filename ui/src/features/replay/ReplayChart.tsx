@@ -244,7 +244,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   }
   const timeline = useMemo(() => replayOrderTimeline(visibleOrders, symbol, visibleRange, recorded), [visibleOrders, symbol, visibleRange, recorded])
   const inspectAt = (x: number, y: number, select = false) => {
-    if (!view || y < layout.top || y > layout.bottom || x < layout.left) { setHover(null); if (select) setInspection(null); return }
+    if (!view || y < layout.top || y > layout.bottom || x < layout.left || x > layout.right && x <= layout.priceX + 8) { setHover(null); if (select) setInspection(null); return }
     const time = x > layout.right ? projection.time_us : replayXTime(x, visibleRange, layout)
     if (time > drawThrough) { setHover(null); if (select) setInspection(null); return }
     const price = replayYPrice(y, view, layout)
@@ -295,6 +295,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   const pointerPosition = (event: PointerEvent<HTMLCanvasElement>) => { const bounds = event.currentTarget.getBoundingClientRect(); return { x: event.clientX - bounds.left, y: event.clientY - bounds.top } }
   const pointerMove = (event: PointerEvent<HTMLCanvasElement>) => {
     const { x, y } = pointerPosition(event), drag = gesture.current
+    event.currentTarget.style.cursor = view && y >= layout.top && x > layout.right && x <= layout.priceX + 8 ? 'ns-resize' : 'crosshair'
     if (!drag) { inspectAt(x, y); return }
     const dx = x - drag.x, dy = y - drag.y
     if (!drag.moved && Math.hypot(dx, dy) < 3) return
@@ -315,7 +316,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
     const wheel = (event: WheelEvent) => {
       if (!view) return
       const bounds = element.getBoundingClientRect(), x = event.clientX - bounds.left, y = event.clientY - bounds.top
-      if (x < 0 || x > layout.right || y < layout.top) return
+      if (x < layout.left || x > layout.priceX + 8 || y < layout.top) return
       event.preventDefault(); setHover(null); setInspection(null)
       const delta = (event.deltaY || event.deltaX) * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? size.height : 1)
       const factor = Math.exp(Math.max(-1, Math.min(1, delta / 400)))
@@ -352,7 +353,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       <canvas ref={canvas} style={{ height }} className="block w-full touch-none cursor-crosshair focus-visible:outline-2 focus-visible:outline-accent" tabIndex={0}
         aria-describedby="replay-scene-summary"
         aria-label="历史盘口热力图与共享价格轴；拖动浏览，滚轮缩放，方向键平移，正负键缩放，Home 复位" role="group"
-        onPointerDown={event => { if (!view || event.button !== 0) return; const { x, y } = pointerPosition(event); if (y < layout.top) return; if (x > layout.right) return; event.currentTarget.focus(); event.currentTarget.setPointerCapture(event.pointerId); gesture.current = { id: event.pointerId, x, y, view, range: visibleRange, mode: x < layout.left ? 'price' : cursorInside && Math.abs(x - replayTimeX(projection.time_us, visibleRange, layout)) <= 8 ? 'seek' : y > layout.bottom ? 'time' : 'chart', moved: false } }}
+        onPointerDown={event => { if (!view || event.button !== 0) return; const { x, y } = pointerPosition(event); if (y < layout.top) return; if (x < layout.left || x > layout.priceX + 8) return; event.currentTarget.focus(); event.currentTarget.setPointerCapture(event.pointerId); gesture.current = { id: event.pointerId, x, y, view, range: visibleRange, mode: x > layout.right ? 'price' : cursorInside && Math.abs(x - replayTimeX(projection.time_us, visibleRange, layout)) <= 8 ? 'seek' : y > layout.bottom ? 'time' : 'chart', moved: false } }}
         onPointerMove={pointerMove} onPointerLeave={() => { if (!gesture.current) setHover(null) }}
         onPointerUp={event => { const drag = gesture.current; gesture.current = null; if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); if (drag && !drag.moved) { const { x, y } = pointerPosition(event); if (x >= layout.left && x <= layout.right) inspectAt(x, y, true) } }}
         onPointerCancel={() => { gesture.current = null; setHover(null) }} onLostPointerCapture={() => { gesture.current = null }}
@@ -383,7 +384,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       {activeHover && <>
         {activeHover.x <= layout.right && <div className="replay-crosshair" aria-hidden style={{ left: activeHover.x, top: layout.top, height: layout.bottom - layout.top }} />}
         <div className="replay-crosshair-horizontal" aria-hidden style={{ left: layout.left, right: 6, top: activeHover.y }} />
-        <span className="replay-crosshair-price num" style={{ left: 0, width: layout.left - 2, top: Math.max(0, Math.min(layout.bottom - 20, activeHover.y - 10)) }}>{view && priceText(Math.round(replayYPrice(activeHover.y, view, layout) / (instrument.price_tick ?? 10 ** -decimals)) * (instrument.price_tick ?? 10 ** -decimals))}</span>
+        <span className="replay-crosshair-price num" style={{ left: layout.right + 2, width: layout.priceX - layout.right + 6, top: Math.max(0, Math.min(layout.bottom - 20, activeHover.y - 10)) }}>{view && priceText(Math.round(replayYPrice(activeHover.y, view, layout) / (instrument.price_tick ?? 10 ** -decimals)) * (instrument.price_tick ?? 10 ** -decimals))}</span>
         <time className="replay-crosshair-time num" style={{ left: Math.max(layout.left, Math.min(layout.right - 140, activeHover.x - 70)), top: height - 24 }}>{replayTime(activeHover.time)}</time>
       </>}
     </div>
