@@ -1,7 +1,6 @@
 import { ReplayStage } from '@/features/replay/ReplayStage'
 import { Fragment, type ReactNode } from 'react'
 import { Segmented } from '@/components/ui/Segmented'
-import { withViewTransition } from '@/lib/viewTransition'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { replayTradeKey } from '@/features/replay/chartInteraction'
 import { replayOrderPositionContext, replayTradeLiquidity } from '@/features/replay/depthGeometry'
@@ -70,7 +69,7 @@ export function OrdersAndTrades({ projection, scene = projection, context, symbo
       <div className="replay-chart-area">{children}</div>
       <section className="replay-dock" aria-label="回放明细">
         <div className="replay-dock-header">
-          <Segmented value={tab} options={[{ value: 'orders', label: '委托' }, { value: 'trades', label: '成交' }, { value: 'commands', label: '报撤观察' }, { value: 'positions', label: '持仓' }]} onChange={value => withViewTransition(() => onTabChange(value))} size="sm" />
+          <Segmented value={tab} options={[{ value: 'orders', label: '委托' }, { value: 'trades', label: '成交' }, { value: 'commands', label: '报撤观察' }, { value: 'positions', label: '持仓' }]} onChange={onTabChange} size="sm" />
         </div>
         <div className="replay-detail-panels" data-tab={tab}>
     <section className="replay-order-section" aria-label="已录自有委托，未来记录标记未到达">
