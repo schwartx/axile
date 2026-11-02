@@ -43,7 +43,11 @@ class ExecutionTerminated(RuntimeError):
     mode : str | None
         终止模式；``cancel_pending`` 表示需要先撤挂单再退出。
     cancel_failed_order_ids : list[str]
-        撤单失败的订单号列表。
+        上游明确返回撤单失败的订单号列表，与订单终态分别记录。
+    cancel_details : dict[str, str]
+        以品种和订单号为键，保留不可撤单或终态未确认的原因。
+    cancel_outcomes : dict[str, dict[str, object]]
+        逐单记录撤单操作分类、终态是否确认及查询异常。
     acked_at : str | None
         执行线程首次确认终止的时间。
     trigger : str
@@ -68,6 +72,8 @@ class ExecutionTerminated(RuntimeError):
         forced: bool = False,
         cancel_attempted: bool | None = None,
         cancel_unconfirmed: bool = False,
+        cancel_details: dict[str, str] | None = None,
+        cancel_outcomes: dict[str, dict[str, object]] | None = None,
     ) -> None:
         self.reason = reason
         self.mode = mode
@@ -77,6 +83,8 @@ class ExecutionTerminated(RuntimeError):
         self.forced = forced
         self.cancel_attempted = cancel_attempted
         self.cancel_unconfirmed = cancel_unconfirmed
+        self.cancel_details = dict(cancel_details or {})
+        self.cancel_outcomes = dict(cancel_outcomes or {})
         message_parts = ["execution terminated"]
         if trigger and trigger != TERMINATION_TRIGGER_OPERATOR:
             message_parts.append(f"trigger={trigger}")

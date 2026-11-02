@@ -17,6 +17,7 @@ _SHANGHAI = ZoneInfo("Asia/Shanghai")
 type ClockWindow = tuple[str, str]
 
 CN_STOCK_WINDOWS: tuple[ClockWindow, ...] = (
+    ("09:15", "09:25"),
     ("09:30", "11:30"),
     ("13:00", "15:00"),
 )

@@ -1,5 +1,5 @@
 import { catalogEvidence } from '@/features/history/executionErrorAdapter'
-import { executionOutcome, outcomeOf, type OutcomeView } from '@/features/account/executionOutcome'
+import { executionOutcome, isSessionClosedSkip, outcomeOf, type OutcomeView } from '@/features/account/executionOutcome'
 import { isDegradedSnapshotSource } from '@/features/account/accountSnapshot'
 import { recordOrders } from './recordOrders'
 /**
@@ -351,13 +351,18 @@ function buildSymbolChain(
   if (outcome === 'FAILED') action = 'failed'
   if (outcome === 'BLOCKED') action = 'skipped'
   reason = typeof recon.error === 'string' ? recon.error : reason
+  const sessionSkip = isSessionClosedSkip(recon)
+  if (sessionSkip) {
+    action = 'skipped'
+    reason = asStr(recon.outcome_reason) || skipReason || '非交易时段，已正常跳过'
+  }
 
   const terminalStatus = order?.terminalStatus ?? null
   const canceled = terminalStatus === '已撤销' || terminalStatus === '已拒绝'
   if (canceled && !reason) reason = terminalStatus ?? ''
 
   // 断点＝主动跳过、订单腿失败、或仓位掉出目标；「受阻/空跑但已到位」不再算断点（安静即好）。
-  const broken = action === 'skipped' || action === 'failed' || reached === false
+  const broken = !sessionSkip && (action === 'skipped' || action === 'failed' || reached === false)
 
   return {
     symbol,
@@ -491,6 +496,7 @@ function targetSummary(tc: TargetChange | null): string {
 
 /** 逐只归入「减仓(阶段1)」或「开仓(阶段2)」，翻向两阶段都占。 */
 function symbolPhase(s: SymbolChain): 'reduce' | 'increase' | 'both' | 'none' {
+  if (s.action === 'skipped' && !s.broken) return 'none'
   switch (s.action) {
     case 'reduce':
     case 'close':
@@ -603,7 +609,8 @@ function buildSpine(
     }
     // 全部到位无动作（aligned）时也给一个标记，别让脊柱在此断档。
     if (phase1.length === 0 && phase2.length === 0) {
-      nodes.push({ key: 'phase', label: '逐只执行', detail: `${symbols.length} 只无变动`, time: '', status: 'INFO', broken: false })
+      const skipped = symbols.filter(s => s.action === 'skipped' && !s.broken).length
+      nodes.push({ key: 'phase', label: '逐只执行', detail: skipped ? `${skipped} 只休市跳过` : `${symbols.length} 只无变动`, time: '', status: 'INFO', broken: false })
     }
   }
   if (afterContent) {

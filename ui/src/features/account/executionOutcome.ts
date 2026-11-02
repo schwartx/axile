@@ -20,6 +20,15 @@ export interface OutcomeView {
 }
 
 function recordedReason(raw: Dict, results: Dict[]): string {
+  const termination = dict(raw.termination)
+  const outcomes = Object.values(dict(termination.cancel_outcomes)).map(dict)
+  const retained = outcomes.filter(item => item.terminal !== true)
+  if (retained.length) {
+    const restricted = retained.filter(item => item.request_status === 'restricted' && !item.query_error).length
+    const failed = retained.filter(item => item.request_status === 'failed').length
+    return [restricted ? `${restricted} 笔委托撤单受限，仍需跟踪` : '', failed ? `${failed} 笔撤单失败` : '',
+      retained.length > restricted + failed ? `${retained.length - restricted - failed} 笔订单终态待确认` : ''].filter(Boolean).join('；')
+  }
   const reason = text(raw.error)
   if (reason) return reason
   const affected = results.filter(result => affectedStates.has(text(result.status)))
@@ -29,7 +38,18 @@ function recordedReason(raw: Dict, results: Dict[]): string {
   return `${affected.length} 个品种执行受阻，原因不同`
 }
 
+export function isSessionClosedSkip(result: Dict): boolean {
+  return result.status === 'NOOP' && result.reason_code === SESSION_CLOSED
+    && !(Array.isArray(result.orders) && result.orders.length) && !(Array.isArray(result.trades) && result.trades.length)
+}
+
 function sessionScopeOf(state: ViewState, reasonCode: string, taskStatus: unknown, results: Dict[]): OutcomeView['sessionScope'] {
+  if (['SUCCEEDED', 'NOOP'].includes(state)) {
+    if (results.some(result => !['SUCCEEDED', 'NOOP'].includes(text(result.status)))) return null
+    const skipped = results.filter(isSessionClosedSkip)
+    if (skipped.length) return skipped.length === results.length ? 'all' : 'partial'
+    return !results.length && state === 'NOOP' && reasonCode === SESSION_CLOSED ? 'all' : null
+  }
   if (!['BLOCKED', 'PARTIAL'].includes(state)) return null
   const closed = results.filter(result => result.status === 'BLOCKED')
   if (results.length && !closed.length) return null
@@ -61,14 +81,15 @@ export function executionRecordView(value: unknown, clear = false): OutcomeView 
     : `未执行${affectedCount ? ` · ${affectedCount} 个品种执行受阻` : ''}`
   const title = {
     SUCCEEDED: isClear ? '清仓完成' : '调仓完成',
-    NOOP: isClear ? '无需清仓' : '无需调仓',
+    NOOP: sessionScope === 'all' ? '休市跳过 · 本次无需执行' : isClear ? '无需清仓' : '无需调仓',
     BLOCKED: blockedTitle,
     PARTIAL: sessionScope === 'partial' ? '部分品种休市 · 执行未全部完成' : '执行未全部完成',
     FAILED: '执行失败', TERMINATED: '执行已终止', UNKNOWN: '执行状态未知',
   }[state]
   const warning = (affectedStates.has(state) && sessionScope !== 'all') || state === 'TERMINATED'
   return { state, title, text: title, tone: warning ? 'warn' : 'neutral', warning,
-    reason: recordedReason(raw, results), symbols, symbolCount: entries.length, affectedCount, sessionScope,
+    reason: recordedReason(raw, results) || (['SUCCEEDED', 'NOOP'].includes(state)
+      ? text(raw.outcome_reason) || (sessionScope ? '非交易时段，已正常跳过' : '') : ''), symbols, symbolCount: entries.length, affectedCount, sessionScope,
     tradeCount: results.reduce((count, result) => count + (Array.isArray(result.trades) ? result.trades.length : 0), 0) }
 }
 

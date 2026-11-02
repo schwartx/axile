@@ -25,6 +25,8 @@ class TerminationCleanupResult:
     attempted: bool = False
     failed_order_ids: list[str] = field(default_factory=list)
     unconfirmed: bool = False
+    details: dict[str, str] = field(default_factory=dict)
+    cancel_outcomes: dict[str, dict[str, object]] = field(default_factory=dict)
 
 
 _scope: ContextVar[_CleanupScope | None] = ContextVar("termination_cleanup", default=None)

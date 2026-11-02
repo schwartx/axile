@@ -13,12 +13,17 @@ from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.server.core.db import SessionLocal
 from axile.server.core.scheduler import scheduler
-from axile.server.cron import SCHEDULER_TIMEZONE, combine_cron_triggers, is_blank_cron_expr, parse_cron_expr
+from axile.server.cron import (
+    SCHEDULER_TIMEZONE,
+    combine_cron_triggers,
+    effective_triggers,
+    is_blank_cron_expr,
+)
 from axile.server.db.models import Account
 from axile.server.db.models.execution_intent import ExecutionIntent
 from axile.server.db.models.supplement import NotificationEvent, SupplementGroup, SupplementStep
 from axile.server.supplement_plan import plan_supplements
-from axile.server.trading_calendar import CalendarDecisionStatus, evaluate_channel_calendar_moment
+from axile.server.trading_calendar import CalendarDecisionStatus, evaluate_channel_calendar_moment, schedule_windows
 
 _locks: dict[int, asyncio.Lock] = {}
 
@@ -34,7 +39,14 @@ def account_lock(account_id: int) -> asyncio.Lock:
 
 def fingerprint(account: Account) -> str:
     """仅调度身份、渠道和绑定参与组去重。"""
-    value = [account.cron_expr, account.supplement.model_dump(), str(account.trade_channel), account.portfolio_id]
+    value = [
+        account.cron_expr,
+        account.supplement.model_dump(),
+        str(account.trade_channel),
+        account.portfolio_id,
+    ]
+    if account.gm_sessions is not None:
+        value.append(account.gm_sessions.model_dump())
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
@@ -57,7 +69,9 @@ async def create_group(account_id: int, base: datetime) -> None:
             return
         if is_blank_cron_expr(account.cron_expr):
             return
-        trigger = combine_cron_triggers(parse_cron_expr(account.cron_expr))
+        trigger = combine_cron_triggers(
+            effective_triggers(account.cron_expr, account.trade_channel, getattr(account, "gm_sessions", None))
+        )
         if trigger.get_next_fire_time(None, base) != base:
             return
         digest = fingerprint(account)
@@ -70,7 +84,9 @@ async def create_group(account_id: int, base: datetime) -> None:
         )
         if existing is not None:
             return
-        planned, expires = plan_supplements(account.trade_channel, account.cron_expr, account.supplement, base)
+        planned, expires = plan_supplements(
+            account.trade_channel, account.cron_expr, account.supplement, base, account.gm_sessions
+        )
         group = SupplementGroup(
             account_id=account_id,
             fingerprint=digest,
@@ -152,7 +168,9 @@ async def step_is_valid(session: AsyncSession, step: SupplementStep, *, pending:
         return False
     if pending and step.status != "pending":
         return False
-    decision = evaluate_channel_calendar_moment(account.trade_channel, now)
+    decision = evaluate_channel_calendar_moment(
+        account.trade_channel, now, windows=schedule_windows(account.trade_channel, account.gm_sessions)
+    )
     return decision.status not in {CalendarDecisionStatus.AVAILABLE_CLOSED, CalendarDecisionStatus.UNAVAILABLE}
 
 

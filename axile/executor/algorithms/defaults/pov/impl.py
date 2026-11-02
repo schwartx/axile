@@ -340,10 +340,12 @@ def _place_participation_slice(
         return detail
 
     tracker.wait_for_completion(timeout=max(0.0, deadline - get_default_clock().time()))
-    failed_cancels = cancel_pending_orders_via_query(executor)
-    if failed_cancels:
-        tracker.explicit_error = "撤单失败，订单终态尚未确认"
-        detail["cancel_error"] = f"撤单失败: {failed_cancels}"
+    cancellation = cancel_pending_orders_via_query(executor)
+    unconfirmed = tracker.record_cancellation_result(cancellation)
+    if cancellation.orders:
+        detail["cancel_outcomes"] = cancellation.outcomes
+    if unconfirmed and not tracker.waiting_on_restriction():
+        detail["cancel_error"] = unconfirmed
     return detail
 
 
@@ -455,7 +457,8 @@ def pov(
             target_volume,
             orders,
             trades,
-            explicit_error=tracker.explicit_error if isinstance(tracker.explicit_error, str) else None,
+            explicit_error=(tracker.explicit_error if isinstance(tracker.explicit_error, str) else None)
+            or (tracker.pending_reason if isinstance(tracker.pending_reason, str) else None),
             explicit_blocked_error=tracker.explicit_blocked_error
             if isinstance(tracker.explicit_blocked_error, str)
             else None,
@@ -532,6 +535,11 @@ def _run_participation_loop(
     while clock.time() < deadline:
         executor.handle_termination_checkpoint()
 
+        if tracker.waiting_on_restriction():
+            tracker.wait_for_completion(timeout=min(fill_wait, max(0.0, deadline - clock.time())))
+            if tracker.get_pending_count():
+                executor.sleep_or_terminate(min(interval, max(0.0, deadline - clock.time())))
+                continue
         account_assets = executor.get_account_assets()
         current_volume = executor.get_current_volume(account_assets)
         filled = abs(current_volume - start_volume)
@@ -539,17 +547,28 @@ def _run_participation_loop(
             break
 
         want = compute_participation_want(params.participation_rate, accumulator.total, filled, total_qty)
+        remaining = deadline - clock.time()
+        if remaining <= 0:
+            break
         if want > 0:
             executor.logger.info(
                 f"{executor.symbol} 参与下单 {want}（已见市场量 {accumulator.total:.4f}, 已成交 {filled}/{total_qty}）"
             )
             detail = _place_participation_slice(
-                executor, tracker, direction, want, params, account_assets, current_volume, target_volume, fill_wait
+                executor,
+                tracker,
+                direction,
+                want,
+                params,
+                account_assets,
+                current_volume,
+                target_volume,
+                min(fill_wait, remaining),
             )
             detail["market_seen"] = accumulator.total
             slice_details.append(detail)
 
-        executor.sleep_or_terminate(interval)
+        executor.sleep_or_terminate(min(interval, max(0.0, deadline - clock.time())))
 
     _maybe_complete_on_timeout(
         executor, tracker, params, direction, total_qty, start_volume, target_volume, fill_wait, slice_details
@@ -591,7 +610,7 @@ def _maybe_complete_on_timeout(
     slice_details : list[dict[str, Any]]
         执行明细列表，就地追加补单明细。
     """
-    if not params.complete_on_timeout:
+    if not params.complete_on_timeout or tracker.get_pending_count():
         return
 
     account_assets = executor.get_account_assets()

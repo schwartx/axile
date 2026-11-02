@@ -15,12 +15,13 @@ from sqlalchemy.orm import InstrumentedAttribute, defer
 from sqlmodel import col, desc, func, select
 
 from axile.channels import get_channel
+from axile.channels.gm_sessions import GM_SPECIAL_WINDOWS, gm_phase
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.trading_calendar import SHINNY_COVERAGE_END, SHINNY_COVERAGE_START
 from axile.server.api.deps import SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
-from axile.server.cron import SCHEDULER_TIMEZONE, is_blank_cron_expr, parse_cron_expr
+from axile.server.cron import SCHEDULER_TIMEZONE, effective_triggers, is_blank_cron_expr
 from axile.server.db.models import (
     AccountActivityListPublic,
     ExecuteRecord,
@@ -28,7 +29,7 @@ from axile.server.db.models import (
     ScheduleSkip,
     ScheduleSkipActivity,
 )
-from axile.server.db.models.account_settings import SupplementSettings
+from axile.server.db.models.account_settings import GMSessionSettings, SupplementSettings
 from axile.server.db.models.performance import CostSummary
 from axile.server.db.models.schedule import (
     ActivityExecutionRecord,
@@ -43,6 +44,7 @@ from axile.server.trading_calendar import (
     CalendarSkipReason,
     CalendarUnavailableReason,
     evaluate_channel_calendar_moment,
+    schedule_windows,
 )
 
 router = APIRouter()
@@ -112,6 +114,7 @@ class SchedulePreviewRequest(BaseModel):
 
     trade_channel: TradeChannel
     cron_expr: str
+    gm_sessions: GMSessionSettings | None = None
     supplement: SupplementSettings | None = None
     scheduled_ats: list[AwareDatetime] | None = Field(
         default=None, min_length=1, max_length=100, description="仅重算指定基础触发的补发摘要，不推进预览游标"
@@ -147,6 +150,7 @@ class SchedulePreviewItem(BaseModel):
     calendar_id: str | None = None
     label: str | None = None
     reason_code: CalendarSkipReason | None = None
+    phase_label: str | None = None
 
 
 class SchedulePreviewResponse(BaseModel):
@@ -211,16 +215,28 @@ def _calendar_summary(channel: TradeChannel, current: datetime) -> SchedulePrevi
     )
 
 
+def _phase_label(channel: TradeChannel, moment: datetime) -> str | None:
+    if str(channel) != "gm":
+        return None
+    phase = gm_phase(moment)
+    return GM_SPECIAL_WINDOWS[phase][2] if phase in GM_SPECIAL_WINDOWS else None
+
+
 def _selected_base_preview(payload: SchedulePreviewRequest, base: datetime) -> SchedulePreviewItem:
     """只重算已有基础触发的补发摘要，保持原时间点及日历动作。"""
     local_time = base.astimezone(SCHEDULER_TIMEZONE)
-    decision = evaluate_channel_calendar_moment(payload.trade_channel, local_time)
+    decision = evaluate_channel_calendar_moment(
+        payload.trade_channel, local_time, windows=schedule_windows(payload.trade_channel, payload.gm_sessions)
+    )
     skipped = decision.status in {CalendarDecisionStatus.AVAILABLE_CLOSED, CalendarDecisionStatus.UNAVAILABLE}
     points = [local_time]
     if payload.supplement is not None and not skipped:
-        points, _ = plan_supplements(payload.trade_channel, payload.cron_expr, payload.supplement, local_time)
+        points, _ = plan_supplements(
+            payload.trade_channel, payload.cron_expr, payload.supplement, local_time, payload.gm_sessions
+        )
     return SchedulePreviewItem(
         scheduled_at=local_time,
+        phase_label=_phase_label(payload.trade_channel, local_time),
         base_scheduled_at=local_time,
         effective_count=len(points) - 1,
         is_last=len(points) == 1,
@@ -239,7 +255,8 @@ async def schedule_preview(payload: SchedulePreviewRequest) -> SchedulePreviewRe
     """按时间游标只读预览未来 Cron 触发点及其交易日历动作。"""
     try:
         get_channel(str(payload.trade_channel))
-    except KeyError as exc:
+        schedule_windows(payload.trade_channel, payload.gm_sessions)
+    except (KeyError, ValueError) as exc:
         raise _field_error("trade_channel", str(exc)) from exc
 
     evaluated_at = clock_now(tz=SCHEDULER_TIMEZONE)
@@ -247,7 +264,7 @@ async def schedule_preview(payload: SchedulePreviewRequest) -> SchedulePreviewRe
     if is_blank_cron_expr(payload.cron_expr):
         return SchedulePreviewResponse(evaluated_at=evaluated_at, calendar=calendar, items=[])
     try:
-        triggers = parse_cron_expr(payload.cron_expr)
+        triggers = effective_triggers(payload.cron_expr, payload.trade_channel, payload.gm_sessions)
     except ValueError as exc:
         raise _field_error("cron_expr", str(exc)) from exc
 
@@ -277,10 +294,14 @@ async def schedule_preview(payload: SchedulePreviewRequest) -> SchedulePreviewRe
         )
         expanded = []
         for base in bases:
-            decision = evaluate_channel_calendar_moment(payload.trade_channel, base)
+            decision = evaluate_channel_calendar_moment(
+                payload.trade_channel, base, windows=schedule_windows(payload.trade_channel, payload.gm_sessions)
+            )
             points = [base]
             if decision.status not in {CalendarDecisionStatus.AVAILABLE_CLOSED, CalendarDecisionStatus.UNAVAILABLE}:
-                points, _ = plan_supplements(payload.trade_channel, payload.cron_expr, payload.supplement, base)
+                points, _ = plan_supplements(
+                    payload.trade_channel, payload.cron_expr, payload.supplement, base, payload.gm_sessions
+                )
             for index, point in enumerate(points):
                 if point > start or (payload.after is None and point == start):
                     expanded.append(point)
@@ -296,10 +317,13 @@ async def schedule_preview(payload: SchedulePreviewRequest) -> SchedulePreviewRe
     items = []
     for scheduled_at in page:
         local_time = scheduled_at.astimezone(SCHEDULER_TIMEZONE)
-        decision = evaluate_channel_calendar_moment(payload.trade_channel, local_time)
+        decision = evaluate_channel_calendar_moment(
+            payload.trade_channel, local_time, windows=schedule_windows(payload.trade_channel, payload.gm_sessions)
+        )
         items.append(
             SchedulePreviewItem(
                 scheduled_at=local_time,
+                phase_label=_phase_label(payload.trade_channel, local_time),
                 **metadata.get(scheduled_at, {}),
                 calendar_day=decision.day,
                 calendar_status=decision.status,

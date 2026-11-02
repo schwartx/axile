@@ -23,15 +23,26 @@ export function schedulePreviewRowKey(item: SchedulePreview['items'][number]): s
     : `round:${item.base_scheduled_at ?? item.scheduled_at}`
 }
 
-/** 整日休市合并为日期行，补发合并为基础轮次，普通 cron 各自保留。 */
-export function schedulePreviewRows(items: SchedulePreview['items']): SchedulePreview['items'] {
+export type SchedulePreviewRow = SchedulePreview['items'][number] & { closed_until?: string }
+
+/** 连续整日休市合并为日期区间，补发合并为基础轮次，普通 cron 各自保留。 */
+export function schedulePreviewRows(items: SchedulePreview['items']): SchedulePreviewRow[] {
   const seen = new Set<string>()
-  return items.filter((item) => {
+  const rows: SchedulePreviewRow[] = []
+  for (const item of items) {
     const key = schedulePreviewRowKey(item)
-    if (seen.has(key)) return false
+    if (seen.has(key)) continue
     seen.add(key)
-    return true
-  })
+    const previous = rows.at(-1)
+    if (previous && isClosedPreviewDay(previous) && isClosedPreviewDay(item)
+      && previous.calendar_id === item.calendar_id
+      && Date.parse(item.calendar_day) - Date.parse(previous.closed_until ?? previous.calendar_day) === 86_400_000) {
+      previous.closed_until = item.calendar_day
+    } else {
+      rows.push({ ...item })
+    }
+  }
+  return rows
 }
 
 /** 日期行已代表整日休市，续取从当天结束后开始，避免密集重复拉取。 */
@@ -51,7 +62,7 @@ export function schedulePreviewItemPresentation(
   if (item.calendar_status === 'available_closed') {
     return { text: reasonText(item.reason_code, '休市').replace(/，已跳过$/, ''), tone: 'muted' }
   }
-  if (item.calendar_status === 'unavailable') return { text: '日历不可用，按排程执行', tone: 'warning' }
+  if (item.calendar_status === 'unavailable') return { text: '日历不可用，跳过执行', tone: 'warning' }
   if (item.action === 'execute' && item.base_scheduled_at && intervalMinutes != null) {
     const index = item.index ?? 0
     const count = Math.max(0, (item.effective_count ?? 0) - Math.max(0, index - 1))

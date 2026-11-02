@@ -85,6 +85,8 @@ class _TerminationSnapshot:
     forced: bool
     cancel_attempted: bool | None
     cancel_unconfirmed: bool
+    cancel_details: dict[str, str]
+    cancel_outcomes: dict[str, dict[str, object]]
 
 
 def _resolve_termination_snapshot(
@@ -118,6 +120,8 @@ def _resolve_termination_snapshot(
         forced=exc.forced,
         cancel_attempted=exc.cancel_attempted,
         cancel_unconfirmed=exc.cancel_unconfirmed,
+        cancel_details=exc.cancel_details,
+        cancel_outcomes=exc.cancel_outcomes,
     )
 
 
@@ -309,6 +313,8 @@ async def _record_terminated_execution(
         trigger=termination.trigger,
         forced=termination.forced,
         cancel_unconfirmed=termination.cancel_unconfirmed,
+        cancel_details=termination.cancel_details,
+        cancel_outcomes=termination.cancel_outcomes,
     )
     if current_state is not None and current_state.channel is not None and current_state.algorithm:
         await append_execution_event(
@@ -329,6 +335,8 @@ async def _record_terminated_execution(
                     "cancel_failed_order_ids": termination.cancel_failed_order_ids,
                     "forced": termination.forced,
                     "cancel_unconfirmed": termination.cancel_unconfirmed,
+                    "cancel_details": termination.cancel_details,
+                    "cancel_outcomes": termination.cancel_outcomes,
                 }
             },
         )

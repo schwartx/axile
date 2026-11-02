@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, cast
 from axile.channels import get_channel
 from axile.common.order_param_model import OrderParamModel
 from axile.executor.models.execution_result import (
+    AlgorithmResult,
     ExecutionOutcome,
     ExecutionStatus,
     TargetSizingDecision,
@@ -86,7 +87,7 @@ class AbstractExecutorCapabilityMixin:
 
     def _create_non_trading_output(self, standard_input: UnifiedStandardInput) -> UnifiedStandardOutput:
         """
-        创建非交易时间场景下的阻断输出.
+        创建休市跳过输出；已有未决委托仍按受阻保留。
 
         Parameters
         ----------
@@ -96,20 +97,31 @@ class AbstractExecutorCapabilityMixin:
         Returns
         -------
         UnifiedStandardOutput
-            状态为 ``BLOCKED`` 的统一输出对象。
+            无未决委托时为 ``NOOP``，否则为 ``BLOCKED``。
         """
         executor = _executor(self)
         runtime = executor.require_execution_runtime()
         empty_assets = UnifiedAccountAssets.unavailable()
+        retained = executor.account_orders.snapshot()["data"]
+        symbol_results = {
+            symbol: AlgorithmResult(
+                symbol=symbol,
+                status=ExecutionStatus.BLOCKED,
+                error="非交易时段，仍有未决委托",
+                reason_code=COMMON_SESSION_CLOSED,
+                orders=[order for order in retained if order.symbol == symbol],
+            )
+            for symbol in {order.symbol for order in retained}
+        }
 
         return UnifiedStandardOutput(
             account_assets=empty_assets,
             memory={"message": SESSION_CLOSED_MESSAGE},
-            symbol_results={},
-            outcome=ExecutionOutcome.BLOCKED,
+            symbol_results=symbol_results,
+            outcome=ExecutionOutcome.BLOCKED if retained else ExecutionOutcome.COMPLETED,
             outcome_reason=SESSION_CLOSED_MESSAGE,
-            status=ExecutionStatus.BLOCKED,
-            error=SESSION_CLOSED_MESSAGE,
+            status=ExecutionStatus.BLOCKED if retained else ExecutionStatus.NOOP,
+            error="非交易时段，仍有未决委托" if retained else None,
             reason_code=COMMON_SESSION_CLOSED,
             execution_time=runtime.elapsed_seconds(),
             channel_type=executor.channel_type,

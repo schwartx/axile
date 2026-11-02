@@ -88,3 +88,12 @@ test('清仓 NOOP 和 PARTIAL 沿用清仓标题，不与调仓合并', () => {
   const result = rows([execution(23, 'NOOP', { execution_kind: 'clear_positions' }), execution(22, 'NOOP'), execution(21, 'PARTIAL', { execution_kind: 'clear_positions' })])
   expect(result.rows.map(recentRowText)).toEqual(['无需清仓', '无需调仓', '执行未全部完成'])
 })
+
+test('正常休市跳过保持成功，不合并到失败或普通无需调仓', () => {
+  const result = rows([
+    execution(24, 'NOOP', { is_success: 1, reason_code: 'COMMON.SESSION.CLOSED', outcome_reason: '1 个品种休市，已跳过', symbol_results: { A: { status: 'NOOP', reason_code: 'COMMON.SESSION.CLOSED' } } }),
+    execution(23, 'SUCCEEDED', { is_success: 1, reason_code: 'COMMON.SESSION.CLOSED', outcome_reason: '1 个品种休市，已跳过', symbol_results: { A: { status: 'NOOP', reason_code: 'COMMON.SESSION.CLOSED' }, B: { status: 'SUCCEEDED' } } }),
+  ])
+  expect(result.rows.map(recentRowText)).toEqual(['休市跳过 · 本次无需执行 · 1 个品种休市，已跳过', '调仓完成 · 1 个品种休市，已跳过'])
+  expect(result.rows.every(row => row.type === 'fill')).toBe(true)
+})

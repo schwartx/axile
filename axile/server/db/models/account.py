@@ -17,7 +17,12 @@ from axile.executor.models.unified_input import DEFAULT_EXECUTION_TIMEOUT_SECOND
 from axile.server.db.models.account_connection import AccountConnectionPublic, AccountConnectionState
 from axile.server.db.models.account_notification import AccountNotificationState, AccountNotificationStatePublic
 from axile.server.db.models.account_runtime_sync import AccountRuntimeSyncPublic
-from axile.server.db.models.account_settings import SETTINGS_FIELDS, AccountSettings, SupplementSettings
+from axile.server.db.models.account_settings import (
+    SETTINGS_FIELDS,
+    AccountSettings,
+    GMSessionSettings,
+    SupplementSettings,
+)
 from axile.server.db.models.account_validation import (
     _MAX_EXECUTION_TIMEOUT,
     _validate_algorithm_config,
@@ -64,6 +69,7 @@ class AccountBase(BaseModel):
     is_started: bool = Field(
         description="账户是否已启动, 布尔值, 必填",
     )
+    gm_sessions: GMSessionSettings | None = None
     supplement: SupplementSettings | None = None
     cron_expr: str = Field(
         description="定时任务表达式, 符合crontab语法, 必填",
@@ -299,6 +305,7 @@ class AccountPublic(SQLModel):
     connection_values: dict[str, Any] = Field(default_factory=dict)
     is_started: bool
     cron_expr: str
+    gm_sessions: GMSessionSettings | None = None
     supplement: SupplementSettings | None = None
     has_pending_supplement: bool = False
     remark: Optional[str] = None
@@ -499,6 +506,7 @@ class AccountUpdate(SQLModel):
     account_config: Optional[Dict[str, Any]] = None
     is_started: Optional[bool] = None
     cron_expr: Optional[str] = None
+    gm_sessions: GMSessionSettings | None = None
     supplement: SupplementSettings | None = None
     remark: Optional[str] = None
     brokerage: Optional[str] = None

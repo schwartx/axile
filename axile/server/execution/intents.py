@@ -357,6 +357,16 @@ async def _insert_intent(
     trigger_source: str,
     payload: dict[str, object],
 ) -> IntentSnapshot:
+    if str(account.trade_channel) == "gm" and kind == ExecutionKind.REBALANCE and trigger_source == "scheduler":
+        from axile.channels.gm_sessions import SHANGHAI, check_gm_operation, gm_session_context
+        from axile.executor.algorithms.utils.clock import clock_now
+        from axile.server.db.models.account_settings import GMSessionSettings
+
+        sessions = account.gm_sessions or GMSessionSettings()
+        now = clock_now(tz=SHANGHAI)
+        context = cast("dict[str, Any]", payload.get("gm_session")) or gm_session_context(sessions.model_dump(), now)
+        check_gm_operation(now, context=context)
+        payload = {**payload, "gm_session": context}
     algorithm = resolve_execution_algorithm_name(
         account,
         kind,

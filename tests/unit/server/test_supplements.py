@@ -37,7 +37,7 @@ def schema_template(tmp_path_factory):
     return path
 
 
-def open_moment(channel, moment):
+def open_moment(channel, moment, **_kwargs):
     return CalendarDayDecision(channel=str(channel), day=moment.date(), status=CalendarDecisionStatus.NOT_REQUIRED)
 
 
@@ -111,7 +111,7 @@ def test_plan_cuts_next_base_and_session(monkeypatch):
     import axile.server.supplement_plan as planner
 
     monkeypatch.setattr(planner, "evaluate_channel_calendar_moment", open_moment)
-    monkeypatch.setattr(planner, "session_end", lambda _channel, _base: BASE + timedelta(minutes=2))
+    monkeypatch.setattr(planner, "session_end", lambda _channel, _base, _sessions: BASE + timedelta(minutes=2))
     points, expires = plan_supplements("ctp", "*/15 * * * *", SupplementSettings(count=4, interval_minutes=1), BASE)
     assert points == [BASE, BASE + timedelta(minutes=1)]
     assert expires == BASE + timedelta(minutes=2)
@@ -250,7 +250,7 @@ def test_failed_execution_keeps_future_supplements(monkeypatch, schema_template)
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("scope", ["all", "partial", "error"])
+@pytest.mark.parametrize("scope", ["all", "partial", "error", "normal_all", "normal_partial"])
 def test_session_closed_completion_cancels_only_its_group(monkeypatch, schema_template, scope):
     from tests.unit.server.test_session_closed_execution import closed_result
 
@@ -270,8 +270,20 @@ def test_session_closed_completion_cancels_only_its_group(monkeypatch, schema_te
                     raw["symbol_results"]["ag2612"] = {"status": "NOOP", "target_volume": -6, "final_volume": -6}
                 elif scope == "error":
                     raw["symbol_results"]["ag2612"] = {"status": "FAILED", "reason_code": "CHANNEL.QUERY_FAILED"}
+                normal = scope.startswith("normal_")
+                if normal:
+                    raw.update(status="NOOP", error=None, success=True)
+                    raw["symbol_results"]["m2701"]["status"] = "NOOP"
+                    if scope == "normal_partial":
+                        raw["status"] = "SUCCEEDED"
+                        raw["symbol_results"]["ag2612"] = {"status": "SUCCEEDED"}
+                all_closed = scope in {"all", "normal_all"}
                 record = ExecuteRecord(
-                    account_id=1, execution_id=execution.execution_id, raw_input={}, raw_result=raw, is_success=0
+                    account_id=1,
+                    execution_id=execution.execution_id,
+                    raw_input={},
+                    raw_result=raw,
+                    is_success=int(normal),
                 )
                 session.add(record)
                 await session.commit()
@@ -279,6 +291,8 @@ def test_session_closed_completion_cancels_only_its_group(monkeypatch, schema_te
                 "all": ExecutionTaskStatus.SKIPPED,
                 "partial": ExecutionTaskStatus.PARTIAL,
                 "error": ExecutionTaskStatus.FAILED,
+                "normal_all": ExecutionTaskStatus.SUCCEEDED,
+                "normal_partial": ExecutionTaskStatus.SUCCEEDED,
             }[scope]
             from axile.server.execution import lifecycle, registry
 
@@ -296,8 +310,8 @@ def test_session_closed_completion_cancels_only_its_group(monkeypatch, schema_te
             state = registry.get_execution_task_state(execution.execution_id)
             assert state.status == terminal
             assert state.output_status == raw["status"]
-            assert state.is_success == 0
-            assert state.error == "非交易时段"
+            assert state.is_success == int(normal)
+            assert state.error == (None if normal else "非交易时段")
             # 幂等收尾不能重复取消/通知，也不能影响下一组。
             await intents.mark_intent_finished(execution.execution_id, terminal)
             async with factory() as session:
@@ -305,19 +319,19 @@ def test_session_closed_completion_cancels_only_its_group(monkeypatch, schema_te
                 assert finished.status == terminal
                 assert finished.finished_at is not None
                 actual_group = await session.get(SupplementGroup, group.id)
-                assert actual_group.status == ("cancelled" if scope == "all" else "active")
+                assert actual_group.status == ("cancelled" if all_closed else "active")
                 assert (await session.get(SupplementStep, steps[0].id)).status == "finished"
                 assert (await session.get(SupplementStep, steps[-1].id)).status == (
-                    "cancelled" if scope == "all" else "pending"
+                    "cancelled" if all_closed else "pending"
                 )
                 assert (await session.get(SupplementGroup, next_group.id)).status == "active"
                 events = list(
                     (await session.scalars(select(NotificationEvent).order_by(NotificationEvent.sequence))).all()
                 )
                 assert [event.event_type for event in events] == (
-                    ["execution.finished", "supplement.cancelled"] if scope == "all" else ["execution.finished"]
+                    ["execution.finished", "supplement.cancelled"] if all_closed else ["execution.finished"]
                 )
-            if scope == "all":
+            if all_closed:
                 await supplements.fire_step(steps[-1].id)
                 now[0] = BASE + timedelta(minutes=15)
                 clear_queued_execution(1, execution.execution_id)

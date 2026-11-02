@@ -8,10 +8,12 @@ export type ScheduleTimeRowSize = 'sm' | 'md'
 export interface ScheduleTimeRowProps {
   scheduledAt: string
   dateOnly?: boolean
+  dateEnd?: string
   trailing: ReactNode
   now?: number
   tone?: ScheduleTimeRowTone
   size?: ScheduleTimeRowSize
+  stacked?: boolean
   className?: string
   style?: CSSProperties
 }
@@ -31,29 +33,33 @@ const SIZE_CLASS: Record<ScheduleTimeRowSize, string> = {
 export function ScheduleTimeRow({
   scheduledAt,
   dateOnly = false,
+  dateEnd,
   trailing,
   now = Date.now(),
   tone = 'default',
   size = 'sm',
+  stacked = false,
   className = '',
   style,
 }: ScheduleTimeRowProps) {
   const dateTime = dateOnly ? formatBeijingDate(scheduledAt) : scheduledAt
-  const exactTime = dateOnly ? `${dateTime}（北京时间）` : formatBeijingTimestamp(scheduledAt)
+  const rangeEnd = dateOnly ? dateEnd : undefined
+  const exactTime = dateOnly ? `${dateTime}${rangeEnd ? `–${rangeEnd}` : ''}（北京时间）` : formatBeijingTimestamp(scheduledAt)
   return (
     <div
       role="listitem"
-      className={`grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-baseline gap-3 ${SIZE_CLASS[size]} ${className}`}
+      className={`grid min-w-0 items-baseline ${stacked ? 'grid-cols-1 gap-1 py-1' : rangeEnd ? 'grid-cols-[minmax(0,1fr)_auto] gap-3' : 'grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-3'} ${SIZE_CLASS[size]} ${className}`}
       style={style}
     >
       <time
         dateTime={dateTime}
         title={exactTime}
-        className="num min-w-0 truncate font-medium text-ink-1"
+        className={`num min-w-0 font-medium text-ink-1 ${stacked || rangeEnd ? '' : 'truncate'}`}
       >
         {dateOnly ? formatPlannedDate(scheduledAt, now) : formatPlannedAt(scheduledAt, now)}
+        {rangeEnd && `–${formatPlannedDate(rangeEnd, now)}`}
       </time>
-      <span title={typeof trailing === 'string' ? trailing : undefined} className={`min-w-0 truncate text-right ${TONE_CLASS[tone]}`}>
+      <span title={typeof trailing === 'string' ? trailing : undefined} className={`min-w-0 ${stacked ? 'break-words text-left' : 'truncate text-right'} ${TONE_CLASS[tone]}`}>
         {trailing}
       </span>
     </div>

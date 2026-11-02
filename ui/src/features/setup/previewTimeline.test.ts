@@ -56,7 +56,7 @@ test('请求条数按补发轮次换算，遵守后端单页上限', () => {
 })
 
 describe('schedulePreviewRows', () => {
-  test('同一天休市合并为日期行，跨页后仍各日一行并保留有效计划', () => {
+  test('跨页连续休市合并为日期区间，保留有效计划且不修改原始数据', () => {
     const closed = preview(['2026-08-29T09:00:00+08:00', '2026-08-29T09:15:00+08:00'], '2026-08-29T09:15:00+08:00', true)
     closed.items = closed.items.map((item) => ({ ...item, calendar_status: 'available_closed', action: 'skip', reason_code: 'CALENDAR.CLOSED' }))
     const next = preview(['2026-08-29T09:30:00+08:00', '2026-08-30T09:00:00+08:00', '2026-08-31T09:00:00+08:00'], null, false)
@@ -64,8 +64,33 @@ describe('schedulePreviewRows', () => {
       ...item, calendar_status: 'available_closed', action: 'skip', reason_code: 'CALENDAR.CLOSED',
     })
     const rows = schedulePreviewRows(appendSchedulePreview(closed, next, closed.next_cursor!).items)
-    expect(rows.map((item) => item.calendar_day)).toEqual(['2026-08-29', '2026-08-30', '2026-08-31'])
-    expect(rows.map(isClosedPreviewDay)).toEqual([true, true, false])
+    expect(rows.map((item) => item.calendar_day)).toEqual(['2026-08-29', '2026-08-31'])
+    expect(rows[0]!.closed_until).toBe('2026-08-30')
+    expect(rows.map(isClosedPreviewDay)).toEqual([true, false])
+    expect(closed.items[0]).not.toHaveProperty('closed_until')
+    expect(schedulePreviewRows(closed.items)[0]).not.toHaveProperty('closed_until')
+  })
+
+  test.each([
+    ['2026-10-31', '2026-11-01'],
+    ['2026-12-31', '2027-01-01'],
+  ])('连续休市跨月或跨年仍合并：%s–%s', (start, end) => {
+    const points = preview([`${start}T09:15:00+08:00`, `${end}T09:15:00+08:00`], null, false)
+    points.items = points.items.map((item) => ({ ...item, calendar_status: 'available_closed', action: 'skip', reason_code: 'CALENDAR.CLOSED' }))
+    const rows = schedulePreviewRows(points.items)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.closed_until).toBe(end)
+  })
+
+  test('不跨过未加载日期、交易日或日历不可用日期合并', () => {
+    const points = preview(['2026-11-01', '2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06', '2026-11-07', '2026-11-08'].map((day) => `${day}T09:15:00+08:00`), null, false)
+    points.items = points.items.map((item, index) => {
+      if (index === 2) return item
+      return { ...item, calendar_status: index === 4 ? 'unavailable' : 'available_closed', action: 'skip', reason_code: index === 4 ? null : 'CALENDAR.CLOSED' }
+    })
+    const rows = schedulePreviewRows(points.items)
+    expect(rows.map((row) => row.calendar_day)).toEqual(['2026-11-01', '2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06', '2026-11-07'])
+    expect(rows.map((row) => row.closed_until)).toEqual([undefined, undefined, undefined, undefined, undefined, '2026-11-08'])
   })
 
   test('日内休息、无对应夜盘和日历不可用仍显示各自时刻', () => {
@@ -152,7 +177,7 @@ describe('schedulePreviewItemPresentation', () => {
       ...base,
       calendar_status: 'unavailable',
     }, executionReasonText)).toEqual({
-      text: '日历不可用，按排程执行',
+      text: '日历不可用，跳过执行',
       tone: 'warning',
     })
   })

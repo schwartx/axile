@@ -28,6 +28,7 @@ def test_handle_inline_execution_terminated_persists_record_and_updates_state(mo
         channel=TradeChannel.CTP,
         algorithm="SINGLE-MAKER",
     )
+    outcomes = {"ag2612:old": {"request_status": "restricted", "terminal": False, "query_error": None}}
     captured: dict[str, object] = {"events": []}
     execution_registry.set_execution_task_state(execution_id, state)
 
@@ -55,6 +56,7 @@ def test_handle_inline_execution_terminated_persists_record_and_updates_state(mo
                     mode=ExecutionTerminateMode.GRACEFUL.value,
                     acked_at="2026-03-27T10:00:03",
                     cancel_failed_order_ids=["order-1"],
+                    cancel_outcomes=outcomes,
                 ),
             )
         )
@@ -78,6 +80,8 @@ def test_handle_inline_execution_terminated_persists_record_and_updates_state(mo
         "trigger": "operator",
         "forced": False,
         "cancel_unconfirmed": False,
+        "cancel_details": {},
+        "cancel_outcomes": outcomes,
     }
     assert captured["events"] == [
         {
@@ -98,6 +102,8 @@ def test_handle_inline_execution_terminated_persists_record_and_updates_state(mo
                     "cancel_failed_order_ids": ["order-1"],
                     "forced": False,
                     "cancel_unconfirmed": False,
+                    "cancel_details": {},
+                    "cancel_outcomes": outcomes,
                 }
             },
         }
@@ -182,6 +188,8 @@ def test_run_execution_task_uses_state_termination_fallbacks(monkeypatch) -> Non
         "trigger": "operator",
         "forced": False,
         "cancel_unconfirmed": False,
+        "cancel_details": {},
+        "cancel_outcomes": {},
     }
     assert captured["events"] == [
         {
@@ -202,6 +210,8 @@ def test_run_execution_task_uses_state_termination_fallbacks(monkeypatch) -> Non
                     "cancel_failed_order_ids": ["order-9"],
                     "forced": False,
                     "cancel_unconfirmed": False,
+                    "cancel_details": {},
+                    "cancel_outcomes": {},
                 }
             },
         }
@@ -508,6 +518,7 @@ def test_worker_backend_terminated_response_round_trips_trigger() -> None:
             mode=ExecutionTerminateMode.CANCEL_PENDING.value,
             acked_at="2026-07-27T10:03:00",
             trigger="timeout",
+            cancel_details={"600000.SH:old": "当前不可撤单"},
         ),
     )
     assert isinstance(response, WorkerBackendResponse)
@@ -516,6 +527,7 @@ def test_worker_backend_terminated_response_round_trips_trigger() -> None:
     with pytest.raises(ExecutionTerminated) as exc_info:
         WorkerBackendManager._handle_response(response)
 
+    assert exc_info.value.cancel_details == {"600000.SH:old": "当前不可撤单"}
     assert exc_info.value.trigger == "timeout"
     assert exc_info.value.mode == ExecutionTerminateMode.CANCEL_PENDING.value
 

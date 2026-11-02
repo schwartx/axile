@@ -180,9 +180,10 @@ def test_ctp_engine_only_queries_and_dispatches_session_allowed_symbols(monkeypa
 
     output = executor.execute(_input(), cleanup=False)
 
-    assert output.status == ExecutionStatus.PARTIAL
-    assert output.symbol_results["IF2609"].status == ExecutionStatus.BLOCKED
-    assert output.symbol_results["IF2609"].error == "非交易时段"
+    assert output.status == ExecutionStatus.SUCCEEDED
+    assert output.symbol_results["IF2609"].status == ExecutionStatus.NOOP
+    assert output.symbol_results["IF2609"].error is None
+    assert output.symbol_results["IF2609"].outcome_reason == "非交易时段"
     assert output.symbol_results["IF2609"].reason_code == "COMMON.SESSION.CLOSED"
     assert output.symbol_results["IF2609"].memory == {
         "symbol_decision_reason_code": "COMMON.SESSION.CLOSED",
@@ -225,10 +226,10 @@ def test_mixed_session_output_preserves_open_results_and_closed_targets(monkeypa
         assert output.reason_code is None
         assert session_closed_scope(output.model_dump(mode="json")) is None
     else:
-        assert output.status == ExecutionStatus.PARTIAL
+        assert output.status == open_status
         assert output.reason_code == COMMON_SESSION_CLOSED
-        assert output.error == "部分品种休市，1 个品种未处理"
-        assert not output.success
+        assert output.error is None
+        assert output.success
         assert session_closed_scope(output.model_dump(mode="json")) == "partial"
 
 
@@ -300,7 +301,7 @@ def test_ctp_engine_sizes_closed_symbol_from_cached_quote_without_blocking_io(
     output = executor.execute(_input(), cleanup=False)
 
     blocked = output.symbol_results["IF2609"]
-    assert blocked.status == ExecutionStatus.BLOCKED
+    assert blocked.status == ExecutionStatus.NOOP
     assert blocked.sizing is not None
     assert blocked.sizing.target_quantity == pytest.approx(1.0)
     assert blocked.target_volume == pytest.approx(1.0)
@@ -349,16 +350,16 @@ def test_ctp_engine_blocks_all_session_rejections_without_execution_io() -> None
 
     assert output.status == ExecutionStatus.BLOCKED
     assert output.error is not None
-    assert "2 个品种" in output.error
-    assert output.error == "2 个品种执行受阻"
-    assert output.reason_code is None
+    assert output.symbol_results["ag2612"].status == ExecutionStatus.BLOCKED
+    assert output.error == output.symbol_results["ag2612"].error
+    assert output.reason_code == "CTP.SESSION.NO_SESSION_TABLE"
     assert set(output.symbol_results) == {"IF2609", "ag2612"}
     assert executor.market_data_requests == []
     assert executor.websocket_requests == []
     assert executor.cancel_all_orders_calls == 0
     for symbol in ("IF2609", "ag2612"):
         result = output.symbol_results[symbol]
-        assert result.status == ExecutionStatus.BLOCKED
+        assert result.status == (ExecutionStatus.NOOP if symbol == "IF2609" else ExecutionStatus.BLOCKED)
         assert result.sizing is not None
         assert result.sizing.status is TargetSizingStatus.UNAVAILABLE
 
@@ -395,3 +396,50 @@ def test_ctp_session_decision_emits_market_rule_audit() -> None:
     event = runtime.events[0]
     assert event["reason_family"] == ExecutionReasonFamily.MARKET_RULE
     assert event["reason_code"] == "CTP.SESSION.NO_SESSION_TABLE"
+
+
+def test_startup_restricted_cancellation_blocks_dispatch_and_keeps_live_order(monkeypatch):
+    from axile.executor import execution_engine
+    from axile.executor.order_cancellation import CancelNotAllowedError
+
+    executor = _CtpSessionExecutor({"IF2609": None, "ag2612": None})
+    order = UnifiedOrder(
+        order_id="retained",
+        symbol="IF2609",
+        direction=OrderDirection.BUY,
+        order_type=OrderType.LIMIT,
+        volume=1,
+        price=100,
+        status=OrderStatus.SUBMITTED,
+    )
+    executor.account_orders.apply(order)
+
+    def restricted():
+        raise CancelNotAllowedError("当前不可撤单")
+
+    monkeypatch.setattr(executor, "cancel_all_orders", restricted)
+    monkeypatch.setattr(execution_engine, "resolve_algorithm", lambda *_: pytest.fail("不应调度算法"))
+    output = executor.execute(_input(), cleanup=False)
+    assert output.status == ExecutionStatus.BLOCKED
+    assert output.reason_code == "COMMON.CANCEL.RESTRICTED"
+    assert output.symbol_results["IF2609"].orders == [order]
+
+
+def test_global_closed_session_keeps_retained_order_instead_of_claiming_success(monkeypatch):
+    executor = _CtpSessionExecutor({"IF2609": "CTP.SESSION.CLOSED", "ag2612": "CTP.SESSION.CLOSED"})
+    order = UnifiedOrder(
+        order_id="retained",
+        symbol="IF2609",
+        direction=OrderDirection.BUY,
+        order_type=OrderType.LIMIT,
+        volume=1,
+        price=100,
+        status=OrderStatus.SUBMITTED,
+    )
+    executor.account_orders.apply(order)
+    monkeypatch.setattr(executor, "_check_trading_time", lambda: False)
+    output = executor.execute(_input(), cleanup=False)
+    assert output.status == ExecutionStatus.BLOCKED
+    assert not output.success
+    assert output.orders == [order]
+    assert executor.cancel_all_orders_calls == 0

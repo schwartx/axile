@@ -157,7 +157,11 @@ class WorkerBackendResponse:
         终止来源：``operator``（人工请求）或 ``timeout``（执行层总超时）；
         与 ``mode`` 正交。``ExecutionTerminated`` 侧同样恒有取值，故这里不用可空。
     cancel_failed_order_ids : list[str]
-        终止时撤单失败的订单标识。
+        上游明确返回撤单失败的订单标识，与终态是否确认独立。
+    cancel_details : dict[str, str]
+        终止清理中逐笔未完成的原因。
+    cancel_outcomes : dict[str, dict[str, object]]
+        逐笔撤单操作结果及独立的终态核实结果。
     normalized_symbol_fields : dict[str, object] | None
         worker 按渠道目录归一化后的 symbol 字段；不包含账户凭据。
     requires_worker_restart : bool
@@ -177,6 +181,8 @@ class WorkerBackendResponse:
     forced: bool = False
     cancel_attempted: bool | None = None
     cancel_unconfirmed: bool = False
+    cancel_details: dict[str, str] = field(default_factory=dict)
+    cancel_outcomes: dict[str, dict[str, object]] = field(default_factory=dict)
     normalized_symbol_fields: dict[str, object] | None = None
     requires_worker_restart: bool = False
     connection_snapshot: dict[str, object] | None = None

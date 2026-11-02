@@ -213,3 +213,27 @@ def test_notification_result_migration_preserves_legacy_success():
             migrations[-1].downgrade()
             assert connection.scalar(sa.text("SELECT count(*) FROM account_notification_state")) == 1
     engine.dispose()
+
+
+def test_gm_sessions_persist_and_roundtrip_in_public_snapshot():
+    from axile.server.db.models.account import AccountPublic
+    from axile.server.db.models.account_settings import GMSessionSettings
+
+    engine = sa.create_engine("sqlite://")
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        account = Account(**(account_data() | {"trade_channel": "gm"}))
+        assert account.gm_sessions is None
+        account.sqlmodel_update({"gm_sessions": {"opening_cancelable": {"enabled": True, "time": "09:15"}}})
+        session.add(account)
+        session.commit()
+        session.expire_all()
+        loaded = session.get(Account, account.id)
+        assert loaded.gm_sessions == GMSessionSettings(opening_cancelable={"enabled": True, "time": "09:15"})
+        assert loaded.snapshot().gm_sessions == loaded.gm_sessions
+        assert AccountPublic.model_validate(loaded.model_dump()).gm_sessions == loaded.gm_sessions
+        loaded.sqlmodel_update({"gm_sessions": None})
+        session.commit()
+        session.expire_all()
+        assert loaded.gm_sessions is None
+    engine.dispose()

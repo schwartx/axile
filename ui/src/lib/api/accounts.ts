@@ -1,3 +1,4 @@
+import type { GMSessions } from '@/features/setup/cron'
 /** 账户相关接口。 */
 import { apiGet, apiSend } from '@/lib/api/client'
 import type { CostSummary, CostTrade } from '@/features/history/costs'
@@ -81,6 +82,7 @@ export interface SchedulePreview {
   has_more: boolean
   items: Array<{
     scheduled_at: string
+    phase_label?: string | null
     base_scheduled_at?: string | null
     index?: number
     effective_count?: number
@@ -203,12 +205,13 @@ export function getNextRun(id: number, signal?: AbortSignal): Promise<AccountNex
 export function previewSchedule(
   tradeChannel: string,
   cronExpr: string,
-  params: { after?: string | null; limit?: number; scheduled_ats?: string[]; supplement?: { count: number; interval_minutes: number } | null } = {},
+  params: { after?: string | null; limit?: number; scheduled_ats?: string[]; gm_sessions?: GMSessions | null; supplement?: { count: number; interval_minutes: number } | null } = {},
   signal?: AbortSignal,
 ): Promise<SchedulePreview> {
   return apiSend<SchedulePreview>('POST', '/account/schedule-preview', {
     trade_channel: tradeChannel,
     cron_expr: cronExpr,
+    gm_sessions: params.gm_sessions ?? null,
     supplement: params.supplement ?? null,
     ...(params.scheduled_ats ? { scheduled_ats: params.scheduled_ats } : {}),
     after: params.after ?? null,

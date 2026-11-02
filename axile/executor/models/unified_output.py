@@ -21,7 +21,7 @@ from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
-from axile.executor.session_closed import COMMON_SESSION_CLOSED
+from axile.executor.session_closed import COMMON_SESSION_CLOSED, normal_session_skip
 
 
 class ExtraData(TypedDict, total=False):
@@ -64,7 +64,11 @@ def _derive_output_reason_code(
     symbol_results: dict[str, AlgorithmResult],
     status: ExecutionStatus,
 ) -> str | None:
-    """仅整单 BLOCKED 且未成功品种原因码完全相同时提升到账户级。"""
+    """提升成功休市跳过或整单受阻时一致的品种原因码。"""
+    if is_success_status(status) and any(
+        normal_session_skip(result.model_dump()) for result in symbol_results.values()
+    ):
+        return COMMON_SESSION_CLOSED
     if status != ExecutionStatus.BLOCKED:
         return None
     failed = [result for result in symbol_results.values() if not is_success_status(result.status)]
@@ -173,6 +177,9 @@ class UnifiedStandardOutput(BaseModel):
                 None,
             )
         self.success = is_success_status(self.status)
+        skipped = [result for result in self.symbol_results.values() if normal_session_skip(result.model_dump())]
+        if self.success and skipped:
+            self.outcome_reason = f"{len(skipped)} 个品种休市，已跳过"
 
         return self
 

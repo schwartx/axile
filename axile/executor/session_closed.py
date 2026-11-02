@@ -14,6 +14,18 @@ def session_closed_scope(result: object) -> str | None:
     if not isinstance(result, dict) or result.get("reason_code") != COMMON_SESSION_CLOSED:
         return None
     status = result.get("status")
+    if status in {"SUCCEEDED", "NOOP"} and result.get("task_status") != "TERMINATED":
+        symbols = result.get("symbol_results", {})
+        if not isinstance(symbols, dict):
+            return None
+        if not symbols:
+            return "all" if normal_session_skip(result) else None
+        skipped = [value for value in symbols.values() if normal_session_skip(value)]
+        if skipped and all(
+            isinstance(value, dict) and value.get("status") in {"SUCCEEDED", "NOOP"} for value in symbols.values()
+        ):
+            return "all" if len(skipped) == len(symbols) else "partial"
+        return None
     if status not in {"BLOCKED", "PARTIAL"} or result.get("task_status") == "TERMINATED":
         return None
     if status == "BLOCKED" and (result.get("orders") or result.get("trades")):
@@ -45,3 +57,14 @@ def _session_result_kind(result: object) -> str | None:
     ):
         return "closed"
     return None
+
+
+def normal_session_skip(result: object) -> bool:
+    """新结果只有明确休市且没有订单、成交的 NOOP 才是正常跳过。"""
+    return (
+        isinstance(result, dict)
+        and result.get("status") == "NOOP"
+        and result.get("reason_code") == COMMON_SESSION_CLOSED
+        and not result.get("orders")
+        and not result.get("trades")
+    )

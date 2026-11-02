@@ -9,10 +9,25 @@ from typing import Literal
 from pydantic import BaseModel
 
 from axile.channels import get_channel
-from axile.channels.schedule_clock import is_within_schedule_windows
+from axile.channels.gm_sessions import GM_REGULAR_WINDOWS, GM_SPECIAL_WINDOWS
+from axile.channels.schedule_clock import ClockWindow, is_within_schedule_windows
 from axile.common.trade_channel import TradeChannel
 from axile.executor.china_futures_session import is_regular_night_session_transition
 from axile.executor.trading_calendar import ShinnyTradingCalendar, TradingCalendar
+from axile.server.db.models.account_settings import GMSessionSettings
+
+
+def schedule_windows(channel: TradeChannel | str, sessions: GMSessionSettings | None = None) -> tuple[ClockWindow, ...]:
+    """按账户选择组装自动交易窗，各阶段保留独立补发边界。"""
+    if str(channel) != "gm":
+        if sessions is not None:
+            sessions.validate_channel(str(channel))
+        return tuple((w.start, w.end) for w in get_channel(str(channel)).descriptor.schedule.windows)
+    choice = sessions or GMSessionSettings()
+    return (
+        *GM_REGULAR_WINDOWS,
+        *((start, end) for name, (start, end, _) in GM_SPECIAL_WINDOWS.items() if getattr(choice, name).enabled),
+    )
 
 
 class CalendarDecisionStatus(StrEnum):
@@ -107,12 +122,15 @@ def evaluate_channel_calendar_moment(
     channel: TradeChannel | str,
     current: datetime,
     *,
+    windows: tuple[ClockWindow, ...] | None = None,
     calendar: TradingCalendar = _DEFAULT_CALENDAR,
 ) -> CalendarDayDecision:
     """按渠道时段把一次触发映射到交易日并判断是否执行。"""
     channel_name = str(channel)
     descriptor = get_channel(channel_name).descriptor
-    clock_windows = tuple((window.start, window.end) for window in descriptor.schedule.windows)
+    clock_windows = (
+        windows if windows is not None else tuple((window.start, window.end) for window in descriptor.schedule.windows)
+    )
     if clock_windows and not is_within_schedule_windows(current, clock_windows):
         # 只把「今日开市」改写成市场缝；日历不可用 / 休市日保持原判定，避免盖掉 fail-open。
         decision = evaluate_channel_calendar_day(channel, current.date(), calendar=calendar)

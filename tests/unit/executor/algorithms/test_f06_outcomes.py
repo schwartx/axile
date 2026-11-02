@@ -15,6 +15,7 @@ from axile.executor.models.execution_result import ExecutionStatus, outcome_from
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
+from axile.executor.order_cancellation import CancellationResult, CancelRequestStatus, OrderCancellation
 from axile.executor.termination import ExecutionTerminated
 
 
@@ -59,6 +60,8 @@ def test_algorithm_outcome(monkeypatch, module, case, expected, termination_at=N
         update_time="",
     )
     tracker = MagicMock()
+    tracker.waiting_on_restriction.return_value = False
+    tracker.get_pending_count.return_value = 0
     orders = []
     tracker.get_all_orders.side_effect = lambda: orders
     tracker.get_all_trades.return_value = []
@@ -113,7 +116,15 @@ def test_algorithm_outcome(monkeypatch, module, case, expected, termination_at=N
     else:
         executor.sleep_or_terminate.side_effect = lambda duration: now.__setitem__(0, now[0] + duration)
         monkeypatch.setattr(
-            module, "cancel_pending_orders_via_query", lambda _: ["1"] if case == "unknown_cancel" else []
+            module,
+            "cancel_pending_orders_via_query",
+            lambda _: CancellationResult(
+                orders={
+                    (executor.symbol, "1"): OrderCancellation(CancelRequestStatus.UNKNOWN, "撤单失败，订单终态尚未确认")
+                }
+                if case == "unknown_cancel"
+                else {}
+            ),
         )
         if module is twap:
             entry, params = twap.twap, twap.TwapParams(slices=1, total_duration=1, max_wait_seconds=1)
@@ -219,6 +230,8 @@ def test_algorithm_keeps_tracker_cancel_error(monkeypatch, module):
         update_time="",
     )
     tracker = MagicMock()
+    tracker.waiting_on_restriction.return_value = False
+    tracker.get_pending_count.return_value = 0
     orders = []
     tracker.get_all_orders.side_effect = lambda: orders
     tracker.get_all_trades.return_value = []
@@ -256,7 +269,7 @@ def test_algorithm_keeps_tracker_cancel_error(monkeypatch, module):
 
     monkeypatch.setattr(module, "submit_and_track_split_orders", split_submit)
     if hasattr(module, "cancel_pending_orders_via_query"):
-        monkeypatch.setattr(module, "cancel_pending_orders_via_query", lambda _: [])
+        monkeypatch.setattr(module, "cancel_pending_orders_via_query", lambda _: CancellationResult())
     if module is maker:
         entry, params = maker.single_maker_callback, maker.SingleMakerParams(max_wait_seconds=1)
     elif module is twap:
@@ -418,3 +431,115 @@ def test_real_algorithm_crosses_zero_within_slice_budget(monkeypatch, module, mo
 @pytest.mark.parametrize("case,status", [("filled", ExecutionStatus.SUCCEEDED), ("noop", ExecutionStatus.NOOP)])
 def test_custom_source_is_valid_through_real_algorithm(monkeypatch, module, source, case, status):
     test_algorithm_outcome(monkeypatch, module, case, status, source=source)
+
+
+@pytest.mark.parametrize("module", [twap, pov], ids=["twap", "pov"])
+@pytest.mark.parametrize(
+    "case", ["fills_later", "fills_near_deadline", "still_restricted", "cancel_failed", "query_failed"]
+)
+def test_real_tracker_handles_restriction_within_original_budget(monkeypatch, module, case):
+    from axile.common.order_param_model import OrderParamModel
+    from axile.executor.algorithms.utils import clock as clock_module
+    from axile.executor.order_cancellation import CancelNotAllowedError
+    from tests.fixtures.algorithm_fakes import ClockStub
+    from tests.unit.executor.algorithms.test_split_orders import _make_executor
+
+    clock = ClockStub()
+    monkeypatch.setattr(clock_module, "_default_clock", clock)
+    executor = _make_executor(OrderParamModel.OFFSET)
+    current = [0.0]
+    executor.get_current_volume.side_effect = lambda _: current[0]
+    price = UnifiedPriceData(
+        symbol=executor.symbol,
+        last_price=100,
+        bid_price=99,
+        ask_price=101,
+        bid_volume=10,
+        ask_volume=10,
+        volume=1,
+        timestamp=0,
+        update_time="",
+    )
+    executor.get_market_data.return_value = price
+    callbacks = {"order": [], "trade": [], "price": []}
+    for kind in callbacks:
+        getattr(executor, f"register_{kind}_callback").side_effect = callbacks[kind].append
+        getattr(executor, f"unregister_{kind}_callback").side_effect = callbacks[kind].remove
+
+    def register_price(callback):
+        callbacks["price"].append(callback)
+        callback(price)
+
+    executor.register_price_callback.side_effect = register_price
+    live = {}
+    submissions = []
+    place = executor.place_order.side_effect
+
+    def filled(order):
+        live.pop(order.order_id, None)
+        current[0] += order.volume
+        for callback in callbacks["order"]:
+            callback(order.model_copy(update={"status": OrderStatus.FILLED, "filled_volume": order.volume}))
+
+    def submit(*args, **kwargs):
+        assert not live, "原单仍在场时不能补单"
+        order = place(*args, **kwargs)
+        submissions.append((clock.time(), order.volume))
+        live[order.order_id] = order
+        if len(submissions) > 1 and case != "fills_near_deadline":
+            filled(order)
+        return order
+
+    executor.place_order.side_effect = submit
+    executor.get_pending_orders.side_effect = lambda: list(live.values())
+
+    executor.cancel_order.return_value = False
+    executor.cancel_order.side_effect = (
+        CancelNotAllowedError("交易规则暂不允许撤单") if case != "cancel_failed" else None
+    )
+    executor.reconcile_terminal_order.return_value = None
+    executor.reconcile_terminal_order.side_effect = TimeoutError() if case == "query_failed" else None
+
+    def advance(duration):
+        clock.sleep(duration)
+        fill_at = 5 if case == "fills_near_deadline" else 2.5
+        if case in {"fills_later", "fills_near_deadline"} and clock.time() >= fill_at and live:
+            for order in list(live.values()):
+                filled(order)
+            for callback in callbacks["price"]:
+                callback(price.model_copy(update={"volume": 3}))
+
+    def wait(event, timeout):
+        if not event.is_set():
+            advance(timeout)
+        return event.is_set()
+
+    clock.event_wait = wait
+    executor.sleep_or_terminate.side_effect = advance
+    if module is twap:
+        entry, params = twap.twap, twap.TwapParams(slices=3, total_duration=6, max_wait_seconds=1)
+    else:
+        entry, params = (
+            pov.pov,
+            pov.PovParams(
+                participation_rate=1,
+                max_duration=6,
+                interval_seconds=1,
+                max_wait_seconds=1,
+                complete_on_timeout=case != "fills_near_deadline",
+            ),
+        )
+    result = entry(executor, AlgorithmInput(symbol=executor.symbol, target_volume=3, trade_rule={}, params=params))
+    assert clock.time() <= 6
+    if case in {"fills_later", "fills_near_deadline"}:
+        assert result.status == ExecutionStatus.SUCCEEDED
+        assert result.error is None
+        assert current[0] == 3
+        assert len(submissions) > 1
+    else:
+        assert result.status == ExecutionStatus.PARTIAL
+        assert len(submissions) == 1
+        assert len(result.orders) == 1
+        assert not result.orders[0].is_completed()
+        assert result.error and ("撤单受限" if case == "still_restricted" else "失败") in result.error
+    assert all(not registered for registered in callbacks.values())

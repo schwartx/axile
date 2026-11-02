@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from threading import Event, Lock, Thread
+from types import SimpleNamespace
 
 import pytest
 
+from axile.channels.gm_sessions import SHANGHAI
 from axile.common.trade_channel import TradeChannel
 from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
@@ -261,6 +264,48 @@ def test_execute_trade_drops_ctp_worker_after_session_recovery_without_replay(
     assert normalized is None
     assert output.success is False
     assert output.extra["worker_error"]["type"] == "ctp_session_recovery_required"
+
+
+@pytest.mark.parametrize("execution_timeout", [0, 180])
+def test_gm_worker_receive_timeout_uses_configured_budget(monkeypatch, execution_timeout):
+    manager = WorkerBackendManager(execute_recv_timeout=600)
+    account = build_account(id=2, trade_channel=TradeChannel.GM)
+    now = datetime(2026, 9, 1, 9, 15, tzinfo=SHANGHAI)
+    standard_input = SimpleNamespace(
+        channel_type=TradeChannel.GM,
+        execution_timeout=execution_timeout,
+        extra={"audit": {"gm_session": {"wait_until": now.replace(minute=30).isoformat()}}},
+    )
+    received_timeouts = []
+
+    async def prepare(*_, **__):
+        return {"ready": True}
+
+    async def respond(_func, _account_id, request, timeout, _termination):
+        received_timeouts.append(timeout)
+        return WorkerBackendResponse(
+            request_id=request.request_id,
+            kind="error",
+            channel_type=TradeChannel.GM,
+            error=WorkerBackendErrorPayload(type="test_error", message="test"),
+        )
+
+    monkeypatch.setattr(manager, "prepare_account", prepare)
+    monkeypatch.setattr(asyncio, "to_thread", respond)
+    monkeypatch.setattr("axile.executor.algorithms.utils.clock.clock_now", lambda **_: now)
+    asyncio.run(
+        manager.execute_trade(
+            account=account,
+            standard_input=standard_input,
+            standard_input_dict={},
+            audit_input={},
+            execution_id="auction",
+            trigger_source="scheduler",
+            cleanup=True,
+        )
+    )
+    expected = 600 if execution_timeout == 0 else 180 + worker_manager_module._EXECUTION_TIMEOUT_GRACE_SECONDS
+    assert received_timeouts == [expected]
 
 
 def test_empty_positions_keeps_paused_gm_session(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -686,3 +731,20 @@ def test_drop_account_disposes_registered_worker(monkeypatch: pytest.MonkeyPatch
 
     assert manager._workers == {}
     assert disposed == [handle]
+
+
+def test_termination_cancellation_facts_survive_worker_response_and_manager():
+    from axile.server.execution.worker_backend.worker_responses import _build_terminated_response
+
+    outcomes = {
+        "ag2612:1": {"request_status": "restricted", "reason": "当前不可撤单", "terminal": False, "query_error": None}
+    }
+    original = ExecutionTerminated(
+        reason="stop", mode="cancel_pending", cancel_outcomes=outcomes, cancel_unconfirmed=True
+    )
+    response = _build_terminated_response(request_id="test", account=build_account(id=2), exc=original)
+    with pytest.raises(ExecutionTerminated) as caught:
+        WorkerBackendManager._handle_response(response)
+    assert caught.value.cancel_outcomes == outcomes
+    assert caught.value.cancel_failed_order_ids == []
+    assert caught.value.cancel_unconfirmed

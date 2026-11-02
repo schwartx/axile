@@ -249,6 +249,8 @@ async def append_terminated_execute_record(
     trigger: str = TERMINATION_TRIGGER_OPERATOR,
     forced: bool = False,
     cancel_unconfirmed: bool = False,
+    cancel_details: dict[str, str] | None = None,
+    cancel_outcomes: dict[str, dict[str, object]] | None = None,
     raw_input: dict[str, object] | None = None,
     raw_result: dict[str, object] | None = None,
     session_factory: SessionFactory = SessionLocal,
@@ -277,7 +279,11 @@ async def append_terminated_execute_record(
     cancel_attempted : bool
         是否尝试过撤单。
     cancel_failed_order_ids : list[str]
-        撤单失败的订单 ID 列表。
+        上游明确返回撤单失败的订单 ID，与终态是否确认独立。
+    cancel_details : dict[str, str] | None, optional
+        逐笔不可撤单或终态未确认的原因。
+    cancel_outcomes : dict[str, dict[str, object]] | None, optional
+        逐笔撤单操作结果及独立的终态核实结果。
     trigger : str, optional
         终止来源：``operator``（人工请求）或 ``timeout``（执行层总超时）。与 ``mode``
         正交——``mode`` 只表示是否撤单，人工终止两种 mode 都可能取，因此不能靠它区分二者。
@@ -309,6 +315,8 @@ async def append_terminated_execute_record(
         "cancel_failed_order_ids": list(cancel_failed_order_ids),
         "forced": forced,
         "cancel_unconfirmed": cancel_unconfirmed,
+        "cancel_details": dict(cancel_details or {}),
+        "cancel_outcomes": dict(cancel_outcomes or {}),
     }
     return await _persist_execute_record(
         account_id=account_id,

@@ -9,8 +9,10 @@ from axile.executor.account_control.guard import AccountControlGuard
 from axile.executor.account_control.presets import resolve_account_control_policy
 from axile.executor.account_control.registry import ensure_default_account_control_registry_bootstrapped
 from axile.executor.account_control.snapshot import AccountControlCounterSnapshot
+from axile.executor.account_orders import AccountOrderBook
 from axile.executor.execution_session import ExecutionSession
 from axile.executor.models.unified_order import OrderDirection, OrderType, UnifiedOrder
+from axile.executor.order_cancellation import CancelNotAllowedError
 from axile.executor.termination import ExecutionTerminated
 from axile.executor.termination_cleanup import cleanup_query_allowed, termination_cleanup_scope
 
@@ -144,6 +146,83 @@ def test_parallel_termination_keeps_sibling_unknown_cleanup():
     from axile.executor.execution_engine import _merge_symbol_terminations
 
     first = ExecutionTerminated(reason="stop", mode="cancel_pending", cancel_attempted=False)
-    sibling = ExecutionTerminated(reason="stop", mode="cancel_pending", cancel_attempted=True, cancel_unconfirmed=True)
+    sibling = ExecutionTerminated(
+        reason="stop",
+        mode="cancel_pending",
+        cancel_attempted=True,
+        cancel_unconfirmed=True,
+        cancel_details={"rb:old": "当前不可撤单"},
+    )
     merged = _merge_symbol_terminations([first, sibling])
     assert merged.cancel_unconfirmed and merged.cancel_attempted
+    assert merged.cancel_details == {"rb:old": "当前不可撤单"}
+
+
+@pytest.mark.parametrize("filled", [False, True])
+def test_termination_preserves_restriction_unless_actual_fill_confirms_terminal(monkeypatch, filled):
+    clock = Clock()
+    monkeypatch.setattr("axile.executor.termination_cleanup.clock_monotonic", clock.time)
+    owner = Owner(clock, terminal=filled)
+
+    def blocked_cancel(_symbol, _order_id):
+        raise CancelNotAllowedError("委托当前不可撤销")
+
+    monkeypatch.setattr(owner, "cancel_order", blocked_cancel)
+    if filled:
+        monkeypatch.setattr(
+            owner,
+            "reconcile_terminal_order",
+            lambda symbol, order_id: UnifiedOrder(
+                symbol=symbol,
+                order_id=order_id,
+                direction=OrderDirection.BUY,
+                order_type=OrderType.LIMIT,
+                volume=1,
+                price=100,
+                filled_volume=1,
+                status="已成交",
+            ),
+        )
+    with pytest.raises(ExecutionTerminated) as caught:
+        ExecutionSession(owner, "rb").handle_termination_checkpoint()
+    assert caught.value.cancel_attempted is False
+    assert caught.value.cancel_unconfirmed is (not filled)
+    assert caught.value.cancel_details == ({} if filled else {"rb:native-1": "委托当前不可撤销"})
+
+
+def test_termination_cleans_retained_missing_order_only_for_current_symbol(monkeypatch):
+    clock = Clock()
+    monkeypatch.setattr("axile.executor.termination_cleanup.clock_monotonic", clock.time)
+    owner = Owner(clock, terminal=False)
+    owner.account_orders = AccountOrderBook()
+    old = UnifiedOrder(
+        order_id="missing-old",
+        symbol="rb",
+        direction=OrderDirection.BUY,
+        order_type=OrderType.LIMIT,
+        volume=1,
+        price=100,
+        status="状态未知",
+    )
+    owner.account_orders.apply(old)
+    owner.account_orders.apply(old.model_copy(update={"symbol": "ag"}))
+    monkeypatch.setattr(owner, "_get_pending_orders_for_execution", lambda symbol: [])
+
+    def blocked_cancel(symbol, order_id):
+        owner.cancels.append((symbol, order_id))
+        raise CancelNotAllowedError("当前不可撤单")
+
+    monkeypatch.setattr(owner, "cancel_order", blocked_cancel)
+    session = ExecutionSession(owner, "rb")
+    with pytest.raises(ExecutionTerminated) as caught:
+        session.handle_termination_checkpoint()
+    assert owner.cancels == [("rb", "missing-old")]
+    assert caught.value.cancel_details == {"rb:missing-old": "当前不可撤单"}
+    assert caught.value.cancel_unconfirmed
+
+    owner.account_orders.apply(old.model_copy(update={"status": "已成交", "filled_volume": 1}))
+    with pytest.raises(ExecutionTerminated) as caught:
+        session.handle_termination_checkpoint()
+    assert caught.value.cancel_details == {}
+    assert not caught.value.cancel_unconfirmed
+    assert owner.cancels == [("rb", "missing-old")]
