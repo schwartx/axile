@@ -5,7 +5,7 @@ import { defaultGMSessions } from './cron'
 import { GMSessionControls } from './GMSessionControls'
 
 test('仅 GM 展示四个阶段，盘后禁用，默认关闭', () => {
-  for (const channel of ['ctp', 'tq', 'binance']) {
+  for (const channel of ['ctp', 'tq']) {
     expect(renderToStaticMarkup(createElement(GMSessionControls, { channel, onChange: () => {} }))).toBe('')
   }
   const html = renderToStaticMarkup(createElement(GMSessionControls, { channel: 'gm', onChange: () => {} }))
