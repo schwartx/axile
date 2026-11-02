@@ -24,6 +24,9 @@ from gm.api import (  # type: ignore  # pyright: ignore[reportUnknownVariableTyp
     order_volume,
 )
 
+from axile.channels.gm_sessions import SHANGHAI, check_gm_operation
+from axile.executor.algorithms.utils.clock import clock_now
+
 GMSdkOperation: TypeAlias = Literal[
     "get_cash",
     "get_position",
@@ -281,6 +284,7 @@ class OrderVolumeRequest:
     position_effect: GMPositionEffect
     price: float
     account: str
+    session: dict[str, Any] | None = None
 
     operation: ClassVar[GMSdkOperation] = "order_volume"
 
@@ -374,6 +378,12 @@ class GMApiBridge:
     @classmethod
     def execute_request(cls, request: GMSdkRequest) -> Any:
         """执行类型化的 GM SDK 请求."""
+        if isinstance(request, OrderCancelRequest):
+            check_gm_operation(clock_now(tz=SHANGHAI), cancel=True)
+        elif isinstance(request, OrderVolumeRequest):
+            check_gm_operation(
+                clock_now(tz=SHANGHAI), limit=request.order_type == GMOrderKind.LIMIT, context=request.session
+            )
         try:
             method = cls._SDK_OPERATION_METHODS[request.operation]
         except KeyError as exc:

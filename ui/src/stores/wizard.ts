@@ -10,6 +10,7 @@ import {
   defaultScheduleRule,
   DEFAULT_PRESET,
   type ScheduleKind,
+  type GMSessions,
   type ScheduleRule,
   type TimerTab,
 } from '@/features/setup/cron'
@@ -30,6 +31,7 @@ export interface AccountDraft {
   autoOn: boolean
   /** 快捷 tab 选中的预设 id（可多选，高级组合后较少使用）。 */
   presetIds: string[]
+  gm_sessions?: GMSessions | null
   /** 是否把渠道声明的夜盘时点并入快捷节奏。 */
   nightOn: boolean
   supN: number
@@ -64,6 +66,7 @@ export function initialTimerForSchedule(schedule: ScheduleKind) {
     autoOn: true,
     presetIds: [DEFAULT_PRESET[schedule]] as string[],
     nightOn: defaultNightOn(schedule),
+    gm_sessions: null,
     supN: 2,
     supM: 1,
     rawCron: '',

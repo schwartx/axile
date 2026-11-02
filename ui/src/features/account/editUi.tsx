@@ -323,7 +323,7 @@ export function EditSaveBar({
 
   return (
     <>
-      <div aria-hidden style={{ height: open ? barHeight : 0 }} />
+      <div aria-hidden className="shrink-0" style={{ height: open ? barHeight : 0 }} />
       <div
         ref={barRef}
         className={`fixed right-0 bottom-0 left-[218px] z-30 border-t border-line bg-surface/85 backdrop-blur-md transition-opacity ${MOTION_LAYOUT} ${

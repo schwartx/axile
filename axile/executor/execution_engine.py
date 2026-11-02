@@ -169,6 +169,9 @@ def _merge_symbol_terminations(terminations: list[ExecutionTerminated]) -> Execu
         dict.fromkeys(order_id for termination in terminations for order_id in termination.cancel_failed_order_ids)
     )
     primary.cancel_unconfirmed = any(termination.cancel_unconfirmed for termination in terminations)
+    primary.cancel_details = {
+        key: reason for termination in terminations for key, reason in termination.cancel_details.items()
+    }
     attempts = [termination.cancel_attempted for termination in terminations]
     primary.cancel_attempted = True if any(attempts) else (False if all(value is False for value in attempts) else None)
     return primary

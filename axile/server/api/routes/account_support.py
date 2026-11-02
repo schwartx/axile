@@ -13,8 +13,8 @@ from axile.server.api.deps import SchedDep, SessionDep
 from axile.server.cron import (
     combine_cron_triggers,
     cron_triggers_equivalent,
+    effective_triggers,
     is_blank_cron_expr,
-    parse_cron_expr,
 )
 from axile.server.db.models import Account
 from axile.server.db.models.account import AccountContext
@@ -121,7 +121,7 @@ async def _apply_account_job(sched: SchedDep, account: AccountContext, latest_po
             delete_job(sched, account_id)
         return
 
-    triggers = parse_cron_expr(account.cron_expr)
+    triggers = effective_triggers(account.cron_expr, account.trade_channel, getattr(account, "gm_sessions", None))
     desired_trigger = combine_cron_triggers(triggers)
     # CompactOrTrigger.__str__ 只有条数，不能当排程指纹。
     from axile.server.execution.scheduler import _scheduled_signal
@@ -129,7 +129,8 @@ async def _apply_account_job(sched: SchedDep, account: AccountContext, latest_po
     if (
         existing_job is not None
         and cron_triggers_equivalent(existing_job.trigger, desired_trigger)
-        and (getattr(existing_job, "func", None) == _scheduled_signal) == bool(getattr(account, "supplement", None))
+        and (getattr(existing_job, "func", None) == _scheduled_signal)
+        == bool(getattr(account, "supplement", None) or str(account.trade_channel) == "gm")
     ):
         return
 

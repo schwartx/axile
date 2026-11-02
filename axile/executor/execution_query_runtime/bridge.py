@@ -265,7 +265,7 @@ class ExecutionQueryRuntimeBridge:
 
     def handle_cancel_order_result(self, symbol: str, order_id: str) -> bool:
         """
-        处理公开撤单后的 execution 查询快照更新.
+        撤单请求已提交时使查询快照失效，原单仍等待真实终态。
 
         Parameters
         ----------
@@ -277,10 +277,9 @@ class ExecutionQueryRuntimeBridge:
         Returns
         -------
         bool
-            若直接 patch 成功则返回 ``True``，否则返回 ``False``。
+            始终返回 ``False``，请求提交不能直接删除原单。
         """
-        if self.remove_pending_order(symbol, order_id):
-            return True
+        # 提交成功不是订单终态，保留旧单直到回报或真实终态查询收敛。
         self.invalidate_pending_orders_snapshot(symbol)
         return False
 

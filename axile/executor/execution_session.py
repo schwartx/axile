@@ -11,12 +11,12 @@ from typing import TYPE_CHECKING, cast
 
 from axile.common.logging import LogComponent, bind_log_context
 from axile.common.order_param_model import OrderParamModel
-from axile.executor.constants.order_status import OrderStatus
 from axile.executor.models.order_channel_health import OrderChannelHealth
 from axile.executor.models.unified_account_assets import PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_callback import OrderUpdateCallback, PriceDataCallback, TradeRecordCallback
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
+from axile.executor.order_cancellation import cancel_orders
 from axile.executor.order_submission_context import order_submission_context
 from axile.executor.termination import ExecutionTerminated, wait_or_terminate
 from axile.executor.termination_cleanup import (
@@ -178,6 +178,7 @@ class ExecutionSession:
                     result = self._cancel_pending_orders_before_termination()
                 exc.cancel_failed_order_ids = result.failed_order_ids
                 exc.cancel_attempted = result.attempted
+                exc.cancel_details = result.details
                 exc.cancel_unconfirmed = (
                     not result.query_complete or result.unconfirmed or bool(result.failed_order_ids)
                 )
@@ -304,7 +305,12 @@ class ExecutionSession:
         owner_reconcile = getattr(self._owner, "reconcile_terminal_order", None)
         if not callable(owner_reconcile):
             return None
-        return cast("UnifiedOrder | None", owner_reconcile(symbol, order_id))
+        terminal = cast("UnifiedOrder | None", owner_reconcile(symbol, order_id))
+        if terminal is not None and terminal.is_completed():
+            book = getattr(self._owner, "account_orders", None)
+            if book is not None:
+                book.apply(terminal)
+        return terminal
 
     def get_order_channel_health(self) -> OrderChannelHealth:
         """
@@ -343,38 +349,34 @@ class ExecutionSession:
         try:
             pending_orders = self.get_pending_orders()
         except Exception as exc:
-            if bool(getattr(exc, "requires_session_recovery", False)):
+            if isinstance(exc, (MemoryError, ExecutionTerminated)) or getattr(exc, "requires_session_recovery", False):
                 raise
             self.logger.warning(f"terminate 查询挂单失败: {exc}")
             return TerminationCleanupResult(unconfirmed=True)
 
-        result = TerminationCleanupResult(query_complete=True)
-        for order in pending_orders:
-            try:
-                result.attempted = True
-                canceled = self.cancel_order(order.order_id)
-            except Exception as exc:
-                if bool(getattr(exc, "requires_session_recovery", False)):
-                    raise
-                self.logger.warning(f"terminate 撤单失败: order_id={order.order_id}, error={exc}")
-                result.failed_order_ids.append(order.order_id)
-                continue
+        # 查询缺失不代表终态，终止清理还须覆盖账本中保留的本品种旧单。
+        book = getattr(self._owner, "account_orders", None)
+        if book is not None:
+            retained = {(order.symbol, order.order_id): order for order in pending_orders}
+            retained.update(
+                ((order.symbol, order.order_id), order)
+                for order in book.snapshot()["data"]
+                if order.symbol == self.symbol
+            )
+            pending_orders = list(retained.values())
 
-            if not canceled:
-                result.failed_order_ids.append(order.order_id)
-            else:
-                try:
-                    terminal = self.reconcile_terminal_order(self.symbol, order.order_id)
-                    if terminal is None or not terminal.is_completed():
-                        result.unconfirmed = True
-                    elif terminal.status != OrderStatus.CANCELED:
-                        result.failed_order_ids.append(order.order_id)
-                except Exception as exc:
-                    if bool(getattr(exc, "requires_session_recovery", False)):
-                        raise
-                    result.unconfirmed = True
-
-        return result
+        result = cancel_orders(
+            pending_orders,
+            cancel=lambda _symbol, order_id: self.cancel_order(order_id),
+            reconcile=self.reconcile_terminal_order,
+        )
+        return TerminationCleanupResult(
+            query_complete=True,
+            attempted=result.attempted,
+            failed_order_ids=[order_id for _, order_id in result.unconfirmed],
+            unconfirmed=bool(result.unconfirmed),
+            details=result.details,
+        )
 
     def set_audit_context(self, context: AuditContext) -> None:
         """设置当前 symbol 会话的审计上下文."""

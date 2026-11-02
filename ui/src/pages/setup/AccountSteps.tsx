@@ -638,6 +638,7 @@ export function AcctTimer() {
     autoOn: acct.autoOn,
     presetIds: acct.presetIds,
     nightOn: acct.nightOn,
+    gm_sessions: acct.channel === 'gm' ? acct.gm_sessions : null,
     supN: acct.supN,
     supM: acct.supM,
     rawCron: acct.rawCron,
@@ -675,6 +676,7 @@ export function AcctTimer() {
                     autoOn: v.autoOn,
                     presetIds: v.presetIds,
                     nightOn: v.nightOn,
+                    gm_sessions: v.gm_sessions,
                     supN: v.supN,
                     supM: v.supM,
                     rawCron: v.rawCron,
@@ -714,7 +716,7 @@ export function AcctConfirm() {
   const cronList = scheduleKind ? resolveCronList(scheduleKind, { ...acct, supN: 0 }, descriptor?.schedule.night) : []
   const cronExpr = cronToExpr(cronList)
   const scheduleDescription = scheduleKind
-    ? describeCron(scheduleKind, cronExpr, descriptor?.schedule.night)
+    ? describeCron(scheduleKind, cronExpr, descriptor?.schedule.night, acct.channel === 'gm' ? acct.gm_sessions : null)
     : null
   const scheduleText = !acct.autoOn
     ? '已关闭'
@@ -778,6 +780,7 @@ export function AcctConfirm() {
         account_config: visibleChannelAccountConfig(accountFields(descriptor), acct.config),
         is_started: acct.autoOn,
         cron_expr: cronExpr,
+        gm_sessions: acct.channel === 'gm' ? acct.gm_sessions ?? null : null,
         supplement: acct.supN > 0 ? { count: acct.supN, interval_minutes: acct.supM } : null,
         remark: null,
         brokerage: acct.channel,

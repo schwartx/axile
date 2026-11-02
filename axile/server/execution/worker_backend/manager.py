@@ -667,6 +667,7 @@ class WorkerBackendManager:
                 forced=response.forced,
                 cancel_attempted=response.cancel_attempted,
                 cancel_unconfirmed=response.cancel_unconfirmed,
+                cancel_details=response.cancel_details,
             )
         if response.kind == "error":
             return WorkerBackendManager._build_failed_output(

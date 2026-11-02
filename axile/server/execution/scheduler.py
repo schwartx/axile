@@ -6,6 +6,7 @@ import loguru
 from apscheduler.job import Job  # type: ignore[import-not-found]
 from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-not-found]
 
+from axile.channels.gm_sessions import gm_phase, gm_session_context
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.server.core.db import SessionLocal
 from axile.server.core.log_config import execution_log_context
@@ -13,10 +14,12 @@ from axile.server.core.scheduler import Scheduler
 from axile.server.cron import SCHEDULER_TIMEZONE, combine_cron_triggers, is_blank_cron_expr
 from axile.server.db.models import Account, ScheduleSkip
 from axile.server.db.models.account import AccountContext
+from axile.server.db.models.account_settings import GMSessionSettings
 from axile.server.repositories import get_latest_portfolio_id_by_account_id
 from axile.server.trading_calendar import (
     CalendarDecisionStatus,
     evaluate_channel_calendar_moment,
+    schedule_windows,
 )
 
 
@@ -32,10 +35,24 @@ async def execute_scheduled_rebalance(account_id: int, scheduled_at: str | None 
         channel = account.trade_channel
 
     try:
-        decision = evaluate_channel_calendar_moment(channel, triggered_at)
+        decision = evaluate_channel_calendar_moment(
+            channel, triggered_at, windows=schedule_windows(channel, getattr(account, "gm_sessions", None))
+        )
     except Exception:  # noqa: BLE001 - 调度层日历故障必须 fail-closed
         loguru.logger.bind(account_id=account_id, channel=str(channel)).exception("交易日历判断失败，跳过排程")
         decision = None
+
+    if (
+        scheduled_at
+        and str(channel) == "gm"
+        and decision is not None
+        and decision.status == CalendarDecisionStatus.AVAILABLE_OPEN
+    ):
+        now = clock_now(tz=SCHEDULER_TIMEZONE)
+        if now.date() != triggered_at.date() or gm_phase(now) != gm_phase(triggered_at):
+            decision = decision.model_copy(
+                update={"status": CalendarDecisionStatus.AVAILABLE_CLOSED, "reason_code": "CALENDAR.SESSION_CLOSED"}
+            )
 
     context = {
         "account_id": account_id,
@@ -88,6 +105,11 @@ async def execute_scheduled_rebalance(account_id: int, scheduled_at: str | None 
         account_id,
         ExecutionKind.REBALANCE,
         "scheduler",
+        payload={
+            "gm_session": gm_session_context((account.gm_sessions or GMSessionSettings()).model_dump(), triggered_at)
+        }
+        if str(channel) == "gm"
+        else None,
         on_conflict="skip",
     )
     if result.outcome == "skipped_busy":
@@ -167,12 +189,14 @@ async def create_job(
                 return
 
     try:
-        if getattr(account, "supplement", None):
+        if getattr(account, "supplement", None) or str(account.trade_channel) == "gm":
             _install_supplement_listener(sched)
         trigger = combine_cron_triggers(triggers)
         next_run_time = trigger.get_next_fire_time(None, clock_now(tz=SCHEDULER_TIMEZONE))  # type: ignore[no-untyped-call]
         sched.add_job(  # type: ignore[no-untyped-call]
-            func=_scheduled_signal if getattr(account, "supplement", None) else execute_scheduled_rebalance,
+            func=_scheduled_signal
+            if (getattr(account, "supplement", None) or str(account.trade_channel) == "gm")
+            else execute_scheduled_rebalance,
             args=[account.id],
             trigger=trigger,
             id=str(account.id),

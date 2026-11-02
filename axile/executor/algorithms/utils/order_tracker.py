@@ -35,6 +35,7 @@ from axile.executor.models.order_channel_health import OrderChannelHealth
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
+from axile.executor.order_cancellation import CancellationResult, CancelNotAllowedError
 from axile.executor.order_volume_limits import split_order_volumes
 from axile.executor.termination import ExecutionTerminated
 
@@ -339,6 +340,8 @@ class OrderTracker:
             if order.is_completed():
                 self.completed_orders[tracked_order_id] = order
                 del self.pending_orders[tracked_order_id]
+                for candidate_id in self._extract_order_candidate_ids(order):
+                    self._order_errors.pop(candidate_id, None)
 
                 # 追单中的撤单换单会先收到旧单终态，再写入新单。只有明确进入
                 # market fallback 的路径才允许在这里带着 chase_info 继续往后走，
@@ -612,21 +615,48 @@ class OrderTracker:
         # 另一方面避免只清 tracker 内存态却把真实挂单留在交易通道里。
         self._logger.info(f"正在撤销所有未成交订单: pending={self.get_pending_count()}")
         self.executor.handle_termination_checkpoint()
-        failed_order_ids = cancel_pending_orders_via_query(self.executor)
-        self._reconcile_timeout_cancellations()
-        # 撤单可能与全部成交竞态；只有真实终态能消除撤单请求失败，不能仅看返回值。
-        with self.lock:
-            failed_order_ids = [order_id for order_id in failed_order_ids if order_id not in self.completed_orders]
-        if failed_order_ids:
-            message = "撤单失败，订单终态尚未确认"
-            self.explicit_error = message
-            error = RuntimeError(f"部分订单撤销失败: {'; '.join(failed_order_ids)}")
+        cancellation = cancel_pending_orders_via_query(self.executor)
+        self._reconcile_timeout_cancellations(cancellation)
+        unconfirmed = self.record_cancellation_result(cancellation)
+        if unconfirmed:
+            message = "; ".join(dict.fromkeys(unconfirmed.values()))
+            error = RuntimeError(f"订单终态尚未确认: {unconfirmed}")
             setattr(error, "execution_error", message)
             raise error
 
         return False
 
-    def _reconcile_timeout_cancellations(self) -> None:
+    def record_cancellation_result(self, result: CancellationResult) -> dict[str, str]:
+        """收敛真实终态并记录仍在场的委托，后续成交可清除本单撤单错误。"""
+        for order in result.terminal_orders:
+            self.on_order_update(order)
+        with self.lock:
+            completed_ids = {
+                candidate_id
+                for order in self.completed_orders.values()
+                for candidate_id in self._extract_order_candidate_ids(order)
+            }
+            unconfirmed = {
+                order_id: reason
+                for (_, order_id), reason in result.unconfirmed.items()
+                if order_id not in completed_ids
+            }
+            for order_id in self.pending_orders:
+                unconfirmed.setdefault(order_id, self._order_errors.get(order_id) or "订单终态尚未确认")
+            self._order_errors.update(unconfirmed)
+        return unconfirmed
+
+    def _record_cancel_restriction(self, order_id: str, info: dict[str, Any], exc: CancelNotAllowedError) -> None:
+        """保留旧单并按原追单间隔重试，终态回报仍可正常收敛。"""
+        with self.lock:
+            info.pop("market_order_fallback_pending_cancel", None)
+            info["last_chase_time"] = self.clock.time()
+            info["cancel_blocked_until"] = self.clock.time() + (self.chase_config.interval if self.chase_config else 0)
+            if order_id in self.pending_orders:
+                self._order_errors[order_id] = exc.execution_error
+        self._logger.warning(f"撤单受限，保留原委托 {order_id}: {exc.execution_error}")
+
+    def _reconcile_timeout_cancellations(self, result: CancellationResult) -> None:
         """在回调注销前补查一次超时撤单终态，不额外等待、追单或重新报单。
 
         复用渠道的真实终态对账能力；不支持该能力的渠道保持原有回调路径。
@@ -636,7 +666,11 @@ class OrderTracker:
         if not callable(getattr(self.executor, "reconcile_terminal_order", None)):
             return
         self.executor.handle_termination_checkpoint()
-        self._query_pending_orders()
+        checked = {order_id for _, order_id in result.unconfirmed}
+        checked.update(order.order_id for order in result.terminal_orders)
+        with self.lock:
+            already_checked = [order for order_id, order in self.pending_orders.items() if order_id in checked]
+        self._reconcile_missing_pending(already_checked)
 
     def _get_effective_refresh_interval(
         self,
@@ -936,6 +970,10 @@ class OrderTracker:
                 with self.lock:
                     self._chasing_order_id = None
 
+            except CancelNotAllowedError as exc:
+                with self.lock:
+                    self._chasing_order_id = None
+                self._record_cancel_restriction(order_id, chase_info, exc)
             except (MemoryError, ExecutionTerminated):
                 with self.lock:
                     self._chasing_order_id = None
@@ -1103,6 +1141,7 @@ class OrderTracker:
                 info = self._chase_info[order_id]
                 if (
                     info["chase_count"] >= self.chase_config.max_count
+                    and self.clock.time() >= info.get("cancel_blocked_until", 0)
                     and not self._submission_expired(info)
                     and not info.get("market_order_fallback_pending_cancel", False)
                     and not info.get("market_order_fallback_failed", False)
@@ -1137,6 +1176,8 @@ class OrderTracker:
                     raise RuntimeError("cancel_order returned False")
 
                 self._logger.info(f"已请求撤销限价单，等待终态后再执行市价单兜底: {symbol} 订单ID {order_id}")
+            except CancelNotAllowedError as exc:
+                self._record_cancel_restriction(order_id, chase_info, exc)
             except (MemoryError, ExecutionTerminated):
                 with self.lock:
                     chase_info.pop("market_order_fallback_pending_cancel", None)
@@ -1428,9 +1469,7 @@ class OrderTracker:
                 if order_id in self.completed_orders:
                     return True
                 if order_id not in self.pending_orders:
-                    # 既不在 pending 也不在 completed：该单已被其他路径摘除，
-                    # 视作不再在场，可以安全换单。
-                    return True
+                    return False
 
             if self.clock.time() >= confirmation_deadline:
                 return False

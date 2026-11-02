@@ -31,10 +31,11 @@ from typing import Any, cast, override
 import psutil
 from loguru import logger
 
-from axile.channels.schedule_clock import CN_STOCK_WINDOWS, is_within_schedule_windows
+from axile.channels.gm_sessions import SHANGHAI, check_gm_operation
 from axile.common.gm_symbols import GM_SYMBOL_RESOLVER, normalize_gm_standard_input
 from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor.base import AbstractExecutor
+from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.connection_state import connection_monitor, preserve_connection_failure
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.gm.common import (
@@ -71,6 +72,7 @@ from axile.executor.models.unified_callback import (
 from axile.executor.models.unified_input import AccountConfig, GMAccountConfig, UnifiedStandardInput
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
+from axile.executor.order_cancellation import CancelNotAllowedError
 from axile.executor.position_attributes import native_position_attributes
 
 __all__ = [
@@ -178,6 +180,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
 
     def _normalize_standard_input(self, standard_input: UnifiedStandardInput) -> UnifiedStandardInput:
         """在 planning 前统一标准输入中的 A 股代码."""
+        self._gm_session = standard_input.extra.get("audit", {}).get("gm_session")
         return normalize_gm_standard_input(standard_input)
 
     # ==================== 连接管理方法 ====================
@@ -220,7 +223,11 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
 
     def _check_trading_time(self) -> bool:
         """检查当前是否处于 A 股可报单窗且自然日开市。"""
-        return is_within_schedule_windows(datetime.now(), CN_STOCK_WINDOWS) and self._is_channel_calendar_open()
+        try:
+            check_gm_operation(clock_now(tz=SHANGHAI), context=getattr(self, "_gm_session", None))
+        except ValueError:
+            return False
+        return self._is_channel_calendar_open()
 
     # ==================== 回调模式方法 ====================
 
@@ -639,6 +646,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         wait_cancel_orders: list[GMCancelOrderTarget],
     ) -> None:
         """执行纯 GM 撤单请求，不处理账户控制."""
+        check_gm_operation(clock_now(tz=SHANGHAI), cancel=True)
         self._call_bridge(OrderCancelRequest(wait_cancel_orders=wait_cancel_orders), timeout=10.0)
 
     def _cancel_order_impl(self, symbol: str, order_id: str) -> bool:
@@ -668,6 +676,8 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             )
             logger.info(f"撤销订单请求已提交: {symbol} 订单ID {order_id}")
             return True
+        except CancelNotAllowedError:
+            raise
         except Exception as e:
             logger.error(f"撤销订单失败: {symbol} 订单ID {order_id}, 错误: {e}")
             return False
@@ -739,6 +749,10 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         **_kwargs: object,
     ) -> UnifiedOrder:
         """下单，返回统一订单模型."""
+        context = getattr(self, "_gm_session", None)
+        check_gm_operation(clock_now(tz=SHANGHAI), limit=order_type == OrderType.LIMIT, context=context)
+        if order_type == OrderType.LIMIT and (not math.isfinite(price) or price <= 0):
+            raise ValueError("限价委托需要有效的正数报价")
         symbol = self._normalize_symbol(symbol)
         if not self.account_id:
             raise ValueError("账户ID未初始化")
@@ -766,6 +780,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
                     position_effect=position_effect,
                     price=order_price,
                     account=self.account_id,
+                    session=context,
                 ),
                 timeout=10.0,
             )
@@ -1044,7 +1059,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         try:
             logger.info(f"开始检查账户 [{account_id}] 是否存在超时委托，超时时间设定为 {timeout} 秒")
             unfinished_orders = self._query_unfinished_order_records(account_id)
-            now = datetime.now(timezone.utc).astimezone()
+            now = clock_now(tz=SHANGHAI)
 
             to_cancel: list[GMCancelOrderTarget] = []
 

@@ -9,17 +9,19 @@ import { ErrorNotice } from '@/components/ui/ErrorNotice'
  * 动效与 :component:`AcctTimer` 原实现一致：panel-fade / grid 展开 / Segmented 滑块。
  */
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
+import { GMSessionControls } from '@/features/setup/GMSessionControls'
 import { SupplementControls } from '@/features/setup/SupplementControls'
-import { SupplementPreviewSummary, type SupplementPreviewValue } from '@/features/setup/SupplementPreviewSummary'
+import type { SupplementPreviewValue } from '@/features/setup/SupplementPreviewSummary'
 import { ScheduleTimeRow } from '@/components/ui/ScheduleTimeRow'
 import { MOTION_LAYOUT, useRemountFade } from '@/lib/viewTransition'
 import { executionReasonText } from '@/features/account/executionReason'
 import {
   DEFAULT_PRESET,
   PRESETS,
-  cronError,
+  timerEditorError,
+  gmTimerSessions,
   cronToExpr,
   defaultNightOn,
   defaultScheduleRule,
@@ -116,7 +118,7 @@ function calendarSummary(preview: SchedulePreview | null): { text: string; warni
   }
   const reason = calendar.unavailable_reason === 'uncovered' ? '日期超出覆盖' : '读取失败'
   return {
-    text: `${calendar.label ?? '中国交易日历'} · ${reason}，按排程执行`,
+    text: `${calendar.label ?? '中国交易日历'} · ${reason}，暂停自动执行`,
     warning: true,
   }
 }
@@ -175,10 +177,12 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
   }, [scheduleKind])
 
   const customEmpty = v.timerTab === 'custom' && !v.rawCron.trim()
-  const rawErr = v.timerTab === 'custom' && !customEmpty ? cronError(v.rawCron) : null
+  const rawErr = timerEditorError(v)
   const cronList = v.autoOn ? resolveCronList(scheduleKind, { ...v, supN: 0 }, nightSchedule) : []
   const cronExpr = rawErr ? '' : cronToExpr(cronList)
-  const previewKey = tradeChannel && cronExpr ? `${tradeChannel}\u0000${cronExpr}` : ''
+  const gmSessions = useMemo(() => gmTimerSessions(tradeChannel, { gm_sessions: v.gm_sessions }), [tradeChannel, v.gm_sessions])
+  const sessionsKey = JSON.stringify(gmSessions)
+  const previewKey = tradeChannel && cronExpr ? `${tradeChannel}\u0000${cronExpr}\u0000${sessionsKey}` : ''
   // 是否会发起预览请求（与下方 effect 的提前返回条件一致）：首帧据此直接上骨架，
   // 避免「占位文案 → 骨架 → 列表」三段跳闪。
   const expectPreview = Boolean(tradeChannel) && v.autoOn && !rawErr && Boolean(cronExpr)
@@ -266,7 +270,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
     const controller = new AbortController()
     const timer = window.setTimeout(() => {
       const limit = layout === 'page' ? previewLimitRef.current : PREVIEW_MIN_ITEMS
-      void previewSchedule(tradeChannel, cronExpr, { limit }, controller.signal)
+      void previewSchedule(tradeChannel, cronExpr, { limit, gm_sessions: gmSessions }, controller.signal)
         .then((next) => {
           if (requestId !== previewRequestId.current) return
           previewResultKey.current = previewKey
@@ -286,7 +290,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
       window.clearTimeout(timer)
       controller.abort()
     }
-  }, [tradeChannel, v.autoOn, rawErr, cronExpr, layout, previewKey, previewRetry])
+  }, [tradeChannel, v.autoOn, rawErr, cronExpr, layout, previewKey, previewRetry, gmSessions])
 
   // 基础时间线独立于补发配置。仅为已显示的有效基础触发补算摘要，保留旧值直至结果就绪。
   useEffect(() => {
@@ -310,6 +314,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
         try {
           for (let start = 0; start < missing.length; start += 100) {
             const response = await previewSchedule(tradeChannel, cronExpr, {
+              gm_sessions: gmSessions,
               scheduled_ats: missing.slice(start, start + 100).map((item) => item.scheduled_at),
               supplement: { count: v.supN, interval_minutes: v.supM },
             }, controller.signal)
@@ -326,7 +331,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
       })()
     }, 250)
     return () => { window.clearTimeout(timer); controller.abort() }
-  }, [schedulePreview, previewKey, expectPreview, tradeChannel, cronExpr, v.supN, v.supM, supplementPreviewRetry])
+  }, [schedulePreview, previewKey, expectPreview, tradeChannel, cronExpr, v.supN, v.supM, supplementPreviewRetry, gmSessions])
 
   const loadMore = useCallback(() => {
     const cursor = previewCursor
@@ -351,7 +356,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
     void previewSchedule(
       tradeChannel,
       cronExpr,
-      { after: cursor, limit: previewTargetRows },
+      { after: cursor, limit: previewTargetRows, gm_sessions: gmSessions },
       controller.signal,
     )
       .then((next) => {
@@ -374,6 +379,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
     rawErr,
     cronExpr,
     previewKey,
+    gmSessions,
     previewTargetRows,
     previewCursor,
     previewLoadingMore,
@@ -436,6 +442,8 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
           </div>
         ) : undefined} />
 
+      <GMSessionControls channel={tradeChannel} value={v.gm_sessions} onChange={(gm_sessions) => patch({ gm_sessions })} />
+
       <div
         className={`grid transition-[grid-template-rows] ${MOTION_LAYOUT} ${
           'grid-rows-[1fr]'
@@ -483,13 +491,22 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
     <div key={previewCascade.generation} role="list" aria-label="未来排程预览" className="space-y-1.5">
       {visiblePreviewRows.map((item, index) => {
         const presentation = schedulePreviewItemPresentation(item, executionReasonText, v.supN > 0 ? v.supM : undefined)
+        const supplement = supplementSummaries.get(Date.parse(item.scheduled_at))
+        const executionLabel = [
+          item.phase_label || '常规调仓',
+          supplement && supplement.configuredCount > 0
+            ? (supplement.count > 0 ? `补发 ${supplement.count} 次` : '无补发')
+            : null,
+        ].filter(Boolean).join(' · ')
         return (
           <ScheduleTimeRow
             key={schedulePreviewRowKey(item)}
             scheduledAt={item.scheduled_at}
             dateOnly={isClosedPreviewDay(item)}
+            dateEnd={item.closed_until}
+            stacked={!isClosedPreviewDay(item)}
             trailing={item.action === 'execute' && item.calendar_status !== 'unavailable'
-              ? <SupplementPreviewSummary value={supplementSummaries.get(Date.parse(item.scheduled_at))} />
+              ? executionLabel
               : presentation.text}
             now={Date.parse(schedulePreview.evaluated_at)}
             tone={presentation.tone}
@@ -526,7 +543,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
   // 高度链决定、与左列内容解耦，两列各自内部滚动，页面本身不滚。常挂载：关自动
   // 调仓时显示提示而非整列消失，避免开关切换引发布局跳动。step 布局：底部通栏。
   const previewPanel = layout === 'page' ? (
-    <aside className="flex flex-col rounded-[14px] border border-line bg-surface px-4 py-3.5 min-[1120px]:min-h-0">
+    <aside className="flex min-w-0 flex-col rounded-[14px] border border-line bg-surface px-4 py-3.5 min-[1120px]:min-h-0">
       <div className="flex-none">{previewHeader}</div>
       <div
         ref={previewListRef}
@@ -571,7 +588,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
     // leading 进左列，预览与标题顶对齐。
     return (
       <div className="min-[1120px]:h-full">
-        <div className="grid grid-cols-1 gap-6 min-[1120px]:h-full min-[1120px]:grid-cols-[minmax(0,1fr)_300px] min-[1120px]:grid-rows-[minmax(0,1fr)]">
+        <div className="grid grid-cols-1 gap-6 min-[1120px]:h-full min-[1120px]:grid-cols-[minmax(0,1fr)_clamp(360px,33%,520px)] min-[1120px]:grid-rows-[minmax(0,1fr)]">
           <div className="min-w-0 min-[1120px]:min-h-0 min-[1120px]:overflow-y-auto">
             {leading ? <div className="mb-6">{leading}</div> : null}
             <div className="space-y-5">

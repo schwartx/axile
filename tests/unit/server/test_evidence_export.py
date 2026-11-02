@@ -699,11 +699,13 @@ def test_redaction_preserves_token_contracts_and_removes_complete_quoted_secrets
             "error": "password='secret with spaces' Authorization=\"Bearer complete-private-token\"",
             "symbol_results": {"TOKENUSDT": {"status": "NOOP", "extra": {"api_key": "hidden"}}},
             "curr_target": {"TOKENUSDT": 1},
+            "cancel_details": {"TOKENUSDT:old": "当前不可撤单"},
         }
     )
     assert "secret with spaces" not in cleaned["error"]
     assert "complete-private-token" not in cleaned["error"]
     assert cleaned["curr_target"] == {"TOKENUSDT": 1}
+    assert cleaned["cancel_details"] == {"TOKENUSDT:old": "当前不可撤单"}
     assert "TOKENUSDT" in cleaned["symbol_results"]
     assert cleaned["symbol_results"]["TOKENUSDT"]["extra"] == {}
     shared = EvidenceRedactor(EvidenceProfile.SHAREABLE, 1, "PARTIAL").clean(
@@ -714,6 +716,7 @@ def test_redaction_preserves_token_contracts_and_removes_complete_quoted_secrets
             "account_id": 1,
             "curr_target": {"TOKENUSDT": 1},
             "actual_policy": {"operations": {"place_order": {"account": {"per_day": {"limit": 500}}}}},
+            "cancel_details": {"TOKENUSDT:old": "当前不可撤单"},
         }
     )
     assert shared["status"] == "PARTIAL"
@@ -721,6 +724,7 @@ def test_redaction_preserves_token_contracts_and_removes_complete_quoted_secrets
     assert "account_name" not in shared
     assert shared["account_id"] == "account-A"
     assert shared["curr_target"] == {"TOKENUSDT": 1}
+    assert shared["cancel_details"] == {"TOKENUSDT:old": "当前不可撤单"}
     assert shared["actual_policy"]["operations"]["place_order"]["account"]["per_day"]["limit"] == 500
     aliases = EvidenceRedactor(EvidenceProfile.SHAREABLE, 1, "A").clean(
         [

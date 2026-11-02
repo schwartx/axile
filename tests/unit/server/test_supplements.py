@@ -37,7 +37,7 @@ def schema_template(tmp_path_factory):
     return path
 
 
-def open_moment(channel, moment):
+def open_moment(channel, moment, **_kwargs):
     return CalendarDayDecision(channel=str(channel), day=moment.date(), status=CalendarDecisionStatus.NOT_REQUIRED)
 
 
@@ -111,7 +111,7 @@ def test_plan_cuts_next_base_and_session(monkeypatch):
     import axile.server.supplement_plan as planner
 
     monkeypatch.setattr(planner, "evaluate_channel_calendar_moment", open_moment)
-    monkeypatch.setattr(planner, "session_end", lambda _channel, _base: BASE + timedelta(minutes=2))
+    monkeypatch.setattr(planner, "session_end", lambda _channel, _base, _sessions: BASE + timedelta(minutes=2))
     points, expires = plan_supplements("ctp", "*/15 * * * *", SupplementSettings(count=4, interval_minutes=1), BASE)
     assert points == [BASE, BASE + timedelta(minutes=1)]
     assert expires == BASE + timedelta(minutes=2)

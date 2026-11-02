@@ -340,6 +340,23 @@ def test_create_account_rejects_unknown_channel_config_field() -> None:
     assert session.account is None
 
 
+@pytest.mark.parametrize("method", ["create", "update"])
+def test_non_gm_account_rejects_special_sessions_without_mutation(method: str) -> None:
+    existing = _build_account() if method == "update" else None
+    session = _RouteSession(existing)
+    payload = {"gm_sessions": {"opening_cancelable": {"enabled": True, "time": "09:15"}}}
+    client = TestClient(_build_app(session))
+    if method == "create":
+        response = client.post("/account/", json={**_account_payload(), **payload})
+    else:
+        response = client.patch("/account/1", json=payload)
+    assert response.status_code == 422
+    assert "仅适用于股票" in response.json()["detail"]
+    assert session.account is existing
+    if existing is not None:
+        assert existing.gm_sessions is None
+
+
 def test_create_account_persists_normalized_channel_config(monkeypatch: pytest.MonkeyPatch) -> None:
     """创建账户只持久化当前模式字段，并写入渠道模型默认值。"""
     monkeypatch.setattr(account_crud_routes, "parse_cron_expr", lambda _expr: ["fake-trigger"])

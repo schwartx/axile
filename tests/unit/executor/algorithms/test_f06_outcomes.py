@@ -15,6 +15,7 @@ from axile.executor.models.execution_result import ExecutionStatus, outcome_from
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
+from axile.executor.order_cancellation import CancellationResult
 from axile.executor.termination import ExecutionTerminated
 
 
@@ -113,7 +114,11 @@ def test_algorithm_outcome(monkeypatch, module, case, expected, termination_at=N
     else:
         executor.sleep_or_terminate.side_effect = lambda duration: now.__setitem__(0, now[0] + duration)
         monkeypatch.setattr(
-            module, "cancel_pending_orders_via_query", lambda _: ["1"] if case == "unknown_cancel" else []
+            module,
+            "cancel_pending_orders_via_query",
+            lambda _: CancellationResult(
+                unconfirmed={(executor.symbol, "1"): "撤单失败，订单终态尚未确认"} if case == "unknown_cancel" else {}
+            ),
         )
         if module is twap:
             entry, params = twap.twap, twap.TwapParams(slices=1, total_duration=1, max_wait_seconds=1)
@@ -256,7 +261,7 @@ def test_algorithm_keeps_tracker_cancel_error(monkeypatch, module):
 
     monkeypatch.setattr(module, "submit_and_track_split_orders", split_submit)
     if hasattr(module, "cancel_pending_orders_via_query"):
-        monkeypatch.setattr(module, "cancel_pending_orders_via_query", lambda _: [])
+        monkeypatch.setattr(module, "cancel_pending_orders_via_query", lambda _: CancellationResult())
     if module is maker:
         entry, params = maker.single_maker_callback, maker.SingleMakerParams(max_wait_seconds=1)
     elif module is twap:

@@ -298,10 +298,9 @@ def _execute_one_slice(
         return detail
 
     tracker.wait_for_completion(timeout=max(0.0, deadline - get_default_clock().time()))
-    failed_cancels = cancel_pending_orders_via_query(executor)
-    if failed_cancels:
-        tracker.explicit_error = "撤单失败，订单终态尚未确认"
-        detail["cancel_error"] = f"撤单失败: {failed_cancels}"
+    unconfirmed = tracker.record_cancellation_result(cancel_pending_orders_via_query(executor))
+    if unconfirmed:
+        detail["cancel_error"] = unconfirmed
     return detail
 
 

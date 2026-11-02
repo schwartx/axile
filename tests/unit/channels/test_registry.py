@@ -116,7 +116,7 @@ def test_builtin_channels_have_stable_order_and_descriptor_shape() -> None:
     assert plugins[0].descriptor.schedule.night.m15[0] == "21:00"
     assert plugins[0].descriptor.schedule.night.m15[-1] == "02:29"
     assert [window.start for window in plugins[0].descriptor.schedule.windows] == ["09:00", "13:00", "21:00"]
-    assert [window.end for window in plugins[1].descriptor.schedule.windows] == ["11:30", "15:00"]
+    assert [window.end for window in plugins[1].descriptor.schedule.windows] == ["09:25", "11:30", "15:00"]
     assert plugins[1].descriptor.schedule.night is None
     assert plugins[0].descriptor.account_form.fields
     assert plugins[0].descriptor.defaults.trade_algorithm.method == "TARGET-POS-TASK"

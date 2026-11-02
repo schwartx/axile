@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, cast
 from unittest.mock import MagicMock
 
@@ -17,6 +18,46 @@ from axile.executor.models.unified_order import OrderDirection, OrderType, Trade
 from axile.executor.models.unified_price import UnifiedPriceData
 from tests.fixtures.algorithm_fakes import ClockStub as _ClockStub
 from tests.fixtures.algorithm_fakes import build_fallback_tracker as _build_tracker
+
+
+def test_gm_auction_keeps_algorithm_parameters_and_wait_budget(monkeypatch):
+    from axile.channels.gm_sessions import SHANGHAI, gm_session_context
+    from axile.server.db.models.account_settings import GMSessionSettings
+
+    now = datetime(2026, 9, 1, 9, 20, tzinfo=SHANGHAI)
+    executor = _SingleMakerExecutor()
+    executor.channel_type = "gm"
+    executor.audit_context = {
+        "gm_session": gm_session_context(
+            GMSessionSettings(opening_locked={"enabled": True, "time": "09:20"}).model_dump(),
+            now,
+        )
+    }
+    tracker = MagicMock()
+    tracker.get_all_orders.return_value = []
+    tracker.get_all_trades.return_value = []
+    setup = MagicMock(return_value=tracker)
+    submit = MagicMock(return_value=[])
+    monkeypatch.setattr(single_maker_impl, "setup_order_tracker", setup)
+    monkeypatch.setattr(single_maker_impl, "submit_and_track_split_orders", submit)
+    monkeypatch.setattr(single_maker_impl, "teardown_order_tracker", lambda *_: None)
+    monkeypatch.setattr(single_maker_impl, "get_default_clock", lambda: _ClockStub())
+    params = single_maker_impl.SingleMakerParams(max_wait_seconds=60, chase_enabled=True, on_missing_book="market")
+    single_maker_impl.single_maker_callback(
+        cast("ExecutorProtocol", executor),
+        AlgorithmInput(
+            symbol=executor.symbol,
+            target_volume=1,
+            params=params,
+            trade_rule={},
+        ),
+    )
+    assert setup.call_args.args[2].enabled is True
+    assert params.chase_enabled and params.on_missing_book == "market"
+    assert submit.call_args.args[3] == OrderType.LIMIT
+    assert submit.call_args.kwargs["leg_timeout_seconds"] == 60
+    assert submit.call_args.kwargs["deadline"] == 60
+    tracker.wait_for_completion.assert_called_once_with(timeout=60)
 
 
 class _SingleMakerExecutor:
@@ -499,9 +540,8 @@ def test_order_tracker_timeout_cancels_only_tracked_symbols() -> None:
     )
     tracker.add_order(executor_order)
 
-    completed = tracker.wait_for_completion(timeout=1.0)
-
-    assert completed is False
+    with pytest.raises(RuntimeError, match="订单终态尚未确认"):
+        tracker.wait_for_completion(timeout=1.0)
     assert executor.query_calls == 1
     assert executor.cancel_order_calls == ["limit-1"]
 
