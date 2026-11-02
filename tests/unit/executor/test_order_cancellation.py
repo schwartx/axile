@@ -6,7 +6,7 @@ import pytest
 
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.models.unified_order import OrderDirection, OrderType, UnifiedOrder
-from axile.executor.order_cancellation import CancelNotAllowedError, cancel_orders
+from axile.executor.order_cancellation import CancelNotAllowedError, CancelRequestStatus, cancel_orders
 from axile.executor.termination import ExecutionTerminated
 
 
@@ -32,6 +32,18 @@ def test_only_actual_terminal_resolves_cancellation(response, terminal):
     assert bool(result.unconfirmed) is (not terminal)
     assert result.terminal_orders == ([final] if terminal else [])
     assert result.attempted is (not isinstance(response, CancelNotAllowedError))
+    expected = (
+        CancelRequestStatus.RESTRICTED
+        if isinstance(response, CancelNotAllowedError)
+        else CancelRequestStatus.UNKNOWN
+        if isinstance(response, Exception)
+        else CancelRequestStatus.SUBMITTED
+        if response
+        else CancelRequestStatus.FAILED
+    )
+    assert result.orders[(original.symbol, original.order_id)].request_status is expected
+    assert result.only_restricted is (expected is CancelRequestStatus.RESTRICTED and not terminal)
+    assert result.outcomes["rb2610:old"]["terminal"] is terminal
     if isinstance(response, CancelNotAllowedError) and not terminal:
         assert result.details == {"rb2610:old": "当前不可撤"}
 
@@ -60,3 +72,31 @@ def test_another_order_terminal_does_not_resolve_original():
     unrelated = order("unrelated").model_copy(update={"status": OrderStatus.CANCELED})
     result = cancel_orders([order()], cancel=Mock(return_value=True), reconcile=Mock(return_value=unrelated))
     assert result.unconfirmed
+
+
+def test_query_failure_does_not_erase_restriction_or_hide_uncertainty():
+    result = cancel_orders(
+        [order()],
+        cancel=Mock(side_effect=CancelNotAllowedError("当前不可撤")),
+        reconcile=Mock(side_effect=TimeoutError()),
+    )
+    assert not result.only_restricted
+    assert result.outcomes == {
+        "rb2610:old": {
+            "request_status": "restricted",
+            "reason": "当前不可撤",
+            "terminal": False,
+            "query_error": "订单终态查询失败",
+        }
+    }
+
+
+def test_mixed_restriction_and_failed_request_is_not_normal_waiting():
+    result = cancel_orders(
+        [order(), order("other")],
+        cancel=Mock(side_effect=[CancelNotAllowedError("当前不可撤"), False]),
+        reconcile=Mock(return_value=None),
+    )
+    assert not result.only_restricted
+    assert result.attempted
+    assert len(result.unconfirmed) == 2

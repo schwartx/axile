@@ -340,8 +340,11 @@ def _place_participation_slice(
         return detail
 
     tracker.wait_for_completion(timeout=max(0.0, deadline - get_default_clock().time()))
-    unconfirmed = tracker.record_cancellation_result(cancel_pending_orders_via_query(executor))
-    if unconfirmed:
+    cancellation = cancel_pending_orders_via_query(executor)
+    unconfirmed = tracker.record_cancellation_result(cancellation)
+    if cancellation.orders:
+        detail["cancel_outcomes"] = cancellation.outcomes
+    if unconfirmed and not tracker.waiting_on_restriction():
         detail["cancel_error"] = unconfirmed
     return detail
 
@@ -454,7 +457,8 @@ def pov(
             target_volume,
             orders,
             trades,
-            explicit_error=tracker.explicit_error if isinstance(tracker.explicit_error, str) else None,
+            explicit_error=(tracker.explicit_error if isinstance(tracker.explicit_error, str) else None)
+            or (tracker.pending_reason if isinstance(tracker.pending_reason, str) else None),
             explicit_blocked_error=tracker.explicit_blocked_error
             if isinstance(tracker.explicit_blocked_error, str)
             else None,
@@ -531,6 +535,11 @@ def _run_participation_loop(
     while clock.time() < deadline:
         executor.handle_termination_checkpoint()
 
+        if tracker.waiting_on_restriction():
+            tracker.wait_for_completion(timeout=min(fill_wait, max(0.0, deadline - clock.time())))
+            if tracker.get_pending_count():
+                executor.sleep_or_terminate(min(interval, max(0.0, deadline - clock.time())))
+                continue
         account_assets = executor.get_account_assets()
         current_volume = executor.get_current_volume(account_assets)
         filled = abs(current_volume - start_volume)
@@ -590,7 +599,7 @@ def _maybe_complete_on_timeout(
     slice_details : list[dict[str, Any]]
         执行明细列表，就地追加补单明细。
     """
-    if not params.complete_on_timeout:
+    if not params.complete_on_timeout or tracker.get_pending_count():
         return
 
     account_assets = executor.get_account_assets()

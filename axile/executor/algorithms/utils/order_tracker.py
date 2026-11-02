@@ -35,7 +35,12 @@ from axile.executor.models.order_channel_health import OrderChannelHealth
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
-from axile.executor.order_cancellation import CancellationResult, CancelNotAllowedError
+from axile.executor.order_cancellation import (
+    CancellationResult,
+    CancelNotAllowedError,
+    CancelRequestStatus,
+    OrderCancellation,
+)
 from axile.executor.order_volume_limits import split_order_volumes
 from axile.executor.termination import ExecutionTerminated
 
@@ -186,6 +191,7 @@ class OrderTracker:
     rest_price_refresh_interval: float = 1.0
     _explicit_error: str | None = field(default=None, init=False)
     _order_errors: dict[str, str] = field(default_factory=dict, init=False)
+    _cancel_restrictions: dict[str, str] = field(default_factory=dict, init=False)
     _explicit_blocked_error: str | None = field(default=None, init=False)
 
     pending_orders: dict[str, UnifiedOrder] = field(default_factory=dict)
@@ -342,6 +348,7 @@ class OrderTracker:
                 del self.pending_orders[tracked_order_id]
                 for candidate_id in self._extract_order_candidate_ids(order):
                     self._order_errors.pop(candidate_id, None)
+                    self._cancel_restrictions.pop(candidate_id, None)
 
                 # 追单中的撤单换单会先收到旧单终态，再写入新单。只有明确进入
                 # market fallback 的路径才允许在这里带着 chase_info 继续往后走，
@@ -618,7 +625,7 @@ class OrderTracker:
         cancellation = cancel_pending_orders_via_query(self.executor)
         self._reconcile_timeout_cancellations(cancellation)
         unconfirmed = self.record_cancellation_result(cancellation)
-        if unconfirmed:
+        if unconfirmed and not self.waiting_on_restriction():
             message = "; ".join(dict.fromkeys(unconfirmed.values()))
             error = RuntimeError(f"订单终态尚未确认: {unconfirmed}")
             setattr(error, "execution_error", message)
@@ -631,20 +638,59 @@ class OrderTracker:
         for order in result.terminal_orders:
             self.on_order_update(order)
         with self.lock:
-            completed_ids = {
-                candidate_id
+            completed = {
+                (order.symbol, candidate)
                 for order in self.completed_orders.values()
-                for candidate_id in self._extract_order_candidate_ids(order)
+                for candidate in self._extract_order_candidate_ids(order)
             }
-            unconfirmed = {
-                order_id: reason
-                for (_, order_id), reason in result.unconfirmed.items()
-                if order_id not in completed_ids
+            pending = {
+                (order.symbol, candidate): key
+                for key, order in self.pending_orders.items()
+                for candidate in self._extract_order_candidate_ids(order)
             }
+            unconfirmed = {}
+            for identity, reason in result.unconfirmed.items():
+                if identity in completed:
+                    continue
+                order_id = pending.get(identity, identity[1])
+                item = result.orders[identity]
+                self._record_cancellation_item(order_id, item)
+                unconfirmed[order_id] = reason
             for order_id in self.pending_orders:
-                unconfirmed.setdefault(order_id, self._order_errors.get(order_id) or "订单终态尚未确认")
-            self._order_errors.update(unconfirmed)
+                reason = (
+                    self._cancel_restrictions.get(order_id) or self._order_errors.get(order_id) or "订单终态尚未确认"
+                )
+                unconfirmed.setdefault(order_id, reason)
+                if order_id not in self._cancel_restrictions:
+                    self._order_errors.setdefault(order_id, reason)
         return unconfirmed
+
+    def _record_cancellation_item(self, order_id: str, item: OrderCancellation) -> None:
+        """持锁更新逐单分类；规则限制不能清除此前真实发生的错误。"""
+        if item.request_status == CancelRequestStatus.RESTRICTED and not item.query_error:
+            self._cancel_restrictions[order_id] = item.reason
+        else:
+            self._cancel_restrictions.pop(order_id, None)
+            self._order_errors[order_id] = item.query_error or item.reason
+
+    @property
+    def pending_reason(self) -> str | None:
+        """仅在结算结果时说明仍在场的受限委托，不当作运行中的错误。"""
+        with self.lock:
+            reasons = [
+                self._cancel_restrictions[key] for key in self.pending_orders if key in self._cancel_restrictions
+            ]
+            return f"委托撤单受限，仍需跟踪：{'；'.join(dict.fromkeys(reasons))}" if reasons else None
+
+    def waiting_on_restriction(self) -> bool:
+        """只有全部未决单均为正常撤单受限时才允许算法继续等待。"""
+        with self.lock:
+            return (
+                bool(self.pending_orders)
+                and not self._explicit_error
+                and not self._order_errors
+                and all(order_id in self._cancel_restrictions for order_id in self.pending_orders)
+            )
 
     def _record_cancel_restriction(self, order_id: str, info: dict[str, Any], exc: CancelNotAllowedError) -> None:
         """保留旧单并按原追单间隔重试，终态回报仍可正常收敛。"""
@@ -653,7 +699,7 @@ class OrderTracker:
             info["last_chase_time"] = self.clock.time()
             info["cancel_blocked_until"] = self.clock.time() + (self.chase_config.interval if self.chase_config else 0)
             if order_id in self.pending_orders:
-                self._order_errors[order_id] = exc.execution_error
+                self._cancel_restrictions[order_id] = exc.execution_error
         self._logger.warning(f"撤单受限，保留原委托 {order_id}: {exc.execution_error}")
 
     def _reconcile_timeout_cancellations(self, result: CancellationResult) -> None:

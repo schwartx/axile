@@ -94,9 +94,9 @@ class AbstractExecutorExecutionLifecycleMixin(AbstractExecutorExecutionRuntimeFa
             executor._prepare_instrument_catalog(standard_input)
             standard_input = executor._normalize_connected_standard_input(standard_input)
 
-            # 非交易时间直接在入口层返回阻断结果，避免继续进入规划和下单阶段。
+            # 非交易时间直接在入口层返回休市结果，避免继续进入规划和下单阶段。
             if not executor._check_trading_time():
-                executor.logger.warning("非交易时段")
+                executor.logger.info("非交易时段")
                 output = executor._create_non_trading_output(standard_input)
             else:
                 executor._validate_input(standard_input)

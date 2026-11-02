@@ -274,8 +274,10 @@ def test_timeout_stops_split_and_blocks_next_slice_until_terminal(monkeypatch, m
     wait_for_completion = tracker.wait_for_completion
     monkeypatch.setattr(tracker, "wait_for_completion", lambda timeout: wait_for_completion(timeout=0))
 
-    orders = _submit(executor, tracker, OrderDirection.SELL, 5, target=-3, current=2)
+    with pytest.raises(RuntimeError, match="订单终态尚未确认"):
+        _submit(executor, tracker, OrderDirection.SELL, 5, target=-3, current=2)
 
+    orders = list(tracker.pending_orders.values())
     assert len(orders) == 1
     assert executor.place_order.call_count == 1
     executor.cancel_order.assert_called_once_with(orders[0].order_id)
@@ -379,7 +381,8 @@ def test_subsecond_wait_stops_at_deadline_without_chasing(monkeypatch, chase_ena
     monkeypatch.setattr(tracker, "_check_and_chase", chase)
     monkeypatch.setattr(tracker, "_fallback_to_market_order", fallback)
 
-    assert tracker.wait_for_completion(timeout=0.2) is False
+    with pytest.raises(RuntimeError, match="订单终态尚未确认"):
+        tracker.wait_for_completion(timeout=0.2)
 
     assert clock.time() == pytest.approx(0.2)
     chase.assert_not_called()

@@ -194,12 +194,14 @@ class AbstractExecutorFacadeMixin:
             executor.get_execution_query_runtime_bridge().handle_order_update(order)
         for order in executor.account_orders.snapshot()["resolved"]:
             if order.is_completed():
-                result.unconfirmed.pop((order.symbol, order.order_id), None)
+                item = result.orders.get((order.symbol, order.order_id))
+                if item is not None:
+                    item.terminal_order = order
         if result.unconfirmed:
             message = "旧委托尚未确认结束，停止新增委托: " + "; ".join(
                 f"{key} {reason}" for key, reason in result.details.items()
             )
-            error = RuntimeError(message)
+            error = CancelNotAllowedError(message) if result.only_restricted else RuntimeError(message)
             setattr(error, "execution_error", message)
             raise error
 

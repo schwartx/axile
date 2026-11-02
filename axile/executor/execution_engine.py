@@ -28,7 +28,8 @@ from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_order import UnifiedOrder
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.models.unified_price import UnifiedPriceData, clone_price_data
-from axile.executor.session_closed import COMMON_SESSION_CLOSED
+from axile.executor.order_cancellation import CancelNotAllowedError
+from axile.executor.session_closed import COMMON_SESSION_CLOSED, normal_session_skip
 from axile.executor.termination import ExecutionTerminated
 
 if TYPE_CHECKING:
@@ -156,12 +157,11 @@ def _merge_symbol_terminations(terminations: list[ExecutionTerminated]) -> Execu
     Returns
     -------
     ExecutionTerminated
-        以最先完成的那个为基准、并汇总全部撤单失败订单号的终止异常。
+        以最先完成的异常为基准，汇总全部撤单操作和订单终态证据。
 
     Notes
     -----
-    合并的关键是 ``cancel_failed_order_ids``：它是运维唯一能看到「哪些挂单被留在
-    交易所」的信号，按品种分散在各自的异常上，只保留一个等于丢失其余品种的游离挂单。
+    撤单操作与订单终态分别保留；只保留一个品种的异常会丢失其余品种的未决委托。
     ``reason`` / ``mode`` / ``trigger`` 在同一次执行内对所有品种同源，取首个即可。
     """
     primary = terminations[0]
@@ -171,6 +171,9 @@ def _merge_symbol_terminations(terminations: list[ExecutionTerminated]) -> Execu
     primary.cancel_unconfirmed = any(termination.cancel_unconfirmed for termination in terminations)
     primary.cancel_details = {
         key: reason for termination in terminations for key, reason in termination.cancel_details.items()
+    }
+    primary.cancel_outcomes = {
+        key: outcome for termination in terminations for key, outcome in termination.cancel_outcomes.items()
     }
     attempts = [termination.cancel_attempted for termination in terminations]
     primary.cancel_attempted = True if any(attempts) else (False if all(value is False for value in attempts) else None)
@@ -298,7 +301,32 @@ class ExecutionEngine:
         planning = self._build_symbol_algorithm_plans(standard_input)
         # dispatch 阶段把计划拆成可直接返回的 NOOP、第一阶段减仓、第二阶段开仓三类。
         dispatch_phases = self._build_dispatch_phases(planning)
-        self._prepare_account_for_symbol_dispatch(dispatch_phases)
+        try:
+            self._prepare_account_for_symbol_dispatch(dispatch_phases)
+        except CancelNotAllowedError as exc:
+            direct_symbols = {result.symbol for result in dispatch_phases.direct_results}
+            return [
+                *planning.planning_failures,
+                *dispatch_phases.direct_results,
+                *[
+                    self._build_failed_algorithm_result(
+                        symbol=plan.symbol,
+                        algorithm_name=plan.algorithm_name,
+                        error=exc.execution_error,
+                        status=ExecutionStatus.BLOCKED,
+                        reason_code="COMMON.CANCEL.RESTRICTED",
+                        orders=[
+                            order
+                            for order in self._owner.account_orders.snapshot()["data"]
+                            if order.symbol == plan.symbol
+                        ],
+                        account_assets=planning.account_assets,
+                        sizing=plan.sizing,
+                    )
+                    for plan in planning.plans
+                    if plan.symbol not in direct_symbols
+                ],
+            ]
         phase_one_results = self._run_phase_one_dispatch(dispatch_phases.phase_one_tasks)
         # 第二阶段只有在第一阶段没有未成功结果时才继续，避免边减仓失败边开新仓。
         phase_two_results = self._run_phase_two_dispatch(
@@ -341,7 +369,7 @@ class ExecutionEngine:
         Notes
         -----
         终止异常不在循环里直接向上抛，而是先收齐再合并后重抛：每个品种线程都会把
-        **自己**那份 ``cancel_failed_order_ids`` 挂在自己的终止异常上，一旦提前逃出
+        **自己**那份撤单和订单终态证据挂在自己的终止异常上，一旦提前逃出
         循环，其余 future 上的异常就再也不会被取出，那些品种的游离挂单会在审计里
         彻底消失——记录看着一切正常，实际敞口还挂在盘上。
 
@@ -544,11 +572,15 @@ class ExecutionEngine:
             reason_code, message = session_block
             if sizing is not None:
                 sizing.current_quantity = self._owner.get_current_volume(symbol, account_assets)
+            retained = [order for order in self._owner.account_orders.snapshot()["data"] if order.symbol == symbol]
+            normal_skip = reason_code == COMMON_SESSION_CLOSED and not retained
             return self._build_failed_algorithm_result(
                 symbol=symbol,
                 algorithm_name=algorithm_name,
-                error=message,
-                status=ExecutionStatus.BLOCKED,
+                error=None if normal_skip else message,
+                outcome_reason=message,
+                status=ExecutionStatus.NOOP if normal_skip else ExecutionStatus.BLOCKED,
+                orders=retained,
                 account_assets=account_assets,
                 target_volume=target_volume,
                 first_tick=clone_price_data(planning_market_data.get(symbol)),
@@ -1083,8 +1115,9 @@ class ExecutionEngine:
         self,
         symbol: str,
         algorithm_name: str,
-        error: str,
+        error: str | None,
         *,
+        outcome_reason: str | None = None,
         status: ExecutionStatus = ExecutionStatus.FAILED,
         orders: list[UnifiedOrder] | None = None,
         account_assets: UnifiedAccountAssets | None = None,
@@ -1104,6 +1137,7 @@ class ExecutionEngine:
             memory=dict(memory or {}),
             status=status,
             error=error,
+            outcome_reason=outcome_reason or error,
             reason_code=reason_code,
             symbol=symbol,
             algorithm=algorithm_name,
@@ -1145,11 +1179,17 @@ class ExecutionEngine:
         status = _derive_dispatch_status(symbol_results)
         error = self._derive_dispatch_error(status, symbol_results)
         account_assets, explicit_error = self._read_result_assets()
-        if explicit_error and status in {
-            ExecutionStatus.SUCCEEDED,
-            ExecutionStatus.NOOP,
-            ExecutionStatus.PARTIAL,
-        }:
+        only_normal_skips = bool(results) and all(normal_session_skip(result.model_dump()) for result in results)
+        if (
+            explicit_error
+            and not only_normal_skips
+            and status
+            in {
+                ExecutionStatus.SUCCEEDED,
+                ExecutionStatus.NOOP,
+                ExecutionStatus.PARTIAL,
+            }
+        ):
             # 只有依赖持仓事实的结论才因收尾查询失败而降级。
             # BLOCKED/FAILED 且未下单并不声称仓位，不能改写成「最终持仓查询失败」。
             progressed = any(
@@ -1177,6 +1217,10 @@ class ExecutionEngine:
     ) -> str | None:
         """部分休市仅在没有收尾查询错误时提升原因码，保留真实异常。"""
         if status == ExecutionStatus.PARTIAL and not explicit_error and _only_session_closed_failures(symbol_results):
+            return COMMON_SESSION_CLOSED
+        if is_success_status(status) and any(
+            normal_session_skip(result.model_dump()) for result in symbol_results.values()
+        ):
             return COMMON_SESSION_CLOSED
         return None
 

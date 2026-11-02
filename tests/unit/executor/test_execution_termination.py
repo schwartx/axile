@@ -425,3 +425,47 @@ def test_session_sleep_or_terminate_without_runtime_falls_back_to_plain_sleep() 
 
     assert clock.sleeps == [2.0]
     assert clock.event_waits == []
+
+
+@pytest.mark.parametrize("query_failed", [False, True])
+def test_termination_restriction_is_not_cancel_failure(monkeypatch, query_failed):
+    from axile.executor.order_cancellation import CancelNotAllowedError
+
+    executor = _TerminationTestExecutor(execution_orders=[_active_order("ag2612", "restricted")])
+    session = ExecutionSession(owner=executor, symbol="ag2612")
+
+    def restricted(_order_id):
+        raise CancelNotAllowedError("当前不可撤单")
+
+    def reconcile(*_args):
+        if query_failed:
+            raise TimeoutError()
+        return None
+
+    monkeypatch.setattr(session, "cancel_order", restricted)
+    monkeypatch.setattr(session, "reconcile_terminal_order", reconcile)
+    result = session._cancel_pending_orders_before_termination()
+    assert result.failed_order_ids == []
+    assert not result.attempted
+    assert result.unconfirmed
+    item = result.cancel_outcomes["ag2612:restricted"]
+    assert item["request_status"] == "restricted"
+    assert item["query_error"] == ("订单终态查询失败" if query_failed else None)
+
+
+def test_cancel_failure_does_not_make_confirmed_terminal_unknown(monkeypatch):
+    executor = _TerminationTestExecutor(execution_orders=[_active_order("ag2612", "order-fail")])
+    event = Event()
+    event.set()
+    executor.set_termination_controller(
+        ExecutionTerminationController(cancel_event=event, mode_provider=lambda: "cancel_pending")
+    )
+    session = ExecutionSession(owner=executor, symbol="ag2612")
+    monkeypatch.setattr(session, "reconcile_terminal_order", lambda *_: _filled_order("ag2612", "order-fail"))
+
+    with pytest.raises(ExecutionTerminated) as caught:
+        session.handle_termination_checkpoint()
+
+    assert caught.value.cancel_failed_order_ids == ["order-fail"]
+    assert not caught.value.cancel_unconfirmed
+    assert caught.value.cancel_outcomes["ag2612:order-fail"]["terminal"] is True

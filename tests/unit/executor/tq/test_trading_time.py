@@ -286,9 +286,10 @@ def test_engine_blocks_symbol_sessions_without_market_io(monkeypatch: pytest.Mon
         instance.close()
 
     blocked = output.symbol_results["rb2610"]
-    assert output.status is ExecutionStatus.PARTIAL
-    assert blocked.status is ExecutionStatus.BLOCKED
-    assert blocked.error == "非交易时段"
+    assert output.status is ExecutionStatus.SUCCEEDED
+    assert blocked.status is ExecutionStatus.NOOP
+    assert blocked.error is None
+    assert blocked.outcome_reason == "非交易时段"
     assert blocked.reason_code == "COMMON.SESSION.CLOSED"
     assert blocked.memory == {
         "symbol_decision_reason_code": "COMMON.SESSION.CLOSED",
@@ -408,15 +409,15 @@ def test_engine_blocks_all_symbol_sessions_without_execution_io(monkeypatch: pyt
     finally:
         instance.close()
 
-    assert output.status is ExecutionStatus.BLOCKED
-    assert output.error is not None
-    assert "2 个品种未执行" in output.error
-    assert output.error == "非交易时段，2 个品种未执行"
+    assert output.status is ExecutionStatus.NOOP
+    assert output.success
+    assert output.error is None
+    assert output.outcome_reason == "2 个品种休市，已跳过"
     assert output.reason_code == "COMMON.SESSION.CLOSED"
     assert cancel_calls == 0
     for symbol in ("rb2610", "ag2612"):
         result = output.symbol_results[symbol]
-        assert result.status is ExecutionStatus.BLOCKED
+        assert result.status is ExecutionStatus.NOOP
         assert result.sizing is not None
         assert result.sizing.status is TargetSizingStatus.UNAVAILABLE
         assert result.target_volume is None
@@ -465,10 +466,10 @@ def test_engine_sizes_closed_symbols_from_cached_quotes(monkeypatch: pytest.Monk
     finally:
         instance.close()
 
-    assert output.status is ExecutionStatus.BLOCKED
+    assert output.status is ExecutionStatus.NOOP
     sized = output.symbol_results["rb2610"]
     missing = output.symbol_results["ag2612"]
-    assert sized.status is ExecutionStatus.BLOCKED
+    assert sized.status is ExecutionStatus.NOOP
     assert sized.sizing is not None
     assert sized.sizing.target_quantity == 1.0
     assert sized.target_volume == 1.0
@@ -504,8 +505,9 @@ def test_market_gap_blocks_before_symbol_planning(monkeypatch: pytest.MonkeyPatc
     finally:
         instance.close()
 
-    assert output.status is ExecutionStatus.BLOCKED
-    assert output.error == "非交易时段"
+    assert output.status is ExecutionStatus.NOOP
+    assert output.success
+    assert output.error is None
     assert output.reason_code == "COMMON.SESSION.CLOSED"
     assert output.symbol_results == {}
 

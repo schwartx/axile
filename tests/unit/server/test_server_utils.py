@@ -126,6 +126,14 @@ def test_append_terminated_execute_record_persists_termination_metadata() -> Non
             cancel_attempted=True,
             cancel_failed_order_ids=["oid-1"],
             cancel_details={"ag2612:oid-1": "当前不可撤单"},
+            cancel_outcomes={
+                "ag2612:oid-1": {
+                    "request_status": "restricted",
+                    "reason": "当前不可撤单",
+                    "terminal": False,
+                    "query_error": None,
+                }
+            },
             raw_input={"account_config": {"secret": "x"}, "symbol": "ag2612"},
             raw_result={"summary": {"filled": 0}},
             session_factory=lambda: fake_session,
@@ -138,6 +146,7 @@ def test_append_terminated_execute_record_persists_termination_metadata() -> Non
     assert record.raw_result["execution_kind"] == ExecutionKind.CLEAR_POSITIONS.value
     assert record.raw_result["termination"]["cancel_failed_order_ids"] == ["oid-1"]
     assert record.raw_result["termination"]["cancel_details"] == {"ag2612:oid-1": "当前不可撤单"}
+    assert record.raw_result["termination"]["cancel_outcomes"]["ag2612:oid-1"]["request_status"] == "restricted"
 
 
 def test_trade_channel_check_records_error_when_dependency_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:

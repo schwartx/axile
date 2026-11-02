@@ -731,3 +731,20 @@ def test_drop_account_disposes_registered_worker(monkeypatch: pytest.MonkeyPatch
 
     assert manager._workers == {}
     assert disposed == [handle]
+
+
+def test_termination_cancellation_facts_survive_worker_response_and_manager():
+    from axile.server.execution.worker_backend.worker_responses import _build_terminated_response
+
+    outcomes = {
+        "ag2612:1": {"request_status": "restricted", "reason": "当前不可撤单", "terminal": False, "query_error": None}
+    }
+    original = ExecutionTerminated(
+        reason="stop", mode="cancel_pending", cancel_outcomes=outcomes, cancel_unconfirmed=True
+    )
+    response = _build_terminated_response(request_id="test", account=build_account(id=2), exc=original)
+    with pytest.raises(ExecutionTerminated) as caught:
+        WorkerBackendManager._handle_response(response)
+    assert caught.value.cancel_outcomes == outcomes
+    assert caught.value.cancel_failed_order_ids == []
+    assert caught.value.cancel_unconfirmed

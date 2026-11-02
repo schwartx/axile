@@ -28,6 +28,7 @@ def test_handle_inline_execution_terminated_persists_record_and_updates_state(mo
         channel=TradeChannel.CTP,
         algorithm="SINGLE-MAKER",
     )
+    outcomes = {"ag2612:old": {"request_status": "restricted", "terminal": False, "query_error": None}}
     captured: dict[str, object] = {"events": []}
     execution_registry.set_execution_task_state(execution_id, state)
 
@@ -55,6 +56,7 @@ def test_handle_inline_execution_terminated_persists_record_and_updates_state(mo
                     mode=ExecutionTerminateMode.GRACEFUL.value,
                     acked_at="2026-03-27T10:00:03",
                     cancel_failed_order_ids=["order-1"],
+                    cancel_outcomes=outcomes,
                 ),
             )
         )
@@ -79,6 +81,7 @@ def test_handle_inline_execution_terminated_persists_record_and_updates_state(mo
         "forced": False,
         "cancel_unconfirmed": False,
         "cancel_details": {},
+        "cancel_outcomes": outcomes,
     }
     assert captured["events"] == [
         {
@@ -100,6 +103,7 @@ def test_handle_inline_execution_terminated_persists_record_and_updates_state(mo
                     "forced": False,
                     "cancel_unconfirmed": False,
                     "cancel_details": {},
+                    "cancel_outcomes": outcomes,
                 }
             },
         }
@@ -185,6 +189,7 @@ def test_run_execution_task_uses_state_termination_fallbacks(monkeypatch) -> Non
         "forced": False,
         "cancel_unconfirmed": False,
         "cancel_details": {},
+        "cancel_outcomes": {},
     }
     assert captured["events"] == [
         {
@@ -206,6 +211,7 @@ def test_run_execution_task_uses_state_termination_fallbacks(monkeypatch) -> Non
                     "forced": False,
                     "cancel_unconfirmed": False,
                     "cancel_details": {},
+                    "cancel_outcomes": {},
                 }
             },
         }

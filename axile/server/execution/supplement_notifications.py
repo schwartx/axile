@@ -184,7 +184,7 @@ async def finish_supplement_execution(session: AsyncSession, row: ExecutionInten
                 )
             )
     await session.flush()
-    if row.status == ExecutionTaskStatus.SKIPPED:
+    if row.status in {ExecutionTaskStatus.SKIPPED, ExecutionTaskStatus.SUCCEEDED}:
         record = await session.scalar(select(ExecuteRecord).where(ExecuteRecord.execution_id == row.execution_id))
         if record is not None and session_closed_scope(record.raw_result) == "all":
             for group in groups.values():

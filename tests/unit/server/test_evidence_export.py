@@ -896,3 +896,25 @@ def test_mixed_result_without_stable_identity_keeps_every_snapshot(database):
     assert report["unidentified_order_snapshots"] == report["unidentified_trade_snapshots"] == 2
     assert len(_csv(archive, "executions/exec-1/orders.csv")) == 2
     assert len(_csv(archive, "executions/exec-1/trades.csv")) == 2
+
+
+def test_cancellation_facts_survive_shareable_evidence_redaction():
+    cleaned = EvidenceRedactor(EvidenceProfile.SHAREABLE, 1, "private").clean(
+        {
+            "termination": {
+                "cancel_outcomes": {
+                    "TOKENUSDT:old": {
+                        "request_status": "restricted",
+                        "terminal": False,
+                        "query_error": None,
+                        "reason": "当前不可撤单",
+                    }
+                }
+            }
+        }
+    )
+    assert cleaned["termination"]["cancel_outcomes"]["TOKENUSDT:old"] == {
+        "request_status": "restricted",
+        "terminal": False,
+        "query_error": None,
+    }

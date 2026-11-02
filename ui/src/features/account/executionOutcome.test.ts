@@ -99,3 +99,23 @@ test('详情逐只状态使用原始结果，不把受阻且缺仓位的品种�
 test.each(['USD', 'EUR', 'JPY', 'CNY', ''])('币种原样保留：%s', currency => {
   expect(withCurrency('10', currency)).toBe(currency === 'CNY' ? '¥10' : currency ? `10 ${currency}` : '10')
 })
+
+test('新休市跳过算成功，保留未观察的仓位，真实失败不会改成休市', () => {
+  const closed = { status: 'NOOP', reason_code: 'COMMON.SESSION.CLOSED', orders: [], trades: [], final_volume: null }
+  const raw = { status: 'NOOP', reason_code: 'COMMON.SESSION.CLOSED', outcome_reason: '1 个品种休市，已跳过', symbol_results: { A: closed } }
+  expect(executionRecordView(raw)).toMatchObject({ title: '休市跳过 · 本次无需执行', sessionScope: 'all', warning: false, reason: '1 个品种休市，已跳过' })
+  expect(executionRecordView({ ...raw, status: 'SUCCEEDED', symbol_results: { A: closed, B: { status: 'SUCCEEDED' } } }))
+    .toMatchObject({ title: '调仓完成', sessionScope: 'partial', warning: false })
+  expect(executionRecordView({ ...raw, status: 'PARTIAL', symbol_results: { A: closed, B: { status: 'FAILED' } } }))
+    .toMatchObject({ title: '执行未全部完成', sessionScope: null, warning: true })
+  expect(executionRecordView({ ...raw, symbol_results: { A: { ...closed, orders: [{}] } } }).sessionScope).toBeNull()
+  expect(closed.final_volume).toBeNull()
+})
+
+test('终止说明区分撤单受限、撤单失败和终态未知', () => {
+  const view = executionRecordView({ task_status: 'TERMINATED', termination: { cancel_outcomes: {
+    A: { request_status: 'restricted', terminal: false }, B: { request_status: 'failed', terminal: false },
+    C: { request_status: 'submitted', terminal: false }, D: { request_status: 'restricted', terminal: true },
+  } } })
+  expect(view.reason).toBe('1 笔委托撤单受限，仍需跟踪；1 笔撤单失败；1 笔订单终态待确认')
+})

@@ -16,7 +16,7 @@ from axile.executor.models.unified_account_assets import PositionDirection, Unif
 from axile.executor.models.unified_callback import OrderUpdateCallback, PriceDataCallback, TradeRecordCallback
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
-from axile.executor.order_cancellation import cancel_orders
+from axile.executor.order_cancellation import CancelRequestStatus, cancel_orders
 from axile.executor.order_submission_context import order_submission_context
 from axile.executor.termination import ExecutionTerminated, wait_or_terminate
 from axile.executor.termination_cleanup import (
@@ -179,9 +179,8 @@ class ExecutionSession:
                 exc.cancel_failed_order_ids = result.failed_order_ids
                 exc.cancel_attempted = result.attempted
                 exc.cancel_details = result.details
-                exc.cancel_unconfirmed = (
-                    not result.query_complete or result.unconfirmed or bool(result.failed_order_ids)
-                )
+                exc.cancel_outcomes = result.cancel_outcomes
+                exc.cancel_unconfirmed = not result.query_complete or result.unconfirmed
             raise
 
     def sleep_or_terminate(self, seconds: float) -> None:
@@ -211,7 +210,7 @@ class ExecutionSession:
             seconds,
             deadline_remaining=runtime.deadline_remaining_seconds() if runtime is not None else None,
             cancel_event=None if controller is None else controller.cancel_event,
-            # 必须传本会话的检查点：它才会先撤当前 symbol 挂单、再把 cancel_failed_order_ids 挂到异常上。
+            # 必须传本会话的检查点：它才会先清理当前 symbol 挂单、再把撤单和终态证据挂到异常上。
             checkpoint=self.handle_termination_checkpoint,
         )
 
@@ -373,9 +372,14 @@ class ExecutionSession:
         return TerminationCleanupResult(
             query_complete=True,
             attempted=result.attempted,
-            failed_order_ids=[order_id for _, order_id in result.unconfirmed],
+            failed_order_ids=[
+                order_id
+                for (_, order_id), item in result.orders.items()
+                if item.request_status == CancelRequestStatus.FAILED
+            ],
             unconfirmed=bool(result.unconfirmed),
             details=result.details,
+            cancel_outcomes=result.outcomes,
         )
 
     def set_audit_context(self, context: AuditContext) -> None:
