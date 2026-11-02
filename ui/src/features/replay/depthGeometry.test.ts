@@ -40,6 +40,7 @@ describe('动态盘口及委托位置', () => {
       executionId: 'E', selected: 'O', onSelect: () => {}, onZoom: () => {}, priceText: String, quantityText: String }))
     for (let rank = 1; rank <= 5; rank++) { expect(html).toContain(`买${rank}`); expect(html).toContain(`卖${rank}`) }
     expect(html).toContain('价位不代表排队顺序')
+    expect(html).not.toContain(' title=')
     expect((html.match(/class="replay-ladder-amount"/g) ?? [])).toHaveLength(10)
   })
   it('零量保留但不是买一；未知量保留价位，聚合不冒充零', () => {

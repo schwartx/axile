@@ -4,14 +4,14 @@ import { ValueSlider } from '@/components/ui/ValueSlider'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { canvasLine, prepareCanvas, readCanvasTheme, type CanvasTheme } from '@/components/viz/chartCanvas'
 import { centerReplayPrice, currentReplayQuote, replayChartLayout, replayHeatCells, replayMarketPriceSegments, replayOnBookOrder, replayPriceTicks, replayPriceY, replayQuoteEnd, replayRemainingQuantity, replayTimeX, replayXTime, replayYPrice, zoomReplayPrice, type ReplayChartLayout, type ReplayPriceView } from '@/features/replay/chartGeometry'
-import { clampReplayView, replayOrderFocus, replayOrderHistoryLabel, replayOrderTimeline, replayTradeKey, replayVisibleOrderMarks, replayVisibleOrders, zoomReplayPriceAt, zoomReplayTime } from '@/features/replay/chartInteraction'
+import { clampReplayView, replayOrderFocus, replayOrderTimeline, replayTradeKey, replayVisibleOrderMarks, replayVisibleOrders, zoomReplayPriceAt, zoomReplayTime } from '@/features/replay/chartInteraction'
 import { replayBubbleRadius, replayMarketBubbles } from '@/features/replay/marketBubbles'
 import { recordedDepth, replayBestLevel, replayObservedPriceView } from '@/features/replay/depthGeometry'
 import { inspectReplayOrder, inspectReplayTrade, nearestReplayInspection, replayFutureRecord, type InspectionRecord } from '@/features/replay/inspection'
 import { ReplayInspector } from '@/features/replay/ReplayInspector'
 import { ReplayDepthLadder } from '@/features/replay/ReplayDepthLadder'
 import { replayOrderOwnershipGroups, replayOwnership } from '@/features/replay/ownership'
-import { replayInstrument, replayNumber, replayTime, replayStatusLabels } from '@/features/replay/presentation'
+import { replayInstrument, replayNumber, replayTime } from '@/features/replay/presentation'
 import type { ReplayCursor, ReplayOrder, ReplayProjection, ReplayRange, ReplayWindow } from '@/features/replay/types'
 
 interface Props {
@@ -48,7 +48,7 @@ function drawTimeAxis(ctx: CanvasRenderingContext2D, height: number, range: Repl
   ctx.textAlign = 'left'
 }
 
-function drawOrderHistory(ctx: CanvasRenderingContext2D, symbol: string, history: ReplayOrder[], projection: ReplayProjection, range: ReplayRange, view: ReplayPriceView, layout: ReplayChartLayout, selected: string | null, executionId: string, theme: CanvasTheme, priceText: (price: number | null) => string, quantityText: (quantity: number | null) => string, cursor: ReplayCursor, hovered: string | undefined = undefined) {
+function drawOrderHistory(ctx: CanvasRenderingContext2D, symbol: string, history: ReplayOrder[], projection: ReplayProjection, range: ReplayRange, view: ReplayPriceView, layout: ReplayChartLayout, selected: string | null, executionId: string, theme: CanvasTheme, cursor: ReplayCursor, hovered: string | undefined = undefined) {
   const { segments, marks } = replayOrderTimeline(history, symbol, range, projection)
   const color = (order: ReplayOrder) => replayFutureRecord(order.time_us, order.capture_seq, cursor) ? theme.ink : order.cancel_pending ? theme.warn : replayOwnership(order, executionId).kind === 'current' ? theme.accent : theme.ink
   for (const { order, start, end, next } of segments) {
@@ -76,17 +76,6 @@ function drawOrderHistory(ctx: CanvasRenderingContext2D, symbol: string, history
     ctx.shadowBlur = 0; ctx.stroke(); ctx.restore()
   }
   ctx.globalAlpha = 1
-  const last = [...segments.map(segment => ({ order: segment.order, time: segment.end })), ...marks.map(mark => ({ order: mark.order, time: mark.time }))]
-    .filter(item => item.order.key === selected && item.order.price != null).sort((a, b) => b.time - a.time || b.order.capture_seq - a.order.capture_seq)[0]
-  if (last && last.order.price! >= view.min && last.order.price! <= view.max) {
-    const { order, time } = last
-    const text = `${replayOrderHistoryLabel(order, cursor)} · ${order.carry_in ? '窗前已存在 · ' : ''}${order.direction === 'BUY' ? '买' : order.direction === 'SELL' ? '卖' : '委托'} ${quantityText(order.volume)} @ ${priceText(order.price)} · ${order.cancel_pending ? '撤单待确认' : replayStatusLabels[order.status ?? 'unknown'] ?? '状态未知'}${replayOnBookOrder(order) ? ` · 剩余 ${quantityText(order.remaining_volume)}` : ''}`
-    const width = Math.min(layout.right - layout.left - 16, ctx.measureText(text).width)
-    const x = Math.max(layout.left + 8, Math.min(replayTimeX(time, range, layout) - width - 8, layout.right - width - 8))
-    const y = replayPriceY(order.price!, view, layout), labelY = y < layout.top + 24 ? y + 20 : y - 12
-    ctx.fillStyle = theme.surface; ctx.fillRect(x - 4, labelY - 13, width + 8, 18)
-    ctx.fillStyle = color(order); ctx.fillText(text, x, labelY, width)
-  }
   ctx.lineWidth = 1
 }
 
@@ -226,7 +215,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
         ctx.lineWidth = hovered ? 2 : 1.5; ctx.stroke(); ctx.restore()
       }
       ctx.globalAlpha = 1
-      drawOrderHistory(ctx, symbol, visibleOrders, recorded, visibleRange, view, layout, selectedOrder, executionId, paint, priceText, quantityText, projection, activeHover?.object)
+      drawOrderHistory(ctx, symbol, visibleOrders, recorded, visibleRange, view, layout, selectedOrder, executionId, paint, projection, activeHover?.object)
       ctx.restore()
     }
     if (cursorInside) canvasLine(ctx, cursorX, layout.top, cursorX, height - 18, theme.accent)

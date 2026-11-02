@@ -1,3 +1,4 @@
+import { ReplayStage } from '@/features/replay/ReplayStage'
 import { Fragment, type ReactNode } from 'react'
 import { Segmented } from '@/components/ui/Segmented'
 import { withViewTransition } from '@/lib/viewTransition'
@@ -60,8 +61,11 @@ export function OrdersAndTrades({ projection, scene = projection, context, symbo
   const currentTrades = new Map(projection.ownTrades.map(trade => [replayTradeKey(trade), trade]))
   const trades = scene.ownTrades.filter(trade => trade.symbol === symbol).map(trade => currentTrades.get(replayTradeKey(trade)) ?? trade)
   const selectedTrade = selectedTradeKey == null ? trades.findLast(trade => currentTrades.has(replayTradeKey(trade))) : trades.find(trade => replayTradeKey(trade) === selectedTradeKey)
+  const canSeek = (time: number) => coverage.some(range => time >= range.start_us && time < range.end_us)
+  const seek = (time: number) => { if (canSeek(time)) onSeek(time) }
+  const seekTitle = (time: number) => canSeek(time) ? '单击或按 Enter 定位到此记录' : '此记录时刻未被录制覆盖，无法定位'
   const commands = projection.commands.filter(command => !command.symbol || command.symbol === symbol).slice(-6)
-  return <div className="replay-stage">
+  return <ReplayStage>
     <div className="replay-chart-column">
       <div className="replay-chart-area">{children}</div>
       <section className="replay-dock" aria-label="回放明细">
@@ -74,14 +78,14 @@ export function OrdersAndTrades({ projection, scene = projection, context, symbo
       <div className="replay-detail-list"><table className="num w-full text-left text-[12px]"><thead className="text-ink-2"><tr><th className="pb-2 font-medium">委托</th><th className="pb-2 font-medium">归属</th><th className="pb-2 font-medium">买卖 / 开平</th><th className="pb-2 text-right font-medium">价格</th><th className="pb-2 text-right font-medium">已成 / 委托</th><th className="pb-2 pl-3 font-medium">当时状态</th></tr></thead><tbody>
         {orders.map(order => {
           const future = !projection.orders[order.key]
-          return <Fragment key={order.key}><tr data-future={future} onClick={() => onSelect(order.key)} className={`border-t border-line ${order.key === selected ? 'bg-accent-soft' : ''}`}>
+          return <Fragment key={order.key}><tr data-future={future} onClick={() => { onSelect(order.key); seek(order.time_us) }} title={seekTitle(order.time_us)} className={`border-t border-line ${order.key === selected ? 'bg-accent-soft' : ''}`}>
           <td className="py-2 pr-3"><button type="button" aria-pressed={order.key === selected} aria-expanded={order.key === selected} aria-controls={`replay-order-extra-${encodeURIComponent(order.key)}`} className="min-h-9 max-w-36 cursor-pointer text-left text-accent underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-accent"><OverflowText text={order.order_id} className="block max-w-36" /></button></td>
           <td className="whitespace-nowrap pr-3 text-ink-2">{replayOwnership(order, executionId).label}</td>
           <td className="whitespace-nowrap">{directionText(order.direction)} {offsetText(order.offset)}</td><td className="pl-3 text-right">{replayNumber(order.price, instrument?.price_decimals)}</td><td className="whitespace-nowrap pl-3 text-right">{future ? '—' : replayNumber(order.filled_volume, decimals)} / {replayNumber(order.volume, decimals)}</td><td className="pl-3"><span className={!future && (order.cancel_pending || !order.confirmed && !order.terminal) ? 'text-warn' : ''}>{future ? '未到达' : order.cancel_pending ? '撤单待确认' : statusLabels[order.status ?? 'unknown'] ?? '状态未知'}</span>{order.carry_in && <small className="block text-ink-2">窗口前已存在</small>}</td>
         </tr><tr className="replay-expanded-row"><td colSpan={6}>
           <div id={`replay-order-extra-${encodeURIComponent(order.key)}`} className="replay-row-expansion" data-open={order.key === selected} inert={order.key !== selected}>
             <div><RecordedFields value={order} context={context} kind="order" executionId={executionId} future={future} position={future ? undefined : replayOrderPositionContext(order, projection, gaps)} />
-              {future && <button type="button" className="replay-trade-seek text-accent disabled:text-ink-2" disabled={!coverage.some(range => order.time_us >= range.start_us && order.time_us < range.end_us)} onClick={() => onSeek(order.time_us)}>定位此委托</button>}
+              {!canSeek(order.time_us) && <p className="text-xs text-ink-2">此记录时刻未被录制覆盖，无法定位</p>}
             </div>
           </div>
         </td></tr></Fragment>})}
@@ -94,11 +98,11 @@ export function OrdersAndTrades({ projection, scene = projection, context, symbo
       <div className="sr-only"><h2 className="font-semibold text-ink-1">自己的成交</h2><span className="text-[12px] text-ink-2">独立于市场成交圆点</span></div>
       <div className="replay-detail-list">{trades.map(trade => {
         const future = !currentTrades.has(replayTradeKey(trade))
-        return <div key={replayTradeKey(trade)}><button data-future={future} type="button" onClick={() => withViewTransition(() => onSelectTrade(replayTradeKey(trade)))} aria-pressed={trade === selectedTrade} aria-expanded={trade === selectedTrade} aria-controls={`replay-trade-extra-${encodeURIComponent(replayTradeKey(trade))}`} className={`grid min-h-11 w-full grid-cols-[minmax(0,1fr)_auto] gap-x-3 border-t border-line py-2 text-left text-[12px] focus-visible:outline-2 focus-visible:outline-accent ${trade === selectedTrade ? 'bg-accent-soft' : 'hover:bg-fill'}`}><span className="num text-ink-2">{replayTime(trade.time_us)}<span className="block text-ink-2">{trade.order_id ?? '委托待关联'} · {directionText(trade.direction)} · {replayOwnership(trade, executionId).label}</span></span><span className="num text-right text-ink-1">{future && <span className="block">未到达</span>}{replayNumber(trade.quantity, decimals)} {instrument?.quantity_label} @ {replayNumber(trade.price, instrument?.price_decimals)}{trade.identity_quality !== 'stable' && <span className="block text-warn">身份未确认，不作为确定累计</span>}</span></button>
+        return <div key={replayTradeKey(trade)}><button data-future={future} type="button" onClick={() => { onSelectTrade(replayTradeKey(trade)); seek(trade.time_us) }} title={seekTitle(trade.time_us)} aria-pressed={trade === selectedTrade} aria-expanded={trade === selectedTrade} aria-controls={`replay-trade-extra-${encodeURIComponent(replayTradeKey(trade))}`} className={`grid min-h-11 w-full grid-cols-[minmax(0,1fr)_auto] gap-x-3 border-t border-line py-2 text-left text-[12px] focus-visible:outline-2 focus-visible:outline-accent ${trade === selectedTrade ? 'bg-accent-soft' : 'hover:bg-fill'}`}><span className="num text-ink-2">{replayTime(trade.time_us)}<span className="block text-ink-2">{trade.order_id ?? '委托待关联'} · {directionText(trade.direction)} · {replayOwnership(trade, executionId).label}</span></span><span className="num text-right text-ink-1">{future && <span className="block">未到达</span>}{replayNumber(trade.quantity, decimals)} {instrument?.quantity_label} @ {replayNumber(trade.price, instrument?.price_decimals)}{trade.identity_quality !== 'stable' && <span className="block text-warn">身份未确认，不作为确定累计</span>}</span></button>
         <div id={`replay-trade-extra-${encodeURIComponent(replayTradeKey(trade))}`} className="replay-row-expansion" data-open={trade === selectedTrade} inert={trade !== selectedTrade}><div>
           <RecordedFields value={trade} context={context} kind="trade" executionId={executionId} future={future} />
           <p className="text-xs text-ink-2">{replayTradeLiquidity(trade)}</p>
-          <button type="button" className="replay-trade-seek text-accent disabled:text-ink-2" disabled={!coverage.some(range => trade.time_us >= range.start_us && trade.time_us < range.end_us)} onClick={() => onSeek(trade.time_us)}>{coverage.some(range => trade.time_us >= range.start_us && trade.time_us < range.end_us) ? '定位此成交' : '成交时刻未被覆盖'}</button>
+          {!canSeek(trade.time_us) && <p className="text-xs text-ink-2">此记录时刻未被录制覆盖，无法定位</p>}
         </div></div>
       </div>})}</div>
       {selectedTradeKey && !selectedTrade && <p className="px-3 py-2 text-xs text-ink-2">所选成交不在这段记录中。</p>}
@@ -117,5 +121,5 @@ export function OrdersAndTrades({ projection, scene = projection, context, symbo
         </div>
       </section>
     </div>
-  </div>
+  </ReplayStage>
 }

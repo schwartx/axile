@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { createElement } from 'react'
+import { Children, createElement, isValidElement, type ReactElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { OrdersAndTrades } from '@/features/replay/ReplayDetails'
 import { projectReplay } from '@/features/replay/model'
@@ -49,8 +49,8 @@ test('成交默认详情与列表选中项一致，覆盖外时间明确禁用�
   expect(html).toContain(`id="replay-trade-extra-${encodeURIComponent('1:T1')}" class="replay-row-expansion" data-open="false" inert=""`)
   const ids = [...html.matchAll(/id="(replay-trade-fields-[^"]+)"/g)].map(match => match[1])
   expect(new Set(ids).size).toBe(2)
-  expect(html).toContain('定位此成交')
-  expect(render(false)).toContain('disabled="">成交时刻未被覆盖')
+  expect(html).not.toContain('定位此成交')
+  expect(render(false)).toContain('此记录时刻未被录制覆盖，无法定位')
   const future = render(true, '3:T3')
   expect(future).toContain('所选成交不在这段记录中。')
   expect(future).not.toContain('class="replay-row-expansion" data-open="true"')
@@ -79,7 +79,7 @@ test('未来委托展示首条观察，经过游标后按当时状态恢复，�
   expect(early.row).toContain('>99</td>')
   expect(early.row).toContain('— / 2')
   expect(early.row).not.toContain('已成交')
-  expect(early.html).toContain('定位此委托')
+  expect(early.html).not.toContain('定位此委托')
   expect(early.html).not.toContain('这段记录没有')
   expect(early.projection.executionTotals).toEqual({})
   expect(early.projection.ownTrades).toHaveLength(0)
@@ -112,4 +112,43 @@ test('已到达成交使用当时字段，后续关联信息在到达前不覆�
   expect(render(100)).toContain('委托待关联')
   expect(render(100)).not.toContain('LATER-ORDER')
   expect(render(200)).toContain('LATER-ORDER')
+})
+
+type RecordEvents = {
+  children?: ReactNode
+  'data-future'?: boolean
+  onClick?: () => void
+  onDoubleClick?: () => void
+}
+function findElement(node: ReactNode, predicate: (element: ReactElement<RecordEvents>) => boolean): ReactElement<RecordEvents> | undefined {
+  for (const child of Children.toArray(node)) {
+    if (!isValidElement<RecordEvents>(child)) continue
+    if (predicate(child)) return child
+    const found = findElement(child.props.children, predicate)
+    if (found) return found
+  }
+}
+
+test('委托和成交单击选中并定位；未来记录可定位，覆盖边界外仅选中', () => {
+  const window: ReplayWindow = { recording_id: 'r', window_id: 'w', context: { schema_version: 1 }, complete: true,
+    next_cursor: null, state_before_start: { time_us: 0, state_through_seq: 0 }, coverage: [{ start_us: 100, end_us: 300 }], gaps: [],
+    messages: ['/order', '/trade'].map((topic, index) => ({ schema_version: 1, recording_id: 'r', capture_seq: index + 1,
+      time_us: 100, topic, data: { symbol: 'X', order_id: 'O', trade_key: 'T', identity_quality: 'stable', price: 99, quantity: 1, status: 'working' } })) }
+  const scene = projectReplay(window, { time_us: 200 })
+  for (const cursor of [50, 200]) for (const end of [100, 300]) {
+    const selected: string[] = [], sought: number[] = []
+    const tree = OrdersAndTrades({ projection: projectReplay(window, { time_us: cursor }), scene, context: window.context,
+      symbol: 'X', selected: null, selectedTradeKey: null, onSelect: key => selected.push(key), onSelectTrade: key => selected.push(key),
+      executionId: 'E', tab: 'orders', onTabChange() {}, onSeek: time => sought.push(time), coverage: [{ start_us: 100, end_us: end }] })
+    for (const type of ['tr', 'button']) {
+      const row = findElement(tree, element => element.type === type && element.props['data-future'] !== undefined)!
+      expect(row.props['data-future']).toBe(cursor < 100)
+      const count = selected.length
+      row.props.onClick!()
+      expect(selected).toHaveLength(count + 1)
+      expect(row.props.onDoubleClick).toBeUndefined()
+      expect(sought).toEqual(end === 300 ? [100] : [])
+      sought.length = 0
+    }
+  }
 })

@@ -4,11 +4,6 @@ import type { ReplayPriceView } from '@/features/replay/chartGeometry'
 
 export const replayTradeKey = (trade: ReplayTrade) => `${trade.capture_seq}:${trade.key}`
 
-export function replayOrderHistoryLabel(order: ReplayOrder, cursor: ReplayCursor): string {
-  const future = order.time_us > cursor.time_us || order.time_us === cursor.time_us && cursor.capture_seq != null && order.capture_seq > cursor.capture_seq
-  return `${future ? '后续' : ''}已录${order.terminal ? '终态' : '轨迹'}`
-}
-
 export interface ReplayOrderLayers { working: boolean; canceled: boolean; filled: boolean }
 
 /** 图层按已读取范围的最后状态筛选整条轨迹，不改变游标状态或原始事实。 */
