@@ -136,7 +136,6 @@ button.replay-ladder-row:hover, .replay-ladder-row.is-selected { background: var
 button.replay-ladder-row:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
 .replay-ladder-empty { position: absolute; top: 36px; left: 82px; color: var(--color-ink-2); line-height: 1.8; }
 .replay-ladder-note { position: absolute; bottom: 6px; left: 6px; right: 4px; color: var(--color-ink-2); }
-.replay-depth-outside { min-height: 26px; flex-shrink: 0; text-align: left; padding-inline: 12px; font-size: 12px; }
 .replay-order-position { font-size: 12px; line-height: 1.5; }
 
 .replay-ladder-amount { position: relative; isolation: isolate; padding-inline: 3px; }
@@ -170,3 +169,6 @@ button.replay-ladder-row:focus-visible { outline: 2px solid var(--color-accent);
 .replay-dock [data-future="true"] button,
 .replay-dock [data-future="true"] span { color: var(--color-ink-2); }
 .replay-dock tr[data-future="true"] { background: var(--color-fill); }
+
+.replay-depth-fit-slot { display: grid; flex-shrink: 0; white-space: nowrap; }
+.replay-depth-fit-slot > * { grid-area: 1 / 1; }

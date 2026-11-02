@@ -11,7 +11,6 @@ export function ReplayDepthLadder({ quote, future = false, orders, view, layout,
 }) {
   const levels = recordedDepth(quote), buckets = replayDepthBuckets(levels, orders, view, layout)
   const max = Math.max(1, ...levels.map(level => level.quantity ?? 0))
-  const outside = levels.filter(level => level.price < view.min || level.price > view.max).length
   const aggregated = buckets.some(bucket => bucket.minPrice !== bucket.maxPrice)
   const describe = (bucket: ReplayDepthBucket) => {
     const prices = bucket.minPrice === bucket.maxPrice ? priceText(bucket.minPrice) : `${priceText(bucket.minPrice)}–${priceText(bucket.maxPrice)}`
@@ -48,6 +47,6 @@ export function ReplayDepthLadder({ quote, future = false, orders, view, layout,
       })}
     </div>
     {!quote && <p className="replay-ladder-empty">盘口未记录／已失效<br />自有委托独立显示</p>}
-    {(aggregated || outside > 0) && <p className="replay-ladder-note">{aggregated ? '按价区间聚合 · 峰值 · 点击展开' : ''}{outside ? ` · 视野外 ${outside} 档` : ''}</p>}
+    {aggregated && <p className="replay-ladder-note">按价区间聚合 · 峰值 · 点击展开</p>}
   </div>
 }
