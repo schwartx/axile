@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { centerReplayPrice, currentReplayQuote, defaultReplayPriceView, replayChartLayout, replayHeatCells, replayMarketPriceSegments, replayOnBookOrder, replayPriceY, replayQuoteEnd, replayRemainingQuantity, replayXTime, replayYPrice, zoomReplayPrice } from '@/features/replay/chartGeometry'
+import { centerReplayPrice, currentReplayQuote, defaultReplayPriceView, replayChartLayout, replayHeatCells, replayMarketPriceSegments, replayOnBookOrder, replayPriceTicks, replayPriceY, replayQuoteEnd, replayRemainingQuantity, replayXTime, replayYPrice, zoomReplayPrice } from '@/features/replay/chartGeometry'
 import type { ReplayOrder, ReplayQuote, ReplayTrade } from '@/features/replay/types'
 
 const quote = (time: number, quantity = 5): ReplayQuote => ({ symbol: 'X', bids: [{ price: 100, quantity }], asks: [{ price: 101, quantity: 4 }], book_valid: true, valid_until_us: 1000, available_depth: 1, depth_coverage: null, last_price: null, last_price_kind: 'unknown', time_us: time, capture_seq: time })
@@ -74,4 +74,14 @@ describe('回放共用价格与观测边界', () => {
     const unrelated = replayMarketPriceSegments(trades, 'X', range, 700, [{ start_us: 250, end_us: 400, topic: 'depth' }, { start_us: 250, end_us: 400, symbol: 'Y' }])
     expect(unrelated).toHaveLength(1)
   })
+})
+
+it('价格轴容纳完整读数，刻度规整且不累加推算价差的浮点尾数', () => {
+  const layout = replayChartLayout(1100, 440, 124)
+  expect(layout.left).toBe(124)
+  expect(layout.priceX).toBe(116)
+  expect(layout.top).toBe(0)
+  expect(replayPriceTicks({ min: 90100, max: 90140, tick: 0.09999999999126885 }, 240)).toEqual([90100, 90105, 90110, 90115, 90120, 90125, 90130, 90135, 90140])
+  expect(replayPriceTicks({ min: 0.00000001, max: 0.00000005, tick: 0.00000001 }, 240)).toEqual([0.00000001, 0.00000002, 0.00000003, 0.00000004, 0.00000005])
+  expect(replayPriceTicks({ min: 100, max: 101, tick: 0.25 }, 240)).toEqual([100, 100.5, 101])
 })

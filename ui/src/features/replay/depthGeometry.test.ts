@@ -104,3 +104,12 @@ describe('动态盘口及委托位置', () => {
     expect(replayTradeLiquidity({ ...trade, attributes: {} })).toBe('主被动未知')
   })
 })
+
+it('主图从顶部绘制，盘口读数避开自己的表头且保留真实价位引导点', () => {
+  const layout = replayChartLayout(1200, 420), view = { min: 99, max: 101, tick: 1 }
+  const buckets = replayDepthBuckets(recordedDepth(quote(1)), [], view, layout)
+  expect(layout.top).toBe(0)
+  expect(buckets.length).toBeGreaterThan(0)
+  expect(buckets.every(bucket => bucket.labelY >= 28 + 9)).toBe(true)
+  for (const bucket of buckets) expect(bucket.y).toBe(replayPriceY((bucket.minPrice + bucket.maxPrice) / 2, view, layout))
+})

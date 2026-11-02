@@ -48,7 +48,8 @@ function positionDepthLabels(buckets: ReplayDepthBucket[], gap: number, layout: 
 
 /** 拥挤时明确按线性价格区间聚合；标签引导线不改变柱条的真实坐标。 */
 export function replayDepthBuckets(levels: RecordedDepthLevel[], orders: ReplayOrder[], view: ReplayPriceView, layout: ReplayChartLayout): ReplayDepthBucket[] {
-  const prices = depthPriceRows(levels, orders, view), height = Math.max(1, layout.bottom - layout.top)
+  const labelLayout = { ...layout, top: Math.max(28, layout.top) }
+  const prices = depthPriceRows(levels, orders, view), height = Math.max(1, labelLayout.bottom - labelLayout.top)
   const individual = prices.size <= Math.max(1, Math.floor(height / 18)), gap = individual ? 18 : 26
   const capacity = Math.max(1, Math.floor(height / gap))
   const grouped = new Map<number, ReplayDepthBucket>()
@@ -67,7 +68,7 @@ export function replayDepthBuckets(levels: RecordedDepthLevel[], orders: ReplayO
     bucket.unknown = bucket.levels.some(level => level.quantity == null)
     bucket.y = replayPriceY((bucket.minPrice + bucket.maxPrice) / 2, view, layout)
   }
-  positionDepthLabels(buckets, gap, layout)
+  positionDepthLabels(buckets, gap, labelLayout)
   return buckets
 }
 

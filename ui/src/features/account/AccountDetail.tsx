@@ -17,7 +17,7 @@ import { executionOutcome } from '@/features/account/executionOutcome'
 import { formatRecentExecution } from '@/lib/scheduleTime'
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
 import { useViewTransitionState } from 'react-router'
-import { ArrowLeftRight, RefreshCw } from 'lucide-react'
+import { ArrowLeftRight, Circle, RefreshCw } from 'lucide-react'
 import { cardPerformance, currentEquity } from '@/features/dashboard/performance'
 import { Link, useNavigate } from '@/components/ui/nav'
 import { Card, Chip } from '@/components/ui/Card'
@@ -679,6 +679,16 @@ export function AccountDetail({
             onActivate={(event) => activateAlgorithm('empty', event)}
           />
           <AccountControlSummary accountId={accountId} />
+          {acc && <Tooltip content={acc.replay_recording_enabled ? '执行回放录制已开启' : '执行回放录制已关闭'}>
+            <span
+              tabIndex={0}
+              role="img"
+              aria-label={acc.replay_recording_enabled ? '执行回放录制已开启' : '执行回放录制已关闭'}
+              className="inline-flex size-6 shrink-0 items-center justify-center rounded-sm text-ink-3 focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
+            >
+              <Circle size={14} fill={acc.replay_recording_enabled ? 'currentColor' : 'none'} aria-hidden="true" />
+            </span>
+          </Tooltip>}
         </div>
       </Card>
       <CopyAccountDialog accountId={accountId} name={item.name} isStarted={isStarted} isBusy={isBusy} open={copyOpen} onClose={() => setCopyOpen(false)} />

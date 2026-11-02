@@ -5,7 +5,7 @@ import { Segmented } from '@/components/ui/Segmented'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { withViewTransition } from '@/lib/viewTransition'
 import { canvasLine, prepareCanvas, readCanvasTheme, type CanvasTheme } from '@/components/viz/chartCanvas'
-import { centerReplayPrice, currentReplayQuote, replayChartLayout, replayHeatCells, replayMarketPriceSegments, replayOnBookOrder, replayPriceY, replayQuoteEnd, replayRemainingQuantity, replayTimeX, replayXTime, replayYPrice, zoomReplayPrice, type ReplayChartLayout, type ReplayPriceView } from '@/features/replay/chartGeometry'
+import { centerReplayPrice, currentReplayQuote, replayChartLayout, replayHeatCells, replayMarketPriceSegments, replayOnBookOrder, replayPriceTicks, replayPriceY, replayQuoteEnd, replayRemainingQuantity, replayTimeX, replayXTime, replayYPrice, zoomReplayPrice, type ReplayChartLayout, type ReplayPriceView } from '@/features/replay/chartGeometry'
 import { clampReplayView, replayOrderFocus, replayOrderHistoryLabel, replayOrderTimeline, replayTradeKey, replayVisibleOrderMarks, replayVisibleOrders, zoomReplayPriceAt, zoomReplayTime } from '@/features/replay/chartInteraction'
 import { replayBubbleRadius, replayMarketBubbles } from '@/features/replay/marketBubbles'
 import { recordedDepth, replayBestLevel, replayObservedPriceView } from '@/features/replay/depthGeometry'
@@ -127,11 +127,13 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   const view = manualView ?? initialView
   const hoverCursor = `${replayWindow.window_id}:${symbol}:${projection.time_us}:${projection.capture_seq}:${visibleRange.start_us}:${visibleRange.end_us}:${view?.min}:${view?.max}`
   const activeHover = hover?.cursor === hoverCursor ? hover : null
+  const selectedExecution = layers.execution && replayWindow.context.streams?.[symbol]?.own_trade?.availability !== 'unavailable' ? recorded.ownTrades.find(trade => replayTradeKey(trade) === selectedTrade && trade.symbol === symbol && trade.time_us >= visibleRange.start_us && trade.time_us < visibleRange.end_us && (!historyOrders.some(order => order.order_id === trade.order_id) || visibleOrders.some(order => order.order_id === trade.order_id))) : undefined
   const height = size.height
-  const layout = useMemo(() => replayChartLayout(size.width, height), [size.width, height])
+  const [priceAxisWidth, setPriceAxisWidth] = useState(76)
+  const layout = useMemo(() => ({ ...replayChartLayout(size.width, height, priceAxisWidth), top: selectedExecution ? 28 : 0 }), [size.width, height, priceAxisWidth, selectedExecution])
+  const priceTicks = useMemo(() => view ? replayPriceTicks(view, layout.bottom - layout.top) : [], [view, layout.bottom, layout.top])
   const bubbles = useMemo(() => !layers.market || replayWindow.context.streams?.[symbol]?.market_trade?.availability === 'unavailable' ? [] : replayMarketBubbles(recorded.marketTrades, symbol, visibleRange, layout, projection, replayWindow.gaps).filter(bubble => !view || bubble.price >= view.min && bubble.price <= view.max), [layers.market, replayWindow, recorded.marketTrades, symbol, visibleRange, layout, projection, view])
   const maxBubble = bubbles.reduce((max, bubble) => Math.max(max, bubble.quantity), 1)
-  const selectedExecution = layers.execution && replayWindow.context.streams?.[symbol]?.own_trade?.availability !== 'unavailable' ? recorded.ownTrades.find(trade => replayTradeKey(trade) === selectedTrade && trade.symbol === symbol && trade.time_us >= visibleRange.start_us && trade.time_us < visibleRange.end_us && (!historyOrders.some(order => order.order_id === trade.order_id) || visibleOrders.some(order => order.order_id === trade.order_id))) : undefined
   const ownOrders = useMemo(() => orders.filter(replayOnBookOrder), [orders])
   const decimals = instrument?.price_decimals ?? 6
   const priceText = useCallback((price: number | null) => replayNumber(price, decimals), [decimals])
@@ -163,7 +165,8 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
     const up = css.getPropertyValue('--color-up').trim(), down = css.getPropertyValue('--color-down').trim()
     ctx.font = `12px ${theme.font}`; ctx.fillStyle = theme.surface; ctx.fillRect(0, 0, size.width, height)
     ctx.fillStyle = theme.ink
-    ctx.textAlign = 'right'; ctx.fillText('价格', layout.priceX, 18); ctx.textAlign = 'left'
+    const measuredAxisWidth = Math.max(76, Math.ceil(Math.max(0, ...priceTicks.map(price => ctx.measureText(priceText(price)).width))) + 16)
+    if (measuredAxisWidth !== priceAxisWidth) { setPriceAxisWidth(measuredAxisWidth); return }
     if (!view || !heat) { ctx.fillText(mode === 'step' ? '游标之前尚无有效价位。' : '这段记录尚无有效价位。', layout.left, height / 2); drawTimeAxis(ctx, height, visibleRange, layout, theme); return }
     const maxQuantity = Math.max(1, maxHeat)
     ctx.save(); ctx.beginPath(); ctx.rect(layout.left, layout.top, layout.right - layout.left, layout.bottom - layout.top); ctx.clip()
@@ -236,14 +239,13 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       const future = selectedExecution.time_us > projection.time_us || selectedExecution.time_us === projection.time_us && selectedExecution.capture_seq > projection.capture_seq
       ctx.fillText(`${future ? '后续已录 · ' : ''}选中逐笔 ${replayTime(selectedExecution.time_us)} · ${quantityText(selectedExecution.quantity)} @ ${priceText(selectedExecution.price)}`, layout.left, 18, layout.right - layout.left)
     }
-    const tickStep = Math.max(1, Math.ceil((view.max - view.min) / view.tick / Math.max(2, Math.floor((layout.bottom - layout.top) / 24)))) * view.tick
-    for (let price = Math.ceil(view.min / tickStep) * tickStep; price <= view.max; price += tickStep) {
+    for (const price of priceTicks) {
       const y = replayPriceY(price, view, layout)
       canvasLine(ctx, layout.left, y, layout.right, y, theme.line)
-      ctx.fillStyle = theme.ink; ctx.textAlign = 'right'; ctx.fillText(priceText(price), layout.priceX, y + 4); ctx.textAlign = 'left'
+      ctx.fillStyle = theme.ink; ctx.textAlign = 'right'; ctx.fillText(priceText(price), layout.priceX, Math.max(12, Math.min(layout.bottom, y + 4))); ctx.textAlign = 'left'
     }
     drawTimeAxis(ctx, height, visibleRange, layout, theme)
-  }, [size, height, projection, replayWindow, visibleRange, symbol, executionId, selectedOrder, selectedExecution, view, layout, historyQuotes, visibleOrders, marketSegments, priceText, quantityText, heat, maxHeat, recorded, drawThrough, mode, cursorInside, bubbles, maxBubble, activeHover?.object])
+  }, [priceAxisWidth, priceTicks, size, height, projection, replayWindow, visibleRange, symbol, executionId, selectedOrder, selectedExecution, view, layout, historyQuotes, visibleOrders, marketSegments, priceText, quantityText, heat, maxHeat, recorded, drawThrough, mode, cursorInside, bubbles, maxBubble, activeHover?.object])
 
   const resetView = () => { setManualView(null); setTimeView(null); setHover(null) }
   const zoom = (factor: number) => {

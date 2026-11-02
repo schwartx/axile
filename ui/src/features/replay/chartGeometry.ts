@@ -12,10 +12,19 @@ export function replayRemainingQuantity(orders: Pick<ReplayOrder, 'remaining_vol
   return orders.some(order => order.remaining_volume == null) ? null : orders.reduce((sum, order) => sum + order.remaining_volume!, 0)
 }
 
-export function replayChartLayout(width: number, height: number): ReplayChartLayout {
+export function replayChartLayout(width: number, height: number, priceAxisWidth = 76): ReplayChartLayout {
   const columns = width >= 600
-  return { left: 76, right: width - (columns ? 346 : 12), top: 34, bottom: height - 30,
-    priceX: 68, cobX: width - 334, ordX: width - 68, columns }
+  return { left: priceAxisWidth, right: width - (columns ? 346 : 12), top: 0, bottom: height - 30,
+    priceX: priceAxisWidth - 8, cobX: width - 334, ordX: width - 68, columns }
+}
+
+/** 坐标刻度使用规整间隔，按序号计算以避免反复累加浮点价差。 */
+export function replayPriceTicks(view: ReplayPriceView, height: number): number[] {
+  const spacing = Math.max(view.tick, (view.max - view.min) / Math.max(2, Math.floor(height / 24)))
+  const magnitude = 10 ** Math.floor(Math.log10(spacing))
+  const step = [1, 2, 5, 10].find(value => value * magnitude >= spacing)! * magnitude
+  const first = Math.ceil(view.min / step), last = Math.floor(view.max / step)
+  return Array.from({ length: Math.max(0, last - first + 1) }, (_, index) => Number(((first + index) * step).toPrecision(15)))
 }
 
 export function replayPriceY(price: number, view: ReplayPriceView, layout: ReplayChartLayout): number {
