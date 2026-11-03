@@ -51,9 +51,9 @@ function drawTimeAxis(ctx: CanvasRenderingContext2D, height: number, range: Repl
   ctx.textAlign = 'left'
 }
 
-function drawOrderHistory(ctx: CanvasRenderingContext2D, symbol: string, history: ReplayOrder[], projection: ReplayProjection, range: ReplayRange, view: ReplayPriceView, layout: ReplayChartLayout, selected: string | null, executionId: string, theme: CanvasTheme, cursor: ReplayCursor, hovered: string | undefined = undefined) {
+function drawOrderHistory(ctx: CanvasRenderingContext2D, symbol: string, history: ReplayOrder[], projection: ReplayProjection, range: ReplayRange, view: ReplayPriceView, layout: ReplayChartLayout, selected: string | null, executionId: string, theme: CanvasTheme, orderColor: string, cursor: ReplayCursor, hovered: string | undefined = undefined) {
   const { segments, marks } = replayOrderTimeline(history, symbol, range, projection)
-  const color = (order: ReplayOrder) => replayFutureRecord(order.time_us, order.capture_seq, cursor) ? theme.ink : order.cancel_pending ? theme.warn : replayOwnership(order, executionId).kind === 'current' ? theme.accent : theme.ink
+  const color = (order: ReplayOrder) => replayFutureRecord(order.time_us, order.capture_seq, cursor) ? theme.ink : order.cancel_pending ? theme.warn : orderColor
   for (const { order, start, end, next } of segments) {
     if (order.price == null) continue
     const x = replayTimeX(start, range, layout), right = replayTimeX(end, range, layout), y = replayPriceY(order.price, view, layout)
@@ -218,7 +218,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
         ctx.lineWidth = hovered ? 2 : 1.5; ctx.stroke(); ctx.restore()
       }
       ctx.globalAlpha = 1
-      drawOrderHistory(ctx, symbol, visibleOrders, recorded, visibleRange, view, layout, selectedOrder, executionId, paint, projection, activeHover?.object)
+      drawOrderHistory(ctx, symbol, visibleOrders, recorded, visibleRange, view, layout, selectedOrder, executionId, paint, future ? theme.ink : css.getPropertyValue('--color-chart-2').trim(), projection, activeHover?.object)
       ctx.restore()
     }
     if (cursorInside) canvasLine(ctx, cursorX, layout.top, cursorX, height - 18, theme.accent)
@@ -342,7 +342,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
 
   return <section aria-label="历史深度与自有委托" className="replay-chart" >
     <div className="replay-chart-playback">{symbolControl}{children}</div>
-    <div className="replay-chart-meta"><div className="replay-chart-meta-main"><div className="replay-chart-legend"><span className="replay-depth-bid"><Minus size={14} aria-hidden />买一</span><span className="replay-depth-ask"><Minus size={14} aria-hidden />卖一</span><span><Minus size={14} aria-hidden />成交价</span>{layers.market && <span><Circle size={10} aria-hidden />市场成交</span>}<span className="text-accent"><Minus size={14} aria-hidden />账户委托</span><span><Minus size={14} aria-hidden />未到达</span></div>      <div className="replay-chart-view-controls replay-chart-navigation" role="group" aria-label="图表导航">
+    <div className="replay-chart-meta"><div className="replay-chart-meta-main"><div className="replay-chart-legend"><span className="replay-depth-bid"><Minus size={14} aria-hidden />买一</span><span className="replay-depth-ask"><Minus size={14} aria-hidden />卖一</span><span><Minus size={14} aria-hidden />成交价</span>{layers.market && <span><Circle size={10} aria-hidden />市场成交</span>}<span className="replay-order-color"><Minus size={14} aria-hidden />账户委托</span><span><Minus size={14} aria-hidden />未到达</span></div>      <div className="replay-chart-view-controls replay-chart-navigation" role="group" aria-label="图表导航">
       <div className="replay-chart-return-slot">      {!cursorInside && <div className="replay-chart-return">
         <Tooltip content={`游标在${projection.time_us < visibleRange.start_us ? '左' : '右'}侧 · 回到游标`}><button type="button" className={controlClass} aria-label="回到游标" onClick={() => { const span = visibleRange.end_us - visibleRange.start_us; setTimeView(clampReplayView({ start_us: projection.time_us - span / 2, end_us: projection.time_us + span / 2 }, range)) }}>{projection.time_us < visibleRange.start_us ? <ArrowLeft size={15} aria-hidden /> : <ArrowRight size={15} aria-hidden />}</button></Tooltip>
       </div>}
