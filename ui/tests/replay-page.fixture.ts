@@ -7,6 +7,8 @@ declare const scenario: string
 let slots: any[] = [], at = 0, effects: any[] = [], dirty = false, tree: any, wall = 0, rafId = 0
 let loadingNext = false, pendingManifest: (() => void) | null = null
 const pendingWindows: (() => void)[] = []
+const requestedRanges: any[] = []
+class FakeBudgetError extends Error {}
 const listeners = new Set<() => void>(), frames = new Map<number, (now: number) => void>()
 const equal = (a: any[], b: any[]) => a?.length === b?.length && a.every((value, index) => Object.is(value, b[index]))
 function useState(initial: any) {
@@ -45,8 +47,13 @@ const manifest = { account_id: 7, execution_id: 'E2', availability: 'partial', r
 if (scenario === 'selected-execution') Object.assign(manifest, { execution_start_us: 25_000_123 })
 if (scenario === 'whole-after-window') manifest.recordings[0].coverage.push({ start_us: 60_000_000, end_us: 100_000_000 })
 mock.module(ui + 'lib/api/replay.ts', () => ({
+  ReplayWindowBudgetError: FakeBudgetError,
   getReplayManifest: () => new Promise(resolve => { pendingManifest = () => resolve(manifest) }),
   readReplayWindow: async (_: string, request: any) => {
+    if (scenario === 'budget-retry') {
+      requestedRanges.push({ start_us: request.start_us, end_us: request.end_us })
+      if (request.end_us - request.start_us > 2_500_000) throw new FakeBudgetError()
+    }
     if (scenario.startsWith('missing') && request.start_us === 0) throw Error('REPLAY_IO')
     if (request.start_us > 0 && loadingNext) return new Promise(resolve => pendingWindows.push(() => resolve(windowAt(request))))
     return windowAt(request)
@@ -65,10 +72,10 @@ function windowAt(request: any) {
     ...(scenario === 'inspect' ? { messages: [{ schema_version: 1, recording_id: 'r', capture_seq: 3, time_us: 1_000_000, topic: '/trade', data: { symbol: 'X', trade_key: 'T', order_id: 'O1', execution_id: 'E1', quantity: 1, price: 100, direction: 'BUY', identity_quality: 'stable' } }, { schema_version: 1, recording_id: 'r', capture_seq: 4, time_us: 1_000_000, topic: '/noop', data: {} }] } : {}),
     ...(scenario === 'overview' ? { messages: [
       { schema_version: 1, recording_id: 'r', capture_seq: 3, time_us: 1_000_000, topic: '/quote/X', data: { symbol: 'X', book_valid: true, available: true, bids: [{ price: 100, quantity: 1 }], asks: [{ price: 101, quantity: 2 }], valid_until_us: 40_000_000 } },
-      { schema_version: 1, recording_id: 'r', capture_seq: 4, time_us: 30_000_000, topic: '/order', data: { symbol: 'X', order_id: 'F', price: 100, quantity: 1, remaining_quantity: 1, status: 'working', confirmed_book: true } },
-      { schema_version: 1, recording_id: 'r', capture_seq: 5, time_us: 35_000_000, topic: '/trade', data: { symbol: 'X', order_id: 'F', trade_key: 'future', identity_quality: 'stable', price: 100, quantity: 1 } },
-      { schema_version: 1, recording_id: 'r', capture_seq: 6, time_us: 36_000_000, topic: '/order', data: { symbol: 'X', order_id: 'O2', price: 100, quantity: 1, remaining_quantity: 0, filled_quantity: 1, status: 'filled', terminal: true, sync_generation: 1 } },
-      { schema_version: 1, recording_id: 'r', capture_seq: 7, time_us: 38_000_000, topic: '/quote/X', data: { symbol: 'X', book_valid: true, available: true, bids: [{ price: 100, quantity: 9 }], asks: [{ price: 101, quantity: 8 }], valid_until_us: 40_000_000 } },
+      { schema_version: 1, recording_id: 'r', capture_seq: 4, time_us: 3_000_000, topic: '/order', data: { symbol: 'X', order_id: 'F', price: 100, quantity: 1, remaining_quantity: 1, status: 'working', confirmed_book: true } },
+      { schema_version: 1, recording_id: 'r', capture_seq: 5, time_us: 5_000_000, topic: '/trade', data: { symbol: 'X', order_id: 'F', trade_key: 'future', identity_quality: 'stable', price: 100, quantity: 1 } },
+      { schema_version: 1, recording_id: 'r', capture_seq: 6, time_us: 6_000_000, topic: '/order', data: { symbol: 'X', order_id: 'O2', price: 100, quantity: 1, remaining_quantity: 0, filled_quantity: 1, status: 'filled', terminal: true, sync_generation: 1 } },
+      { schema_version: 1, recording_id: 'r', capture_seq: 7, time_us: 8_000_000, topic: '/quote/X', data: { symbol: 'X', book_valid: true, available: true, bids: [{ price: 100, quantity: 9 }], asks: [{ price: 101, quantity: 8 }], valid_until_us: 40_000_000 } },
     ] } : {}),
     ...(scenario === 'first-quote' ? { messages: [{ schema_version: 1, recording_id: 'r', capture_seq: 3, time_us: 1_000_000,
       topic: '/quote/X', data: { symbol: 'X', book_valid: true, available: true, bids: [{ price: 100, quantity: 1 }], asks: [{ price: 101, quantity: 2 }], valid_until_us: 2_000_000 } }] } : {}) }
@@ -124,7 +131,7 @@ function expand(node: any): any {
   }
   return node
 }
-if (scenario !== 'overview') {
+if (scenario !== 'overview' && scenario !== 'budget-retry') {
   find(tree, node => node.props?.ariaLabel === '窗口时长').props.onChange('20'); await settle()
 }
 if (scenario === 'overview') {
@@ -139,7 +146,7 @@ if (scenario === 'overview') {
   const preview = text(futureOrder)
   chart().props.onSelectTrade('5:future'); flush()
   const future = { selected: details().props.selectedTradeKey, currentTrades: chart().props.projection.ownTrades.length }
-  chart().props.onSeek(39_000_000); flush()
+  chart().props.onSeek(9_000_000); flush()
   const lateBook = chart().props.projection.quotes.X.bids[0].quantity
   chart().props.onSeek(2_000_000); flush()
   console.log(JSON.stringify({ initial, earlyBook, lateBook, restoredBook: chart().props.projection.quotes.X.bids[0].quantity, preview, future }))
@@ -150,10 +157,13 @@ if (scenario === 'overview') {
     find(tree, node => node.props?.ariaLabel === '窗口时长').props.onChange('2'); await settle()
     find(tree, node => node.props?.['aria-label'] === '下一窗口').props.onClick(); await settle()
     const later = find(tree, node => node.props?.symbolControl && node.props?.projection).props.range
-    find(tree, node => node.props?.ariaLabel === '窗口时长').props.onChange('all'); await settle()
-    ranges.push({ later, whole: find(tree, node => node.props?.symbolControl && node.props?.projection).props.range })
+    find(tree, node => node.props?.ariaLabel === '窗口时长').props.onChange('10'); await settle()
+    ranges.push({ later, longer: find(tree, node => node.props?.symbolControl && node.props?.projection).props.range })
   }
   console.log(JSON.stringify(ranges))
+} else if (scenario === 'budget-retry') {
+  await settle()
+  console.log(JSON.stringify({ requests: requestedRanges, range: find(tree, node => node.props?.symbolControl && node.props?.projection)?.props.range }))
 } else if (scenario === 'controls') {
   const title = find(tree, node => node.props?.page === '执行回放').props
   const chart = () => find(tree, node => node.props?.projection && node.props?.symbolControl)

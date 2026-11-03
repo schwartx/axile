@@ -102,7 +102,17 @@ export function replayExecutionRange(coverage: ReplayRange[], startUs: number | 
 }
 
 export function replayWindowDuration(value: string): number {
-  return value === 'all' ? Number.MAX_SAFE_INTEGER : Number(value) * 1_000_000
+  const seconds = Number(value)
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1_000_000 : 10_000_000
+}
+
+/** 缩小时保留用户要定位的时刻；单个微秒不能继续缩小。 */
+export function smallerReplayRange(range: ReplayRange, target?: number | null): ReplayRange | null {
+  const duration = Math.floor((range.end_us - range.start_us) / 2)
+  if (duration < 1) return null
+  const anchor = target != null && target >= range.start_us && target < range.end_us ? target : range.start_us
+  const start = Math.min(anchor, range.end_us - duration)
+  return { start_us: start, end_us: start + duration }
 }
 
 export function replayGapAt(gaps: ReplayGap[], timeUs: number, symbol?: string): ReplayGap | undefined {

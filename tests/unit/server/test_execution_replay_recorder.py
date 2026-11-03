@@ -102,6 +102,19 @@ def test_native_failure_does_not_escape_or_retry(tmp_path):
     recorder.close()
 
 
+def test_low_disk_space_is_reported_without_affecting_the_account(tmp_path):
+    def fail(*_args):
+        raise RuntimeError("REPLAY_DISK_SPACE", "private storage details")
+
+    recorder = ReplayRecorder(7, tmp_path, writer_factory=fail)
+    recorder.attach(SimpleNamespace())
+    recorder.configure(True, 1)
+    eventually(lambda: recorder.status()["state"] == "error")
+    assert recorder.status()["error"] == "replay_disk_space_low"
+    recorder.observe("/command", {"phase": "request"})
+    recorder.close()
+
+
 def test_frozen_payload_is_not_changed_by_later_callback_mutation(running):
     recorder, _, writers, _ = running
     original = {"phase": "request", "actual_parameters": {"price": 12, "quantity": 2}}
@@ -164,8 +177,7 @@ def test_clock_rollback_stops_new_messages(running):
     assert all(message["capture_seq"] == 1 for message in writers[0].messages)
 
 
-@pytest.mark.parametrize("budget", ["MAX_QUEUE_MESSAGES", "MAX_QUEUE_BYTES"])
-def test_queue_is_bounded_without_waiting_for_native(tmp_path, monkeypatch, budget):
+def test_queue_accepts_more_than_4096_messages_without_waiting_for_native(tmp_path):
     gate = threading.Event()
     entered = threading.Event()
     writer = FakeWriter()
@@ -175,19 +187,44 @@ def test_queue_is_bounded_without_waiting_for_native(tmp_path, monkeypatch, budg
         gate.wait(2)
         return writer
 
-    monkeypatch.setattr(module, budget, 1)
     recorder = ReplayRecorder(7, tmp_path, writer_factory=factory)
     recorder.attach(SimpleNamespace())
     recorder.configure(True, 1)
     assert entered.wait(1)
     try:
-        recorder.observe("/command", {"phase": "request"})
-        recorder.observe("/command", {"phase": "returned"})
-        assert recorder.status()["error"] == "replay_queue_budget"
+        for _ in range(5_000):
+            recorder.observe("/command", {"phase": "request"})
+        assert len(recorder._session.queue) == 5_000
+        assert recorder.status()["state"] != "error"
     finally:
         gate.set()
-        recorder.close()
-    assert not writer.finished.is_set()
+        recorder.close(timeout=10)
+    assert len(writer.messages) == 5_000
+
+
+def test_queue_accepts_more_than_16_mib_without_stopping(tmp_path):
+    gate = threading.Event()
+    entered = threading.Event()
+    writer = FakeWriter()
+
+    def factory(*_args):
+        entered.set()
+        gate.wait(10)
+        return writer
+
+    recorder = ReplayRecorder(7, tmp_path, writer_factory=factory)
+    recorder.attach(SimpleNamespace())
+    recorder.configure(True, 1)
+    assert entered.wait(1)
+    try:
+        for _ in range(2_200):
+            recorder.observe("/command", {"phase": "request", "source": "X" * 8_000})
+        assert recorder._session.queued_bytes > 16 * 1024 * 1024
+        assert recorder.status()["state"] != "error"
+    finally:
+        gate.set()
+        recorder.close(timeout=10)
+    assert len(writer.messages) == 2_200
 
 
 def test_disable_returns_while_native_append_is_blocked(running):

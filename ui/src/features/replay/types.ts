@@ -70,6 +70,10 @@ export interface ReplayWindow {
   recording_id: string
   window_id: string
   state_before_start: ReplayData | null
+  state_fragment?: string
+  state_fragment_end?: boolean
+  message_fragment?: string
+  message_fragment_end?: boolean
   messages: ReplayMessage[]
   next_cursor: string | null
   complete: boolean

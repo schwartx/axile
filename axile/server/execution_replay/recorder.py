@@ -1,4 +1,4 @@
-"""账户唯一的有界录制旁路；采集线程不执行原生写入或排空。"""
+"""账户唯一的录制旁路；采集线程不执行原生写入或排空。"""
 
 from __future__ import annotations
 
@@ -12,15 +12,20 @@ from uuid import uuid4
 
 from axile.executor.algorithms.utils.clock import clock_monotonic, clock_now_us
 from axile.executor.replay import set_replay_observer
-from axile.server.execution_replay.contracts import MAX_MESSAGE_BYTES, encode_json, freeze_data, freeze_json
+from axile.server.execution_replay.contracts import encode_json, freeze_data, freeze_json
 from axile.server.execution_replay.service import native_writer
 
-MAX_QUEUE_MESSAGES = 4_096
-MAX_QUEUE_BYTES = 16 * 1024 * 1024
 MAX_IDENTITIES = 4_096
 TAIL_US = 5_000_000
 _TERMINAL = frozenset({"filled", "canceled", "rejected", "expired"})
 _TRADE_FIELDS = ("symbol", "price", "quantity", "direction", "position_side", "offset", "order_id")
+
+
+def _remember_recent[K, V](values: dict[K, V], key: K, value: V) -> None:
+    values.pop(key, None)
+    values[key] = value
+    if len(values) > MAX_IDENTITIES:
+        values.pop(next(iter(values)))
 
 
 @dataclass
@@ -95,7 +100,7 @@ class ReplayRecorder:
         self._position_parts: set[tuple[str, str | None]] = set()
         self._orders: set[tuple[str, str]] = set()
         self._order_changes: dict[tuple[str, str], int] = {}
-        self._terminal_orders: set[tuple[str, str]] = set()
+        self._terminal_orders: dict[tuple[str, str], None] = {}
         self._order_set_revisions: dict[str, int] = {}
         self._order_set_observation: dict[str, tuple[int, int, int]] = {}
         self._trade_facts: dict[str, dict[str, object]] = {}
@@ -105,8 +110,8 @@ class ReplayRecorder:
         self._interest_orders: set[str] = set()
         self._interest_positions: set[str] = set()
         self._tails: dict[str, int] = {}
-        self._tail_trades: set[str] = set()
-        self._tail_commands: set[str] = set()
+        self._tail_trades: dict[str, None] = {}
+        self._tail_commands: dict[str, None] = {}
 
     @staticmethod
     def _freeze_context(context: Mapping[str, object]) -> dict[str, object]:
@@ -315,10 +320,6 @@ class ReplayRecorder:
                     }
                 )
                 size = len(message.encode("utf-8"))
-                if size > MAX_MESSAGE_BYTES:
-                    raise ValueError("replay_message_budget")
-                if len(session.queue) >= MAX_QUEUE_MESSAGES or session.queued_bytes + size > MAX_QUEUE_BYTES:
-                    raise ValueError("replay_queue_budget")
                 session.queue.append(("message", message, size))
                 session.queued_bytes += size
                 session.sequence += 1
@@ -339,17 +340,12 @@ class ReplayRecorder:
             session = self._session
             if session is None or session.stopping or not self._desired:
                 return None
-            if (
-                not isinstance(scope, list)
-                or len(scope) > MAX_IDENTITIES
-                or not all(isinstance(symbol, str) and 0 < len(symbol) <= 128 for symbol in scope)
+            if not isinstance(scope, list) or not all(
+                isinstance(symbol, str) and 0 < len(symbol) <= 128 for symbol in scope
             ):
                 return None
             session.request_revision += 1
-            while len(session.queries) + len(session.completed_queries) >= MAX_IDENTITIES:
-                if not session.completed_queries:
-                    self._stop_locked("replay_query_budget")
-                    return None
+            while len(session.queries) + len(session.completed_queries) >= MAX_IDENTITIES and session.completed_queries:
                 del session.completed_queries[next(iter(session.completed_queries))]
             key = ("symbols", tuple(sorted(set(scope)))) if scope else ("account", ())
             session.queries[session.request_revision] = self._sync_generation, key, session.sequence
@@ -512,7 +508,7 @@ class ReplayRecorder:
                 if any(field in metadata and metadata[field] != value for field, value in additions.items()):
                     raise ValueError("replay_identity_conflict")
                 if additions:
-                    self._command_metadata[command_id] = {**metadata, **additions}
+                    _remember_recent(self._command_metadata, command_id, {**metadata, **additions})
 
     def _associate_order_locked(self, data: dict[str, object]) -> None:
         symbol, order_id = data.get("symbol"), data.get("order_id")
@@ -520,12 +516,12 @@ class ReplayRecorder:
             key = symbol, order_id
             execution_id = data.get("execution_id")
             if isinstance(execution_id, str) and execution_id:
-                self._order_executions[key] = execution_id
+                _remember_recent(self._order_executions, key, execution_id)
             elif key in self._order_executions:
                 data["execution_id"] = self._order_executions[key]
             origin = data.get("origin")
             if isinstance(origin, str) and origin not in ("", "unknown"):
-                self._order_origins[key] = origin
+                _remember_recent(self._order_origins, key, origin)
             elif key in self._order_origins:
                 data["origin"] = self._order_origins[key]
 
@@ -541,36 +537,19 @@ class ReplayRecorder:
             key, symbol = data.get("trade_key"), data.get("symbol")
             self._track_trade_order_locked(data)
             if data.get("identity_quality") == "stable" and isinstance(key, str) and key not in self._tail_trades:
-                self._tail_trades.add(key)
+                _remember_recent(self._tail_trades, key, None)
                 if isinstance(symbol, str):
                     self._tails[symbol] = timestamp + TAIL_US
         elif topic == "/command" and data.get("phase") == "request":
             key, symbol = data.get("command_id"), data.get("symbol")
             if isinstance(key, str) and key not in self._tail_commands and isinstance(symbol, str):
-                self._tail_commands.add(key)
+                _remember_recent(self._tail_commands, key, None)
                 self._tails[symbol] = timestamp + TAIL_US
-        seed_scopes = self._session.seed_interest_scopes.values() if self._session else ()
-        if (
-            max(
-                len(self._positions),
-                len(self._position_parts),
-                len(self._orders),
-                len(self._order_changes),
-                len(self._terminal_orders),
-                len(self._order_set_revisions),
-                len(self._order_set_observation),
-                len(self._trade_facts),
-                len(self._order_executions),
-                len(self._order_origins),
-                len(self._command_metadata),
-                len(self._tail_trades),
-                len(self._tail_commands),
-                len(self._tails),
-                *(len(scope) for scope in seed_scopes if scope is not None),
-            )
-            > MAX_IDENTITIES
-        ):
-            raise ValueError("replay_identity_budget")
+        while len(self._order_changes) > MAX_IDENTITIES:
+            removable = next((key for key in self._order_changes if key not in self._orders), None)
+            if removable is None:
+                break
+            del self._order_changes[removable]
 
     def _track_seed_scope_locked(self, name: str, scope: tuple[str, tuple[str, ...]]) -> None:
         session = self._session
@@ -612,7 +591,7 @@ class ReplayRecorder:
             ):
                 return
         if data.get("status") in _TERMINAL:
-            self._terminal_orders.add(key)
+            _remember_recent(self._terminal_orders, key, None)
             self._forget_order_locked(key, timestamp)
         elif key not in self._terminal_orders:
             self._orders.add(key)
@@ -645,7 +624,7 @@ class ReplayRecorder:
             if name in before and name != "order_id" and value != before[name]:
                 continue
             merged[name] = value
-        self._trade_facts[trade] = merged
+        _remember_recent(self._trade_facts, trade, merged)
         after = self._known_trade_facts(merged)
         key = self._order_key(after)
         if key is not None and before != after and self._session is not None:
@@ -783,9 +762,6 @@ class ReplayRecorder:
         execution_symbols = set(symbols)
         with self._condition:
             self._executions[execution_id] = execution_symbols
-            if len(self._executions) + sum(len(values) for values in self._executions.values()) > MAX_IDENTITIES:
-                self._stop_locked("replay_identity_budget")
-                return
         self.observe(
             "/execution",
             {**(data or {}), "execution_id": execution_id, "phase": "start", "symbols": sorted(execution_symbols)},
@@ -803,9 +779,6 @@ class ReplayRecorder:
     def _seal_locked(self) -> None:
         session = self._session
         if session is not None and not session.stopping and (not session.queue or session.queue[-1][0] != "seal"):
-            if len(session.queue) >= MAX_QUEUE_MESSAGES + 8:
-                self._stop_locked("replay_control_budget")
-                return
             session.queue.append(("seal", "", 0))
             self._condition.notify_all()
 
@@ -855,6 +828,8 @@ class ReplayRecorder:
                 code = "replay_close_timeout" if isinstance(error, TimeoutError) else "replay_writer_error"
                 if isinstance(error, ValueError) and str(error).startswith("replay_"):
                     code = str(error)
+                elif error.args and error.args[0] == "REPLAY_DISK_SPACE":
+                    code = "replay_disk_space_low"
                 self._stop_locked(code)
         finally:
             with self._condition:
@@ -927,9 +902,7 @@ class ReplayRecorder:
         seed = getattr(owner, "replay_seed_observations", None)
         if not callable(seed):
             return
-        for index, (topic, data) in enumerate(seed()):
-            if index >= MAX_IDENTITIES:
-                raise ValueError("replay_seed_budget")
+        for topic, data in seed():
             self.observe(topic, data)
 
     def _seed_interest(self, session: _Session) -> None:
@@ -945,10 +918,8 @@ class ReplayRecorder:
             groups = {}
             for name in ("orders", "positions"):
                 values = interest.get(name, [])
-                if (
-                    not isinstance(values, (list, set, tuple))
-                    or len(values) > MAX_IDENTITIES
-                    or not all(isinstance(symbol, str) and 0 < len(symbol.encode("utf-8")) <= 256 for symbol in values)
+                if not isinstance(values, (list, set, tuple)) or not all(
+                    isinstance(symbol, str) and 0 < len(symbol.encode("utf-8")) <= 256 for symbol in values
                 ):
                     raise ValueError("replay_interest_budget")
                 groups[name] = set(values)
@@ -970,13 +941,12 @@ class ReplayRecorder:
             raise ValueError("replay_invalid_clock")
         if session.last_time_us is not None and timestamp < session.last_time_us:
             raise ValueError("replay_clock_rollback")
-        if len(session.queue) >= MAX_QUEUE_MESSAGES + 8:
-            raise ValueError("replay_control_budget")
         expired = [symbol for symbol, until in self._tails.items() if timestamp >= until]
         for symbol in expired:
             del self._tails[symbol]
         session.queue.append(("poll_seal" if expired else "poll", str(timestamp), 0))
         session.poll_pending = True
+        session.last_time_us = timestamp
         session.next_poll = now + 0.1
 
     def close(self, timeout: float = 1.0) -> dict[str, object]:

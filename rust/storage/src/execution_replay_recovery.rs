@@ -1,8 +1,8 @@
 //! Rebuild missing or damaged directory indexes from verified sealed MCAP parts.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::io::{Cursor, Read};
+use std::fs::{self, File};
+use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use mcap::records::{op, Record};
@@ -10,10 +10,13 @@ use mcap::sans_io::{LinearReadEvent, LinearReader, LinearReaderOptions};
 use serde_json::Value;
 
 use crate::execution_replay::{
-    child_file, day_directory, digest, failure, identifier, io_error, read_bounded, Catalog,
-    CatalogRecording, PartDescriptor, RecoveryPartMeta, ReplayResult, CATALOG_LIMIT,
-    PART_FILE_LIMIT, RECOVERY_METADATA_LIMIT, RECOVERY_METADATA_NAME, SCAN_FILES,
+    child_file, day_directory, digest, failure, identifier, io_error, read_bounded,
+    read_mcap_summary, validate_committed_records, Catalog, CatalogRecording, PartDescriptor,
+    RecoveryPartMeta, ReplayResult, CATALOG_LIMIT, PART_FILE_LIMIT, RECOVERY_METADATA_LIMIT,
+    RECOVERY_METADATA_NAME, SCAN_FILES,
 };
+use crate::execution_replay_block::read_block;
+use crate::execution_replay_index::BlockIndex;
 use crate::execution_replay_reader::{
     collect_part_symbols, validate_descriptor, validate_part_bytes_budget, Budget,
 };
@@ -22,12 +25,22 @@ use crate::execution_replay_reader::{
 pub(crate) struct ReadIndex {
     pub catalogs: Vec<Catalog>,
     pub partial_recordings: BTreeSet<String>,
+    pub partial_parts: Vec<(String, String, u32)>,
 }
 
-pub(crate) fn load_read_index(account: &Path, budget: &mut Budget) -> ReplayResult<ReadIndex> {
+pub(crate) fn load_read_index(
+    account: &Path,
+    execution: &str,
+    budget: &mut Budget,
+) -> ReplayResult<ReadIndex> {
     budget.charge(0, 0)?;
     if !account.exists() {
         return Ok(ReadIndex::default());
+    }
+    let index_path = child_file(account, ".replay-index.sqlite")?;
+    if index_path.exists() {
+        budget.indexed = true;
+        return load_sqlite_index(account, execution, &BlockIndex::open(&index_path)?);
     }
     let mut days = Vec::new();
     for entry in fs::read_dir(account).map_err(io_error)? {
@@ -43,8 +56,102 @@ pub(crate) fn load_read_index(account: &Path, budget: &mut Budget) -> ReplayResu
     days.sort();
     let mut index = ReadIndex::default();
     for day in days {
-        let catalog = read_day(account, &day, budget, &mut index.partial_recordings)?;
+        let catalog = read_day(
+            account,
+            &day,
+            budget,
+            &mut index.partial_recordings,
+            &mut index.partial_parts,
+        )?;
         index.catalogs.push(catalog);
+    }
+    Ok(index)
+}
+
+fn load_sqlite_index(
+    account: &Path,
+    execution: &str,
+    sqlite: &BlockIndex,
+) -> ReplayResult<ReadIndex> {
+    let recordings = sqlite.recording_metadata(execution)?;
+    for metadata in recordings.values() {
+        if metadata
+            .context
+            .get("schema_version")
+            .and_then(Value::as_u64)
+            != Some(1)
+        {
+            return Err(failure("SCHEMA", "unsupported frozen replay context"));
+        }
+        if let Some(previous) = &metadata.previous_recording_id {
+            identifier(previous)?;
+        }
+        crate::execution_replay::validate_symbols(&metadata.symbols)?;
+    }
+    let mut index = ReadIndex::default();
+    let mut days: BTreeMap<String, Vec<PartDescriptor>> = BTreeMap::new();
+    for (recording, part, day) in sqlite.files(execution)? {
+        identifier(&recording)?;
+        let metadata = recordings
+            .get(&recording)
+            .ok_or_else(|| failure("CORRUPT", "file has no recording metadata"))?;
+        let directory = day_directory(account, &day, false)?;
+        let name = format!("recording-{recording}-{part:06}.mcap");
+        let sealed = child_file(&directory, &name)?;
+        let partial = child_file(&directory, &format!("{name}.partial"))?;
+        let descriptor = sqlite.sealed_file(&recording, part)?;
+        if let Some((descriptor, context, previous)) = descriptor {
+            if descriptor.recording_id != recording
+                || descriptor.part != part
+                || descriptor.day != day
+                || context != metadata.context
+                || previous != metadata.previous_recording_id
+            {
+                return Err(failure(
+                    "CORRUPT",
+                    "file metadata differs from its recording",
+                ));
+            }
+            validate_descriptor(&descriptor)?;
+            if sealed.exists() || !partial.exists() {
+                if sealed.exists()
+                    && fs::metadata(&sealed).map_err(io_error)?.len() == descriptor.size_bytes
+                {
+                    let summary = read_mcap_summary(&sealed, false)?;
+                    if summary.stats.as_ref().is_none_or(|stats| {
+                        stats.message_count != descriptor.last_seq - descriptor.first_seq + 2
+                    }) {
+                        return Err(failure(
+                            "CORRUPT",
+                            "sealed replay summary disagrees with its index",
+                        ));
+                    }
+                }
+                days.entry(day).or_default().push(descriptor);
+                continue;
+            }
+        }
+        index.partial_recordings.insert(recording.clone());
+        index.partial_parts.push((recording, day, part));
+    }
+    for (recording, metadata) in &recordings {
+        if metadata.unsealed_start_us.is_some() {
+            index.partial_recordings.insert(recording.clone());
+        }
+    }
+    index.catalogs.push(Catalog {
+        schema_version: 1,
+        day: "1970-01-01".into(),
+        recordings,
+        parts: Vec::new(),
+    });
+    for (day, parts) in days {
+        index.catalogs.push(Catalog {
+            schema_version: 1,
+            day,
+            recordings: BTreeMap::new(),
+            parts,
+        });
     }
     Ok(index)
 }
@@ -54,6 +161,7 @@ fn read_day(
     day: &str,
     budget: &mut Budget,
     partials: &mut BTreeSet<String>,
+    partial_parts: &mut Vec<(String, String, u32)>,
 ) -> ReplayResult<Catalog> {
     let directory = day_directory(account, day, false)?;
     let mut files = Vec::new();
@@ -66,7 +174,8 @@ fn read_day(
             .to_string_lossy()
             .into_owned();
         if let Some(stem) = name.strip_suffix(".mcap.partial") {
-            let (recording, _) = part_identity(stem)?;
+            let (recording, part) = part_identity(stem)?;
+            partial_parts.push((recording.clone(), day.to_owned(), part));
             day_partials.insert(recording);
         } else if name.ends_with(".mcap") {
             part_identity(name.strip_suffix(".mcap").unwrap())?;
@@ -204,6 +313,15 @@ fn recover_sealed_part(
     let directory = day_directory(account, day, false)?;
     let path = child_file(&directory, name)?;
     let size = fs::metadata(&path).map_err(io_error)?.len();
+    let index_path = child_file(account, ".replay-index.sqlite")?;
+    if index_path.exists() {
+        let index = BlockIndex::open(&index_path)?;
+        if let Some((part, context, previous)) = index.sealed_file(&recording, number)? {
+            return recover_indexed_part(
+                account, day, &path, size, &index, part, context, previous, budget,
+            );
+        }
+    }
     budget.charge(size, 0)?;
     let bytes = read_bounded(&path, PART_FILE_LIMIT as usize)?;
     let recovery = read_recovery_metadata(&bytes, budget)?;
@@ -244,6 +362,145 @@ fn recover_sealed_part(
         error: None,
     };
     Ok((part, metadata))
+}
+
+fn recover_indexed_part(
+    account: &Path,
+    day: &str,
+    path: &Path,
+    size: u64,
+    index: &BlockIndex,
+    part: PartDescriptor,
+    context: Value,
+    previous: Option<String>,
+    budget: &mut Budget,
+) -> ReplayResult<(PartDescriptor, CatalogRecording)> {
+    validate_descriptor(&part)?;
+    if part.day != day
+        || part.committed_prefix
+        || part.size_bytes != size
+        || path.file_name().and_then(|name| name.to_str()) != Some(part.file_name().as_str())
+        || context["schema_version"] != 1
+    {
+        return Err(failure(
+            "CORRUPT",
+            "sealed replay index disagrees with its file",
+        ));
+    }
+    if let Some(previous) = &previous {
+        identifier(previous)?;
+    }
+    let summary = read_mcap_summary(path, true)?;
+    if summary
+        .stats
+        .as_ref()
+        .is_none_or(|stats| stats.message_count != part.last_seq - part.first_seq + 2)
+    {
+        return Err(failure(
+            "CORRUPT",
+            "sealed replay summary disagrees with its index",
+        ));
+    }
+    let mut metadata = summary
+        .metadata_indexes
+        .iter()
+        .filter(|item| item.name == RECOVERY_METADATA_NAME);
+    let entry = metadata
+        .next()
+        .ok_or_else(|| failure("INCOMPLETE", "sealed replay recovery metadata is missing"))?;
+    if metadata.next().is_some()
+        || entry.length > (RECOVERY_METADATA_LIMIT + 9) as u64
+        || entry
+            .offset
+            .checked_add(entry.length)
+            .is_none_or(|end| end > size)
+    {
+        return Err(failure("CORRUPT", "invalid replay recovery metadata index"));
+    }
+    budget.charge(entry.length, 0)?;
+    let mut file = File::open(path).map_err(io_error)?;
+    file.seek(SeekFrom::Start(entry.offset)).map_err(io_error)?;
+    let mut bytes = vec![0; entry.length as usize];
+    file.read_exact(&mut bytes).map_err(io_error)?;
+    if bytes.len() < 9
+        || bytes[0] != op::METADATA
+        || u64::from_le_bytes(bytes[1..9].try_into().unwrap()) != (bytes.len() - 9) as u64
+    {
+        return Err(failure("CORRUPT", "invalid replay recovery record"));
+    }
+    let recovery = decode_recovery_record(&bytes[9..])?
+        .ok_or_else(|| failure("CORRUPT", "missing replay recovery record"))?;
+    let account_id = account
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("account-"))
+        .and_then(|name| name.parse::<u64>().ok())
+        .ok_or_else(|| failure("PATH", "invalid account directory"))?;
+    let mut original = part.clone();
+    original.sha256.clear();
+    original.size_bytes = 0;
+    if recovery.schema_version != 1
+        || recovery.account_id != account_id
+        || recovery.previous_recording_id != previous
+        || recovery.descriptor != original
+    {
+        return Err(failure(
+            "CORRUPT",
+            "sealed replay recovery metadata disagrees with its index",
+        ));
+    }
+    let (first, last) = index
+        .file_bounds(&part.recording_id, part.part, part.last_seq)?
+        .ok_or_else(|| failure("INCOMPLETE", "sealed replay block index is missing"))?;
+    if first.first_seq != part.first_seq
+        || first.first_us != part.start_us
+        || last.last_seq != part.last_seq
+    {
+        return Err(failure(
+            "CORRUPT",
+            "sealed replay block index has invalid bounds",
+        ));
+    }
+    budget.charge(first.range.length, 0)?;
+    let records = read_block(path, &first.range)?;
+    let (snapshot, messages) = validate_committed_records(
+        &records,
+        &part,
+        account_id,
+        &context,
+        first.first_seq,
+        first.last_seq,
+        first.first_us,
+        first.last_us,
+        &mut None,
+        &mut BTreeMap::new(),
+        None,
+    )?;
+    let checkpoint = index
+        .checkpoint_at(&part.recording_id, part.part, part.checkpoint_through_seq)?
+        .ok_or_else(|| failure("INCOMPLETE", "indexed replay checkpoint is missing"))?;
+    let hash = digest(&serde_json::to_vec(&checkpoint.state).map_err(io_error)?);
+    if snapshot
+        .as_ref()
+        .and_then(|value| value["projection"]["sha256"].as_str())
+        != Some(hash.as_str())
+    {
+        return Err(failure(
+            "CORRUPT",
+            "checkpoint disagrees with its replay file",
+        ));
+    }
+    budget.charge(0, messages.len())?;
+    let recording = CatalogRecording {
+        context,
+        previous_recording_id: previous,
+        executions: part.executions.clone(),
+        symbols: part.symbols.clone(),
+        state: "unknown".into(),
+        unsealed_start_us: None,
+        error: None,
+    };
+    Ok((part, recording))
 }
 
 fn read_recovery_metadata(bytes: &[u8], budget: &mut Budget) -> ReplayResult<RecoveryPartMeta> {
@@ -410,15 +667,40 @@ mod tests {
     }
 
     #[test]
-    fn missing_catalog_recovers_verified_mcap_without_writing_index() {
+    fn indexed_replay_needs_no_daily_catalog_and_reports_a_truncated_file() {
         let fixture = Fixture::new();
         let (catalog, sealed) = fixture.write_part();
         let original = fs::read(&sealed).unwrap();
-        fs::remove_file(&catalog).unwrap();
-        fixture.assert_replay();
         assert!(!catalog.exists());
-        assert_eq!(fs::read(&sealed).unwrap(), original);
+        fixture.assert_replay();
         fs::write(&sealed, &original[..original.len() - 8]).unwrap();
+        let result = manifest(&fixture.0, 1, "7").unwrap();
+        assert_eq!(result["availability"], "partial");
+        assert!(window(
+            &fixture.0,
+            1,
+            "7",
+            r#"{"recording_id":"recovery-A","start_us":100,"end_us":101}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn indexed_replay_rejects_a_corrupt_summary_crc() {
+        use std::io::Write;
+        let fixture = Fixture::new();
+        let (_, sealed) = fixture.write_part();
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&sealed)
+            .unwrap();
+        file.seek(SeekFrom::End(-10)).unwrap();
+        let mut byte = [0_u8];
+        file.read_exact(&mut byte).unwrap();
+        file.seek(SeekFrom::End(-10)).unwrap();
+        file.write_all(&[byte[0] ^ 0x80]).unwrap();
+        drop(file);
         assert_eq!(
             manifest(&fixture.0, 1, "7").unwrap_err().code,
             "REPLAY_CORRUPT"
@@ -426,146 +708,61 @@ mod tests {
     }
 
     #[test]
-    fn malformed_catalog_recovers_only_verified_sealed_files_without_writing_index() {
+    fn stray_catalog_cannot_forge_an_execution_mapping() {
         let fixture = Fixture::new();
         let (catalog, sealed) = fixture.write_part();
         let original = fs::read(&sealed).unwrap();
-        let damaged = b"{truncated";
-        fs::write(&catalog, damaged).unwrap();
-        let partial = catalog
-            .parent()
-            .unwrap()
-            .join("recording-unsealed-000001.mcap.partial");
-        let unpublished = b"unpublished facts must not be parsed as replay";
-        fs::write(&partial, unpublished).unwrap();
+        let forged = br#"{"recordings":{"recovery-A":{"executions":["forged"]}}}"#;
+        fs::write(&catalog, forged).unwrap();
         fixture.assert_replay();
-        assert_eq!(fs::read(&catalog).unwrap(), damaged);
+        assert_eq!(
+            manifest(&fixture.0, 1, "forged").unwrap()["availability"],
+            "not_recorded"
+        );
+        assert_eq!(fs::read(&catalog).unwrap(), forged);
         assert_eq!(fs::read(&sealed).unwrap(), original);
-        assert_eq!(fs::read(&partial).unwrap(), unpublished);
-        fs::write(&sealed, &original[..original.len() - 8]).unwrap();
+    }
+
+    #[test]
+    fn corrupted_indexed_block_is_not_used_for_replay() {
+        let fixture = Fixture::new();
+        fixture.write_part();
+        let db =
+            rusqlite::Connection::open(fixture.0.join("account-1/.replay-index.sqlite")).unwrap();
+        db.execute("UPDATE blocks SET hash=?1", ["0".repeat(64)])
+            .unwrap();
+        assert!(window(
+            &fixture.0,
+            1,
+            "7",
+            r#"{"recording_id":"recovery-A","start_us":100,"end_us":101}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn unsupported_index_version_fails_without_changing_the_recording() {
+        let fixture = Fixture::new();
+        let (_, sealed) = fixture.write_part();
+        let original = fs::read(&sealed).unwrap();
+        let db =
+            rusqlite::Connection::open(fixture.0.join("account-1/.replay-index.sqlite")).unwrap();
+        db.execute("UPDATE identity SET version=2", []).unwrap();
         assert_eq!(
             manifest(&fixture.0, 1, "7").unwrap_err().code,
             "REPLAY_CORRUPT"
         );
-        assert_eq!(fs::read(&catalog).unwrap(), damaged);
-    }
-
-    #[test]
-    fn structurally_damaged_catalog_discards_its_metadata_during_recovery() {
-        for damage in [
-            "missing_field",
-            "wrong_day",
-            "invalid_part",
-            "duplicate_part",
-            "missing_context_version",
-            "invalid_recording_symbols",
-            "invalid_part_symbols",
-        ] {
-            let fixture = Fixture::new();
-            let (path, sealed) = fixture.write_part();
-            let original = fs::read(&sealed).unwrap();
-            let mut catalog: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-            catalog["recordings"]["recovery-A"]["executions"] = json!(["forged"]);
-            match damage {
-                "missing_field" => {
-                    catalog.as_object_mut().unwrap().remove("recordings");
-                }
-                "wrong_day" => catalog["day"] = json!("2000-01-01"),
-                "invalid_part" => catalog["parts"][0]["first_seq"] = json!(0),
-                "duplicate_part" => {
-                    let duplicate = catalog["parts"][0].clone();
-                    catalog["parts"].as_array_mut().unwrap().push(duplicate);
-                }
-                "missing_context_version" => {
-                    catalog["recordings"]["recovery-A"]["context"] = json!({})
-                }
-                "invalid_recording_symbols" => {
-                    catalog["recordings"]["recovery-A"]["symbols"] = json!(["\n"])
-                }
-                "invalid_part_symbols" => catalog["parts"][0]["symbols"] = json!(["\n"]),
-                _ => unreachable!(),
-            }
-            let unchanged = serde_json::to_vec(&catalog).unwrap();
-            fs::write(&path, &unchanged).unwrap();
-            fixture.assert_replay();
-            assert_eq!(
-                manifest(&fixture.0, 1, "forged").unwrap()["availability"],
-                "not_recorded"
-            );
-            assert_eq!(fs::read(&path).unwrap(), unchanged);
-            assert_eq!(fs::read(&sealed).unwrap(), original);
-        }
-    }
-
-    #[test]
-    fn a_valid_unknown_catalog_version_is_not_reinterpreted_by_recovery() {
-        let fixture = Fixture::new();
-        let (path, sealed) = fixture.write_part();
-        let original = fs::read(&sealed).unwrap();
-        let mut catalog: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        catalog["schema_version"] = json!(2);
-        let unchanged = serde_json::to_vec(&catalog).unwrap();
-        fs::write(&path, &unchanged).unwrap();
-        assert_eq!(
-            manifest(&fixture.0, 1, "7").unwrap_err().code,
-            "REPLAY_SCHEMA"
-        );
-        assert_eq!(
-            window(
-                &fixture.0,
-                1,
-                "7",
-                r#"{"recording_id":"recovery-A","start_us":100,"end_us":101}"#,
-            )
-            .unwrap_err()
-            .code,
-            "REPLAY_SCHEMA"
-        );
-        assert_eq!(fs::read(&path).unwrap(), unchanged);
         assert_eq!(fs::read(&sealed).unwrap(), original);
-        catalog["schema_version"] = json!(1);
-        catalog["recordings"]["recovery-A"]["context"]["schema_version"] = json!(2);
-        let unknown_context = serde_json::to_vec(&catalog).unwrap();
-        fs::write(&path, &unknown_context).unwrap();
-        assert_eq!(
-            manifest(&fixture.0, 1, "7").unwrap_err().code,
-            "REPLAY_SCHEMA"
-        );
-        assert_eq!(fs::read(&path).unwrap(), unknown_context);
     }
 
     #[test]
-    fn an_intact_catalog_hash_mismatch_is_not_treated_as_index_damage() {
+    fn missing_index_does_not_claim_the_recording_is_absent() {
         let fixture = Fixture::new();
-        let (path, _) = fixture.write_part();
-        let mut catalog: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        catalog["parts"][0]["sha256"] = json!("0".repeat(64));
-        let unchanged = serde_json::to_vec(&catalog).unwrap();
-        fs::write(&path, &unchanged).unwrap();
-        assert_eq!(
-            window(
-                &fixture.0,
-                1,
-                "7",
-                r#"{"recording_id":"recovery-A","start_us":100,"end_us":101}"#,
-            )
-            .unwrap_err()
-            .code,
-            "REPLAY_VIEW_CHANGED"
-        );
-        assert_eq!(fs::read(&path).unwrap(), unchanged);
-    }
-
-    #[test]
-    fn orphan_sealed_part_is_added_only_to_the_read_view() {
-        let fixture = Fixture::new();
-        let (path, _) = fixture.write_part();
-        let mut catalog: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        catalog["parts"] = json!([]);
-        fs::write(&path, serde_json::to_vec(&catalog).unwrap()).unwrap();
-        let unchanged = fs::read(&path).unwrap();
-        fixture.assert_replay();
-        assert_eq!(fs::read(path).unwrap(), unchanged);
+        let (_, sealed) = fixture.write_part();
+        let original = fs::read(&sealed).unwrap();
+        fs::remove_file(fixture.0.join("account-1/.replay-index.sqlite")).unwrap();
+        assert!(manifest(&fixture.0, 1, "7").is_err());
+        assert_eq!(fs::read(&sealed).unwrap(), original);
     }
 
     #[test]

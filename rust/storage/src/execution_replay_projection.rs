@@ -7,8 +7,6 @@ use serde_json::{json, Map, Value};
 
 use crate::error::AnalysisError;
 
-const MAX_STATE_BYTES: usize = 2 * 1024 * 1024;
-const MAX_STATE_ENTRIES: usize = 20_000;
 const JS_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -113,14 +111,148 @@ impl Projection {
             return Err(failure("unsupported or inconsistent checkpoint"));
         }
         state.rebuild_cancel_pending();
-        state.check_budget()?;
         Ok(state)
     }
 
     pub(crate) fn snapshot(&self) -> Result<Value, AnalysisError> {
-        self.check_budget()?;
-        serde_json::to_value(self)
+        let mut state = self.clone();
+        state.rebuild_order_amounts();
+        state.rebuild_totals();
+        state.rebuild_positions();
+        serde_json::to_value(state)
             .map_err(|error| AnalysisError::caused_by("REPLAY_CHECKPOINT", error))
+    }
+
+    pub(crate) fn market_fact(&self, key: &str) -> Option<Value> {
+        let record = self.trade_accounting.market_records.get(key);
+        let pending = self
+            .trade_accounting
+            .pending
+            .get(&format!("market:trade:{key}"));
+        let seen = self.trade_accounting.market_seen_keys.contains(key);
+        (record.is_some() || pending.is_some() || seen)
+            .then(|| json!({"record":record,"pending":pending,"seen":seen}))
+    }
+
+    pub(crate) fn own_fact(&self, key: &str) -> Option<Value> {
+        let record = self.trade_accounting.own_records.get(key);
+        let pending = self
+            .trade_accounting
+            .pending
+            .get(&format!("own:trade:{key}"));
+        let seen = self.trade_accounting.own_seen_keys.contains(key);
+        (record.is_some() || pending.is_some() || seen)
+            .then(|| json!({"record":record,"pending":pending,"seen":seen}))
+    }
+
+    pub(crate) fn own_observation(&self, seq: u64) -> Option<Value> {
+        self.trade_accounting
+            .pending
+            .get(&format!("own:observation:{seq}"))
+            .cloned()
+    }
+
+    pub(crate) fn own_associations(&self, seq: u64) -> Vec<(String, Value)> {
+        self.trade_accounting
+            .own_records
+            .iter()
+            .filter(|(_, record)| record["data"]["association_seq"] == seq)
+            .filter_map(|(key, _)| self.own_fact(key).map(|value| (key.clone(), value)))
+            .collect()
+    }
+
+    pub(crate) fn own_observation_associations(&self, seq: u64) -> Vec<(String, Value)> {
+        self.trade_accounting
+            .pending
+            .iter()
+            .filter_map(|(key, value)| {
+                let identity = key.strip_prefix("own:observation:")?;
+                let observation = &value["observation"];
+                let data = observation.get("data").unwrap_or(observation);
+                (data["association_seq"] == seq).then(|| (identity.to_owned(), value.clone()))
+            })
+            .collect()
+    }
+
+    pub(crate) fn hydrate_market_fact(
+        &mut self,
+        key: &str,
+        value: &Value,
+    ) -> Result<(), AnalysisError> {
+        if !value.is_object()
+            || !value["seen"].is_boolean()
+            || !(value["record"].is_object() || value["record"].is_null())
+            || !(value["pending"].is_object() || value["pending"].is_null())
+        {
+            return Err(failure("invalid indexed market fact"));
+        }
+        if !value["record"].is_null() {
+            self.trade_accounting
+                .market_records
+                .insert(key.to_owned(), value["record"].clone());
+        }
+        if value["seen"] == true {
+            self.trade_accounting
+                .market_seen_keys
+                .insert(key.to_owned());
+        }
+        if !value["pending"].is_null() {
+            self.trade_accounting
+                .pending
+                .insert(format!("market:trade:{key}"), value["pending"].clone());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn market_observation(&self, seq: u64) -> Option<Value> {
+        self.trade_accounting
+            .pending
+            .get(&format!("market:observation:{seq}"))
+            .cloned()
+    }
+
+    pub(crate) fn hydrate_market_observation(
+        &mut self,
+        seq: u64,
+        value: &Value,
+    ) -> Result<(), AnalysisError> {
+        if !value.is_object() || value["market"] != true || !value["observation"].is_object() {
+            return Err(failure("invalid indexed market observation"));
+        }
+        self.trade_accounting
+            .pending
+            .insert(format!("market:observation:{seq}"), value.clone());
+        Ok(())
+    }
+
+    pub(crate) fn clear_market_history(&mut self) {
+        self.trade_accounting.market_records.clear();
+        self.trade_accounting.market_seen_keys.clear();
+        self.trade_accounting
+            .pending
+            .retain(|key, _| !key.starts_with("market:"));
+    }
+
+    pub(crate) fn advance_market_observation(
+        &mut self,
+        message: &Value,
+    ) -> Result<(), AnalysisError> {
+        if message["schema_version"].as_u64() != Some(1)
+            || message["recording_id"].as_str() != Some(self.recording_id.as_str())
+            || !message["topic"]
+                .as_str()
+                .is_some_and(|topic| topic.starts_with("/market_trade/"))
+        {
+            return Err(failure("invalid market observation"));
+        }
+        let seq = safe_integer(&message["capture_seq"])?;
+        let time = safe_integer(&message["time_us"])?;
+        if seq <= self.state_through_seq || self.time_us.is_some_and(|previous| time < previous) {
+            return Err(failure("market observation order is invalid"));
+        }
+        self.state_through_seq = seq;
+        self.time_us = Some(time);
+        Ok(())
     }
 
     pub(crate) fn apply(&mut self, message: &Value) -> Result<(), AnalysisError> {
@@ -181,43 +313,6 @@ impl Projection {
         }
         self.state_through_seq = seq;
         self.time_us = Some(time);
-        self.check_budget()
-    }
-
-    fn check_budget(&self) -> Result<(), AnalysisError> {
-        let entries = self.quotes.len()
-            + self.orders.len()
-            + self.executions.len()
-            + self.commands.len()
-            + self.connections.len()
-            + self.observed_positions.len()
-            + self.derived_positions.len()
-            + self.position_basis.len()
-            + self.position_scopes.len()
-            + self.trade_accounting.own_records.len()
-            + self.trade_accounting.market_records.len()
-            + self.trade_accounting.pending.len()
-            + self.order_change_seq.len()
-            + self.last_set_revision.len()
-            + self.last_set_observation.len()
-            + self.sync_generation.len()
-            + self.synchronized.len()
-            + self.trade_accounting.own_seen_keys.len()
-            + self.trade_accounting.market_seen_keys.len();
-        if entries > MAX_STATE_ENTRIES {
-            return Err(AnalysisError::new(
-                "REPLAY_BUDGET",
-                "projection entry limit exceeded",
-            ));
-        }
-        let bytes = serde_json::to_vec(self)
-            .map_err(|error| AnalysisError::caused_by("REPLAY_CHECKPOINT", error))?;
-        if bytes.len() > MAX_STATE_BYTES {
-            return Err(AnalysisError::new(
-                "REPLAY_BUDGET",
-                "projection exceeds 2 MiB checkpoint budget",
-            ));
-        }
         Ok(())
     }
 
@@ -252,7 +347,6 @@ impl Projection {
             value["by_symbol"] = Value::Object(symbols);
         }
         merge_map(&mut self.executions, key, value);
-        self.rebuild_totals();
         Ok(())
     }
 
@@ -267,9 +361,6 @@ impl Projection {
                 self.associate_order_owner(&symbol, &order_id, &execution_id, seq, time);
             }
         }
-        self.rebuild_order_amounts();
-        self.rebuild_totals();
-        self.rebuild_positions();
     }
 
     fn rebuild_cancel_pending(&mut self) {
@@ -393,11 +484,6 @@ impl Projection {
                 json!({"market":market,"observation":annotate(data,seq,time)}),
             );
             self.mark_incomplete(market);
-            if !market {
-                self.rebuild_order_amounts();
-                self.rebuild_totals();
-                self.rebuild_positions();
-            }
             return Ok(());
         }
         let key = key.unwrap().to_owned();
@@ -437,11 +523,6 @@ impl Projection {
                 "{}:trade:{key}",
                 if market { "market" } else { "own" }
             ));
-        }
-        if !market {
-            self.rebuild_order_amounts();
-            self.rebuild_totals();
-            self.rebuild_positions();
         }
         Ok(())
     }
@@ -618,6 +699,7 @@ impl Projection {
         seq: u64,
         time: u64,
     ) -> Result<(), AnalysisError> {
+        self.rebuild_order_amounts();
         let query = if let Some(basis) = data.get("query_basis") {
             if basis.get("recording_id").and_then(Value::as_str) != Some(self.recording_id.as_str())
             {
@@ -831,6 +913,7 @@ impl Projection {
         seq: u64,
         time: u64,
     ) -> Result<(), AnalysisError> {
+        self.rebuild_order_amounts();
         let rows = data
             .get("orders")
             .and_then(Value::as_array)
@@ -1104,7 +1187,6 @@ impl Projection {
                 json!({"scope_complete":complete,"observed_seq":seq,"observed_at_us":time}),
             );
         }
-        self.rebuild_positions();
         Ok(())
     }
 
@@ -2354,6 +2436,102 @@ mod tests {
         assert!(value["trade_accounting"]["execution_totals"]["E"]
             .get("quantity")
             .is_none());
+    }
+
+    #[test]
+    fn checkpoint_above_two_mib_restores_trade_identity_and_totals() {
+        let mut state = Projection::new("r");
+        state
+            .apply(&message(
+                1,
+                "/execution",
+                json!({"execution_id":"E","event":"started","symbols":["A"]}),
+            ))
+            .unwrap();
+        for seq in 2..=301 {
+            let mut data = trade(&format!("T{seq}"), 3.0);
+            data["source"] = json!("S".repeat(8_000));
+            state.apply(&message(seq, "/trade", data)).unwrap();
+        }
+        let snapshot = state.snapshot().unwrap();
+        assert!(serde_json::to_vec(&snapshot).unwrap().len() > 2 * 1024 * 1024);
+        let restored = Projection::restore(snapshot).unwrap();
+        let result = restored.snapshot().unwrap();
+        assert_eq!(
+            result["trade_accounting"]["execution_totals"]["E"]["by_symbol"]["A"]["quantity"],
+            900.0
+        );
+        assert_eq!(
+            result["trade_accounting"]["own_records"]["T2"]["first_capture_seq"],
+            2
+        );
+    }
+
+    #[test]
+    fn historical_trades_are_not_limited_by_projection_entry_count() {
+        let mut state = Projection::new("r");
+        state
+            .apply(&message(
+                1,
+                "/execution",
+                json!({"execution_id":"E","event":"started","symbols":["A"]}),
+            ))
+            .unwrap();
+        for seq in 2..=10_101 {
+            state
+                .apply(&message(seq, "/trade", trade(&format!("T{seq}"), 3.0)))
+                .unwrap();
+        }
+        let snapshot = state.snapshot().unwrap();
+        assert_eq!(
+            snapshot["trade_accounting"]["own_records"]
+                .as_object()
+                .unwrap()
+                .len(),
+            10_100
+        );
+        assert_eq!(
+            snapshot["trade_accounting"]["execution_totals"]["E"]["by_symbol"]["A"]["quantity"],
+            30_300.0
+        );
+        assert_eq!(
+            Projection::restore(snapshot).unwrap().state_through_seq,
+            10_101
+        );
+    }
+
+    #[test]
+    fn deferred_derived_state_matches_a_checkpoint_after_every_event() {
+        let events = vec![
+            message(
+                1,
+                "/execution",
+                json!({"execution_id":"E","event":"started","symbols":["A"]}),
+            ),
+            message(2, "/order", order("O", 10.0)),
+            message(3, "/trade", trade("T", 4.0)),
+            message(
+                4,
+                "/account_observation",
+                json!({"scope":["A"],"scope_complete":true,
+                "position_basis":{"status":"aligned","proof":{"kind":"included_trade_keys","complete":true,"included_trade_keys":["T"]}},
+                "positions":[{"symbol":"A","position_side":"NET","quantity":4}]}),
+            ),
+            message(5, "/trade", trade("U", 2.0)),
+            message(6, "/order", query_order("O", 99.0, 2, 1)),
+            message(7, "/trade", trade("T", 5.0)),
+        ];
+        let mut deferred = Projection::new("r");
+        let mut checkpointed = Projection::new("r");
+        for event in events {
+            deferred.apply(&event).unwrap();
+            checkpointed.apply(&event).unwrap();
+            checkpointed = Projection::restore(checkpointed.snapshot().unwrap()).unwrap();
+            assert_eq!(
+                deferred.snapshot().unwrap(),
+                checkpointed.snapshot().unwrap()
+            );
+        }
     }
 
     #[test]

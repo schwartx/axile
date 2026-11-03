@@ -1,6 +1,7 @@
 """真实原生扩展和 MCAP 的隔离集成；输入为手写事实，不连接交易账户。"""
 
 import json
+import sqlite3
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -230,7 +231,8 @@ def test_actual_recorder_pagination_keeps_its_sealed_view(make_recording):
     assert all(message["time_us"] == TIME for message in messages)
     fresh = window(root, "E1", recording_id, TIME, TIME + 100)
     assert fresh["window_id"] != first["window_id"]
-    assert_mcap_files(root, minimum=2)
+    assert_mcap_files(root)
+    assert len(list(root.rglob("*.mcap"))) == 1
 
 
 def test_actual_checkpoint_deduplicates_trade_and_applies_late_ownership(make_recording):
@@ -273,7 +275,8 @@ def test_actual_checkpoint_deduplicates_trade_and_applies_late_ownership(make_re
     assert accounting["own_records"]["T1"]["first_time_us"] == TIME
     assert accounting["own_records"]["T1"]["data"]["execution_id"] == "E1"
     assert not accounting["pending"]
-    assert_mcap_files(root, minimum=2)
+    assert_mcap_files(root)
+    assert len(list(root.rglob("*.mcap"))) == 1
 
 
 def test_actual_same_microsecond_part_boundary_and_hot_toggle(make_recording):
@@ -306,7 +309,8 @@ def test_actual_same_microsecond_part_boundary_and_hot_toggle(make_recording):
     assert {item["recording_id"] for item in replay_manifest(root, 7, "E3")["recordings"]} == {second_id}
     with pytest.raises(Exception, match="REPLAY_NOT_RECORDED"):
         window(root, "E3", first_id, TIME, TIME + 100)
-    assert_mcap_files(root, minimum=3)
+    assert_mcap_files(root, minimum=2)
+    assert len(list(root.rglob("*.mcap"))) == 2
 
 
 def test_actual_ctp_frozen_declaration_and_attributes(make_recording):
@@ -415,7 +419,8 @@ def test_actual_checkpoint_keeps_independent_cancel_intents(tmp_path):
         order = baseline["orders"]['["X","O"]']
         assert order["cancel_pending"] is expected_pending
         assert order["confirmed_book"] is (after_sequence != 10)
-    assert_mcap_files(root, minimum=4)
+    assert_mcap_files(root)
+    assert len(list(root.rglob("*.mcap"))) == 1
 
 
 def test_actual_second_loss_rejects_query_proof_without_global_sync(make_recording):
@@ -578,25 +583,25 @@ def test_actual_symbol_directory_covers_earlier_and_later_nested_symbols(make_re
     assert recording["symbols"] == ["A", "X", "Y", "Z"]
     assert recording["symbols_complete"] is True
     assert recording["context"].get("instrument", {}) == {}
-    for catalog in root.rglob("catalog.json"):
-        catalog.unlink()
+    assert not list(root.rglob("catalog.json"))
     recovered = replay_manifest(root, 7, "E")["recordings"][0]
     assert recovered["symbols"] == recording["symbols"]
     assert recovered["symbols_complete"] is True
 
 
-def test_actual_corrupt_catalog_is_recovered_read_only(make_recording):
+def test_actual_index_is_used_without_a_daily_catalog(make_recording):
     recorder, _, root, recording_id = make_recording()
     recorder.begin_execution("E", ["X"])
     recorder.observe("/quote/X", quote())
     finished(recorder)
-    catalog = next(root.rglob("catalog.json"))
+    catalog = next(root.rglob("*.mcap")).parent / "catalog.json"
     sealed = {path: path.read_bytes() for path in root.rglob("*.mcap")}
     catalog.write_bytes(b"{truncated")
     assert replay_manifest(root, 7, "E")["availability"] == "available"
     assert len(window(root, "E", recording_id, TIME, TIME + 1)["messages"]) == 2
     assert catalog.read_bytes() == b"{truncated"
     assert all(path.read_bytes() == original for path, original in sealed.items())
-    catalog.write_text(json.dumps({"schema_version": 2, "day": catalog.parent.name, "future_field": True}))
+    with sqlite3.connect(root / "account-7" / ".replay-index.sqlite") as db:
+        db.execute("UPDATE identity SET version=2")
     with pytest.raises(_core.NativeError):
         replay_manifest(root, 7, "E")

@@ -1,5 +1,5 @@
 import { describe, expect, it, spyOn } from 'bun:test'
-import { readReplayWindow, replayWindowQuery, validateReplayManifest, validateReplayPage } from '@/lib/api/replay'
+import { readReplayWindow, replayWindowQuery, ReplayWindowBudgetError, validateReplayManifest, validateReplayPage } from '@/lib/api/replay'
 import { replaySymbols, replayWindowRequest } from '@/features/replay/presentation'
 import type { ReplayRecording, ReplayWindow } from '@/features/replay/types'
 
@@ -78,6 +78,47 @@ describe('回放只读窗口边界', () => {
       expect(urls.every(url => url.includes('recording_id=rec-A'))).toBe(true)
     } finally { fetchMock.mockRestore() }
   })
+  it('大基线跨多页恢复后继续读取窗口事件', async () => {
+    const baseline = { note: '中文😀'.repeat(40), accounting: { quantity: 7 } }
+    const chunks = JSON.stringify(baseline).match(/.{1,7}/gu)!
+    let index = 0
+    const preconnect = globalThis.fetch.preconnect
+    const fetchMock = spyOn(globalThis, 'fetch').mockImplementation(Object.assign(async () => {
+      const current = index++
+      const value = current < chunks.length
+        ? { ...page(), state_before_start: null, state_fragment: chunks[current], state_fragment_end: current === chunks.length - 1,
+          messages: [], next_cursor: `state-${current}`, complete: false }
+        : { ...page(), state_before_start: null }
+      return new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }, { preconnect }))
+    try {
+      const result = await readReplayWindow('exec', request)
+      expect(chunks.length).toBeGreaterThan(20)
+      expect(result.state_before_start).toEqual(baseline)
+      expect(result.messages.map(event => event.capture_seq)).toEqual([3])
+      expect(result.state_fragment).toBeUndefined()
+      expect(index).toBe(chunks.length + 1)
+    } finally { fetchMock.mockRestore() }
+  })
+  it('单条事件跨页恢复后保持顺序和内容', async () => {
+    const event = { ...page().messages[0], data: { text: '中文😀'.repeat(100) } }
+    const chunks = JSON.stringify(event).match(/.{1,11}/gu)!
+    let index = 0
+    const preconnect = globalThis.fetch.preconnect
+    const fetchMock = spyOn(globalThis, 'fetch').mockImplementation(Object.assign(async () => {
+      const current = index++
+      const value = current === 0 ? { ...page(), messages: [], next_cursor: 'first', complete: false }
+        : current <= chunks.length ? { ...page(), state_before_start: null, messages: [], message_fragment: chunks[current - 1],
+          message_fragment_end: current === chunks.length, next_cursor: `fragment-${current}`, complete: false }
+          : { ...page(), state_before_start: null, messages: [] }
+      return new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }, { preconnect }))
+    try {
+      const result = await readReplayWindow('exec', request)
+      expect(result.messages).toEqual([event])
+      expect(result.message_fragment).toBeUndefined()
+    } finally { fetchMock.mockRestore() }
+  })
   it('未完成且游标循环时停止读取，避免无限拉取', async () => {
     let count = 0
     const preconnect = globalThis.fetch.preconnect
@@ -85,6 +126,13 @@ describe('回放只读窗口边界', () => {
     try { await expect(readReplayWindow('exec', request)).rejects.toThrow('无法继续') }
     finally { fetchMock.mockRestore() }
     expect(count).toBe(2)
+  })
+  it('读取预算不足可以自动缩小窗口，其他错误不伪装成预算问题', async () => {
+    const preconnect = globalThis.fetch.preconnect
+    const fetchMock = spyOn(globalThis, 'fetch').mockImplementation(Object.assign(async () =>
+      new Response(JSON.stringify({ detail: { code: 'REPLAY_BUDGET', message: '读取超过预算' } }), { status: 413 }), { preconnect }))
+    try { await expect(readReplayWindow('exec', request)).rejects.toBeInstanceOf(ReplayWindowBudgetError) }
+    finally { fetchMock.mockRestore() }
   })
 })
 

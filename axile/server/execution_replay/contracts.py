@@ -1,14 +1,10 @@
-"""回放输入的 JSON、安全字段和结构预算；状态投影由 Rust 负责。"""
+"""回放输入的 JSON 和安全字段校验；状态投影由 Rust 负责。"""
 
 import json
 import math
 from collections.abc import Mapping
 
-MAX_MESSAGE_BYTES = 256 * 1024
 MAX_SAFE_INTEGER = 2**53 - 1
-MAX_NODES = 20_000
-MAX_ITEMS = 2_048
-MAX_STRING_BYTES = 8_192
 
 DATA_FIELDS = frozenset(
     "schema_version symbol symbols source source_seq source_time_us source_time_quality source_precision "
@@ -44,38 +40,27 @@ def _number(value: int | float) -> int | float:
 
 
 def freeze_json(value: object) -> object:
-    """仅复制有界 JSON 原语；拒绝 SDK 对象、秘密字段及非有限数。"""
-    remaining = [MAX_NODES]
-    remaining_bytes = [MAX_MESSAGE_BYTES]
+    """复制 JSON 原语，拒绝 SDK 对象、秘密字段及非有限数。"""
 
     def visit(item: object, depth: int) -> object:
-        remaining[0] -= 1
-        remaining_bytes[0] -= len(item.encode("utf-8")) if isinstance(item, str) else 16
-        if remaining[0] < 0 or depth > 10 or remaining_bytes[0] < 0:
+        if depth > 10:
             raise ValueError("replay_structure_budget")
         if item is None or isinstance(item, bool):
             return item
         if isinstance(item, (int, float)):
             return _number(item)
         if isinstance(item, str):
-            if len(item.encode("utf-8")) > MAX_STRING_BYTES:
-                raise ValueError("replay_string_budget")
             return item
         if isinstance(item, Mapping):
-            if len(item) > MAX_ITEMS:
-                raise ValueError("replay_mapping_budget")
             result = {}
             for key, nested in item.items():
                 if not isinstance(key, str) or key.lower() in _FORBIDDEN_KEYS:
                     raise ValueError("replay_forbidden_field")
                 if len(key.encode("utf-8")) > 128:
                     raise ValueError("replay_key_budget")
-                remaining_bytes[0] -= len(key.encode("utf-8"))
                 result[key] = visit(nested, depth + 1)
             return result
         if isinstance(item, (list, tuple)):
-            if len(item) > MAX_ITEMS:
-                raise ValueError("replay_list_budget")
             return [visit(nested, depth + 1) for nested in item]
         raise ValueError("replay_non_json_value")
 

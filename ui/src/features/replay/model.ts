@@ -735,7 +735,6 @@ export function projectReplay(window: ReplayWindow, cursor: ReplayCursor, _symbo
       }
     }
     state.view.capture_seq = message.capture_seq
-    if (state.view.orderHistory.length > 20_000 || state.view.quoteHistory.length > 20_000) throw new Error('当前窗口事件过多，请选择更短时间范围')
   }
   state.view.time_us = cursor.time_us
   for (const [symbol, value] of Object.entries(state.view.quotes)) {

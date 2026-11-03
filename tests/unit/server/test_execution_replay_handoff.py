@@ -151,8 +151,8 @@ def test_starting_cancel_before_first_writer_attempt(tmp_path, action):
         recorder.close()
 
 
-@pytest.mark.parametrize("action", ["off", "disconnect", "close", "overflow"])
-def test_waiting_handoff_is_cancelable_and_keeps_queue_budget(tmp_path, monkeypatch, action):
+@pytest.mark.parametrize("action", ["off", "disconnect", "close"])
+def test_waiting_handoff_is_cancelable(tmp_path, action):
     attempts = []
     entered = threading.Event()
 
@@ -174,10 +174,6 @@ def test_waiting_handoff_is_cancelable_and_keeps_queue_budget(tmp_path, monkeypa
             recorder.attach(None)
         elif action == "close":
             recorder.close()
-        else:
-            monkeypatch.setattr(recorder_module, "MAX_QUEUE_MESSAGES", 1)
-            recorder.observe("/command", {"phase": "request"})
-            recorder.observe("/command", {"phase": "request"})
         eventually(lambda: not waiting_thread.is_alive())
         state = recorder.status()
         assert (
@@ -186,12 +182,9 @@ def test_waiting_handoff_is_cancelable_and_keeps_queue_budget(tmp_path, monkeypa
                 "off": "disabled",
                 "disconnect": "waiting_connection",
                 "close": "disabled",
-                "overflow": "error",
             }[action]
         )
         assert "reason" not in state
-        if action == "overflow":
-            assert state["error"] == "replay_queue_budget"
         assert not list(tmp_path.iterdir())
     finally:
         recorder.close()

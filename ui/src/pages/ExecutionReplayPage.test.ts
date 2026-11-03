@@ -140,9 +140,9 @@ test('点选图中成交暂停播放并关联委托及详情，但不改变游�
   expect(result.tab).toBe('orders')
 })
 
-test('默认读取整段，后续图层与游标状态独立，未来选择和倒退不泄漏终态', () => {
+test('默认读取有界窗口，后续图层与游标状态独立，未来选择和倒退不泄漏终态', () => {
   const result = pageCase('overview')
-  expect(result.initial).toMatchObject({ range: { start_us: 0, end_us: 40_000_000 }, sceneTrades: 1, currentTrades: 0, sceneStatus: 'filled', currentStatus: 'working' })
+  expect(result.initial).toMatchObject({ range: { start_us: 0, end_us: 10_000_000 }, sceneTrades: 1, currentTrades: 0, sceneStatus: 'filled', currentStatus: 'working' })
   expect(result.earlyBook).toBe(1)
   expect(result.lateBook).toBe(9)
   expect(result.restoredBook).toBe(1)
@@ -151,11 +151,22 @@ test('默认读取整段，后续图层与游标状态独立，未来选择和�
   expect(result.future).toEqual({ selected: '5:future', currentTrades: 0 })
 })
 
-test('后移短窗再切回整段，恢复当前覆盖时段起点且不跨越缺口', () => {
+test('后移短窗再切换窗口长度，保留当前位置且不跨越缺口', () => {
   expect(pageCase('whole-after-window')).toEqual([
-    { later: { start_us: 2_000_000, end_us: 4_000_000 }, whole: { start_us: 0, end_us: 40_000_000 } },
-    { later: { start_us: 62_000_000, end_us: 64_000_000 }, whole: { start_us: 60_000_000, end_us: 100_000_000 } },
+    { later: { start_us: 2_000_000, end_us: 4_000_000 }, longer: { start_us: 2_000_000, end_us: 12_000_000 } },
+    { later: { start_us: 62_000_000, end_us: 64_000_000 }, longer: { start_us: 62_000_000, end_us: 72_000_000 } },
   ])
+})
+
+test('数据密集时页面自动缩小读取窗口', () => {
+  expect(pageCase('budget-retry')).toEqual({
+    requests: [
+      { start_us: 0, end_us: 10_000_000 },
+      { start_us: 0, end_us: 5_000_000 },
+      { start_us: 0, end_us: 2_500_000 },
+    ],
+    range: { start_us: 0, end_us: 2_500_000 },
+  })
 })
 
 

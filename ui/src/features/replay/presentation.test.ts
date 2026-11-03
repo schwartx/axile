@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test'
-import { rememberReplaySymbols, replayCommandPresentation, replayFieldText, replayExecutionRange, replayRange, replayStream, replaySymbols, replayTime } from '@/features/replay/presentation'
+import { rememberReplaySymbols, replayCommandPresentation, replayFieldText, replayExecutionRange, replayRange, replayStream, replaySymbols, replayTime, replayWindowDuration, smallerReplayRange } from '@/features/replay/presentation'
 import { projectReplay } from '@/features/replay/model'
 import type { ReplayData, ReplayRecording, ReplayWindow } from '@/features/replay/types'
 
@@ -17,6 +17,13 @@ it('窗口不跨越覆盖缺口，未覆盖的seek不使用未来数据', () => 
   const coverage = [{ start_us: 100, end_us: 200 }, { start_us: 300, end_us: 500 }]
   expect(replayRange(coverage, 150, 100)).toEqual({ start_us: 150, end_us: 200 })
   expect(replayRange(coverage, 250)).toBeNull()
+})
+
+it('事件过密时缩小窗口，保留要定位的时刻', () => {
+  expect(replayWindowDuration('all')).toBe(10_000_000)
+  expect(smallerReplayRange({ start_us: 100, end_us: 200 })).toEqual({ start_us: 100, end_us: 150 })
+  expect(smallerReplayRange({ start_us: 100, end_us: 200 }, 199)).toEqual({ start_us: 150, end_us: 200 })
+  expect(smallerReplayRange({ start_us: 100, end_us: 101 }, 100)).toBeNull()
 })
 
 it('渠道模板只提供覆盖说明，不能把未观察品种标为完整可用', () => {

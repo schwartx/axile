@@ -8,7 +8,7 @@ import { Segmented } from '@/components/ui/Segmented'
 import { ValueSlider } from '@/components/ui/ValueSlider'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
-import { getReplayManifest } from '@/lib/api/replay'
+import { getReplayManifest, ReplayWindowBudgetError } from '@/lib/api/replay'
 import { projectReplay } from '@/features/replay/model'
 import { replayTradeKey } from '@/features/replay/chartInteraction'
 import { ReplayChart } from '@/features/replay/ReplayChart'
@@ -19,7 +19,7 @@ import { ReplayStage } from '@/features/replay/ReplayStage'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { InkRewrite } from '@/components/ui/InkRewrite'
 import '@/features/replay/replay.css'
-import { rememberReplaySymbols, replayInstrument, replayNumber, replayRange, replayExecutionRange, replayStream, replaySymbols, replayTime, replayWindowRequest, replayWindowDuration } from '@/features/replay/presentation'
+import { rememberReplaySymbols, replayInstrument, replayNumber, replayRange, replayExecutionRange, replayStream, replaySymbols, replayTime, replayWindowRequest, replayWindowDuration, smallerReplayRange } from '@/features/replay/presentation'
 import { useReplayWindow } from '@/features/replay/useReplayWindow'
 import type { ReplayCursor, ReplayManifest, ReplayRange } from '@/features/replay/types'
 
@@ -39,17 +39,19 @@ export function ExecutionReplayPage() {
   const [knownSymbols, setKnownSymbols] = useState<Record<string, string[]>>({})
   const [cursor, setCursor] = useState<ReplayCursor>({ time_us: 0 }), [playing, setPlaying] = useState(false), [speed, setSpeed] = useState('1')
   const [cursorWindow, setCursorWindow] = useState('')
-  const [selectedOrder, setSelectedOrder] = useState<string | null>(null), [windowDuration, setWindowDuration] = useState('all')
+  const [selectedOrder, setSelectedOrder] = useState<string | null>(null), [windowDuration, setWindowDuration] = useState('10')
+  const [adaptiveDuration, setAdaptiveDuration] = useState<number | null>(null)
   const [selectedTrade, setSelectedTrade] = useState<string | null>(null)
   const [detailTab, setDetailTab] = useState<ReplayDetailTab>('orders')
   const [seekDraft, setSeekDraft] = useState<number | null>(null)
   const pendingSeek = useRef<{ recording: string; symbol: string; time_us: number } | null>(null)
   const continuePlayback = useRef<string | null>(null)
+  const budgetRetries = useRef(0)
   const initialWindowDuration = useRef(windowDuration); initialWindowDuration.current = windowDuration
   useEffect(() => {
     const controller = new AbortController()
-    continuePlayback.current = null
-    setManifestLoading(true); setManifest(null); setManifestError(null); setPlaying(false); setRange(null); setRecordingId(''); setSymbol(''); setKnownSymbols({})
+    continuePlayback.current = null; budgetRetries.current = 0
+    setManifestLoading(true); setManifest(null); setManifestError(null); setPlaying(false); setRange(null); setRecordingId(''); setSymbol(''); setKnownSymbols({}); setAdaptiveDuration(null)
     void getReplayManifest(executionId, controller.signal).then(value => {
       if (controller.signal.aborted) return
       if (value.account_id !== accountId || value.execution_id !== executionId) throw new Error('这次执行不属于当前账户')
@@ -64,11 +66,24 @@ export function ExecutionReplayPage() {
   const recording = manifest?.recordings.find(item => item.recording_id === recordingId)
   const request = useMemo(() => range && recording ? replayWindowRequest(recording, range, symbol) : null, [range, recording, symbol])
   const loaded = useReplayWindow(executionId, request, revision)
+  const effectiveDuration = Math.min(replayWindowDuration(windowDuration), adaptiveDuration ?? Number.MAX_SAFE_INTEGER)
+  const retryingBudget = loaded.error instanceof ReplayWindowBudgetError && budgetRetries.current < 16 && range != null && range.end_us - range.start_us > 1
+  useEffect(() => {
+    if (!(loaded.error instanceof ReplayWindowBudgetError) || !range || budgetRetries.current >= 16) return
+    const pending = pendingSeek.current
+    const target = pending?.recording === recordingId && pending.symbol === symbol ? pending.time_us : null
+    const next = smallerReplayRange(range, target)
+    if (!next) return
+    budgetRetries.current += 1
+    setAdaptiveDuration(previous => Math.min(previous ?? Number.MAX_SAFE_INTEGER, next.end_us - next.start_us))
+    setRange(next)
+  }, [loaded.error, range, recordingId, symbol])
   const windowData = loaded.value
   const context = windowData?.context ?? recording?.context
   const symbols = recording ? replaySymbols(recording, knownSymbols[recordingId] ?? []) : []
   useEffect(() => {
     if (!windowData) return
+    budgetRetries.current = 0
     const discovered = replaySymbols(windowData)
     setKnownSymbols(previous => rememberReplaySymbols(previous, windowData))
     if (!symbol && discovered[0]) setSymbol(discovered[0])
@@ -113,14 +128,14 @@ export function ExecutionReplayPage() {
     if (range) setCursor({ time_us: Math.max(range.start_us, Math.min(range.end_us - 1, Math.round(timeUs))), capture_seq: captureSeq })
   }, [range])
   const seekRecording = (timeUs: number) => {
-    continuePlayback.current = null
+    continuePlayback.current = null; budgetRetries.current = 0
     setPlaying(false); setSeekDraft(null)
     if (!recording || !range) return
     const coverage = recording.coverage.find(item => timeUs >= item.start_us && timeUs < item.end_us)
     if (!coverage) return
     if (windowData && !loaded.error && !projected.error && timeUs >= range.start_us && timeUs < range.end_us) { setCursor({ time_us: timeUs }); return }
     pendingSeek.current = { recording: recordingId, symbol, time_us: timeUs }
-    const duration = replayWindowDuration(windowDuration)
+    const duration = effectiveDuration
     const start = !windowData || loaded.error || projected.error ? timeUs : coverage.start_us + Math.floor((timeUs - coverage.start_us) / duration) * duration
     setRange(replayRange(recording.coverage, start, duration))
   }
@@ -148,27 +163,27 @@ export function ExecutionReplayPage() {
         const coverage = recording?.coverage.find(item => range.start_us >= item.start_us && range.start_us < item.end_us)
         if (coverage && range.end_us < coverage.end_us) {
           continuePlayback.current = windowData.recording_id
-          setRange({ start_us: range.end_us, end_us: Math.min(coverage.end_us, range.end_us + replayWindowDuration(windowDuration)) })
+          setRange({ start_us: range.end_us, end_us: Math.min(coverage.end_us, range.end_us + effectiveDuration) })
         }
       }
       else frame = requestAnimationFrame(advance)
     }
     frame = requestAnimationFrame(advance)
     return () => cancelAnimationFrame(frame)
-  }, [playing, speed, windowData, range, windowKey, cursorWindow, projected.error, recording, windowDuration])
+  }, [playing, speed, windowData, range, windowKey, cursorWindow, projected.error, recording, effectiveDuration])
 
   const selectRecording = (value: string) => {
     continuePlayback.current = null
-    setPlaying(false); pendingSeek.current = null; setRecordingId(value)
+    setPlaying(false); pendingSeek.current = null; setRecordingId(value); setAdaptiveDuration(null); budgetRetries.current = 0
     const next = manifest?.recordings.find(item => item.recording_id === value)
     if (!next) return
     setSymbol(replaySymbols(next, knownSymbols[value] ?? [])[0] ?? ''); setRange(replayRange(next.coverage, undefined, replayWindowDuration(windowDuration)))
   }
   const moveWindow = (direction: -1 | 1) => {
-    continuePlayback.current = null
+    continuePlayback.current = null; budgetRetries.current = 0
     if (!recording || !range) return
     setPlaying(false)
-    const duration = replayWindowDuration(windowDuration)
+    const duration = effectiveDuration
     const coverageIndex = recording.coverage.findIndex(item => range.start_us >= item.start_us && range.start_us < item.end_us)
     const containing = recording.coverage[coverageIndex]
     if (!containing) return
@@ -220,7 +235,7 @@ export function ExecutionReplayPage() {
     </header>
     <div className="replay-read-errors" hidden={!manifestError && !loaded.error && !projected.error && !reviewed.error}>
       <ErrorNotice intent="read" title="回放目录读取失败" error={manifestError} onRetry={() => setRevision(value => value + 1)} />
-      <ErrorNotice intent="read" title="回放窗口读取失败" error={loaded.error ?? projected.error ?? reviewed.error} onRetry={() => setRevision(value => value + 1)} />
+      <ErrorNotice intent="read" title="回放窗口读取失败" error={(retryingBudget ? null : loaded.error) ?? projected.error ?? reviewed.error} onRetry={() => setRevision(value => value + 1)} />
     </div>
     {manifestLoading && <p className="replay-empty" role="status">正在查找这次执行的录制…</p>}
     {manifest && !manifest.recordings.length && <div className="replay-empty"><h2 className="font-medium text-ink-1">{availabilityLabels[manifest.availability] ?? '暂无可回放记录'}</h2><p className="mt-2 max-w-xl text-sm text-ink-2">{manifest.reason ?? '这次执行没有已封口的录制。账户录制默认关闭，开启前的数据不会补录。'}</p></div>}
@@ -235,7 +250,7 @@ export function ExecutionReplayPage() {
       </OrdersAndTrades> : <ReplayStage><div className="replay-chart-column"><div className="replay-chart-area"><div className="replay-main-chart">
         <div className="replay-chart-playback"><span className="text-[13px] font-semibold text-ink-1">{symbol || '品种未知'}</span>{transport}</div>
         <div className="replay-chart-meta"><div className="replay-chart-legend"><span className="replay-depth-bid"><Minus size={14} aria-hidden />买一</span><span className="replay-depth-ask"><Minus size={14} aria-hidden />卖一</span><span><Minus size={14} aria-hidden />成交价</span><span><Circle size={10} aria-hidden />市场成交</span><span className="replay-order-color"><Minus size={14} aria-hidden />账户委托</span><span><Minus size={14} aria-hidden />未到达</span></div><div className="replay-chart-view-controls replay-chart-navigation"><div className="replay-chart-return-slot" /><div className="replay-playback-group">{playControls}<button type="button" className="min-h-7 min-w-7 text-ink-2 opacity-40" aria-label="恢复视图" disabled><RotateCcw size={15} aria-hidden /></button><button type="button" className="min-h-7 min-w-7 text-ink-2 opacity-40" aria-label="聚焦委托过程" disabled><Crosshair size={14} aria-hidden /></button><button type="button" className="min-h-7 min-w-7 text-ink-2 opacity-40" aria-label="图层与图例说明" disabled><Info size={15} aria-hidden /></button></div><button type="button" className={`${buttonClass} replay-first-quote`} disabled>跳到首个盘口</button></div></div>
-        <div className="replay-empty" role="status">{loaded.loading ? '正在恢复所选时刻的状态，回放已暂停…' : '所选窗口暂不可用，可在录制信息中切换窗口或重试。'}</div>
+        <div className="replay-empty" role="status">{loaded.loading || retryingBudget ? '正在恢复所选时刻的状态，回放已暂停…' : '所选窗口暂不可用，可在录制信息中切换窗口或重试。'}</div>
         {range && <div className="replay-chart-axis replay-loading-axis"><ValueSlider variant="axis" label="录制定位" min={0} max={Math.max(1, (currentCoverage?.end_us ?? range.end_us) - (currentCoverage?.start_us ?? range.start_us) - 1)} step={1} value={Math.max(0, (seekDraft ?? navigationTime) - (currentCoverage?.start_us ?? range.start_us))} formatValue={offset => replayTime((currentCoverage?.start_us ?? range.start_us) + offset)} onChange={offset => { continuePlayback.current = null; setPlaying(false); setSeekDraft((currentCoverage?.start_us ?? range.start_us) + offset) }} onChangeEnd={offset => seekRecording((currentCoverage?.start_us ?? range.start_us) + offset)} /></div>}
       </div></div><section className="replay-dock" aria-label="回放明细"><div className="replay-dock-header"><Segmented value={detailTab} options={[{ value: 'orders', label: '委托' }, { value: 'trades', label: '成交' }, { value: 'commands', label: '报撤观察' }, { value: 'positions', label: '持仓' }]} onChange={setDetailTab} size="sm" /></div></section></div></ReplayStage>}
     </>}
@@ -245,7 +260,7 @@ export function ExecutionReplayPage() {
       {recording && context && <>
           <div className="replay-window-controls mb-4">
             <button type="button" className={buttonClass} onClick={() => moveWindow(-1)} disabled={!canPrevWindow} aria-label="上一窗口"><ChevronLeft size={14} aria-hidden /><span className="sr-only">上一窗口</span></button>
-            <label><span>读取窗口 </span><Select value={windowDuration} ariaLabel="窗口时长" className={selectClass} onChange={value => { continuePlayback.current = null; setPlaying(false); setWindowDuration(value); setRange(replayRange(recording.coverage, value === 'all' ? currentCoverage?.start_us : range?.start_us, replayWindowDuration(value))) }} options={['all', '2', '5', '10', '20'].map(value => ({ value, label: value === 'all' ? '整段' : `${value} 秒` }))} /></label>
+            <label><span>读取窗口 </span><Select value={windowDuration} ariaLabel="窗口时长" className={selectClass} onChange={value => { continuePlayback.current = null; budgetRetries.current = 0; setPlaying(false); setWindowDuration(value); setAdaptiveDuration(null); setRange(replayRange(recording.coverage, range?.start_us, replayWindowDuration(value))) }} options={['2', '5', '10', '20'].map(value => ({ value, label: `${value} 秒` }))} /></label>
             <button type="button" className={buttonClass} onClick={() => moveWindow(1)} disabled={!canNextWindow} aria-label="下一窗口"><span className="sr-only">下一窗口</span><ChevronRight size={14} aria-hidden /></button>
           </div>
         <div className="mb-3 text-xs text-ink-2"><p className="mb-1">录制段</p><Select ariaLabel="选择录制段" className={`${selectClass} w-full`} value={recordingId} onChange={selectRecording} options={(manifest?.recordings ?? []).map((value, index) => ({ value: value.recording_id, label: `第 ${index + 1} 段${value.order_known === false ? '（先后未知）' : ''}` }))} /></div>

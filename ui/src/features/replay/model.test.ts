@@ -23,6 +23,14 @@ const fill = (id: string, quantity: number, rest: ReplayData = {}): ReplayData =
   identity_quality: 'stable', quantity, price: 99, direction: 'BUY', position_side: 'NET', execution_id: 'exec-1', ...rest })
 
 describe('回放按本地已观察前缀恢复', () => {
+  test('窗口内超过两万条盘口观察仍可回放', () => {
+    const events = Array.from({ length: 20_001 }, (_, index) =>
+      message(index + 1, '/quote/A', { symbol: 'A', bids: [], asks: [] }, index + 1))
+    const result = projectReplay(windowOf(events), { time_us: 20_001 })
+    expect(result.quoteHistory).toHaveLength(20_001)
+    expect(result.capture_seq).toBe(20_001)
+  })
+
   test('盘口档数来自每次观察，保留未知量和零量；连续播放与窗前恢复一致', () => {
     const depth = { symbol: 'A', book_valid: true, available: true, valid_until_us: 1000,
       bids: [{ price: 98, quantity: 0 }, { price: 97 }, { price: 96, quantity: 8, field_quality: { quantity: 'invalid' } }, { price: 95, quantity: -1 }, { price: 94, quantity: 4, field_quality: { price: 'missing' } }],
