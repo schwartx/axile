@@ -127,9 +127,12 @@ class ExecutorProtocol(Protocol):
         order_type: OrderType,
         volume: float,
         price: float = 0,
+        *,
+        market_data: UnifiedPriceData | None = None,
+        market_data_purpose: MarketDataPurpose | None = None,
         **kwargs: object,
     ) -> UnifiedOrder:
-        """下单."""
+        """下单，可显式携带行情证据并要求按盘口用途校验。"""
         ...
 
     def get_pending_orders(self) -> list[UnifiedOrder]:

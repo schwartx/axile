@@ -24,6 +24,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
+from axile.domain.execution import ExecutionReasonFamily
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.algorithms.common.params import BaseAlgorithmParams, ChaseParamsMixin
 from axile.executor.algorithms.core.base import (
@@ -73,13 +74,13 @@ class SingleMakerParams(BaseAlgorithmParams, ChaseParamsMixin):
     on_missing_book: Literal["skip", "active", "market"] = Field(
         default="skip",
         title="盘口缺失处理",
-        description="盘口无效时跳过、尝试主动报价或发市价单；主动回退不保证有有效报价。",
+        description="盘口无效时可跳过或请求市价单；active 仅兼容旧配置，行为与跳过相同。",
         json_schema_extra={
             "x-order": 30,
             "x-control": "cards",
             "x-option-descriptions": {
                 "skip": "跳过本次下单。",
-                "active": "尝试主动报价，仍可能没有有效报价。",
+                "active": "仅兼容旧配置：盘口无效时跳过，不会转市价。",
                 "market": "提交市价单，成交价格由市场决定。",
             },
             "x-enum-labels": {"skip": "跳过", "active": "尝试主动报价", "market": "市价单"},
@@ -117,19 +118,15 @@ def _resolve_pricing_on_book(
     Returns
     -------
     tuple[OrderType, float] | None
-        ``(order_type, price)``；当盘口买卖一无效且 ``on_missing_book="skip"`` 时返回
-        ``None``，表示本轮跳过该品种（欠量、下轮重挂），绝不穿价成 taker。
+        ``(order_type, price)``；盘口无效且未显式请求市价时返回 ``None``。
     """
-    book_ok = market_data is not None and market_data.book_valid
-    if book_ok:
-        return determine_order_price(direction, market_data, price_strategy=params.price_strategy)
-    # 盘口无效（未命中 bookTicker 被 last_price 兜底的假盘口）：按 on_missing_book 决策
-    if params.on_missing_book == "skip":
-        return None
+    if market_data is not None and market_data.book_valid:
+        pricing = determine_order_price(direction, market_data, price_strategy=params.price_strategy)
+        if pricing[0] != OrderType.MARKET:
+            return pricing
     if params.on_missing_book == "market":
         return OrderType.MARKET, 0.0
-    # active：退化成对手价（可成交，接受 taker）
-    return determine_order_price(direction, market_data, price_strategy="ACTIVE")
+    return None
 
 
 def _missing_book_result(
@@ -142,8 +139,8 @@ def _missing_book_result(
     execution_memory: dict[str, Any],
     chase_config: ChaseConfig | None,
 ) -> AlgorithmResult:
-    """盘口无效且策略为 skip 时构造本轮跳过结果（欠量，下轮重挂）。"""
-    executor.logger.warning(f"{symbol} 盘口买卖一无效（假盘口），本轮跳过（skip）")
+    """盘口无效且未请求市价时构造本轮阻断结果。"""
+    executor.logger.warning(f"{symbol} 盘口买卖一无效，本轮不下单")
     execution_memory[f"{symbol}_skipped"] = "missing_book"
     return AlgorithmResult(
         orders=[],
@@ -153,7 +150,9 @@ def _missing_book_result(
         first_tick=first_tick,
         status=ExecutionStatus.BLOCKED,
         error="盘口买卖一无效，本轮未执行",
+        reason_code="COMMON.MARKET_DATA.UNAVAILABLE",
         memory={
+            "symbol_decision_reason_family": ExecutionReasonFamily.MARKET_RULE.value,
             "algorithm": algorithm_name,
             "target_volume": target_volume,
             "execution_details": execution_memory,
@@ -237,7 +236,7 @@ def single_maker_callback(
     log_debug(f"账户总资产: {account_assets.total_asset:.2f}")
 
     symbol = algorithm_input.symbol
-    market_data = executor.get_market_data()
+    market_data = clone_price_data(executor.get_market_data())
     if market_data:
         log_debug(f"获取到 {symbol} 的价格数据")
 
@@ -265,7 +264,6 @@ def single_maker_callback(
             needed_volume = abs(target_volume - current_volume)
             pricing = _resolve_pricing_on_book(direction, market_data, params)
             if pricing is None:
-                # 盘口无效 + on_missing_book=skip：本轮跳过该品种（欠量，下轮 rebalance 重挂），永不 taker
                 return _missing_book_result(
                     executor,
                     account_assets,
@@ -296,6 +294,7 @@ def single_maker_callback(
                     current_volume=float(current_volume),
                     leg_timeout_seconds=max_wait_seconds,
                     deadline=deadline,
+                    market_data=market_data,
                 )
                 if not orders:
                     execution_memory[f"{symbol}_skipped"] = "no_order_submitted"

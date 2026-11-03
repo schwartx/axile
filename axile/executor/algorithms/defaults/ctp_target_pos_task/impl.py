@@ -819,6 +819,7 @@ def ctp_target_pos_task_algorithm(executor: ExecutorProtocol, algorithm_input: A
                 "symbol": planned_symbol,
                 "target_volume": target_volume,
                 "current_net_position": current_net_position,
+                "start_volume": current_net_position,
                 "final_net_position": final_net_position,
                 "target_gap": target_gap if not target_reached else 0,
                 "target_reached": target_reached,
@@ -873,6 +874,7 @@ def ctp_target_pos_task_algorithm(executor: ExecutorProtocol, algorithm_input: A
                 "algorithm": algorithm_name,
                 "success": False,
                 "error": error_msg,
+                "start_volume": current_net_position,
                 "execution_details": execution_memory,
             },
         )

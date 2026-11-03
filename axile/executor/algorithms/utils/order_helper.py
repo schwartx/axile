@@ -698,7 +698,8 @@ def submit_and_track_split_orders(
     deadline : float | None, default=None
         调用方提供的绝对截止时间，与外层等待共用；缺省时按时间额度计算。
     **kwargs : object
-        额外的下单参数，例如 ``trade_rule``。
+        额外的下单参数，例如 ``trade_rule``；``market_data`` 应为实际定价使用的快照，
+        整次拆单复用其冻结副本，不随追单刷新变更。
 
     Returns
     -------
@@ -716,6 +717,8 @@ def submit_and_track_split_orders(
     穿零时与 OFFSET 模型一样由 :func:`_submit_close_open_orders`
     拆成平仓腿和开仓腿，逐腿复核持仓且不超过本片额度。
     """
+    if isinstance(kwargs.get("market_data"), UnifiedPriceData):
+        kwargs["market_data"] = kwargs["market_data"].model_copy(deep=True)
     if deadline is None:
         deadline = get_default_clock().time() + leg_timeout_seconds
     model = _resolve_order_param_model(executor)

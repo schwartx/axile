@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pytest
-from pydantic import Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from axile.channels import (
     AlgorithmReference,
@@ -143,6 +143,44 @@ def test_plugins_default_to_process_and_reject_removed_thread_backend() -> None:
     assert ChannelPlugin.__dataclass_fields__["execution_backend"].default == "process"
     with pytest.raises(ValueError, match="仅支持 process"):
         replace(plugin, execution_backend="thread")  # type: ignore[arg-type]
+
+
+def test_external_plugin_owns_its_schedule_configuration() -> None:
+    from axile.server.db.models.account import Account, AccountSnapshot
+    from axile.server.db.models.account_settings import AccountSettings, ScheduleSettings
+
+    class VendorSchedule(BaseModel):
+        model_config = ConfigDict(extra="forbid", frozen=True)
+        delay: int = Field(ge=1)
+
+    list_channels()
+    register_channel(replace(_plugin(), schedule_settings_model=VendorSchedule))
+    settings = AccountSettings()
+    settings.apply_patch({"channel_options": {"vendor-demo": {"delay": 2}}})
+    assert settings.schedule.channel_options == {"vendor-demo": {"delay": 2}}
+    # 旧 GM 接口更新/清空只影响本渠道，不覆盖其他插件配置。
+    settings.apply_patch({"gm_sessions": {}})
+    settings.apply_patch({"gm_sessions": None})
+    assert settings.schedule.channel_options == {"vendor-demo": {"delay": 2}}
+    account = Account(
+        name="vendor",
+        market="demo",
+        trade_channel="vendor-demo",
+        brokerage="demo",
+        settings=settings,
+        algorithm={"method": "SINGLE-MAKER", "params": {}},
+    )
+    snapshot = AccountSnapshot.model_validate_json(account.snapshot().model_dump_json())
+    assert snapshot.channel_options == {"vendor-demo": {"delay": 2}}
+    snapshot.channel_options["vendor-demo"]["delay"] = 9
+    assert account.channel_options["vendor-demo"]["delay"] == 2
+    assert "channel_options" not in account.model_dump()
+    with pytest.raises(ValidationError):
+        ScheduleSettings(channel_options={"vendor-demo": {"delay": 0}})
+    with pytest.raises(ValidationError):
+        ScheduleSettings(channel_options={"vendor-demo": {"delay": 2, "unknown": True}})
+    with pytest.raises(ValueError):
+        replace(_plugin(), legacy_schedule_field="legacy")
 
 
 def test_entry_point_is_loaded_once_and_appended_after_builtins(monkeypatch: pytest.MonkeyPatch) -> None:

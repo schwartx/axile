@@ -9,6 +9,8 @@ from sqlalchemy.orm import Mapper, relationship
 from sqlmodel import Field, Relationship, SQLModel
 from sqlmodel._compat import SQLModelConfig
 
+from axile.channels.gm_sessions import GMSessionSettings
+from axile.channels.schedule_settings import validate_schedule_options
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.models import AccountControlOverride
@@ -18,10 +20,9 @@ from axile.server.db.models.account_connection import AccountConnectionPublic, A
 from axile.server.db.models.account_notification import AccountNotificationState, AccountNotificationStatePublic
 from axile.server.db.models.account_runtime_sync import AccountRuntimeSyncPublic
 from axile.server.db.models.account_settings import (
-    SETTINGS_FIELDS,
     AccountSettings,
-    GMSessionSettings,
     SupplementSettings,
+    settings_fields,
 )
 from axile.server.db.models.account_validation import (
     _MAX_EXECUTION_TIMEOUT,
@@ -160,6 +161,9 @@ class AccountCreate(AccountBase):
 class AccountSnapshot(AccountBase):
     """执行时使用的普通 Python 数据快照，不携带 session 或 ORM 关系。"""
 
+    channel_options: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    _options = field_validator("channel_options")(validate_schedule_options)
+
     id: int | None = None
     copied_from_account_id: int | None = None
     copied_from_account_name: str | None = None
@@ -213,7 +217,7 @@ class Account(SQLModel, AsyncAttrs, table=True):
 
     def __init__(self, **data: Any) -> None:
         """兼容旧的扁平创建载荷，将配置归入设置对象。"""
-        patch = {key: data.pop(key) for key in list(data) if key in SETTINGS_FIELDS}
+        patch = {key: data.pop(key) for key in list(data) if key in settings_fields()}
         settings = data.pop("settings", None) or AccountSettings()
         settings.apply_patch(patch)
         super().__init__(**data)
@@ -227,14 +231,19 @@ class Account(SQLModel, AsyncAttrs, table=True):
 
     def __getattr__(self, name: str) -> Any:
         """兼容尚未迁移的账户配置字段读取。"""
-        group = SETTINGS_FIELDS.get(name)
+        group = settings_fields().get(name)
         if group:
-            return self.settings.connection if group == "connection" else getattr(getattr(self.settings, group), name)
+            if group == "connection":
+                return self.settings.connection
+            model = getattr(self.settings, group)
+            if name in type(model).model_fields:
+                return getattr(model, name)
+            return self.settings.flat_values()[name]
         return getattr(super(), "__getattr__")(name)
 
     def __setattr__(self, name: str, value: Any) -> None:
         """兼容单字段更新，同时确保 JSON 列被替换。"""
-        if name in SETTINGS_FIELDS:
+        if name in settings_fields():
             self.settings.apply_patch({name: value})
             super().__setattr__("updated_at", now_str())
         else:
@@ -243,20 +252,24 @@ class Account(SQLModel, AsyncAttrs, table=True):
     def model_dump(self, **kwargs: Any) -> dict[str, Any]:
         """保留内部旧载荷格式；公开 API 仍由独立 DTO 构造。"""
         values = super().model_dump() | self.settings.flat_values()
-        return AccountSnapshot.model_construct(**values).model_dump(**kwargs)
+        # 扁平旧载荷不增加字段；进程间快照由 snapshot() 单独带上渠道配置。
+        result = AccountSnapshot.model_construct(**values).model_dump(**kwargs)
+        result.pop("channel_options", None)
+        return result
 
     def sqlmodel_update(self, obj: Any, *, update: dict[str, Any] | None = None) -> "Account":
         """先校验局部配置，再更新账户身份字段。"""
         data = (obj.model_dump(exclude_unset=True) if isinstance(obj, BaseModel) else dict(obj)) | (update or {})
         self.settings.apply_patch(data)
-        if SETTINGS_FIELDS.keys() & data.keys():
+        if settings_fields().keys() & data.keys():
             self.updated_at = now_str()
-        super().sqlmodel_update({key: value for key, value in data.items() if key not in SETTINGS_FIELDS})
+        super().sqlmodel_update({key: value for key, value in data.items() if key not in settings_fields()})
         return self
 
     def snapshot(self) -> AccountSnapshot:
         """复制为与 ORM 生命周期无关的账户快照。"""
-        return AccountSnapshot.model_validate(self.model_dump()).model_copy(deep=True)
+        values = self.model_dump() | {"channel_options": self.settings.schedule.channel_options}
+        return AccountSnapshot.model_validate(values).model_copy(deep=True)
 
     execute_records: list["ExecuteRecord"] = Relationship(
         sa_relationship=relationship(

@@ -1,6 +1,7 @@
 """账户拆分的持久化、迁移与通知成功摘要契约。"""
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,7 @@ from pydantic import ValidationError
 from sqlmodel import Session, SQLModel, select
 
 from axile.server.db.models import Account, AccountNotificationState, AccountSettings, AccountSnapshot
-from axile.server.db.models.account_settings import ExecutionSettings
+from axile.server.db.models.account_settings import ExecutionSettings, ScheduleSettings
 from axile.server.execution import notification_state
 
 MIGRATIONS = Path(__file__).parents[3] / "axile/server/alembic/versions"
@@ -216,8 +217,8 @@ def test_notification_result_migration_preserves_legacy_success():
 
 
 def test_gm_sessions_persist_and_roundtrip_in_public_snapshot():
+    from axile.channels.gm_sessions import GMSessionSettings
     from axile.server.db.models.account import AccountPublic
-    from axile.server.db.models.account_settings import GMSessionSettings
 
     engine = sa.create_engine("sqlite://")
     SQLModel.metadata.create_all(engine)
@@ -237,3 +238,78 @@ def test_gm_sessions_persist_and_roundtrip_in_public_snapshot():
         session.expire_all()
         assert loaded.gm_sessions is None
     engine.dispose()
+
+
+def test_legacy_schedule_json_is_read_and_rewritten_as_channel_options():
+    engine = sa.create_engine("sqlite://")
+    SQLModel.metadata.create_all(engine)
+    legacy = {"gm_sessions": {"opening_locked": {"enabled": True, "time": "09:24"}}}
+    with Session(engine) as session:
+        session.add(Account(**(account_data() | {"trade_channel": "gm"})))
+        session.commit()
+        session.execute(sa.update(AccountSettings).values(schedule=legacy))
+        session.commit()
+        session.expire_all()
+        account = session.get(Account, 1)
+        assert account.gm_sessions.opening_locked.time == "09:24"
+        account.sqlmodel_update({"cron_expr": "30 9 * * *"})
+        session.commit()
+        stored = session.execute(sa.text("SELECT schedule FROM account_settings")).scalar_one()
+        stored = json.loads(stored)
+        assert "gm_sessions" not in stored
+        assert stored["channel_options"]["gm"]["opening_locked"] == {"enabled": True, "time": "09:24"}
+    engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"gm": {"unknown": True}},
+        {"gm": {"opening_locked": {"time": "09:25"}}},
+        {"gm": {"after_hours": {"enabled": True, "time": "15:05"}}},
+        {"ctp": {}},
+        {"missing-channel": {}},
+        {" GM ": {}},
+        {"GM": {}, "gm": {}},
+    ],
+)
+def test_channel_options_do_not_bypass_plugin_validation(options):
+    with pytest.raises(ValidationError):
+        ScheduleSettings(channel_options=options)
+
+
+@pytest.mark.parametrize("options", [None, [], "bad", 1])
+def test_channel_options_require_an_object(options):
+    with pytest.raises(ValidationError):
+        ScheduleSettings(channel_options=options)
+
+
+def test_legacy_schedule_update_is_atomic_and_detects_conflicts():
+    account = Account(**(account_data() | {"trade_channel": "gm", "gm_sessions": {}}))
+    before = account.settings.schedule
+    with pytest.raises(ValidationError):
+        account.sqlmodel_update({"long_leverage": 3, "gm_sessions": {"unexpected": True}})
+    assert account.settings.schedule is before
+    assert account.long_leverage is None
+    with pytest.raises(ValidationError, match="冲突"):
+        ScheduleSettings(channel_options={"gm": {}}, gm_sessions={"opening_locked": {"time": "09:24"}})
+    account.gm_sessions = None
+    assert account.gm_sessions is None
+    assert account.settings.schedule.channel_options == {}
+    assert "gm_sessions" not in ScheduleSettings.model_fields
+
+
+def test_opening_locked_trigger_range():
+    import pytest
+    from pydantic import ValidationError
+
+    from axile.channels.gm_sessions import GMSessionSettings
+
+    for minute in range(20, 25):
+        assert (
+            GMSessionSettings(opening_locked={"enabled": True, "time": f"09:{minute}"}).opening_locked.time
+            == f"09:{minute}"
+        )
+    for time in ("09:19", "09:25", "9:24", "09:24:00"):
+        with pytest.raises(ValidationError):
+            GMSessionSettings(opening_locked={"enabled": True, "time": time})

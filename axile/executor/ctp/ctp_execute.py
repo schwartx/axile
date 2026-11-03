@@ -105,6 +105,7 @@ from axile.executor.order_insert_rejects import (
     rejected_order_update,
     resolve_insert_reject_order_id,
 )
+from axile.executor.order_submission_context import validate_order_submission
 from axile.executor.order_volume_limits import (
     effective_max_order_volume,
     ensure_order_volume_allowed,
@@ -321,6 +322,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             if name in {"ReqOrderInsert", "ReqExecOrderInsert", "ReqOptionSelfCloseInsert"}:
                 self._require_new_order_ready(str(req.InstrumentID))
                 if name == "ReqOrderInsert":
+                    validate_order_submission()
                     self._validate_order_quote(str(req.InstrumentID), req.LimitPrice, req.OrderPriceType)
             elif name in {"ReqOrderAction", "ReqExecOrderAction", "ReqOptionSelfCloseAction"}:
                 self._require_session_ready()

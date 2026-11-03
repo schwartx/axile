@@ -118,17 +118,33 @@ def test_quote_expires_between_read_and_place_order(now):
     assert owner.events[-1]["details"]["quote_timestamp"] == 1000000
 
 
-def test_subscription_can_supply_fresh_quote_and_unregister(now):
+@pytest.mark.parametrize("callback_raises", [False, True])
+def test_subscription_evidence_is_scoped_to_callback_and_unregisters(now, callback_raises):
     owner = Owner(quote())
     session = ExecutionSession(owner, "600584.SH")
     received = []
     session.get_market_data()
-    session.register_price_callback(received.append)
+
+    def callback(fresh):
+        received.append(fresh)
+        assert session.place_order(OrderDirection.BUY, OrderType.LIMIT, 100, fresh.bid_price) == "order"
+        if callback_raises:
+            raise RuntimeError("callback failed")
+
+    session.register_price_callback(callback)
     now[0] += 6
-    fresh = quote(now[0])
-    owner.callbacks[0](fresh)
-    assert session.place_order(OrderDirection.BUY, OrderType.LIMIT, 100, 9.9) == "order"
-    session.unregister_price_callback(received.append)
+    fresh = quote(now[0], bid_price=8.9, ask_price=9.1)
+    if callback_raises:
+        with pytest.raises(RuntimeError, match="callback failed"):
+            owner.callbacks[0](fresh)
+    else:
+        owner.callbacks[0](fresh)
+    # 新回调不能替算法调用链中仍在消费的旧价格续期。
+    with pytest.raises(MarketDataUnavailableError, match="已过期"):
+        session.place_order(OrderDirection.BUY, OrderType.LIMIT, 100, 9.9)
+    assert len(owner.orders) == 1
+    assert session.place_order(OrderDirection.BUY, OrderType.LIMIT, 100, 8.9, market_data=fresh) == "order"
+    session.unregister_price_callback(callback)
     assert owner.callbacks == []
     assert received == [fresh]
 

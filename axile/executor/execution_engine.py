@@ -23,6 +23,7 @@ from axile.executor.models.execution_result import (
     ExecutionStatus,
     TargetSizingDecision,
     is_success_status,
+    outcome_from_status,
 )
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets, is_degraded_snapshot_source
 from axile.executor.models.unified_input import UnifiedStandardInput
@@ -280,6 +281,19 @@ class ExecutionEngine:
         """在单品种执行会话上运行算法."""
         algorithm_func = resolve_algorithm(algorithm_name, session)
         result = algorithm_func(session, algorithm_input)
+        failure = session.market_data_failure
+        if failure is not None and result.error == failure.execution_error and not is_success_status(result.status):
+            # 算法可恢复异常可能已转成结果；保留报单/成交证据，只修正尚未报单的阻断口径。
+            status = result.status
+            no_position_progress = result.final_volume is None or result.final_volume == result.memory.get(
+                "start_volume"
+            )
+            if status == ExecutionStatus.FAILED and not result.orders and not result.trades and no_position_progress:
+                status = ExecutionStatus.BLOCKED
+            result = result.model_copy(
+                update={"status": status, "outcome": outcome_from_status(status), "reason_code": failure.reason_code}
+            )
+            result.memory["symbol_decision_reason_family"] = ExecutionReasonFamily.MARKET_RULE.value
         merged_memory = dict(session.memory)
         merged_memory.update(result.memory)
         result.memory = merged_memory
@@ -460,6 +474,7 @@ class ExecutionEngine:
                 error=exc.execution_error,
                 status=ExecutionStatus.BLOCKED,
                 reason_code=exc.reason_code,
+                memory={"symbol_decision_reason_family": ExecutionReasonFamily.MARKET_RULE.value},
                 sizing=task.sizing,
             )
         except Exception as exc:
@@ -619,6 +634,11 @@ class ExecutionEngine:
                     else ExecutionStatus.FAILED
                 ),
                 reason_code=sizing.reason_code if sizing is not None else None,
+                memory=(
+                    {"symbol_decision_reason_family": ExecutionReasonFamily.MARKET_RULE.value}
+                    if sizing is not None and sizing.reason_code == "COMMON.MARKET_DATA.UNAVAILABLE"
+                    else None
+                ),
             )
         current_volume = self._owner.get_current_volume(symbol, account_assets)
         sizing.current_quantity = current_volume
@@ -927,6 +947,17 @@ class ExecutionEngine:
                         target_volume=plan.final_target_volume,
                         first_tick=clone_price_data(planning_market_data.get(symbol)),
                         sizing=sizing,
+                        status=(
+                            ExecutionStatus.BLOCKED
+                            if sizing is not None and sizing.reason_code == "COMMON.MARKET_DATA.UNAVAILABLE"
+                            else ExecutionStatus.FAILED
+                        ),
+                        reason_code=sizing.reason_code if sizing is not None else None,
+                        memory=(
+                            {"symbol_decision_reason_family": ExecutionReasonFamily.MARKET_RULE.value}
+                            if sizing is not None and sizing.reason_code == "COMMON.MARKET_DATA.UNAVAILABLE"
+                            else None
+                        ),
                     )
                 )
                 continue
@@ -976,7 +1007,14 @@ class ExecutionEngine:
             sizing=current.sizing if current.sizing is not None else previous.sizing,
             first_tick=current.first_tick if current.first_tick is not None else previous.first_tick,
             memory=merged_memory,
-            final_volume=current.final_volume,
+            final_volume=(
+                previous.final_volume
+                if current.final_volume is None
+                and current.reason_code == "COMMON.MARKET_DATA.UNAVAILABLE"
+                and not current.orders
+                and not current.trades
+                else current.final_volume
+            ),
             status=merged_status,
             error=merged_error,
             reason_code=current.reason_code or previous.reason_code,

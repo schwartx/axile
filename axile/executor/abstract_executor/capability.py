@@ -199,6 +199,14 @@ class AbstractExecutorCapabilityMixin:
         """返回当前渠道在统一层使用的规范 symbol."""
         return symbol
 
+    def _market_data_order_symbols(self, symbol: str) -> tuple[str, str]:
+        """返回公开下单行情的查询代码和统一代码。"""
+        return symbol, symbol
+
+    def _market_data_matches_order_symbol(self, symbol: str, quote: UnifiedPriceData) -> bool:
+        """检查报价是否属于公开下单品种。"""
+        return quote.symbol == self._market_data_order_symbols(symbol)[1]
+
     def _normalize_standard_input(self, standard_input: UnifiedStandardInput) -> UnifiedStandardInput:
         """返回当前渠道在 planning 前使用的标准输入."""
         return standard_input

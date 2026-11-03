@@ -26,7 +26,7 @@ from axile.executor.models.unified_callback import OrderUpdateCallback, PriceDat
 from axile.executor.models.unified_input import AccountConfig, TQAccountConfig, UnifiedStandardInput
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
-from axile.executor.order_submission_context import get_order_submission_context
+from axile.executor.order_submission_context import get_order_submission_context, get_order_submission_validator
 from axile.executor.session_closed import COMMON_SESSION_CLOSED, SESSION_CLOSED_MESSAGE
 from axile.executor.tq.converters import account_to_unified, order_to_unified, quote_to_unified, trade_to_unified
 from axile.executor.tq.order_terminal_audit import TQOrderTerminalAudit
@@ -442,6 +442,17 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
         return runtime.quote_snapshot(tq_symbol)
 
     @override
+    def _market_data_order_symbols(self, symbol: str) -> tuple[str, str]:
+        resolver = self._require_runtime().resolver
+        native_symbol = resolver.to_tq(symbol, for_trade=True)
+        return native_symbol, resolver.to_axile(native_symbol)
+
+    @override
+    def _market_data_matches_order_symbol(self, symbol: str, quote: UnifiedPriceData) -> bool:
+        native_symbol, quote_symbol = self._market_data_order_symbols(symbol)
+        return quote.symbol == quote_symbol and quote.extra.get("tq_symbol") == native_symbol
+
+    @override
     def get_market_data(self, symbols: list[str]) -> dict[str, UnifiedPriceData]:
         runtime = self._require_runtime()
         tq_symbols = [
@@ -492,7 +503,9 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
             raise ValueError(f"TqSdk 不支持开平标志: {offset_flag}")
 
         order_id = uuid4().hex
-        self._terminal_audit.register(order_id, self.get_active_execution_runtime(), get_order_submission_context())
+        execution_runtime = self.get_active_execution_runtime()
+        audit_context = get_order_submission_context()
+        validate = get_order_submission_validator()
 
         def submit(api: object) -> TQTradingTimeCheck | dict[str, object]:
             check = self._check_tq_symbol_trading_time(api, sessions, datetime.now(_SHANGHAI))
@@ -507,6 +520,9 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
                 "limit_price": None if order_type is OrderType.MARKET else float(price),
                 "order_id": order_id,
             }
+            if validate is not None:
+                validate()
+            self._terminal_audit.register(order_id, execution_runtime, audit_context)
             native_order = insert_order(**arguments)
             row = snapshot_entity(native_order)
             row["order_id"] = order_id

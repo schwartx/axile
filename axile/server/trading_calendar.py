@@ -9,12 +9,11 @@ from typing import Literal
 from pydantic import BaseModel
 
 from axile.channels import get_channel
-from axile.channels.gm_sessions import GM_REGULAR_WINDOWS, GM_SPECIAL_WINDOWS
+from axile.channels.gm_sessions import GM_REGULAR_WINDOWS, GM_SPECIAL_WINDOWS, GMSessionSettings
 from axile.channels.schedule_clock import ClockWindow, is_within_schedule_windows
 from axile.common.trade_channel import TradeChannel
 from axile.executor.china_futures_session import is_regular_night_session_transition
 from axile.executor.trading_calendar import ShinnyTradingCalendar, TradingCalendar
-from axile.server.db.models.account_settings import GMSessionSettings
 
 
 def schedule_windows(channel: TradeChannel | str, sessions: GMSessionSettings | None = None) -> tuple[ClockWindow, ...]:

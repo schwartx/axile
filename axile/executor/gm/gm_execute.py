@@ -74,6 +74,7 @@ from axile.executor.models.unified_order import OrderDirection, OrderType, Trade
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.models.unified_price import UnifiedPriceData
 from axile.executor.order_cancellation import CancelNotAllowedError
+from axile.executor.order_submission_context import get_order_submission_validator
 from axile.executor.position_attributes import native_position_attributes
 
 __all__ = [
@@ -811,6 +812,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
                     price=order_price,
                     account=self.account_id,
                     session=context,
+                    submission_validator=get_order_submission_validator(),
                 ),
                 timeout=10.0,
             )

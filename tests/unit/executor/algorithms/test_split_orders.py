@@ -69,6 +69,163 @@ def _make_executor(model: OrderParamModel) -> MagicMock:
 _ASSETS = UnifiedAccountAssets(available_cash=0.0, total_asset=0.0, market_value=0.0, positions=[])
 
 
+@pytest.mark.parametrize("algorithm", ["SINGLE-MAKER", "TWAP", "POV"])
+@pytest.mark.parametrize("expire", [False, True])
+def test_real_algorithm_split_keeps_pricing_evidence_during_refresh(monkeypatch, algorithm, expire):
+    """追单刷新不能把旧拆单限价绑定到新报价，原证据过期时后腿必须阻断。"""
+    from threading import Event
+
+    from axile.executor.algorithms.core.base import AlgorithmInput
+    from axile.executor.algorithms.defaults.pov.impl import PovParams
+    from axile.executor.algorithms.defaults.single_maker.impl import SingleMakerParams
+    from axile.executor.algorithms.defaults.twap.impl import TwapParams
+    from axile.executor.algorithms.utils import clock as clock_module
+    from axile.executor.execution_engine import ExecutionEngine
+    from axile.executor.market_data_validation import MarketDataUnavailableError
+    from axile.executor.models.unified_order import TradeRecord
+    from tests.unit.executor.test_base_executor_symbol_dispatch import _assets, _price, _TestExecutor
+
+    SYMBOL = "rb2612.SHFE"
+
+    class Clock:
+        now = 1_793_664_000.0
+
+        def time(self):
+            return self.now
+
+        def sleep(self, seconds):
+            self.now += seconds
+
+        def event_wait(self, event: Event, timeout=None):
+            if not event.is_set():
+                assert timeout is not None
+                self.sleep(timeout)
+            return event.is_set()
+
+    class Executor(_TestExecutor):
+        order_param_model = OrderParamModel.OFFSET
+
+        def __init__(self):
+            super().__init__()
+            self.quote = _price(SYMBOL)
+            self.submissions = []
+            self.trades = []
+            self.order_callbacks = []
+            self.trade_callbacks = []
+            self.price_callbacks = []
+
+        def get_market_data(self, symbols):
+            return {symbol: self.quote.model_copy(deep=True) for symbol in symbols}
+
+        def register_order_callback(self, callback):
+            self.order_callbacks.append(callback)
+
+        def unregister_order_callback(self, callback):
+            self.order_callbacks.remove(callback)
+
+        def register_trade_callback(self, callback):
+            self.trade_callbacks.append(callback)
+
+        def unregister_trade_callback(self, callback):
+            self.trade_callbacks.remove(callback)
+
+        def register_price_callback(self, callback):
+            self.price_callbacks.append(callback)
+            callback(self.quote.model_copy(deep=True))
+
+        def unregister_price_callback(self, callback):
+            self.price_callbacks.remove(callback)
+
+        def _place_order_impl(self, symbol, direction, order_type, volume, price=0, **kwargs):
+            order = super()._place_order_impl(symbol, direction, order_type, volume, price, **kwargs)
+            order.order_id = f"order-{len(self.submissions) + 1}"
+            order.status = OrderStatus.FILLED
+            order.filled_volume = volume
+            order.avg_price = price
+            self.submissions.append(order)
+            self.position += volume if direction == OrderDirection.BUY else -volume
+            trade = TradeRecord.create(
+                trade_id=f"trade-{order.order_id}",
+                symbol=symbol,
+                order_id=order.order_id,
+                trade_volume=volume,
+                trade_price=price,
+            )
+            self.trades.append(trade)
+            for callback in self.trade_callbacks:
+                callback(trade)
+            for callback in self.order_callbacks:
+                callback(order)
+            return order
+
+        def _query_trades_impl(self, symbol, order_id):
+            return [trade for trade in self.trades if trade.symbol == symbol and trade.order_id == order_id]
+
+    clock = Clock()
+    monkeypatch.setattr(clock_module, "_default_clock", clock)
+    owner = Executor()
+    owner.position = 2
+    if expire:
+        owner.quote.timestamp -= 4500
+    monkeypatch.setattr(
+        owner,
+        "get_account_assets",
+        lambda: _assets(
+            positions=[
+                (SYMBOL, abs(owner.position), PositionDirection.LONG if owner.position > 0 else PositionDirection.SHORT)
+            ]
+            if owner.position
+            else []
+        ),
+    )
+    session = ExecutionEngine(owner)._create_symbol_session(SYMBOL, None)
+    original_quote = owner.quote.model_copy(deep=True)
+    evidence = []
+    place_order = session.place_order
+
+    def observe_order(direction, order_type, volume, price=0, **kwargs):
+        evidence.append((price, kwargs.get("market_data").model_copy(deep=True)))
+        return place_order(direction, order_type, volume, price, **kwargs)
+
+    monkeypatch.setattr(session, "place_order", observe_order)
+    wait = OrderTracker.wait_for_completion
+    refreshed = False
+
+    def refresh_after_first_leg(tracker, *args, **kwargs):
+        nonlocal refreshed
+        result = wait(tracker, *args, **kwargs)
+        if not refreshed and owner.submissions:
+            refreshed = True
+            if expire:
+                clock.now += 0.6
+            owner.quote.bid_price = 199
+            owner.quote.ask_price = 201
+            owner.quote.timestamp = int(clock.now * 1000)
+            assert tracker._rest_refresh_price(SYMBOL, clock.now) is not None
+        return result
+
+    monkeypatch.setattr(OrderTracker, "wait_for_completion", refresh_after_first_leg)
+    params = {
+        "SINGLE-MAKER": SingleMakerParams(max_wait_seconds=30, chase_enabled=True),
+        "TWAP": TwapParams(total_duration=30, slices=1, max_wait_seconds=30),
+        "POV": PovParams(participation_rate=1, interval_seconds=1, max_duration=1, complete_on_timeout=False),
+    }[algorithm]
+    ExecutionEngine(owner)._run_algorithm_with_session(
+        session, algorithm, AlgorithmInput(SYMBOL, -3, {}, params=params)
+    )
+
+    assert refreshed
+    assert len(evidence) >= 2
+    assert evidence[0][0] == evidence[1][0] == original_quote.bid_price
+    assert evidence[0][1] == evidence[1][1] == original_quote
+    if expire:
+        assert len(owner.submissions) == 1
+        assert isinstance(session.market_data_failure, MarketDataUnavailableError)
+    else:
+        assert len(owner.submissions) == 2
+        assert session.market_data_failure is None
+
+
 def _submit(executor, tracker, direction, volume, target, current, price=100.0):
     return submit_and_track_split_orders(
         executor,

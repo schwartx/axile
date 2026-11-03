@@ -35,7 +35,7 @@ from axile.executor.market_data_validation import DEFAULT_QUOTE_MAX_AGE_SECONDS,
 from axile.executor.models.order_channel_health import OrderChannelHealth
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
-from axile.executor.models.unified_price import UnifiedPriceData
+from axile.executor.models.unified_price import UnifiedPriceData, clone_price_data
 from axile.executor.order_cancellation import (
     CancellationResult,
     CancelNotAllowedError,
@@ -971,8 +971,6 @@ class OrderTracker:
                             }
                         },
                     )
-                    with self.lock:
-                        self._chasing_order_id = None
                     continue
 
                 # 剩余量必须在撤单确认之后再算：确认前的快照默认「旧单已死」，
@@ -980,6 +978,26 @@ class OrderTracker:
                 order = self._latest_known_order(order_id, order)
                 remaining_volume = self._get_effective_remaining_volume(order_id, order)
                 if remaining_volume > 0 and not self._submission_expired(chase_info):
+                    # 撤单确认可能耗时并接收新行情；换单必须重新定价并携带实际报价证据。
+                    latest_price = clone_price_data(self._usable_price(symbol))
+                    new_price = 0.0
+                    if latest_price is not None:
+                        new_price = (
+                            latest_price.bid_price if direction == OrderDirection.BUY else latest_price.ask_price
+                        )
+                    if new_price <= 0:
+                        message = "追单失败：撤单确认后行情不可用或追单价格缺失"
+                        self._set_order_error(order_id, message)
+                        self.executor.emit_audit_event(
+                            event_type=ExecutionEventType.ORDER_TERMINAL,
+                            status=ExecutionEventStatus.ERROR,
+                            reason_family=ExecutionReasonFamily.EXECUTION_STRATEGY,
+                            reason_code="COMMON.ORDER_CHASE_MARKET_DATA_UNAVAILABLE",
+                            symbol=symbol,
+                            order_id=order_id,
+                            details={"chase": {"remaining_volume": float(remaining_volume)}, "message": message},
+                        )
+                        continue
                     kwargs = _chase_place_kwargs(chase_info)
 
                     new_order = self.executor.place_order(
@@ -987,6 +1005,7 @@ class OrderTracker:
                         OrderType.LIMIT,
                         remaining_volume,
                         new_price,
+                        market_data=latest_price,
                         **kwargs,
                     )
 
@@ -1015,26 +1034,22 @@ class OrderTracker:
                     self._update_chase_info(order_id, new_order)
                     self._set_order_error(order_id, None)
 
-                with self.lock:
-                    self._chasing_order_id = None
-
             except CancelNotAllowedError as exc:
-                with self.lock:
-                    self._chasing_order_id = None
                 self._record_cancel_restriction(order_id, chase_info, exc)
             except (MemoryError, ExecutionTerminated):
-                with self.lock:
-                    self._chasing_order_id = None
                 raise
             except RECOVERABLE_ALGORITHM_EXCEPTIONS as exc:
-                with self.lock:
-                    self._chasing_order_id = None
                 if isinstance(exc, (MemoryError, ExecutionTerminated)) or bool(
                     getattr(exc, "requires_session_recovery", False)
                 ):
                     raise
                 self._logger.error(f"追单失败 {symbol}: {exc}")
                 self._set_order_error(order_id, execution_error_message(exc, "追单"))
+            finally:
+                with self.lock:
+                    self._chasing_order_id = None
+                    if not self.pending_orders and not self._fallback_submitting:
+                        self.all_done_event.set()
 
         self._fallback_to_market_order()
 
@@ -1282,7 +1297,8 @@ class OrderTracker:
         submitted = 0.0
         if remaining <= 0 or self._submission_expired(chase_info):
             return
-        if not self._is_market_fallback_price_safe(completed_order, chase_info):
+        price_data = clone_price_data(self.latest_prices.get(symbol))
+        if not self._is_market_fallback_price_safe(completed_order, chase_info, price_data):
             self._mark_market_fallback_failed(
                 order_id,
                 reason_code="COMMON.MARKET_FALLBACK_PRICE_PROTECTION",
@@ -1305,7 +1321,13 @@ class OrderTracker:
                 if self._submission_expired(chase_info):
                     return
                 market_order = self.executor.place_order(
-                    direction, OrderType.MARKET, chunk, price=0, **_chase_place_kwargs(chase_info)
+                    direction,
+                    OrderType.MARKET,
+                    chunk,
+                    price=0,
+                    market_data=price_data,
+                    market_data_purpose="order",
+                    **_chase_place_kwargs(chase_info),
                 )
                 submitted += chunk
                 self.add_order(
@@ -1370,13 +1392,10 @@ class OrderTracker:
         else:
             self._set_order_error(order_id, None)
 
-    def _is_market_fallback_price_safe(self, completed_order: UnifiedOrder, chase_info: dict[str, Any]) -> bool:
-        """使用最新盘口做简单价格保护，避免极端行情直接扫市价单."""
-        symbol = chase_info["symbol"]
-        # 注意：此处刻意仍读 latest_prices 而非走 _usable_price 的行情快照刷新——市价兜底的
-        # 价格保护是与「被动挂单越点差吃成 taker」不同的关注点，且改动会扰动既有语义；
-        # 陈旧盘口在市价兜底路径的兜底留待后续单独评估。
-        price_data = self.latest_prices.get(symbol)
+    def _is_market_fallback_price_safe(
+        self, completed_order: UnifiedOrder, chase_info: dict[str, Any], price_data: UnifiedPriceData | None
+    ) -> bool:
+        """使用本次兜底消费的盘口做价格保护；提交时由会话重验同一行情。"""
         if price_data is None:
             return False
 

@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlmodel import and_, col, delete, desc, func, select
 
 from axile.channels import get_channel
+from axile.channels.gm_sessions import GMSessionSettings
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.notification_function import validate_notification_function
 from axile.common.trade_channel import TradeChannel
@@ -40,7 +41,6 @@ from axile.server.db.models import (
     PortfolioAccountPublic,
 )
 from axile.server.db.models.account_connection import AccountConnectionDetail
-from axile.server.db.models.account_settings import GMSessionSettings
 from axile.server.db.models.account_validation import _check_algorithm_channel_compat
 from axile.server.db.models.performance import PerformanceSummary
 from axile.server.execution.account_runtime_sync import enqueue_account_runtime_sync, reconcile_account_runtime

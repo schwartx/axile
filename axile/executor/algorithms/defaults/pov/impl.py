@@ -289,11 +289,8 @@ def _place_participation_slice(
     片末主动撤除未成交余量，避免其在后续轮询间隔成交而破坏累计量核对；
     未成交余量由后续轮次的累计参与自动补回。
     """
-    order_type, price = determine_order_price(
-        direction,
-        executor.get_market_data(),
-        price_strategy=params.price_strategy,
-    )
+    market_data = clone_price_data(executor.get_market_data())
+    order_type, price = determine_order_price(direction, market_data, price_strategy=params.price_strategy)
     detail: dict[str, Any] = {
         "direction": direction.value,
         "volume": slice_qty,
@@ -314,6 +311,7 @@ def _place_participation_slice(
             current_volume=float(current_volume),
             leg_timeout_seconds=fill_wait_seconds,
             deadline=deadline,
+            market_data=market_data,
         )
         if not orders:
             detail["skipped"] = "no_order_submitted"

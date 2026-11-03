@@ -15,7 +15,7 @@ from sqlalchemy.orm import InstrumentedAttribute, defer
 from sqlmodel import col, desc, func, select
 
 from axile.channels import get_channel
-from axile.channels.gm_sessions import GM_SPECIAL_WINDOWS, gm_phase
+from axile.channels.gm_sessions import GM_SPECIAL_WINDOWS, GMSessionSettings, gm_phase
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.trading_calendar import SHINNY_COVERAGE_END, SHINNY_COVERAGE_START
@@ -29,7 +29,7 @@ from axile.server.db.models import (
     ScheduleSkip,
     ScheduleSkipActivity,
 )
-from axile.server.db.models.account_settings import GMSessionSettings, SupplementSettings
+from axile.server.db.models.account_settings import SupplementSettings
 from axile.server.db.models.performance import CostSummary
 from axile.server.db.models.schedule import (
     ActivityExecutionRecord,
