@@ -27,6 +27,7 @@ pub(crate) mod execution_ops;
 pub(crate) mod execution_reads;
 pub(crate) mod execution_replay;
 pub(crate) mod execution_replay_block;
+pub(crate) mod execution_replay_fragments;
 pub(crate) mod execution_replay_index;
 pub(crate) mod execution_replay_projection;
 #[cfg(feature = "python")]

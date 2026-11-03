@@ -119,14 +119,14 @@ w.finish()
 @pytest.mark.parametrize("action", ["off", "disconnect"])
 def test_starting_cancel_before_first_writer_attempt(tmp_path, action):
     entered, release = threading.Event(), threading.Event()
-    attempts = []
+    writer = FakeWriter()
 
     def metadata():
         entered.set()
         assert release.wait(2)
         return {"environment": "demo"}
 
-    recorder = ReplayRecorder(7, tmp_path, writer_factory=lambda *_: attempts.append(True))
+    recorder = ReplayRecorder(7, tmp_path, writer_factory=lambda *_: writer)
     recorder.attach(SimpleNamespace(replay_context_metadata=metadata))
     recorder.configure(True, 1)
     try:
@@ -144,8 +144,9 @@ def test_starting_cancel_before_first_writer_attempt(tmp_path, action):
         session.thread.join(1)
         assert not session.thread.is_alive()
         assert recorder.status()["state"] == ("disabled" if action == "off" else "waiting_connection")
-        assert not session.queue and session.queued_bytes == 0
-        assert not attempts and not list(tmp_path.iterdir())
+        assert not session.queue
+        assert writer.finished.is_set()
+        assert any(message["data"].get("execution_id") == "canceled" for message in writer.messages)
     finally:
         release.set()
         recorder.close()
@@ -227,20 +228,21 @@ def test_waiting_segment_cannot_capture_into_its_replacement(tmp_path, switch):
         recorder.observe("/command", {"command_id": "old-queued", "phase": "request"})
         if switch == "off_on":
             recorder.configure(False, 2)
-            eventually(lambda: recorder.status()["state"] == "disabled")
             recorder.configure(True, 3)
         else:
             recorder.attach(SimpleNamespace(), {"channel": "fresh"})
-        eventually(
-            lambda: recorder.status().get("recording_id") != previous and recorder.status().get("reason") is not None
-        )
+        assert recorder.status()["state"] == "closing"
+        held.finish()
+        eventually(lambda: recorder.status()["state"] == "recording" and recorder.status()["recording_id"] != previous)
         identity = recorder.status()["recording_id"]
         observe_receipt(receipt, "/command", {"command_id": "late-old", "phase": "returned"})
-        held.finish()
-        eventually(lambda: recorder.status()["state"] == "recording")
         recorder.observe("/command", {"command_id": "fresh", "phase": "request"})
         recorder.end_execution("E")
         recorder.close()
+        old_page = replay_window(tmp_path, 7, "E", {"recording_id": previous, "start_us": 0, "end_us": 101})
+        assert [
+            message["data"]["command_id"] for message in old_page["messages"] if message["topic"] == "/command"
+        ] == ["old-queued"]
         page = replay_window(tmp_path, 7, "E", {"recording_id": identity, "start_us": 0, "end_us": 101})
         assert [message["data"]["command_id"] for message in page["messages"] if message["topic"] == "/command"] == [
             "fresh"

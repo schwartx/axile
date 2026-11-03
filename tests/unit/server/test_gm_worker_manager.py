@@ -506,6 +506,20 @@ def test_dispose_handle_shutdown_timeout_falls_back_to_terminate() -> None:
     assert handle.process.terminate_called is True
 
 
+def test_dispose_handle_preserves_worker_draining_replay() -> None:
+    manager = WorkerBackendManager(shutdown_recv_timeout=0.01)
+    handle = _FakeHandle(is_alive=True, join_stops=False)
+    handle.connection.recv = lambda: WorkerBackendResponse(
+        request_id=handle.connection.last_request_id,
+        kind="result",
+        output_payload={"shutdown": True, "replay_draining": True},
+    )
+    manager._dispose_handle(handle)
+    assert handle.replay_draining is True
+    assert handle.process.is_alive()
+    assert not handle.process.terminate_called
+
+
 def test_manager_maps_structured_error_to_failed_output() -> None:
     """结构化错误响应应转换为失败输出，而不是抛出裸字符串异常。"""
     response = WorkerBackendResponse(

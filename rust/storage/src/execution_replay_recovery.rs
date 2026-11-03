@@ -90,7 +90,22 @@ fn load_sqlite_index(
     }
     let mut index = ReadIndex::default();
     let mut days: BTreeMap<String, Vec<PartDescriptor>> = BTreeMap::new();
-    for (recording, part, day) in sqlite.files(execution)? {
+    let files = sqlite.files(execution)?;
+    let recorded: BTreeSet<_> = files.iter().map(|(recording, _, _)| recording).collect();
+    for recording in recorded {
+        for reference in sqlite.fragment_references(recording)? {
+            let day = reference["day"]
+                .as_str()
+                .ok_or_else(|| failure("CORRUPT", "fragment has no day"))?;
+            if reference["reference"]["__axile_fragment__"]["recording"].as_str() != Some(recording)
+            {
+                return Err(failure("CORRUPT", "fragment belongs to another recording"));
+            }
+            let directory = day_directory(account, day, false)?;
+            crate::execution_replay_fragments::check_present(&directory, &reference["reference"])?;
+        }
+    }
+    for (recording, part, day) in files {
         identifier(&recording)?;
         let metadata = recordings
             .get(&recording)
@@ -747,11 +762,14 @@ mod tests {
         let original = fs::read(&sealed).unwrap();
         let db =
             rusqlite::Connection::open(fixture.0.join("account-1/.replay-index.sqlite")).unwrap();
-        db.execute("UPDATE identity SET version=2", []).unwrap();
-        assert_eq!(
-            manifest(&fixture.0, 1, "7").unwrap_err().code,
-            "REPLAY_CORRUPT"
-        );
+        for version in [1, 2, 4] {
+            db.execute("UPDATE identity SET version=?1", [version])
+                .unwrap();
+            assert_eq!(
+                manifest(&fixture.0, 1, "7").unwrap_err().code,
+                "REPLAY_CORRUPT"
+            );
+        }
         assert_eq!(fs::read(&sealed).unwrap(), original);
     }
 
@@ -762,6 +780,17 @@ mod tests {
         let original = fs::read(&sealed).unwrap();
         fs::remove_file(fixture.0.join("account-1/.replay-index.sqlite")).unwrap();
         assert!(manifest(&fixture.0, 1, "7").is_err());
+        let error = match ExecutionReplayWriter::new(
+            &fixture.0,
+            1,
+            "new-recording",
+            r#"{"schema_version":1}"#,
+        ) {
+            Ok(_) => panic!("writer recreated an empty index"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, "REPLAY_INCOMPLETE");
+        assert!(!fixture.0.join("account-1/.replay-index.sqlite").exists());
         assert_eq!(fs::read(&sealed).unwrap(), original);
     }
 

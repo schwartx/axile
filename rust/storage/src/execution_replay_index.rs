@@ -101,6 +101,28 @@ fn validate_indexed_block(block: &IndexedBlock, through_seq: u64) -> ReplayResul
 impl BlockIndex {
     pub fn writer(path: &Path) -> ReplayResult<Self> {
         if !path.exists() {
+            let account = path
+                .parent()
+                .ok_or_else(|| failure("PATH", "index has no account directory"))?;
+            for day in std::fs::read_dir(account).map_err(io_error)? {
+                let day = day.map_err(io_error)?;
+                if !day.file_type().map_err(io_error)?.is_dir() {
+                    continue;
+                }
+                for entry in std::fs::read_dir(day.path()).map_err(io_error)? {
+                    let entry = entry.map_err(io_error)?;
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    if name.starts_with("recording-")
+                        && (name.ends_with(".mcap") || name.ends_with(".mcap.partial"))
+                    {
+                        return Err(failure(
+                            "INCOMPLETE",
+                            "replay index is missing while recording files exist",
+                        ));
+                    }
+                }
+            }
             return Self::create(path);
         }
         reject_symlink(path)?;
@@ -109,7 +131,7 @@ impl BlockIndex {
         let version: u32 = db
             .query_row("SELECT version FROM identity", [], |row| row.get(0))
             .map_err(io_error)?;
-        if version != 1 {
+        if version != 3 {
             return Err(failure("CORRUPT", "unsupported replay block index"));
         }
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
@@ -127,7 +149,7 @@ impl BlockIndex {
         db.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
              CREATE TABLE identity (version INTEGER NOT NULL);
-             INSERT INTO identity VALUES (1);
+             INSERT INTO identity VALUES (3);
              CREATE TABLE recordings (recording TEXT PRIMARY KEY, metadata TEXT) WITHOUT ROWID;
              CREATE TABLE files (recording TEXT NOT NULL, part INTEGER NOT NULL, day TEXT NOT NULL,
                PRIMARY KEY(recording, part)) WITHOUT ROWID;
@@ -159,7 +181,8 @@ impl BlockIndex {
                recording TEXT NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL,
                seq INTEGER NOT NULL, value TEXT,
                PRIMARY KEY (recording, kind, key, seq)
-             ) WITHOUT ROWID;",
+             ) WITHOUT ROWID;
+             CREATE INDEX facts_sequence ON facts(recording, kind, seq);",
         )
         .map_err(io_error)?;
         if let Some(directory) = path.parent() {
@@ -177,7 +200,7 @@ impl BlockIndex {
         let version: u32 = db
             .query_row("SELECT version FROM identity", [], |row| row.get(0))
             .map_err(io_error)?;
-        if version != 1 {
+        if version != 3 {
             return Err(failure("CORRUPT", "unsupported replay block index"));
         }
         Ok(Self { db })
@@ -642,6 +665,47 @@ impl BlockIndex {
             )
             .optional()
             .map_err(io_error)
+    }
+
+    pub fn market_references(
+        &self,
+        recording: &str,
+        after_seq: u64,
+        through_seq: u64,
+        end_us: u64,
+    ) -> ReplayResult<Vec<Value>> {
+        identifier(recording)?;
+        let mut query = self.db.prepare(
+            "SELECT value FROM facts WHERE recording=?1 AND kind='market_ref' AND seq>?2 AND seq<=?3 AND json_extract(value, '$.time_us')<?4 ORDER BY seq"
+        ).map_err(io_error)?;
+        let rows = query
+            .query_map(params![recording, after_seq, through_seq, end_us], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(io_error)?;
+        rows.map(|row| {
+            let payload = row.map_err(io_error)?;
+            serde_json::from_str(&payload).map_err(|error| failure("CORRUPT", error.to_string()))
+        })
+        .collect()
+    }
+
+    pub fn fragment_references(&self, recording: &str) -> ReplayResult<Vec<Value>> {
+        identifier(recording)?;
+        let mut query = self
+            .db
+            .prepare(
+                "SELECT value FROM facts WHERE recording=?1 AND kind='fragment_ref' ORDER BY seq",
+            )
+            .map_err(io_error)?;
+        let rows = query
+            .query_map([recording], |row| row.get::<_, String>(0))
+            .map_err(io_error)?;
+        rows.map(|row| {
+            let payload = row.map_err(io_error)?;
+            serde_json::from_str(&payload).map_err(|error| failure("CORRUPT", error.to_string()))
+        })
+        .collect()
     }
 
     pub fn record_watermark(

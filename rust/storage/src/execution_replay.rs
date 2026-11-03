@@ -22,7 +22,6 @@ use crate::execution_replay_index::{BlockIndex, FactVersion, IndexedCheckpoint};
 use crate::execution_replay_projection::Projection;
 
 pub(crate) const JS_SAFE: u64 = 9_007_199_254_740_991;
-pub(crate) const MESSAGE_LIMIT: usize = PART_FILE_LIMIT as usize;
 pub(crate) const CONTEXT_LIMIT: usize = 256 * 1024;
 pub(crate) const CHECKPOINT_LIMIT: usize = 3 * 1024 * 1024;
 pub(crate) const PAGE_LIMIT: usize = 4 * 1024 * 1024;
@@ -39,7 +38,6 @@ pub(crate) const RECOVERY_METADATA_NAME: &str = "axile.execution_replay.part.v1"
 const CHECKPOINT_EVENTS: u64 = 10_000;
 const CHECKPOINT_BYTES: u64 = 8 * 1024 * 1024;
 const MARKET_FACTS_PER_BLOCK: usize = 250;
-const DISK_RESERVE: u64 = 256 * 1024 * 1024;
 pub(crate) const SCHEMA: &str =
     include_str!("../../../axile/server/execution_replay/schemas/replay-v1.json");
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -52,63 +50,6 @@ pub(crate) fn failure(code: &str, message: impl Into<String>) -> AnalysisError {
 
 pub(crate) fn io_error(error: impl std::fmt::Display) -> AnalysisError {
     failure("IO", error.to_string())
-}
-
-#[cfg(unix)]
-fn available_disk_bytes(path: &Path) -> ReplayResult<u64> {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
-    let path = CString::new(path.as_os_str().as_bytes()).map_err(io_error)?;
-    let mut value = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    if unsafe { libc::statvfs(path.as_ptr(), value.as_mut_ptr()) } != 0 {
-        return Err(io_error(io::Error::last_os_error()));
-    }
-    let value = unsafe { value.assume_init() };
-    let unit = if value.f_frsize == 0 {
-        value.f_bsize
-    } else {
-        value.f_frsize
-    };
-    Ok((value.f_bavail as u128 * unit as u128).min(u64::MAX as u128) as u64)
-}
-
-#[cfg(windows)]
-fn available_disk_bytes(path: &Path) -> ReplayResult<u64> {
-    use std::os::windows::ffi::OsStrExt;
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn GetDiskFreeSpaceExW(
-            directory: *const u16,
-            available: *mut u64,
-            total: *mut u64,
-            free: *mut u64,
-        ) -> i32;
-    }
-    let directory: Vec<u16> = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let mut available = 0_u64;
-    if unsafe {
-        GetDiskFreeSpaceExW(
-            directory.as_ptr(),
-            &mut available,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        )
-    } == 0
-    {
-        return Err(io_error(io::Error::last_os_error()));
-    }
-    Ok(available)
-}
-
-fn require_disk_reserve(available: u64) -> ReplayResult<()> {
-    if available < DISK_RESERVE {
-        return Err(failure("DISK_SPACE", "insufficient replay disk reserve"));
-    }
-    Ok(())
 }
 
 pub(crate) fn digest(bytes: &[u8]) -> String {
@@ -392,7 +333,7 @@ pub(crate) fn atomic_json(path: &Path, value: &impl Serialize, limit: usize) -> 
     result
 }
 
-fn sync_directory(path: &Path) -> ReplayResult<()> {
+pub(crate) fn sync_directory(path: &Path) -> ReplayResult<()> {
     #[cfg(unix)]
     File::open(path)
         .and_then(|file| file.sync_all())
@@ -977,9 +918,9 @@ fn validate_query_basis(
     Ok(())
 }
 
-struct CappedFile {
-    file: File,
-    limit: u64,
+pub(crate) struct CappedFile {
+    pub(crate) file: File,
+    pub(crate) limit: u64,
 }
 
 fn estimated_message_size(bytes: usize, topic_bytes: usize) -> u64 {
@@ -1069,7 +1010,7 @@ struct PendingSeal {
     hash: JoinHandle<ReplayResult<(String, u64)>>,
 }
 
-/// One account writer; callers own the bounded queue and a single writer thread.
+/// One account writer, owned by a single writer thread.
 pub(crate) struct ExecutionReplayWriter {
     account: PathBuf,
     account_id: u64,
@@ -1123,7 +1064,6 @@ impl ExecutionReplayWriter {
         }
         validate_json(&context, 0)?;
         let account = account_directory(root, account_id, true)?;
-        require_disk_reserve(available_disk_bytes(&account)?)?;
         let lease = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -1205,9 +1145,6 @@ impl ExecutionReplayWriter {
 
     fn append_inner(&mut self, message_json: &str) -> ReplayResult<()> {
         self.drain_seals(false)?;
-        if message_json.len() > MESSAGE_LIMIT {
-            return Err(failure("BUDGET", "event exceeds message budget"));
-        }
         let mut message: Value = serde_json::from_str(message_json)
             .map_err(|error| failure("SCHEMA", error.to_string()))?;
         validate_message(&message, &self.context)?;
@@ -1236,12 +1173,16 @@ impl ExecutionReplayWriter {
         self.pending_fact_bytes = bytes_before;
         validate_message(&message, &self.context)?;
         let message_json = serde_json::to_string(&message).map_err(io_error)?;
-        if message_json.len() > MESSAGE_LIMIT {
-            return Err(failure("BUDGET", "event exceeds message budget"));
-        }
         let day = shanghai_day(time_us)?;
         let topic = message["topic"].as_str().unwrap_or_default();
-        let cost = estimated_message_size(message_json.len(), topic.len());
+        let mut cost = estimated_message_size(message_json.len(), topic.len());
+        if cost > self.file_limit / 2 {
+            self.commit_active()?;
+            let compressed = zstd::bulk::compress(message_json.as_bytes(), 0).map_err(io_error)?;
+            cost = (compressed.len() as u64)
+                .saturating_add(topic.len() as u64)
+                .saturating_add(4096);
+        }
         if self
             .active
             .as_ref()
@@ -1259,15 +1200,44 @@ impl ExecutionReplayWriter {
         if self.active.is_none() {
             self.open_part(&day, time_us, sequence)?;
         }
+        let mut stored_message = None;
         if self
             .active
             .as_ref()
             .is_some_and(|part| would_exceed_file_limit(part, self.file_limit, cost))
         {
-            return Err(failure(
-                "BUDGET",
-                "event and checkpoint cannot fit in a replay file",
-            ));
+            let fragment_day = self.active.as_ref().unwrap().descriptor.day.clone();
+            let directory = self
+                .active
+                .as_ref()
+                .and_then(|part| part.path.parent())
+                .ok_or_else(|| failure("PATH", "replay part has no directory"))?;
+            let reference = crate::execution_replay_fragments::write(
+                directory,
+                &self.recording_id,
+                sequence,
+                message_json.as_bytes(),
+                self.file_limit,
+            )?;
+            cost = estimated_message_size(reference.len(), topic.len());
+            if self
+                .active
+                .as_ref()
+                .is_some_and(|part| would_exceed_file_limit(part, self.file_limit, cost))
+            {
+                return Err(failure(
+                    "BUDGET",
+                    "fragment reference cannot fit in a replay file",
+                ));
+            }
+            let reference_value: Value = serde_json::from_slice(&reference).map_err(io_error)?;
+            self.push_fact(
+                "fragment_ref",
+                sequence.to_string(),
+                sequence,
+                Some(json!({"day":fragment_day,"reference":reference_value})),
+            )?;
+            stored_message = Some(reference);
         }
         for fact in staged {
             let value = fact
@@ -1290,7 +1260,7 @@ impl ExecutionReplayWriter {
             sequence,
             time_us,
             publish_time(&message, time_us),
-            message_json.as_bytes(),
+            stored_message.as_deref().unwrap_or(message_json.as_bytes()),
         );
         active.descriptor.last_seq = sequence;
         active.descriptor.end_us = time_us
@@ -1660,6 +1630,15 @@ impl ExecutionReplayWriter {
         let data = &message["data"];
         if let Some(key) = stable_market_key(data) {
             self.push_fact(
+                "market_ref",
+                seq.to_string(),
+                seq,
+                Some(
+                    json!({"time_us":message["time_us"], "symbol":data["symbol"],
+                    "trade_key":key, "related_capture_seq":data["related_capture_seq"]}),
+                ),
+            )?;
+            self.push_fact(
                 "market_trade",
                 key.to_owned(),
                 seq,
@@ -1693,7 +1672,6 @@ impl ExecutionReplayWriter {
         let Some((first_seq, first_us)) = part.pending_first else {
             return Ok(());
         };
-        require_disk_reserve(available_disk_bytes(&self.account)?)?;
         part.writer.flush().map_err(io_error)?;
         let mut schema = part.committed_schema;
         let mut channels = part.committed_channels.clone();
@@ -1803,12 +1781,6 @@ impl ExecutionReplayWriter {
         self.commit_active()?;
         self.drain_seals(false)?;
         if self.pending_seals.len() >= 2 {
-            if end_us.is_some() {
-                return Err(failure(
-                    "BUDGET",
-                    "replay file hashing cannot keep up with recording",
-                ));
-            }
             self.drain_seals(true)?;
         }
         let Some(mut part) = self.active.take() else {
@@ -2193,7 +2165,7 @@ impl CommitValidator<'_> {
         if topic == "/snapshot" {
             return self.snapshot(message, &value);
         }
-        if !self.snapshot_seen || message.data.len() > MESSAGE_LIMIT || value["topic"] != *topic {
+        if !self.snapshot_seen || value["topic"] != *topic {
             return Err(failure("CORRUPT", "invalid replay observation"));
         }
         validate_message(&value, self.context)?;
@@ -2348,17 +2320,6 @@ mod tests {
 
     fn event(sequence: u64, time: u64, topic: &str, data: Value) -> String {
         json!({"schema_version":1,"recording_id":"recA","capture_seq":sequence,"time_us":time,"topic":topic,"data":data}).to_string()
-    }
-
-    #[test]
-    fn low_disk_reserve_stops_recording_before_the_filesystem_is_full() {
-        assert_eq!(
-            require_disk_reserve(DISK_RESERVE - 1).unwrap_err().code,
-            "REPLAY_DISK_SPACE"
-        );
-        assert!(require_disk_reserve(DISK_RESERVE).is_ok());
-        let directory = TestDirectory::new();
-        assert!(available_disk_bytes(&directory.0).unwrap() > 0);
     }
 
     #[test]
@@ -3084,7 +3045,7 @@ mod tests {
     }
 
     #[test]
-    fn a_single_event_larger_than_half_a_file_can_be_recorded() {
+    fn a_compressible_event_larger_than_a_file_can_be_recorded() {
         let directory = TestDirectory::new();
         let mut writer = ExecutionReplayWriter::new(&directory.0, 7, "recA", &context()).unwrap();
         let time = 1_793_318_400_000_000_u64;
@@ -3101,7 +3062,7 @@ mod tests {
                 2,
                 time + 1,
                 "/quote/X",
-                json!({"symbol":"X","source":"X".repeat(27 * 1024 * 1024)}),
+                json!({"symbol":"X","source":"X".repeat(51 * 1024 * 1024)}),
             ))
             .unwrap();
         writer.finish().unwrap();
@@ -3110,6 +3071,151 @@ mod tests {
             .iter()
             .all(|part| part.size_bytes <= PART_FILE_LIMIT));
         assert_eq!(writer.status()["state_through_seq"], 2);
+        let index = BlockIndex::open(&writer.account.join(".replay-index.sqlite")).unwrap();
+        let blocks = index.blocks("recA", 2, None, 8).unwrap();
+        let part = writer.sealed.last().unwrap();
+        let path = writer.account.join(&part.day).join(part.file_name());
+        let records =
+            crate::execution_replay_block::read_block(&path, &blocks.last().unwrap().range)
+                .unwrap();
+        assert!(records.iter().any(|record| matches!(record, BlockRecord::Message(message) if message.data.len() > PART_FILE_LIMIT as usize)));
+    }
+
+    #[test]
+    fn rotation_waits_for_hashing_instead_of_stopping_recording() {
+        let directory = TestDirectory::new();
+        let mut writer = ExecutionReplayWriter::new(&directory.0, 7, "recA", &context()).unwrap();
+        let time = 1_793_318_400_000_000_u64;
+        let (release, wait) = std::sync::mpsc::channel();
+        let mut release = Some(release);
+        let mut wait = Some(wait);
+        for seq in 1..=3 {
+            writer
+                .append(&event(
+                    seq,
+                    time + seq,
+                    "/execution",
+                    json!({"execution_id":"E","phase":"started","symbol":"X"}),
+                ))
+                .unwrap();
+            if seq == 3 {
+                let release = release.take().unwrap();
+                thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    release.send(()).unwrap();
+                });
+            }
+            writer.seal_inner(Some(time + seq + 1)).unwrap();
+            if seq == 1 {
+                let mut pending = writer.pending_seals.remove(0);
+                let hash = pending.hash;
+                let wait = wait.take().unwrap();
+                pending.hash = thread::spawn(move || {
+                    wait.recv().unwrap();
+                    hash.join().unwrap()
+                });
+                writer.pending_seals.insert(0, pending);
+            }
+        }
+        writer.finish().unwrap();
+        assert_eq!(writer.sealed.len(), 3);
+    }
+
+    #[test]
+    fn oversized_event_spans_bounded_mcap_files_and_replays_intact() {
+        let directory = TestDirectory::new();
+        let mut writer = ExecutionReplayWriter::new(&directory.0, 7, "recA", &context()).unwrap();
+        writer.file_limit = 512 * 1024;
+        let time = 1_793_318_400_000_000_u64;
+        writer
+            .append(&event(
+                1,
+                time,
+                "/execution",
+                json!({"execution_id":"E","phase":"started","symbol":"X"}),
+            ))
+            .unwrap();
+        let mut random = 1_u64;
+        let source: String = (0..6_000_000)
+            .map(|_| {
+                random ^= random << 13;
+                random ^= random >> 7;
+                random ^= random << 17;
+                (b'!' + (random % 90) as u8) as char
+            })
+            .collect();
+        writer
+            .append(&event(
+                2,
+                time + 1,
+                "/quote/X",
+                json!({"symbol":"X","source":source}),
+            ))
+            .unwrap();
+        writer.finish().unwrap();
+        let day = writer.account.join(shanghai_day(time).unwrap());
+        let files: Vec<_> = fs::read_dir(&day)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "mcap"))
+            .collect();
+        assert!(files.len() > 2);
+        assert!(files
+            .iter()
+            .all(|path| fs::metadata(path).unwrap().len() <= writer.file_limit));
+        let mut request = json!({"recording_id":"recA","start_us":time,"end_us":time+2});
+        let mut fragments = String::new();
+        let mut pages = 0;
+        loop {
+            let page =
+                crate::execution_replay_reader::window(&directory.0, 7, "E", &request.to_string())
+                    .unwrap();
+            pages += 1;
+            assert!(pages < 20);
+            if let Some(fragment) = page["message_fragment"].as_str() {
+                fragments.push_str(fragment);
+            }
+            if page["complete"] == true {
+                break;
+            }
+            request["cursor"] = page["next_cursor"].clone();
+        }
+        let restored: Value = serde_json::from_str(&fragments).unwrap();
+        assert_eq!(restored["data"]["source"], source);
+        let fragment = files
+            .iter()
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("fragment-")
+            })
+            .unwrap();
+        let mut damaged = fs::read(fragment).unwrap();
+        let position = damaged.len() / 2;
+        damaged[position] ^= 1;
+        fs::write(fragment, damaged).unwrap();
+        assert!(crate::execution_replay_reader::window(
+            &directory.0,
+            7,
+            "E",
+            &json!({"recording_id":"recA","start_us":time,"end_us":time+2}).to_string()
+        )
+        .is_err());
+        fs::remove_file(fragment).unwrap();
+        assert_eq!(
+            crate::execution_replay_reader::manifest(&directory.0, 7, "E")
+                .unwrap_err()
+                .code,
+            "REPLAY_INCOMPLETE"
+        );
+        assert!(crate::execution_replay_reader::window(
+            &directory.0,
+            7,
+            "E",
+            &json!({"recording_id":"recA","start_us":time,"end_us":time+2}).to_string()
+        )
+        .is_err());
     }
 
     #[test]

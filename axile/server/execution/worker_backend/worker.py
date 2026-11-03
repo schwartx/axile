@@ -498,10 +498,20 @@ def _handle_shutdown(
             state.executor = None
             state.account_id = None
             state.config_signature = None
+    try:
+        replay_draining = (
+            state.replay_recorder is not None and state.replay_recorder.status().get("recording_id") is not None
+        )
+    except Exception:  # noqa: BLE001 - 状态不可用时保留收尾机会
+        replay_draining = state.replay_recorder is not None
     return WorkerBackendResponse(
         request_id=request.request_id,
         kind="result",
-        output_payload={"shutdown": True, "reason": reason},
+        output_payload={
+            "shutdown": True,
+            "reason": reason,
+            "replay_draining": replay_draining,
+        },
     )
 
 

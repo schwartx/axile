@@ -7,9 +7,7 @@ use std::path::Path;
 use mcap::records::{Channel, Header, MessageHeader, Record, SchemaHeader};
 use mcap::sans_io::{LinearReadEvent, LinearReader, LinearReaderOptions};
 
-use crate::execution_replay::{
-    digest, failure, io_error, ReplayResult, PART_FILE_LIMIT, SCAN_BYTES, SCAN_EVENTS,
-};
+use crate::execution_replay::{digest, failure, io_error, ReplayResult, SCAN_BYTES};
 
 /// A committed range contains only complete MCAP records. The first range includes magic.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -95,12 +93,10 @@ pub(crate) fn read_block(path: &Path, block: &CommittedBlock) -> ReplayResult<Ve
     let options = LinearReaderOptions::default()
         .with_skip_start_magic(block.offset != 0)
         .with_skip_end_magic(true)
-        .with_prevalidate_chunk_crcs(true)
-        .with_record_length_limit(SCAN_BYTES as usize);
+        .with_prevalidate_chunk_crcs(true);
     let mut reader = LinearReader::new_with_options(options);
     let mut source = Cursor::new(bytes);
     let mut records = Vec::new();
-    let mut decoded_bytes = 0_u64;
     while let Some(event) = reader.next_event() {
         match event.map_err(|error| failure("CORRUPT", error.to_string()))? {
             LinearReadEvent::ReadRequest(need) => {
@@ -110,10 +106,6 @@ pub(crate) fn read_block(path: &Path, block: &CommittedBlock) -> ReplayResult<Ve
                 reader.notify_read(read);
             }
             LinearReadEvent::Record { opcode, data } => {
-                decoded_bytes = decoded_bytes.saturating_add(data.len() as u64);
-                if decoded_bytes > SCAN_BYTES || records.len() >= SCAN_EVENTS {
-                    return Err(failure("BUDGET", "committed block exceeds decoding budget"));
-                }
                 let record = mcap::parse_record(opcode, data)
                     .map_err(|error| failure("CORRUPT", error.to_string()))?;
                 match record {
@@ -123,15 +115,10 @@ pub(crate) fn read_block(path: &Path, block: &CommittedBlock) -> ReplayResult<Ve
                     }
                     Record::Channel(channel) => records.push(BlockRecord::Channel(channel)),
                     Record::Message { header, data } => {
-                        if data.len() > PART_FILE_LIMIT as usize {
-                            return Err(failure(
-                                "BUDGET",
-                                "committed block exceeds decoding budget",
-                            ));
-                        }
+                        let restored = crate::execution_replay_fragments::restore(path, &data)?;
                         records.push(BlockRecord::Message(BlockMessage {
                             header,
-                            data: data.into_owned(),
+                            data: restored.unwrap_or_else(|| data.into_owned()),
                         }));
                     }
                     _ => (),

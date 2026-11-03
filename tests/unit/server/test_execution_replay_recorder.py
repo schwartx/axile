@@ -152,7 +152,7 @@ def test_invalid_or_sensitive_input_stops_only_recorder(running, data, code):
     assert recorder.status()["error"] == code
     assert not replay_enabled(owner)
     eventually(lambda: recorder._session is None)
-    assert not writers[0].finished.is_set()
+    assert writers[0].finished.is_set()
 
 
 def test_missing_quality_and_declared_false_zero_survive():
@@ -219,7 +219,7 @@ def test_queue_accepts_more_than_16_mib_without_stopping(tmp_path):
     try:
         for _ in range(2_200):
             recorder.observe("/command", {"phase": "request", "source": "X" * 8_000})
-        assert recorder._session.queued_bytes > 16 * 1024 * 1024
+        assert len(recorder._session.queue) == 2_200
         assert recorder.status()["state"] != "error"
     finally:
         gate.set()
@@ -553,7 +553,7 @@ def test_poll_seals_only_after_its_captured_queue_prefix(tmp_path):
     assert timeline.index(("message", 2_000_000)) < timeline.index(("poll", 3_000_000))
 
 
-def test_close_timeout_is_bounded_and_does_not_publish_partial(running):
+def test_close_timeout_keeps_draining_and_finishes(running):
     recorder, _, writers, _ = running
     entered = threading.Event()
     release = threading.Event()
@@ -565,12 +565,64 @@ def test_close_timeout_is_bounded_and_does_not_publish_partial(running):
     writers[0].append = blocked
     recorder.observe("/command", {"phase": "request"})
     assert entered.wait(1)
+    recorder.observe("/command", {"phase": "returned"})
     try:
-        assert recorder.close(timeout=0.01)["error"] == "replay_close_timeout"
+        assert recorder.close(timeout=0.01)["state"] == "closing"
+        threading.Event().wait(1.1)
+        assert recorder.status()["state"] == "closing"
     finally:
         release.set()
     eventually(lambda: recorder._session is None)
-    assert not writers[0].finished.is_set()
+    assert writers[0].finished.is_set()
+
+
+def test_worker_shutdown_waits_for_recording_to_finish(running):
+    from axile.server.execution.worker_backend.replay import close_worker_replay
+
+    recorder, _, writers, _ = running
+    entered, release = threading.Event(), threading.Event()
+
+    def blocked(_raw):
+        entered.set()
+        release.wait(3)
+
+    writers[0].append = blocked
+    recorder.observe("/command", {"phase": "request"})
+    assert entered.wait(1)
+    state = SimpleNamespace(replay_recorder=recorder, replay_error=None)
+    closing = threading.Thread(target=close_worker_replay, args=(state,))
+    closing.start()
+    try:
+        closing.join(1.1)
+        assert closing.is_alive()
+        assert recorder.status()["state"] == "closing"
+    finally:
+        release.set()
+        closing.join(3)
+    assert not closing.is_alive()
+    assert writers[0].finished.is_set()
+
+
+def test_unlinked_trade_correction_protects_inflight_order_query(running, monkeypatch):
+    recorder, _, _, _ = running
+    monkeypatch.setattr(module, "MAX_IDENTITIES", 2)
+    recorder.observe("/order", {"symbol": "X", "order_id": "O", "status": "working"})
+    recorder.observe("/trade", {"symbol": "X", "order_id": "O", "trade_key": "T", "identity_quality": "stable"})
+    for key in ("T2", "T3"):
+        recorder.observe("/trade", {"symbol": "Y", "order_id": "Y", "trade_key": key, "identity_quality": "stable"})
+    token = recorder.begin_query(["X"])
+    recorder.observe("/trade", {"trade_key": "T", "identity_quality": "stable", "price": 12})
+    recorder.observe(
+        "/order_set",
+        {
+            **token,
+            "scope": {"kind": "symbols", "symbols": ["X"]},
+            "scope_complete": True,
+            "synchronized": True,
+            "orders": [],
+        },
+    )
+    assert ("X", "O") in recorder._orders
 
 
 def test_repeated_query_observation_keeps_its_original_coverage_proof(running):

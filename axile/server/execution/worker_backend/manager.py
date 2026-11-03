@@ -197,6 +197,7 @@ class _WorkerBackendHandle:
     control_status: WorkerReplayControl | None = None
     control_termination: WorkerTerminationSignal | None = None
     control_closed: bool = False
+    replay_draining: bool = False
 
 
 class WorkerBackendManager:
@@ -490,7 +491,7 @@ class WorkerBackendManager:
             if handle is not None and handle.catalog is not None:
                 handle.catalog.configure(channel=channel, enabled=enabled, last_execution=latest)
 
-    def _send_shutdown(self, handle: _WorkerBackendHandle, *, lock_timeout: float = -1) -> None:
+    def _send_shutdown(self, handle: _WorkerBackendHandle, *, lock_timeout: float = -1) -> bool:
         request = WorkerBackendRequest.shutdown(
             request_id=uuid4().hex,
             reason="manager_shutdown",
@@ -509,6 +510,7 @@ class WorkerBackendManager:
             raise WorkerBackendExecutionError("worker backend shutdown 返回了未知响应类型")
         if response.request_id != request.request_id:
             raise WorkerBackendExecutionError("worker backend shutdown 返回了不匹配的 request_id")
+        return bool(response.output_payload and response.output_payload.get("replay_draining"))
 
     @staticmethod
     def _terminate_process(handle: _WorkerBackendHandle) -> None:
@@ -547,7 +549,7 @@ class WorkerBackendManager:
         end_connection_instance(getattr(handle, "connection_binding", None), "账户执行器已关闭，会话已结束")
         try:
             if not handle.connection.closed and handle.process.is_alive():
-                self._send_shutdown(handle, lock_timeout=lock_timeout)
+                handle.replay_draining = self._send_shutdown(handle, lock_timeout=lock_timeout)
         except (BrokenPipeError, EOFError, OSError, WorkerBackendExecutionError):
             pass
         try:
@@ -557,7 +559,7 @@ class WorkerBackendManager:
         self._close_control(handle)
         if handle.process.is_alive():
             handle.process.join(timeout=2.0)
-        if handle.process.is_alive():
+        if handle.process.is_alive() and not handle.replay_draining:
             handle.process.terminate()
             handle.process.join(timeout=2.0)
         if handle.monitor is not None:
@@ -1273,6 +1275,10 @@ class WorkerBackendManager:
                 # 服务关停时不能等待仍在后台恢复的请求锁；其线程会随 worker 退出而解除等待。
                 self._dispose_handle(handle, lock_timeout=self._shutdown_recv_timeout)
             finally:
+                self._finish_worker_retirement(account_id, handle)
+        for account_id, handle in workers:
+            if handle.replay_draining and handle.process.is_alive():
+                handle.process.join()
                 self._finish_worker_retirement(account_id, handle)
 
     def close(self) -> None:

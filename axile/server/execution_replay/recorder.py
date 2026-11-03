@@ -32,13 +32,11 @@ def _remember_recent[K, V](values: dict[K, V], key: K, value: V) -> None:
 class _Session:
     recording_id: str
     context: dict[str, object]
-    queue: deque[tuple[str, str, int]] = field(default_factory=deque)
-    queued_bytes: int = 0
+    queue: deque[tuple[str, Any]] = field(default_factory=deque)
     sequence: int = 0
     last_time_us: int | None = None
     stopping: bool = False
     error: str | None = None
-    deadline: float | None = None
     state: str = "starting"
     thread: threading.Thread | None = None
     request_revision: int = 0
@@ -289,11 +287,10 @@ class ReplayRecorder:
         if session is not None:
             session.stopping = True
             session.error = error or session.error
-            session.deadline = clock_monotonic() + 1.0
             self._condition.notify_all()
 
     def observe(self, topic: str, data: Mapping[str, object]) -> None:
-        """短临界区冻结、取时、编号与有界入队，任何失败只停止录制。"""
+        """冻结、取时和编号；编码与写入在后台执行。"""
         with self._condition:
             session = self._session
             if session is None or session.stopping or not self._desired:
@@ -309,19 +306,19 @@ class ReplayRecorder:
                 frozen = freeze_data(topic, data, session.context)
                 self._normalize_generation_locked(topic, frozen, session)
                 self._associate_locked(topic, frozen)
-                message = encode_json(
-                    {
-                        "schema_version": 1,
-                        "recording_id": session.recording_id,
-                        "capture_seq": session.sequence + 1,
-                        "time_us": timestamp,
-                        "topic": topic,
-                        "data": frozen,
-                    }
+                session.queue.append(
+                    (
+                        "message",
+                        {
+                            "schema_version": 1,
+                            "recording_id": session.recording_id,
+                            "capture_seq": session.sequence + 1,
+                            "time_us": timestamp,
+                            "topic": topic,
+                            "data": frozen,
+                        },
+                    )
                 )
-                size = len(message.encode("utf-8"))
-                session.queue.append(("message", message, size))
-                session.queued_bytes += size
                 session.sequence += 1
                 session.last_time_us = timestamp
                 self._track_locked(topic, frozen, timestamp)
@@ -629,6 +626,10 @@ class ReplayRecorder:
         key = self._order_key(after)
         if key is not None and before != after and self._session is not None:
             self._order_changes[key] = self._session.sequence
+        elif key is None and self._session is not None:
+            # An unlinked correction may belong to any live order queried earlier.
+            for order in self._orders:
+                self._order_changes[order] = self._session.sequence
 
     @staticmethod
     def _known_trade_facts(data: dict[str, object]) -> dict[str, object]:
@@ -779,7 +780,7 @@ class ReplayRecorder:
     def _seal_locked(self) -> None:
         session = self._session
         if session is not None and not session.stopping and (not session.queue or session.queue[-1][0] != "seal"):
-            session.queue.append(("seal", "", 0))
+            session.queue.append(("seal", ""))
             self._condition.notify_all()
 
     def tick(self) -> None:
@@ -799,10 +800,6 @@ class ReplayRecorder:
             self._seed_cached_observations(session)
             while True:
                 with self._condition:
-                    if session.error:
-                        break
-                    if session.stopping and session.deadline is not None and clock_monotonic() > session.deadline:
-                        raise TimeoutError("replay_close_timeout")
                     if not session.queue and session.stopping:
                         break
                     self._queue_poll_locked(session)
@@ -810,19 +807,17 @@ class ReplayRecorder:
                         self._condition.wait(0.1)
                         continue
                     item = session.queue.popleft()
-                    session.queued_bytes -= item[2]
                     if item[0].startswith("poll"):
                         session.poll_pending = False
                 if item[0] == "message":
-                    writer.append(item[1])
+                    writer.append(encode_json(item[1]))
                 elif item[0] == "seal":
                     writer.seal()
                 else:
                     writer.poll(int(item[1]))
                     if item[0] == "poll_seal":
                         writer.seal()
-            if not session.error:
-                writer.finish()
+            writer.finish()
         except Exception as error:  # noqa: BLE001 - writer 故障隔离且保留未封口文件
             with self._condition:
                 code = "replay_close_timeout" if isinstance(error, TimeoutError) else "replay_writer_error"
@@ -834,7 +829,6 @@ class ReplayRecorder:
         finally:
             with self._condition:
                 session.queue.clear()
-                session.queued_bytes = 0
                 if self._session is session:
                     self._session = None
                     self._effective_version = self._config_version
@@ -842,11 +836,11 @@ class ReplayRecorder:
             self._notify()
 
     def _open_writer(self, session: _Session):
-        """仅重试交接期间的文件锁占用；等待可取消，采集队列仍受原预算约束。"""
+        """重试交接期间的文件锁占用；已有事件需要等候写入。"""
         context_json = encode_json(session.context)
         while True:
             with self._condition:
-                if session.stopping:
+                if session.stopping and not session.queue:
                     return None
             try:
                 writer = self._writer_factory(self.root, self.account_id, session.recording_id, context_json)
@@ -854,14 +848,14 @@ class ReplayRecorder:
                     raise RuntimeError("writer factory returned no writer")
             except BlockingIOError:
                 with self._condition:
-                    if session.stopping:
+                    if session.stopping and not session.queue:
                         return None
                     first_wait = not session.waiting_for_writer
                     session.waiting_for_writer = True
                 if first_wait:
                     self._notify()
                 with self._condition:
-                    self._condition.wait_for(lambda: session.stopping, timeout=0.1)
+                    self._condition.wait(0.1)
                 continue
             with self._condition:
                 session.waiting_for_writer = False
@@ -944,14 +938,14 @@ class ReplayRecorder:
         expired = [symbol for symbol, until in self._tails.items() if timestamp >= until]
         for symbol in expired:
             del self._tails[symbol]
-        session.queue.append(("poll_seal" if expired else "poll", str(timestamp), 0))
+        session.queue.append(("poll_seal" if expired else "poll", str(timestamp)))
         session.poll_pending = True
         session.last_time_us = timestamp
         session.next_poll = now + 0.1
 
-    def close(self, timeout: float = 1.0) -> dict[str, object]:
-        """停止接收并有界等待后台关闭；超时明确报错，不阻塞交易退出。"""
-        if not 0 <= timeout <= 30:
+    def close(self, timeout: float | None = 1.0) -> dict[str, object]:
+        """停止接收并等待后台关闭；超时后继续在后台排空。"""
+        if timeout is not None and not 0 <= timeout <= 30:
             raise ValueError("invalid_replay_close_timeout")
         with self._condition:
             self._closed = True
@@ -967,8 +961,5 @@ class ReplayRecorder:
             thread = session.thread if session is not None else None
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout)
-            if thread.is_alive():
-                with self._condition:
-                    self._stop_locked("replay_close_timeout")
         self._notify()
         return self.status()

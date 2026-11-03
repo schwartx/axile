@@ -25,6 +25,7 @@ serde_path_to_error = "0.1"
 sha2 = "0.10"
 regex = "1"
 uuid = { version = "=1.11.0", default-features = false, features = ["std", "v5"] }
+zstd = "0.14.3"
 
 [profile.release]
 lto = "thin"

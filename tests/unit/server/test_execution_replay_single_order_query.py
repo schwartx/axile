@@ -250,7 +250,7 @@ def test_complete_scope_observation_fences_reset_with_existing_set_watermarks(ru
     assert recorder._order_set_observation == {}
 
 
-def test_scope_observation_fences_share_the_identity_budget(running, monkeypatch):
+def test_scope_observation_fences_are_not_limited_by_recent_identity_cache(running, monkeypatch):
     recorder, _, _, _ = running
     monkeypatch.setattr(module, "MAX_IDENTITIES", 1)
     for symbols in (["X"], []):
@@ -265,7 +265,8 @@ def test_scope_observation_fences_share_the_identity_budget(running, monkeypatch
                 "orders": [],
             },
         )
-    assert recorder.status()["error"] == "replay_identity_budget"
+    assert recorder.status()["state"] == "recording"
+    assert set(recorder._order_set_observation) == {"X", ""}
 
 
 def test_actual_mcap_single_order_proof_is_retained_without_a_complete_scope_claim(make_recording):

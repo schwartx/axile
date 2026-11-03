@@ -177,9 +177,9 @@ def end_worker_replay_execution(state: Any, reason: str) -> None:
 
 
 def close_worker_replay(state: Any) -> None:
-    """退出时有界收尾，不让录制错误覆盖交易或连接结果。"""
+    """退出时完成已接收事件的写入，不覆盖交易或连接结果。"""
     if state.replay_recorder is not None:
         try:
-            state.replay_recorder.close(timeout=1.0)
+            state.replay_recorder.close(timeout=None)
         except Exception:
             state.replay_error = "录制收尾失败"

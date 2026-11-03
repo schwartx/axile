@@ -16,8 +16,8 @@ use crate::execution_replay::{
     account_directory, checked_us, child_file, collect_observed_symbols, day_directory, digest,
     failure, identifier, io_error, read_bounded, stable_market_key, validate_committed_records,
     validate_message, validate_symbols, CatalogRecording, PartDescriptor, ReplayResult,
-    CHECKPOINT_LIMIT, CONTEXT_LIMIT, JS_SAFE, MESSAGE_LIMIT, PAGE_LIMIT, PART_FILE_LIMIT,
-    PART_LIMIT, SCAN_BYTES, SCAN_DAYS, SCAN_EVENTS, SCAN_FILES, SCAN_SECONDS, SCHEMA,
+    CHECKPOINT_LIMIT, CONTEXT_LIMIT, JS_SAFE, PAGE_LIMIT, PART_FILE_LIMIT, PART_LIMIT, SCAN_BYTES,
+    SCAN_DAYS, SCAN_EVENTS, SCAN_FILES, SCAN_SECONDS, SCHEMA,
 };
 use crate::execution_replay_block::{read_block, BlockRecord};
 use crate::execution_replay_index::{BlockIndex, IndexedBlock, IndexedCheckpoint};
@@ -32,6 +32,14 @@ pub(crate) struct PartData {
     pub context: Value,
     pub projection: Value,
     pub messages: Vec<Value>,
+    limited: bool,
+}
+
+struct PageRead {
+    after_seq: u64,
+    start_us: u64,
+    end_us: u64,
+    bytes: usize,
 }
 
 #[derive(Default)]
@@ -135,10 +143,11 @@ fn read_part_budget(
     budget: &mut Budget,
     checkpoint: Option<(&IndexedCheckpoint, &Value)>,
     until_us: Option<u64>,
+    page: Option<&mut PageRead>,
 ) -> ReplayResult<PartData> {
     validate_descriptor(part)?;
     if part.committed_prefix {
-        return read_committed_part(account, part, budget, checkpoint, until_us);
+        return read_committed_part(account, part, budget, checkpoint, until_us, page);
     }
     let index_path = child_file(account, ".replay-index.sqlite")?;
     if index_path.exists() {
@@ -182,7 +191,7 @@ fn read_part_budget(
                 .checked_add(last.range.length)
                 .ok_or_else(|| failure("CORRUPT", "block end overflow"))?;
             prefix.sha256 = digest(&serde_json::to_vec(&(&first, &last)).map_err(io_error)?);
-            let data = read_committed_part(account, &prefix, budget, checkpoint, until_us)?;
+            let data = read_committed_part(account, &prefix, budget, checkpoint, until_us, page)?;
             if data.context != indexed_context {
                 return Err(failure(
                     "CORRUPT",
@@ -217,6 +226,7 @@ fn read_committed_part(
     budget: &mut Budget,
     checkpoint: Option<(&IndexedCheckpoint, &Value)>,
     until_us: Option<u64>,
+    mut page: Option<&mut PageRead>,
 ) -> ReplayResult<PartData> {
     let index = BlockIndex::open(&child_file(account, ".replay-index.sqlite")?)?;
     let (first, last) = index
@@ -267,6 +277,7 @@ fn read_committed_part(
         None
     };
     let mut stopped_at_end = false;
+    let mut limited = false;
     loop {
         let blocks = index.file_blocks(
             &part.recording_id,
@@ -359,19 +370,29 @@ fn read_committed_part(
                 projection = Some(state);
             }
             for observation in &observations {
-                budget.charge(
-                    serde_json::to_vec(observation).map_err(io_error)?.len() as u64,
-                    1,
-                )?;
+                let size = serde_json::to_vec(observation).map_err(io_error)?.len();
+                budget.charge(size as u64, 1)?;
+                if let Some(page) = page.as_deref_mut() {
+                    if integer(observation, "capture_seq")? > page.after_seq
+                        && integer(observation, "time_us")? >= page.start_us
+                        && integer(observation, "time_us")? < page.end_us
+                    {
+                        page.bytes = page.bytes.saturating_add(size);
+                    }
+                }
             }
             messages.append(&mut observations);
             previous = Some(block);
+            if page.as_ref().is_some_and(|page| page.bytes >= PAGE_LIMIT) {
+                limited = true;
+                break;
+            }
         }
-        if stopped_at_end {
+        if stopped_at_end || limited {
             break;
         }
     }
-    if !stopped_at_end && previous.as_ref() != Some(&last) {
+    if !stopped_at_end && !limited && previous.as_ref() != Some(&last) {
         return Err(failure(
             "VIEW_CHANGED",
             "committed replay prefix is incomplete",
@@ -381,6 +402,7 @@ fn read_committed_part(
         context: context.ok_or_else(|| failure("CORRUPT", "missing committed context"))?,
         projection: projection.ok_or_else(|| failure("CORRUPT", "missing committed checkpoint"))?,
         messages,
+        limited,
     })
 }
 
@@ -467,6 +489,7 @@ pub(crate) fn validate_part_bytes_budget(
         context: checkpoint["context"].clone(),
         projection: checkpoint["projection"].clone(),
         messages,
+        limited: false,
     })
 }
 
@@ -511,12 +534,7 @@ fn decode_message(
     {
         return Err(failure("SCHEMA", "unsupported replay message encoding"));
     }
-    let limit = if first {
-        CHECKPOINT_LIMIT
-    } else {
-        MESSAGE_LIMIT
-    };
-    if message.data.len() > limit {
+    if first && message.data.len() > CHECKPOINT_LIMIT {
         return Err(failure("BUDGET", "MCAP message exceeds its size limit"));
     }
     let value: Value = serde_json::from_slice(&message.data)
@@ -1006,7 +1024,7 @@ fn fill_legacy_symbol_directories(
                 }
                 Err(error) => return Err(io_error(error)),
             }
-            let scan = read_part_budget(account, part, budget, None, None)
+            let scan = read_part_budget(account, part, budget, None, None, None)
                 .and_then(|data| collect_part_symbols(&data, &mut symbols));
             match scan {
                 Ok(()) => (),
@@ -1352,7 +1370,7 @@ struct WindowPage<'a> {
     baseline: Option<Value>,
     messages: Vec<Value>,
     large_message: Option<(u64, String)>,
-    last_returned: u64,
+    last_scanned: u64,
     sparse_market: bool,
     market_keys: BTreeSet<String>,
     market_observations: BTreeSet<u64>,
@@ -1442,6 +1460,7 @@ impl WindowPage<'_> {
             return Ok(false);
         }
         let Some(message) = filtered_message(message, self.symbols) else {
+            self.last_scanned = seq;
             return Ok(false);
         };
         let encoded = serde_json::to_string(&message).map_err(io_error)?;
@@ -1459,7 +1478,7 @@ impl WindowPage<'_> {
             return Ok(true);
         }
         self.page_bytes += bytes;
-        self.last_returned = seq;
+        self.last_scanned = seq;
         self.messages.push(message);
         Ok(false)
     }
@@ -1517,17 +1536,27 @@ pub(crate) fn window(
         baseline: None,
         messages: Vec::new(),
         large_message: None,
-        last_returned: cursor.after_seq,
+        last_scanned: cursor.after_seq,
         sparse_market: false,
         market_keys: BTreeSet::new(),
         market_observations: BTreeSet::new(),
     };
     let index_path = child_file(&account, ".replay-index.sqlite")?;
+    let mut paged_read = !first_page && cursor.state_offset.is_none() && index_path.exists();
     let checkpoint = if index_path.exists() {
         let index = BlockIndex::open(&index_path)?;
-        let through_seq = cursor.parts.last().unwrap().last_seq;
+        let through_seq = if paged_read {
+            cursor.after_seq
+        } else {
+            cursor.parts.last().unwrap().last_seq
+        };
+        let checkpoint_time = if paged_read {
+            request.end_us
+        } else {
+            request.start_us
+        };
         index
-            .checkpoint_before(&request.recording_id, request.start_us, through_seq)?
+            .checkpoint_before(&request.recording_id, checkpoint_time, through_seq)?
             .filter(|checkpoint| {
                 checkpoint.seq >= cursor.parts[0].checkpoint_through_seq
                     && cursor.parts.iter().any(|part| {
@@ -1539,10 +1568,57 @@ pub(crate) fn window(
     } else {
         None
     };
+    paged_read &= checkpoint.is_some();
     if let Some(checkpoint) = &checkpoint {
         page.projection = Some(Projection::restore(checkpoint.state.clone())?);
     }
+    if paged_read {
+        page.baseline = Some(json!({}));
+        page.sparse_market = true;
+    }
+    if let Some(checkpoint) = checkpoint.as_ref().filter(|_| !paged_read) {
+        let index = BlockIndex::open(&index_path)?;
+        let references = index.market_references(
+            &request.recording_id,
+            checkpoint.seq,
+            cursor.parts.last().unwrap().last_seq,
+            request.end_us,
+        )?;
+        for reference in &references {
+            let time = integer(reference, "time_us")?;
+            if time < request.start_us || time >= request.end_us {
+                continue;
+            }
+            if !symbols.is_empty()
+                && reference["symbol"]
+                    .as_str()
+                    .is_none_or(|symbol| !symbols.contains(symbol))
+            {
+                continue;
+            }
+            if let Some(key) = reference["trade_key"].as_str() {
+                page.market_keys.insert(key.to_owned());
+            }
+        }
+        for reference in &references {
+            if reference["trade_key"]
+                .as_str()
+                .is_some_and(|key| page.market_keys.contains(key))
+            {
+                if let Some(seq) = reference["related_capture_seq"].as_u64() {
+                    page.market_observations.insert(seq);
+                }
+            }
+        }
+    }
     let mut loaded_parts = Vec::new();
+    let mut page_read = PageRead {
+        after_seq: cursor.after_seq,
+        start_us: request.start_us,
+        end_us: request.end_us,
+        bytes: 0,
+    };
+    let mut read_limited = false;
     for part in &cursor.parts {
         if checkpoint
             .as_ref()
@@ -1554,58 +1630,30 @@ pub(crate) fn window(
             .as_ref()
             .filter(|checkpoint| part.part == checkpoint.part)
             .map(|checkpoint| (checkpoint, &context));
-        let data = read_part_budget(&account, part, &mut budget, resume, Some(request.end_us))?;
+        let data = read_part_budget(
+            &account,
+            part,
+            &mut budget,
+            resume,
+            Some(request.end_us),
+            checkpoint.is_some().then_some(&mut page_read),
+        )?;
         if data.context != context {
             return Err(failure(
                 "CORRUPT",
                 "part context differs from the fixed catalog view",
             ));
         }
+        read_limited = data.limited;
         loaded_parts.push((part, data));
+        if read_limited {
+            break;
+        }
     }
     if let Some((part, data)) = loaded_parts.first() {
         page.begin_part(data, part)?;
     }
-    if checkpoint.is_some() {
-        for (_, data) in &loaded_parts {
-            for message in &data.messages {
-                let time = integer(message, "time_us")?;
-                let topic = message["topic"].as_str().unwrap_or_default();
-                if time < request.start_us
-                    || time >= request.end_us
-                    || !topic.starts_with("/market_trade/")
-                {
-                    continue;
-                }
-                if !symbols.is_empty()
-                    && message["data"]["symbol"]
-                        .as_str()
-                        .is_none_or(|symbol| !symbols.contains(symbol))
-                {
-                    continue;
-                }
-                if let Some(key) = stable_market_key(&message["data"]) {
-                    page.market_keys.insert(key.to_owned());
-                }
-            }
-        }
-        for (_, data) in &loaded_parts {
-            for message in &data.messages {
-                if !message["topic"]
-                    .as_str()
-                    .is_some_and(|topic| topic.starts_with("/market_trade/"))
-                {
-                    continue;
-                }
-                if stable_market_key(&message["data"])
-                    .is_some_and(|key| page.market_keys.contains(key))
-                {
-                    if let Some(seq) = message["data"]["related_capture_seq"].as_u64() {
-                        page.market_observations.insert(seq);
-                    }
-                }
-            }
-        }
+    if checkpoint.is_some() && !paged_read {
         let index = BlockIndex::open(&index_path)?;
         let projection = page
             .projection
@@ -1662,6 +1710,7 @@ pub(crate) fn window(
         if start > state_json.len() || !state_json.is_char_boundary(start) {
             return Err(failure("INVALID_CURSOR", "invalid replay state offset"));
         }
+        cursor.state_offset = None;
         if start < state_json.len() {
             let mut end = start
                 .saturating_add(STATE_FRAGMENT_BYTES)
@@ -1699,6 +1748,7 @@ pub(crate) fn window(
             break;
         }
     }
+    more |= read_limited;
     if let Some((seq, encoded)) = page.large_message {
         let start = cursor.message_offset.unwrap_or(0);
         if start >= encoded.len() || !encoded.is_char_boundary(start) {
@@ -1730,7 +1780,7 @@ pub(crate) fn window(
     response["complete"] = Value::Bool(!more);
     if more {
         cursor.after_seq = page
-            .last_returned
+            .last_scanned
             .max(cursor.parts[0].checkpoint_through_seq);
         response["next_cursor"] = Value::String(cursor.encode()?);
     }
@@ -1912,6 +1962,75 @@ mod tests {
     use super::*;
 
     #[test]
+    fn filtered_pages_keep_all_matching_events_across_indexed_blocks() {
+        use crate::execution_replay::ExecutionReplayWriter;
+        let root =
+            std::env::temp_dir().join(format!("axile-filtered-pages-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        let mut writer =
+            ExecutionReplayWriter::new(&root, 1, "pages", r#"{"schema_version":1}"#).unwrap();
+        let payload = "x".repeat(128 * 1024);
+        for seq in 1..=90 {
+            let (topic, data) = if seq == 1 {
+                (
+                    "/execution",
+                    json!({"execution_id":"E","phase":"started","symbol":"X"}),
+                )
+            } else if seq == 2 || seq == 90 {
+                (
+                    "/market_trade/X",
+                    json!({"symbol":"X","trade_key":"T", "identity_quality":"stable", "price":100,"quantity":3}),
+                )
+            } else if seq % 2 == 0 {
+                ("/quote/X", json!({"symbol":"X","source":payload}))
+            } else {
+                ("/quote/Y", json!({"symbol":"Y","source":payload}))
+            };
+            writer
+                .append(
+                    &json!({"schema_version":1,"recording_id":"pages","capture_seq":seq,
+                "time_us":100+seq,"topic":topic,"data":data})
+                    .to_string(),
+                )
+                .unwrap();
+            if seq % 6 == 0 {
+                writer.seal().unwrap();
+            }
+        }
+        writer.finish().unwrap();
+        let mut request =
+            json!({"recording_id":"pages","start_us":103,"end_us":200,"symbols":["X"]});
+        let mut sequences = Vec::new();
+        let mut pages = 0;
+        loop {
+            let response = window(&root, 1, "E", &request.to_string()).unwrap();
+            pages += 1;
+            if pages == 1 {
+                assert!(
+                    response["state_before_start"]["trade_accounting"]["market_records"]["T"]
+                        .is_object()
+                );
+            }
+            assert!(pages < 10, "pagination must make progress");
+            sequences.extend(
+                response["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|item| item["capture_seq"].as_u64().unwrap()),
+            );
+            if response["complete"] == true {
+                break;
+            }
+            request["cursor"] = response["next_cursor"].clone();
+        }
+        let expected: Vec<u64> = (4..=90).step_by(2).collect();
+        assert_eq!(sequences, expected);
+        assert!(pages > 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn late_window_uses_previous_checkpoint_with_a_small_read_budget() {
         use crate::execution_replay::ExecutionReplayWriter;
         let root =
@@ -1959,6 +2078,7 @@ mod tests {
             part,
             &mut budget,
             Some((&checkpoint, context)),
+            None,
             None,
         )
         .unwrap();
