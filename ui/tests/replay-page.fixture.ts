@@ -35,7 +35,7 @@ const jsx = (type: any, props: any, key: any) => ({ type, props, key })
 mock.module('react/jsx-runtime', () => ({ jsx, jsxs: jsx, Fragment: 'fragment' }))
 mock.module('react/jsx-dev-runtime', () => ({ jsxDEV: jsx, Fragment: 'fragment' }))
 mock.module('react-router', () => ({ useParams: () => ({ id: '7', executionId: 'E2' }) }))
-mock.module('lucide-react', () => Object.fromEntries(['ChevronLeft', 'ChevronRight', 'Info', 'Pause', 'Play', 'RefreshCw', 'SkipBack', 'SkipForward', 'X'].map(name => [name, () => null])))
+mock.module('lucide-react', () => Object.fromEntries(['ChevronLeft', 'ChevronRight', 'Circle', 'Crosshair', 'Minus', 'RotateCcw', 'Info', 'Pause', 'Play', 'RefreshCw', 'SkipBack', 'SkipForward', 'X'].map(name => [name, () => null])))
 for (const [path, name] of [['features/account/pageHead.tsx', 'AccountPageTitle'], ['components/ui/Select.tsx', 'Select'], ['components/ui/ValueSlider.tsx', 'ValueSlider'], ['components/ui/BackLink.tsx', 'BackLink'], ['components/ui/ErrorNotice.tsx', 'ErrorNotice'], ['components/ui/Segmented.tsx', 'Segmented'], ['components/ui/OverflowText.tsx', 'OverflowText'], ['components/ui/InkRewrite.tsx', 'InkRewrite'], ['features/replay/ReplayChart.tsx', 'ReplayChart']]) mock.module(ui + path, () => ({ [name]: () => null }))
 mock.module(ui + 'stores/domain.ts', () => ({ useDomainStore: (select: any) => select({ accounts: [{ account_id: 7, name: 'demo', trade_channel: 'binance', market: 'crypto' }] }) }))
 mock.module(ui + 'lib/viewTransition.ts', () => ({ withViewTransition: (update: () => void) => update() }))
@@ -91,7 +91,7 @@ async function settle() { for (let index = 0; index < 4; index++) { await Promis
 async function finishWindows() { loadingNext = false; for (const resolve of pendingWindows.splice(0)) resolve(); await settle() }
 function find(node: any, predicate: (node: any) => boolean): any {
   if (Array.isArray(node)) { for (const child of node) { const match = find(child, predicate); if (match) return match } }
-  else if (node && typeof node === 'object') return predicate(node) ? node : find(node.props?.children, predicate)
+  else if (node && typeof node === 'object') return predicate(node) ? node : find(node.props?.children, predicate) ?? find(node.props?.playControls, predicate)
   return null
 }
 function text(node: any): string {
@@ -234,13 +234,14 @@ if (scenario === 'overview') {
   find(tree, node => node.props?.onSeek && node.props?.projection).props.onSeek(10_000_000); flush()
   const initial = seekText()
   loadingNext = true; button('下一窗口').props.onClick(); flush()
+  const loadingSkeleton = Boolean(find(tree, node => node.props?.className === 'replay-main-chart')) && Boolean(find(tree, node => node.props?.['aria-label'] === '回放明细')) && button('播放').props.disabled
   slider().props.onChange(0); flush()
   slider().props.onChangeEnd(slider().props.value); await settle()
   const cursor = seekText()
   await finishWindows()
   const afterLateResponse = seekText()
   find(tree, node => node.props?.onSeek && node.props?.projection).props.onSeek(5_000_000); flush()
-  console.log(JSON.stringify({ initial, cursor, afterLateResponse, afterNextSeek: seekText() }))
+  console.log(JSON.stringify({ initial, cursor, afterLateResponse, afterNextSeek: seekText(), loadingSkeleton }))
 } else if (scenario.startsWith('pause-')) {
   button('播放').props.onClick(); flush(); loadingNext = true; frame(20_001)
   if (scenario === 'pause-drag') { slider().props.onChange(25000000); slider().props.onChangeEnd(25000000) }

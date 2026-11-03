@@ -106,7 +106,6 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   const firstQuote = historyQuotes.find(quote => currentReplayQuote(quote, quote.time_us, replayWindow.gaps))
   const futureDepth = Boolean(firstQuote && replayFutureRecord(firstQuote.time_us, firstQuote.capture_seq, projection))
   const displayQuote = currentQuote ?? (futureDepth ? firstQuote! : null)
-  const depthLabel = displayQuote ? `${futureDepth ? '盘口尚未到达 · ' : ''}已录买 ${displayQuote.bids.length} / 卖 ${displayQuote.asks.length} 档` : '盘口未记录／已失效'
   const visibleOrders = useMemo(() => replayVisibleOrders(historyOrders, layers), [historyOrders, layers])
   const marketSegments = useMemo(() => replayWindow.context.streams?.[symbol]?.market_trade?.availability === 'unavailable' ? [] : replayMarketPriceSegments(recorded.marketTrades, symbol, visibleRange, drawThrough, replayWindow.gaps), [replayWindow, recorded.marketTrades, drawThrough, symbol, visibleRange])
   const initialView = useMemo(() => replayObservedPriceView(historyQuotes, historyOrders, recorded.marketTrades.filter(trade => trade.symbol === symbol), instrument?.price_tick), [historyQuotes, historyOrders, recorded.marketTrades, symbol, instrument?.price_tick])
@@ -166,7 +165,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       ctx.save(); ctx.beginPath(); ctx.rect(layout.left, layout.top, Math.max(0, replayTimeX(drawThrough, visibleRange, layout) - layout.left), layout.bottom - layout.top); ctx.clip()
       ctx.fillStyle = paint.accent
       for (const cell of heat.cells) {
-        ctx.globalAlpha = cell.quantity == null ? 0.12 : cell.quantity === 0 ? 0.025 : 0.06 + Math.sqrt(cell.quantity / maxQuantity) * 0.57
+        ctx.globalAlpha = cell.quantity == null ? 0.12 : 0.025 + cell.quantity / maxQuantity * 0.825
         ctx.fillRect(cell.x, cell.y - heat.rowHeight / 2, heat.columnWidth, heat.rowHeight)
         if (cell.unknown) { ctx.globalAlpha = 0.5; ctx.fillRect(cell.x, cell.y - heat.rowHeight / 2, 1, heat.rowHeight) }
       }
@@ -343,7 +342,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
 
   return <section aria-label="历史深度与自有委托" className="replay-chart" >
     <div className="replay-chart-playback">{symbolControl}{children}</div>
-    <div className="replay-chart-meta"><div className="replay-chart-meta-main"><div className="replay-chart-legend"><span className="replay-depth-bid"><Minus size={14} aria-hidden />买一</span><span className="replay-depth-ask"><Minus size={14} aria-hidden />卖一</span><span><Minus size={14} aria-hidden />成交价</span>{layers.market && <span><Circle size={10} aria-hidden />市场成交</span>}<span className="text-accent"><Minus size={14} aria-hidden />账户委托</span><span><Minus size={14} aria-hidden />未到达</span></div>{activeHover && activeHover.id !== 'pointer' && <span className="replay-hover-readout num" aria-label="悬停读数">{activeHover.future ? '未到达 · ' : ''}{activeHover.title} · {activeHover.headline} · {activeHover.status}</span>}      <div className="replay-chart-view-controls replay-chart-navigation" role="group" aria-label="图表导航">
+    <div className="replay-chart-meta"><div className="replay-chart-meta-main"><div className="replay-chart-legend"><span className="replay-depth-bid"><Minus size={14} aria-hidden />买一</span><span className="replay-depth-ask"><Minus size={14} aria-hidden />卖一</span><span><Minus size={14} aria-hidden />成交价</span>{layers.market && <span><Circle size={10} aria-hidden />市场成交</span>}<span className="text-accent"><Minus size={14} aria-hidden />账户委托</span><span><Minus size={14} aria-hidden />未到达</span></div>      <div className="replay-chart-view-controls replay-chart-navigation" role="group" aria-label="图表导航">
       <div className="replay-chart-return-slot">      {!cursorInside && <div className="replay-chart-return">
         <Tooltip content={`游标在${projection.time_us < visibleRange.start_us ? '左' : '右'}侧 · 回到游标`}><button type="button" className={controlClass} aria-label="回到游标" onClick={() => { const span = visibleRange.end_us - visibleRange.start_us; setTimeView(clampReplayView({ start_us: projection.time_us - span / 2, end_us: projection.time_us + span / 2 }, range)) }}>{projection.time_us < visibleRange.start_us ? <ArrowLeft size={15} aria-hidden /> : <ArrowRight size={15} aria-hidden />}</button></Tooltip>
       </div>}
@@ -351,10 +350,12 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
         <div className="replay-playback-group" role="group" aria-label="回放与视图控制">
         {playControls}
         <Tooltip content="恢复视图"><button type="button" className={controlClass} onClick={resetView} disabled={!manualView && !timeView} aria-label="恢复视图"><RotateCcw size={15} aria-hidden /></button></Tooltip>
+        <Tooltip content="聚焦委托过程"><button type="button" className={controlClass} aria-label="聚焦委托过程" disabled={!view || !selected} onClick={focusOrder}><Crosshair size={14} aria-hidden /></button></Tooltip>
+        <Tooltip content="图层与图例说明"><button type="button" className={controlClass} popoverTarget="replay-chart-legend" aria-label="图层与图例说明"><Info size={15} aria-hidden /></button></Tooltip>
         </div>
         {firstQuoteControl}
       </div>
-    </div><div className="replay-depth-status"><span className="replay-depth-fit-slot"><span style={{ visibility: outsideDepth > 0 ? 'hidden' : 'visible' }}>{depthLabel}</span><Tooltip content={`当前视野外有 ${outsideDepth} 个已录档位`}><button type="button" className="text-accent focus-visible:outline-2 focus-visible:outline-accent" style={{ visibility: outsideDepth > 0 ? 'visible' : 'hidden' }} disabled={outsideDepth === 0} onClick={() => setManualView(null)}>显示全部档位</button></Tooltip></span><span className="replay-heat-scale"><i aria-hidden />{heat?.cells.some(cell => cell.quantity != null) ? `挂量 0 → ${quantityText(maxHeat)}` : '挂量尚未知'}</span></div></div>
+    </div><div className="replay-depth-status">{outsideDepth > 0 && <span className="replay-depth-fit-slot"><Tooltip content={`当前视野外有 ${outsideDepth} 个已录档位`}><button type="button" className="text-accent focus-visible:outline-2 focus-visible:outline-accent" style={{ visibility: outsideDepth > 0 ? 'visible' : 'hidden' }} disabled={outsideDepth === 0} onClick={() => setManualView(null)}>显示全部档位</button></Tooltip></span>}<span className="replay-heat-scale">{heat?.cells.some(cell => cell.quantity != null) ? <>挂量峰值 <span className="replay-heat-legend"><i aria-hidden /><span><span>0</span><span>{quantityText(maxHeat / 2)}</span><span>{quantityText(maxHeat)}</span></span></span></> : '挂量尚未知'}</span></div></div>
     <div ref={holder} className="replay-chart-plot">
       <p id="replay-scene-summary" className="sr-only">已读取时段，游标之后的记录灰显为未到达，已录自有成交 {recorded.ownTrades.filter(trade => trade.symbol === symbol && trade.time_us >= visibleRange.start_us && trade.time_us < visibleRange.end_us).length} 笔。盘口与委托状态对应游标 {replayTime(projection.time_us)}。</p>
       <canvas ref={canvas} style={{ height }} className="block w-full touch-none cursor-crosshair focus-visible:outline-2 focus-visible:outline-accent" tabIndex={0}
@@ -373,10 +374,6 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
           else if (event.key === 'Escape') { setHover(null); setInspection(null) }
         }} />
       {view && [...new Set(depthOrders.flatMap(order => order.price != null && order.price >= view.min && order.price <= view.max ? [order.price] : []))].map(price => <span key={price} className="replay-order-price num" data-pending={depthOrders.some(order => order.price === price && order.cancel_pending) || undefined} style={{ right: size.width - layout.priceX - 6, top: replayPriceY(price, view, layout) }} aria-label={`账户挂单价格 ${priceText(price)}`}>{priceText(price)}</span>)}
-      <div className="replay-chart-view-controls replay-chart-tools" role="group" aria-label="图表工具" style={{ left: layout.left + 8, top: layout.top + 8 }}>
-        <Tooltip content="聚焦委托过程"><button type="button" className={controlClass} aria-label="聚焦委托过程" disabled={!view || !selected} onClick={focusOrder}><Crosshair size={14} aria-hidden /></button></Tooltip>
-        <Tooltip content="图层与图例说明"><button type="button" className={controlClass} popoverTarget="replay-chart-legend" aria-label="图层与图例说明"><Info size={15} aria-hidden /></button></Tooltip>
-      </div>
       <div className="replay-chart-axis" data-outside={!cursorInside || undefined} style={{ left: layout.left - 12, right: size.width - layout.right - 12, top: height - 30 }}>
         <ValueSlider variant="axis" label="录制定位" min={0} max={Math.max(1, visibleRange.end_us - visibleRange.start_us - 1)} step={1} value={projection.time_us - visibleRange.start_us}
           formatValue={offset => cursorInside ? replayTime(visibleRange.start_us + offset) : `游标在当前视野之外，${replayTime(projection.time_us)}`} onChange={offset => { setHover(null); onSeek(visibleRange.start_us + offset) }} />
@@ -411,7 +408,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
         <fieldset className="replay-layer-options"><legend className="sr-only">显示图层</legend>{([['working', '在途委托'], ['canceled', '已撤销委托'], ['filled', '已全成委托'], ['market', '市场成交气泡'], ['execution', '账户成交标注']] as const).map(([key, label]) => <label key={key}><span className="relative inline-flex shrink-0 items-center justify-center"><input type="checkbox" checked={layers[key]} onChange={event => { setLayers({ ...layers, [key]: event.target.checked }); setHover(null) }} className="peer size-4 cursor-pointer appearance-none rounded-[3px] border border-ink-3 bg-transparent checked:border-accent checked:bg-accent-soft hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent forced-colors:appearance-auto" /><Check size={12} strokeWidth={2} aria-hidden="true" className="pointer-events-none absolute text-accent opacity-0 peer-checked:opacity-100 forced-colors:hidden" /></span>{label}</label>)}</fieldset>
         <p className="replay-help-note">只影响主图，委托按已录终态筛选。</p>
         <div className="replay-help-grid">
-          <section><h3>盘口</h3><p>颜色越深挂量越多，竖纹表示未知。</p><p>仅含已录档位，聚合取峰值；引导线对应真实价格。</p></section>
+          <section><h3>盘口</h3><p>颜色越亮挂量越多，竖纹表示未知。</p><p>仅含已录档位，聚合取峰值；引导线对应真实价格。</p></section>
           <section><h3>委托</h3><p><span aria-hidden>● → △ / ○</span> 入场确认 → 全成 / 撤销</p><p>实线为本次，点线为账户上下文，长虚线为待撤。</p><p>轨迹不代表排队顺序。</p></section>
           <section><h3>成交</h3><p><span aria-hidden>━ ○</span> 白线和气泡表示市场成交。</p><p>账户成交见“成交”。</p></section>
           <section><h3>账户挂单</h3><p>账户挂单为当前时刻的未成交剩余量，包含其他执行，不代表持仓。</p></section>

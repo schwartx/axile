@@ -7,12 +7,12 @@ import type { ReplayWindow } from '@/features/replay/types'
 import { readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 
-it('悬停只显示轴标签与行内读数，点击打开附近浮卡且不定位，移出和拖动清理读数', () => {
+it('悬停只显示轴标签，点击打开附近浮卡且不定位，移出和拖动清理读数', () => {
   const source = readFileSync(new URL('../../../tests/replay-hover.fixture.ts', import.meta.url), 'utf8')
   const script = `const ui=${JSON.stringify(new URL('../../', import.meta.url).pathname)};\n${source}`
   const result = spawnSync(process.execPath, ['-e', script], { cwd: new URL('../../../', import.meta.url), encoding: 'utf8', timeout: 10_000 })
   if (result.status !== 0) throw Error(result.stderr || result.stdout)
-  expect(JSON.parse(result.stdout.trim())).toEqual({ noFloatingCard: true, axisLabels: true, hasReadout: true, hoverDoesNotPause: true, clearedOnLeave: true, clickSelectsWithoutSeek: true, overlappingRecords: true, futureLabeled: true, clearedOnDrag: true, marketIdentity: true, explicitSeek: true, noPin: true, anchoredBesideClick: true, fixedDuringHover: true, staysOnLeave: true, escapeCloses: true, depthClickCloses: true, emptyClickCloses: true, returnsToCursor: true, resetsView: true })
+  expect(JSON.parse(result.stdout.trim())).toEqual({ noFloatingCard: true, axisLabels: true, hasReadout: false, hoverDoesNotPause: true, clearedOnLeave: true, clickSelectsWithoutSeek: true, overlappingRecords: true, futureLabeled: true, clearedOnDrag: true, marketIdentity: true, explicitSeek: true, noPin: true, anchoredBesideClick: true, fixedDuringHover: true, staysOnLeave: true, escapeCloses: true, depthClickCloses: true, emptyClickCloses: true, returnsToCursor: true, resetsView: true })
 })
 
 function chart() {
@@ -82,10 +82,10 @@ it('首个盘口到达前灰显预览，同刻按采集序号生效，过期或�
     return html
   }
   const early = render(50)
-  expect(early).toContain('未到达 · 已录买 1 / 卖 1 档')
+  expect(early).not.toContain('已录买 1 / 卖 1 档')
   expect(early).toContain('class="replay-depth-ladder num" data-future="true"')
   expect(early).toContain('<span>3</span>')
-  expect(early).not.toContain('<span>9</span>')
+  expect(early.split('class="replay-depth-ladder num"')[1]).not.toContain('<span>9</span>')
   expect(render(100, 0)).toContain('class="replay-depth-ladder num" data-future="true"')
   expect(render(100, 1)).toContain('class="replay-depth-ladder num" data-future="false"')
   expect(render(175)).toContain('盘口未记录／已失效')
@@ -93,5 +93,5 @@ it('首个盘口到达前灰显预览，同刻按采集序号生效，过期或�
   expect(render(200)).toContain('<span>9</span>')
   window.gaps = [{ start_us: 110, end_us: 130, topic: 'depth', symbol: 'X' }]
   expect(render(120)).toContain('盘口未记录／已失效')
-  expect(render(120)).not.toContain('<span>9</span>')
+  expect(render(120).split('class="replay-depth-ladder num"')[1]).not.toContain('<span>9</span>')
 })

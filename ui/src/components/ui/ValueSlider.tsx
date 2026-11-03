@@ -48,7 +48,7 @@ export function ValueSlider({ value, min, max, step, onChange, onChangeEnd, form
       aria-valuemin={min} aria-valuemax={max} aria-valuenow={bounded}
       aria-valuetext={Number.isFinite(value) ? format(value) : '请输入数值'}
       aria-disabled={disabled || undefined} aria-invalid={invalid || undefined} tabIndex={disabled ? -1 : 0}
-      className={`group relative flex ${variant === 'axis' ? 'h-6 rounded' : 'h-11 rounded-lg'} touch-pan-y select-none items-center px-3 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${disabled ? 'cursor-default' : dragging ? 'cursor-grabbing' : 'cursor-pointer'}`}
+      className={`group relative flex ${variant === 'axis' ? 'h-6 rounded' : 'h-11 rounded-lg focus-visible:ring-2 focus-visible:ring-accent/40'} touch-pan-y select-none items-center px-3 outline-none ${disabled ? 'cursor-default' : dragging ? 'cursor-grabbing' : 'cursor-pointer'}`}
       onPointerDown={(event) => {
         if (disabled || !event.isPrimary || event.button !== 0) return
         event.currentTarget.focus()

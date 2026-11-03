@@ -88,6 +88,7 @@ test('没有主动暂停时，下一窗口读取完成后继续播放', () => {
 
 test('下一窗读取中显式定位回缓存首窗，仍应用新定位并丢弃迟到响应', () => {
   const result = pageCase('cached-seek')
+  expect(result.loadingSkeleton).toBe(true)
   expect(result.initial).toContain('08:00:10.000000')
   expect(result.cursor).toContain('08:00:00.000000')
   expect(result.afterLateResponse).toBe(result.cursor)
