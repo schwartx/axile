@@ -8,6 +8,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field, computed_field, model_validator
 
+from axile.domain.execution import ExecutionReasonFamily
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
@@ -160,6 +161,7 @@ class AlgorithmResult(BaseModel):
     status: ExecutionStatus = Field(default=ExecutionStatus.SUCCEEDED, description="该品种执行状态")
     error: str | None = Field(default=None, description="该品种失败原因")
     reason_code: str | None = Field(default=None, description="该品种失败或受阻的稳定原因码")
+    reason_family: ExecutionReasonFamily | None = Field(default=None, description="该品种失败或受阻的原因分类")
     account_assets: UnifiedAccountAssets | None = Field(
         default=None,
         exclude=True,

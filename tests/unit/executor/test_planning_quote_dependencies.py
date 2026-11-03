@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from axile.executor.abstract_executor.capability import AbstractExecutorCapabilityMixin
+from axile.executor.algorithms.utils.clock import clock_now_ms
 from axile.executor.execution_engine import ExecutionEngine
 from axile.executor.models.unified_account_assets import Position, UnifiedAccountAssets
 
@@ -20,7 +21,7 @@ class Owner(AbstractExecutorCapabilityMixin):
         self.requests.append(symbols)
         if "old" in symbols:
             raise TimeoutError("old quote")
-        return {symbol: SimpleNamespace(last_price=100) for symbol in symbols}
+        return {symbol: SimpleNamespace(symbol=symbol, last_price=100, timestamp=clock_now_ms()) for symbol in symbols}
 
     def get_min_notional(self, symbol):
         return None

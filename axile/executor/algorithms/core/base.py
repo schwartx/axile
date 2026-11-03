@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from axile.common.order_param_model import OrderParamModel
 from axile.common.trade_channel import TradeChannel
+from axile.executor.market_data_validation import MarketDataPurpose
 from axile.executor.models.execution_result import AlgorithmResult
 from axile.executor.models.unified_account_assets import PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_callback import (
@@ -126,9 +127,12 @@ class ExecutorProtocol(Protocol):
         order_type: OrderType,
         volume: float,
         price: float = 0,
+        *,
+        market_data: UnifiedPriceData | None = None,
+        market_data_purpose: MarketDataPurpose | None = None,
         **kwargs: object,
     ) -> UnifiedOrder:
-        """下单."""
+        """下单，可显式携带行情证据并要求按盘口用途校验。"""
         ...
 
     def get_pending_orders(self) -> list[UnifiedOrder]:
@@ -202,6 +206,12 @@ class ExecutorProtocol(Protocol):
 
     def get_account_assets(self) -> UnifiedAccountAssets:
         """获取账户资产."""
+        ...
+
+    def market_data_error(
+        self, quote: UnifiedPriceData | None, *, purpose: MarketDataPurpose = "order", now: float | None = None
+    ) -> str | None:
+        """检查行情是否足以用于本次定量或报价。"""
         ...
 
     def get_market_data(self) -> UnifiedPriceData | None:

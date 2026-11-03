@@ -137,7 +137,7 @@ def test_scheduled_rebalance_is_fail_closed_when_calendar_is_unavailable(monkeyp
 
 @pytest.mark.parametrize("available", [True, False])
 def test_delayed_gm_trigger_cannot_cross_phase_or_hide_calendar_failure(monkeypatch, available):
-    from axile.server.db.models.account_settings import GMSessionSettings
+    from axile.channels.gm_sessions import GMSessionSettings
 
     account = _account()
     account.trade_channel = TradeChannel.GM
@@ -325,8 +325,8 @@ def test_schedule_preview_returns_raw_cron_points_with_cursor(monkeypatch: pytes
 def test_gm_schedule_preview_and_trigger_share_selected_phases(
     monkeypatch, hour, minute, auction, after_hours, expected
 ):
+    from axile.channels.gm_sessions import GMSessionSettings
     from axile.server import trading_calendar
-    from axile.server.db.models.account_settings import GMSessionSettings
 
     sessions = GMSessionSettings(opening_cancelable={"enabled": auction, "time": "09:15"})
     moment = datetime(2026, 10, 9, hour, minute, tzinfo=SCHEDULER_TIMEZONE)
@@ -363,8 +363,9 @@ def test_gm_schedule_preview_and_trigger_share_selected_phases(
 
 
 def test_gm_supplements_stop_at_each_phase_boundary(monkeypatch):
+    from axile.channels.gm_sessions import GMSessionSettings
     from axile.server import supplement_plan
-    from axile.server.db.models.account_settings import GMSessionSettings, SupplementSettings
+    from axile.server.db.models.account_settings import SupplementSettings
 
     monkeypatch.setattr(
         supplement_plan,
@@ -388,7 +389,7 @@ def test_gm_supplements_stop_at_each_phase_boundary(monkeypatch):
 def test_special_sessions_rejected_for_non_gm_preview():
     from fastapi import HTTPException
 
-    from axile.server.db.models.account_settings import GMSessionSettings
+    from axile.channels.gm_sessions import GMSessionSettings
 
     with pytest.raises(HTTPException, match="仅适用于股票"):
         asyncio.run(

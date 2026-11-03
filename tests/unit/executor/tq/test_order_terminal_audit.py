@@ -481,6 +481,8 @@ def test_terminal_preserves_symbol_session_algorithm(audited_executor, algorithm
         runtime=instance.require_execution_runtime(),
         audit_context={"execution_id": "execution-A", "account_id": 2, "algorithm": algorithm},
     )
+    api.quote["datetime"] = int(instance.market_data_now() * 1_000_000_000)
+    session.get_market_data()
     order = session.place_order(OrderDirection.BUY, OrderType.LIMIT, 2, 3200)
     row = finish(api)
     bind_execution(instance, RecordingSink(), "execution-B")

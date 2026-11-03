@@ -31,7 +31,7 @@ from typing import Any, cast, override
 import psutil
 from loguru import logger
 
-from axile.channels.gm_sessions import SHANGHAI, check_gm_operation
+from axile.channels.gm_sessions import SHANGHAI, check_gm_operation, gm_phase
 from axile.common.gm_symbols import GM_SYMBOL_RESOLVER, normalize_gm_standard_input
 from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor.base import AbstractExecutor
@@ -74,6 +74,7 @@ from axile.executor.models.unified_order import OrderDirection, OrderType, Trade
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.models.unified_price import UnifiedPriceData
 from axile.executor.order_cancellation import CancelNotAllowedError
+from axile.executor.order_submission_context import get_order_submission_validator
 from axile.executor.position_attributes import native_position_attributes
 
 __all__ = [
@@ -550,6 +551,21 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             },
         )
 
+    def market_data_error(self, quote, *, purpose="order", now=None):
+        """竞价行情必须来自本交易日、本阶段，再检查公共时效和所需价格。"""
+        now = self.market_data_now() if now is None else now
+        error = super().market_data_error(quote, purpose=purpose, now=now)
+        if error or quote is None:
+            return error
+        current = datetime.fromtimestamp(now, SHANGHAI)
+        quoted = datetime.fromtimestamp(quote.timestamp / 1000, SHANGHAI)
+        if quoted.date() != current.date():
+            return "行情不属于当前交易日"
+        if gm_phase(current) in {"opening_cancelable", "opening_locked", "closing_auction"}:
+            if gm_phase(quoted) != gm_phase(current):
+                return "行情不属于当前竞价阶段"
+        return None
+
     def get_market_data(self, symbols: list[str]) -> dict[str, UnifiedPriceData]:
         """获取市场数据."""
         normalized_symbols = [self._normalize_symbol(symbol) for symbol in symbols]
@@ -593,6 +609,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
                     }
 
                     unified_price = from_gm_price(gm_tick, TradeChannel.GM)
+                    unified_price.extra.update(source="gm.current", time_basis="exchange")
                     market_data[unified_price.symbol] = unified_price
                     logger.success(f"{unified_price.symbol} 的快照数据获取成功")
 
@@ -795,6 +812,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
                     price=order_price,
                     account=self.account_id,
                     session=context,
+                    submission_validator=get_order_submission_validator(),
                 ),
                 timeout=10.0,
             )

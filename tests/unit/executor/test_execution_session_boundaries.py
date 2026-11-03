@@ -8,6 +8,8 @@ import pytest
 
 from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor.base import AbstractExecutor
+from axile.executor.abstract_executor.capability import AbstractExecutorCapabilityMixin
+from axile.executor.algorithms.utils.clock import clock_now_ms
 from axile.executor.audit import ExecutionAuditSink
 from axile.executor.execution_session import ExecutionSession
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
@@ -86,7 +88,7 @@ class _SessionBoundaryExecutor(AbstractExecutor):
                 ask_volume=1.0,
                 volume=1.0,
                 turnover=1.0,
-                timestamp=1,
+                timestamp=clock_now_ms(),
                 update_time="2026-03-22T10:00:00",
             )
             for symbol in symbols
@@ -173,7 +175,7 @@ def test_execution_session_keeps_symbol_local_memory() -> None:
 def test_execution_session_proxies_symbol_scoped_owner_query_methods() -> None:
     captured: dict[str, object] = {"audit_metadata": {}}
 
-    class _Owner:
+    class _Owner(AbstractExecutorCapabilityMixin):
         channel_type = TradeChannel.CTP
         logger = _Logger()
 
@@ -259,7 +261,7 @@ def test_execution_session_proxies_symbol_scoped_owner_query_methods() -> None:
                     ask_volume=1.0,
                     volume=10.0,
                     turnover=1010.0,
-                    timestamp=1,
+                    timestamp=clock_now_ms(),
                     update_time="2024-01-01T00:00:00",
                 )
             }
@@ -311,6 +313,7 @@ def test_execution_session_proxies_symbol_scoped_owner_query_methods() -> None:
 
     assert session.get_current_volume(account_assets) == 2.5
     assert session.get_positions(account_assets) == [(1.0, "long")]
+    session.get_market_data()
     assert session.place_order(OrderDirection.BUY, OrderType.LIMIT, 3.0, 99.0, tif="GTC").order_id == "order-rb2610"
     assert [order.order_id for order in session.get_pending_orders()] == ["pending"]
     assert [trade.trade_id for trade in session.query_trades("order-1")] == ["trade-order-1"]
@@ -318,14 +321,17 @@ def test_execution_session_proxies_symbol_scoped_owner_query_methods() -> None:
     assert session.get_termination_mode() == "graceful"
     session.handle_termination_checkpoint()
     assert session.get_account_assets().available_cash == 88.0
-    assert session.get_market_data() is not None
     assert session.get_tick_size() == 0.01
     session.register_order_callback(object())
-    session.register_price_callback(object())
+
+    def price_callback(quote):
+        pass
+
+    session.register_price_callback(price_callback)
     trade_callback = cast(object, lambda trade: trade)
     session.register_trade_callback(cast("object", trade_callback))
     session.unregister_order_callback(object())
-    session.unregister_price_callback(object())
+    session.unregister_price_callback(price_callback)
     session.unregister_trade_callback(cast("object", trade_callback))
     assert session.is_monitoring() is True
     assert session.cancel_order("order-1") is True

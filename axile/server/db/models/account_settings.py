@@ -7,7 +7,12 @@ from sqlalchemy import JSON as SA_JSON
 from sqlalchemy import Column, ForeignKey, Integer
 from sqlmodel import Field, SQLModel
 
-from axile.channels.gm_sessions import GM_SPECIAL_WINDOWS
+from axile.channels.schedule_settings import (
+    legacy_schedule_fields,
+    legacy_schedule_values,
+    normalize_schedule_options,
+    validate_schedule_options,
+)
 from axile.executor.account_control.models import AccountControlOverride
 from axile.executor.futures_close_policy import FuturesClosePolicy
 from axile.executor.models.unified_input import DEFAULT_EXECUTION_TIMEOUT_SECONDS
@@ -62,46 +67,21 @@ class SupplementSettings(SettingsModel):
     interval_minutes: int = Field(ge=1, le=60)
 
 
-class GMSessionTime(SettingsModel):
-    """一次独立阶段触发。"""
-
-    enabled: bool = False
-    time: str
-
-
-class GMSessionSettings(SettingsModel):
-    """GM 自动调仓阶段；盘后专用委托尚未验证，禁止启用。"""
-
-    opening_cancelable: GMSessionTime = GMSessionTime(time="09:15")
-    opening_locked: GMSessionTime = GMSessionTime(time="09:20")
-    closing_auction: GMSessionTime = GMSessionTime(time="14:57")
-    after_hours: GMSessionTime = GMSessionTime(time="15:05")
-
-    @model_validator(mode="after")
-    def validate_times(self) -> "GMSessionSettings":
-        """固定阶段触发时间，拒绝尚未验证的盘后能力。"""
-        for name, (start, _end, label) in GM_SPECIAL_WINDOWS.items():
-            value = getattr(self, name)
-            if value.time != start:
-                raise ValueError(f"{label}触发时间固定为 {start}")
-        if self.after_hours.enabled:
-            raise ValueError("当前渠道尚未验证盘后定价交易能力，暂不能启用")
-        return self
-
-    def validate_channel(self, channel: str) -> None:
-        """特殊阶段配置仅允许用于 GM。"""
-        if str(channel) != "gm":
-            raise ValueError("集合竞价和盘后定价交易配置仅适用于股票（GM）")
-
-
 class ScheduleSettings(SettingsModel):
     """账户期望的调度配置，不表示当前执行状态。"""
 
     is_started: bool = False
     cron_expr: str = ""
-    gm_sessions: GMSessionSettings | None = None
+    channel_options: dict[str, dict[str, Any]] = Field(default_factory=dict)
     supplement: SupplementSettings | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_options(cls, value: Any) -> Any:
+        """旧持久化字段仅在兼容边界转换，不在公共模型声明渠道结构。"""
+        return normalize_schedule_options(value) if isinstance(value, dict) else value
+
+    _options = field_validator("channel_options")(validate_schedule_options)
     _cron = field_validator("cron_expr")(_validate_cron_expr)
 
 
@@ -130,6 +110,11 @@ SETTINGS_FIELDS = {field: group for group, model in SETTINGS_GROUPS.items() for 
 }
 
 
+def settings_fields() -> dict[str, str]:
+    """合并公共字段与插件声明的兼容字段，避免导入时加载插件。"""
+    return SETTINGS_FIELDS | dict.fromkeys(legacy_schedule_fields(), "schedule")
+
+
 class AccountSettings(SQLModel, table=True):
     """与账户一对一的配置；运行结果不写入本表。"""
 
@@ -155,10 +140,13 @@ class AccountSettings(SQLModel, table=True):
 
     def flat_values(self) -> dict[str, Any]:
         """提供旧 API 和执行快照的兼容字段。"""
-        values = {"account_config": dict(self.connection)}
+        values: dict[str, Any] = {"account_config": dict(self.connection)}
         for group in SETTINGS_GROUPS:
             model = getattr(self, group)
-            values.update({name: getattr(model, name) for name in type(model).model_fields})
+            values.update(
+                {name: getattr(model, name) for name in type(model).model_fields if name != "channel_options"}
+            )
+        values.update(legacy_schedule_values(self.schedule.channel_options))
         return values
 
     def apply_patch(self, patch: dict[str, Any]) -> None:
@@ -166,10 +154,14 @@ class AccountSettings(SQLModel, table=True):
         if "account_config" in patch and not isinstance(patch["account_config"], dict):
             raise ValueError("account_config 必须是对象")
         replacements = {}
+        fields = settings_fields()
         for group, model in SETTINGS_GROUPS.items():
-            changes = {key: value for key, value in patch.items() if SETTINGS_FIELDS.get(key) == group}
+            changes = {key: value for key, value in patch.items() if fields.get(key) == group}
             if changes:
-                replacements[group] = model.model_validate(getattr(self, group).model_dump() | changes)
+                current = getattr(self, group).model_dump()
+                if group == "schedule":
+                    changes = normalize_schedule_options(changes, current=current["channel_options"])
+                replacements[group] = model.model_validate(current | changes)
         for group, value in replacements.items():
             setattr(self, group, value)
         if "account_config" in patch:

@@ -9,6 +9,7 @@ import pytest
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionReasonFamily
 from axile.executor.abstract_executor.base import AbstractExecutor
+from axile.executor.algorithms.utils.clock import clock_now_ms
 from axile.executor.ctp.ctp_execute import CtpExecutionEngine
 from axile.executor.models.execution_result import AlgorithmResult, ExecutionStatus, TargetSizingStatus
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
@@ -71,7 +72,7 @@ class _CtpSessionExecutor(AbstractExecutor):
                 ask_volume=1,
                 volume=1,
                 turnover=100,
-                timestamp=1,
+                timestamp=clock_now_ms(),
                 update_time="2026-08-25T21:29:00",
             )
             for symbol in symbols
@@ -185,10 +186,7 @@ def test_ctp_engine_only_queries_and_dispatches_session_allowed_symbols(monkeypa
     assert output.symbol_results["IF2609"].error is None
     assert output.symbol_results["IF2609"].outcome_reason == "非交易时段"
     assert output.symbol_results["IF2609"].reason_code == "COMMON.SESSION.CLOSED"
-    assert output.symbol_results["IF2609"].memory == {
-        "symbol_decision_reason_code": "COMMON.SESSION.CLOSED",
-        "symbol_decision_reason_family": ExecutionReasonFamily.MARKET_RULE.value,
-    }
+    assert output.symbol_results["IF2609"].reason_family == ExecutionReasonFamily.MARKET_RULE
     assert output.symbol_results["IF2609"].sizing is not None
     assert output.symbol_results["IF2609"].sizing.status is TargetSizingStatus.UNAVAILABLE
     assert executor.market_data_requests == [["ag2612"]]
@@ -278,7 +276,7 @@ def test_ctp_engine_sizes_closed_symbol_from_cached_quote_without_blocking_io(
             ask_volume=1,
             volume=1,
             turnover=100,
-            timestamp=1,
+            timestamp=clock_now_ms(),
             update_time="2026-08-25T11:29:00",
         )
     }
@@ -385,10 +383,8 @@ def test_ctp_session_decision_emits_market_rule_audit() -> None:
                 algorithm="SINGLE-MAKER",
                 status=ExecutionStatus.BLOCKED,
                 error="CTP.SESSION.NO_SESSION_TABLE",
-                memory={
-                    "symbol_decision_reason_code": "CTP.SESSION.NO_SESSION_TABLE",
-                    "symbol_decision_reason_family": ExecutionReasonFamily.MARKET_RULE.value,
-                },
+                reason_code="CTP.SESSION.NO_SESSION_TABLE",
+                reason_family=ExecutionReasonFamily.MARKET_RULE,
             )
         ],
     )

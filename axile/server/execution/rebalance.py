@@ -42,7 +42,7 @@ from axile.server.repositories import (
     get_latest_portfolio_id_by_account_id,
     get_latest_success_execute_record_by_account_id,
 )
-from axile.server.target_weight_snapshots import append_target_weight_snapshot
+from axile.server.target_weight_snapshots import append_target_weight_snapshot, get_execution_target_snapshot
 from axile.server.utils import trade_channel_check
 
 
@@ -304,7 +304,7 @@ def _build_rebalance_standard_input(
     )
     if account.trade_channel == TradeChannel.GM:
         if trigger_source == "scheduler":
-            from axile.server.db.models.account_settings import GMSessionSettings
+            from axile.channels.gm_sessions import GMSessionSettings
 
             sessions = getattr(account, "gm_sessions", None) or GMSessionSettings()
             standard_input.extra["audit"]["gm_session"] = gm_session or gm_session_context(
@@ -430,23 +430,30 @@ async def _run_account_rebalance(
     account = await _load_rebalance_account(account_id, logger)
     logger.info("执行任务")
     await trade_channel_check(account, execution_id=execution_id)
-    request = await _resolve_rebalance_request(account, execution_id, logger)
-
-    normalized_target = _normalize_rebalance_target(account, request.curr_target)
     async with SessionLocal() as session:
-        await append_target_weight_snapshot(
-            session,
-            portfolio_id=request.portfolio_id,
-            account_id=cast("int", account.id),
-            raw_weights=request.curr_target,
-            normalized_weights=normalized_target,
-            source="execution",
-            execution_id=execution_id,
-        )
+        snapshot = await get_execution_target_snapshot(session, execution_id) if execution_id else None
+        if snapshot is not None:
+            if snapshot.account_id != account_id or snapshot.raw_weights is None or snapshot.normalized_weights is None:
+                raise ValueError("执行目标快照不完整或不属于当前账户")
+            curr_target = snapshot.raw_weights
+            normalized_target = snapshot.normalized_weights
+        else:
+            request = await _resolve_rebalance_request(account, execution_id, logger)
+            curr_target = request.curr_target
+            normalized_target = _normalize_rebalance_target(account, curr_target)
+            await append_target_weight_snapshot(
+                session,
+                portfolio_id=request.portfolio_id,
+                account_id=cast("int", account.id),
+                raw_weights=curr_target,
+                normalized_weights=normalized_target,
+                source="execution",
+                execution_id=execution_id,
+            )
 
     return await trade(
         account,
-        request.curr_target,
+        curr_target,
         execution_id=execution_id,
         trigger_source=trigger_source,
         logger=logger,

@@ -30,9 +30,13 @@ export function GMSessionControls({ channel, value, onChange }: {
           <div className="min-w-0 flex-1">
             <div id={`${id}-${key}`} className="text-sm font-[640]">{label}</div>
             <div id={`${id}-${key}-range`} className="text-xs text-ink-3">
-              {unavailable ? '当前渠道尚未验证盘后交易能力' : `固定 ${time} 触发 · 北京时间`}
+              {unavailable ? '当前渠道尚未验证盘后交易能力' : key === 'opening_locked' ? '09:20–09:24 可选 · 北京时间' : `固定 ${time} 触发 · 北京时间`}
             </div>
           </div>
+          {key === 'opening_locked' && <select aria-label="早盘不可撤单阶段触发时间" value={selected.time}
+            className="rounded border border-line bg-surface px-2 py-1 text-sm" onChange={(event) => onChange({ ...sessions, [key]: { ...selected, time: event.target.value } })}>
+            {['09:20', '09:21', '09:22', '09:23', '09:24'].map((option) => <option key={option} value={option}>{option}</option>)}
+          </select>}
         </div>
       })}
     </div>

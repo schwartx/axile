@@ -6,7 +6,7 @@ import loguru
 from apscheduler.job import Job  # type: ignore[import-not-found]
 from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-not-found]
 
-from axile.channels.gm_sessions import gm_phase, gm_session_context
+from axile.channels.gm_sessions import GMSessionSettings, gm_phase, gm_session_context
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.server.core.db import SessionLocal
 from axile.server.core.log_config import execution_log_context
@@ -14,7 +14,6 @@ from axile.server.core.scheduler import Scheduler
 from axile.server.cron import SCHEDULER_TIMEZONE, combine_cron_triggers, is_blank_cron_expr
 from axile.server.db.models import Account, ScheduleSkip
 from axile.server.db.models.account import AccountContext
-from axile.server.db.models.account_settings import GMSessionSettings
 from axile.server.repositories import get_latest_portfolio_id_by_account_id
 from axile.server.trading_calendar import (
     CalendarDecisionStatus,

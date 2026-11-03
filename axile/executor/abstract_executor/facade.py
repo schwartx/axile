@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, cast
 
 from axile.executor.abstract_executor.support import _coerce_object_dict, _coerce_trade_rules
 from axile.executor.account_control.decorators import controlled_operation
+from axile.executor.market_data_validation import MarketDataUnavailableError
 from axile.executor.models.execution_result import ExecutionOutcome, ExecutionStatus
 from axile.executor.models.unified_account_assets import Position, UnifiedAccountAssets
 from axile.executor.models.unified_callback import OrderUpdateCallback, PriceDataCallback, TradeRecordCallback
@@ -18,8 +19,15 @@ from axile.executor.models.unified_input import DEFAULT_EXECUTION_TIMEOUT_SECOND
 from axile.executor.models.unified_input_support import as_timeout_int
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_output import UnifiedStandardOutput
+from axile.executor.models.unified_price import clone_price_data
 from axile.executor.order_cancellation import CancelNotAllowedError, cancel_orders
 from axile.executor.order_input_validation import normalize_order_enums
+from axile.executor.order_submission_context import (
+    get_order_submission_context,
+    get_order_submission_validator,
+    order_submission_context,
+    validate_order_submission,
+)
 
 if TYPE_CHECKING:
     from axile.executor.abstract_executor.base import AbstractExecutor
@@ -106,13 +114,36 @@ class AbstractExecutorFacadeMixin:
         normalized_symbol = executor._normalize_symbol(symbol)
         try:
             direction, order_type = normalize_order_enums(direction, order_type)
-            order = executor._place_order_impl(normalized_symbol, direction, order_type, volume, price, **kwargs)
+            if get_order_submission_validator() is not None:
+                validate_order_submission()
+                order = executor._place_order_impl(normalized_symbol, direction, order_type, volume, price, **kwargs)
+            else:
+                query_symbol, quote_symbol = executor._market_data_order_symbols(normalized_symbol)
+                quote = clone_price_data(executor.get_market_data([query_symbol]).get(quote_symbol))
+                purpose = "sizing" if order_type == OrderType.MARKET else "order"
+
+                def validate() -> None:
+                    error = (
+                        "行情品种不匹配"
+                        if quote is not None
+                        and not executor._market_data_matches_order_symbol(normalized_symbol, quote)
+                        else executor.market_data_error(quote, purpose=purpose)
+                    )
+                    if error is not None:
+                        raise MarketDataUnavailableError(normalized_symbol, error)
+
+                validate()
+                with order_submission_context(get_order_submission_context() or {}, validate=validate):
+                    order = executor._place_order_impl(
+                        normalized_symbol, direction, order_type, volume, price, **kwargs
+                    )
         except Exception as exc:
             executor.account_orders.activity.record_failure(
                 "place_order",
                 normalized_symbol,
                 None,
                 getattr(exc, "execution_error", None) or "下单未确认成功，请查看执行详情；未据此认定订单已结束",
+                outcome="blocked" if isinstance(exc, MarketDataUnavailableError) else "unknown",
             )
             raise
         executor.get_execution_query_runtime_bridge().handle_place_order_result(

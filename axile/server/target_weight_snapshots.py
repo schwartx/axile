@@ -11,6 +11,11 @@ from sqlmodel import col, desc, select
 from axile.server.db.models import TargetSizingPublic, TargetWeightSnapshot, TargetWeightSnapshotPublic
 
 
+async def get_execution_target_snapshot(session: AsyncSession, execution_id: str) -> TargetWeightSnapshot | None:
+    """读取 execution 已冻结的目标，供渠道锁重试复用。"""
+    return await session.scalar(select(TargetWeightSnapshot).where(TargetWeightSnapshot.execution_id == execution_id))
+
+
 async def append_target_weight_snapshot(
     session: AsyncSession,
     *,

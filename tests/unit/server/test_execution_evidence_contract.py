@@ -99,13 +99,13 @@ def _algorithm_result(case):
             [],
             explicit_error=query_error or inputs.get("error"),
             explicit_blocked_error=inputs.get("blocked"),
+            blocked_reason_code=COMMON_SESSION_CLOSED if inputs.get("blocked") else None,
         ),
         symbol="A",
         algorithm="contract",
         orders=orders,
         target_volume=inputs["target"],
         account_assets=assets,
-        reason_code=COMMON_SESSION_CLOSED if inputs.get("blocked") else None,
     )
 
 

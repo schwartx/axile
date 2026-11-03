@@ -7,16 +7,17 @@ from typing import cast
 
 import pytest
 
-from axile.channels.gm_sessions import SHANGHAI, gm_session_context
+from axile.channels.gm_sessions import SHANGHAI, GMSessionSettings, gm_session_context
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionArtifactType, ExecutionEventStatus, ExecutionEventType
 from axile.executor.abstract_executor.base import AbstractExecutor
+from axile.executor.abstract_executor.capability import AbstractExecutorCapabilityMixin
+from axile.executor.algorithms.utils.clock import clock_now_ms
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import ExecutionStatus, UnifiedStandardOutput
 from axile.executor.models.unified_price import UnifiedPriceData
 from axile.server.db.models import Account
-from axile.server.db.models.account_settings import GMSessionSettings
 from axile.server.execution import backend as execution_backend
 from axile.server.execution import intents as execution_intents
 from axile.server.execution import rebalance as rebalance_execution
@@ -36,7 +37,7 @@ from tests.unit.server._execution_test_support import (
 )
 
 
-class _VolumeCalcStub:
+class _VolumeCalcStub(AbstractExecutorCapabilityMixin):
     logger: WarningLogger
 
     def __init__(self, logger: WarningLogger) -> None:
@@ -103,7 +104,7 @@ def test_calculate_target_volume_does_not_restore_forbidden_symbols_from_last_ta
             ask_volume=1.0,
             volume=1.0,
             turnover=1.0,
-            timestamp=1,
+            timestamp=clock_now_ms(),
             update_time="2026-03-13T00:00:00",
         )
     }
@@ -235,6 +236,9 @@ def test_trade_defaults_gm_ashare_short_leverage_to_zero_when_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """GM+A股 且未显式配置 short_leverage 时，应默认按 long-only 处理负目标。"""
+    monkeypatch.setattr(
+        rebalance_execution, "clock_now", lambda **kwargs: datetime(2026, 11, 3, 10, 0, tzinfo=SHANGHAI)
+    )
     account = build_account(
         name="gm-ashare-account",
         market="A股",
@@ -588,6 +592,11 @@ def test_account_rebalance_persists_same_normalized_target_used_by_trade(
     monkeypatch.setattr(rebalance_execution, "_load_rebalance_account", fake_load)
     monkeypatch.setattr(rebalance_execution, "trade_channel_check", fake_check)
     monkeypatch.setattr(rebalance_execution, "_resolve_rebalance_request", fake_resolve)
+
+    async def fake_snapshot(_session, _execution_id):
+        return None
+
+    monkeypatch.setattr(rebalance_execution, "get_execution_target_snapshot", fake_snapshot)
     monkeypatch.setattr(rebalance_execution, "append_target_weight_snapshot", fake_append)
     monkeypatch.setattr(rebalance_execution, "trade", fake_trade)
     monkeypatch.setattr(rebalance_execution, "SessionLocal", lambda: FakeSession())
@@ -1112,3 +1121,60 @@ def test_standard_input_execution_timeout_defaults_to_180() -> None:
     assert UnifiedStandardInput.from_dict(dict(payload)).execution_timeout == 180
     # 0 表示显式关闭 deadline（仿真路径依赖该语义），不能被默认值覆盖。
     assert UnifiedStandardInput.from_dict({**payload, "execution_timeout": 0}).execution_timeout == 0
+
+
+def test_rebalance_retry_reuses_frozen_target(monkeypatch):
+    account = build_account()
+    raw = {"rb2610": 0.5}
+    normalized = {"rb2610": 0.25}
+    saved = None
+    calculations = 0
+    attempts = 0
+
+    async def load(*args):
+        return account
+
+    async def check(*args, **kwargs):
+        pass
+
+    async def snapshot(*args):
+        return saved
+
+    async def resolve(*args):
+        nonlocal calculations
+        calculations += 1
+        return rebalance_execution._ResolvedRebalanceRequest(portfolio_id=7, curr_target=raw)
+
+    async def append(_session, **kwargs):
+        nonlocal saved
+        assert saved is None
+        saved = SimpleNamespace(
+            account_id=1, raw_weights=kwargs["raw_weights"], normalized_weights=kwargs["normalized_weights"]
+        )
+
+    async def trade(_account, target, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        assert target == raw
+        assert kwargs["normalized_target"] == normalized
+        if attempts == 1:
+            raise execution_intents.IntentNotRunnable("账户渠道锁占用中", retry=True)
+        return SimpleNamespace(is_success=1)
+
+    monkeypatch.setattr(rebalance_execution, "SessionLocal", lambda: FakeSession())
+    monkeypatch.setattr(rebalance_execution, "_load_rebalance_account", load)
+    monkeypatch.setattr(rebalance_execution, "trade_channel_check", check)
+    monkeypatch.setattr(rebalance_execution, "get_execution_target_snapshot", snapshot)
+    monkeypatch.setattr(rebalance_execution, "_resolve_rebalance_request", resolve)
+    monkeypatch.setattr(rebalance_execution, "_normalize_rebalance_target", lambda *args: normalized)
+    monkeypatch.setattr(rebalance_execution, "append_target_weight_snapshot", append)
+    monkeypatch.setattr(rebalance_execution, "trade", trade)
+
+    async def run():
+        with pytest.raises(execution_intents.IntentNotRunnable):
+            await rebalance_execution._run_account_rebalance(1, execution_id="retry")
+        assert (await rebalance_execution._run_account_rebalance(1, execution_id="retry")).is_success == 1
+
+    asyncio.run(run())
+    assert calculations == 1
+    assert attempts == 2

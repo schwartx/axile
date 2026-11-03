@@ -285,6 +285,7 @@ class OrderVolumeRequest:
     price: float
     account: str
     session: dict[str, Any] | None = None
+    submission_validator: Callable[[], None] | None = None
 
     operation: ClassVar[GMSdkOperation] = "order_volume"
 
@@ -388,6 +389,8 @@ class GMApiBridge:
             method = cls._SDK_OPERATION_METHODS[request.operation]
         except KeyError as exc:
             raise ValueError(f"未知的 GM bridge 操作: {request.operation}") from exc
+        if isinstance(request, OrderVolumeRequest) and request.submission_validator is not None:
+            request.submission_validator()
         return method(**request.as_kwargs())
 
     @classmethod

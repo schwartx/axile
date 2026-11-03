@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import math
+import time
+from datetime import UTC, datetime
 
 import pytest
 
 from axile.executor.constants.order_status import OrderStatus
+from axile.executor.market_data_validation import market_data_error
 from axile.executor.models.unified_account_assets import PositionDirection
 from axile.executor.tq.converters import account_to_unified, order_to_unified, quote_to_unified, trade_to_unified
 from axile.executor.tq.symbols import TQInstrument, TQSymbolResolver
@@ -92,6 +95,61 @@ def test_quote_and_order_return_to_common_symbol() -> None:
     assert quote.symbol == "rb2610"
     assert order.symbol == "rb2610"
     assert order.status == OrderStatus.FILLED
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="requires POSIX tzset")
+@pytest.mark.parametrize("host_tz", ["UTC", "Asia/Shanghai"])
+@pytest.mark.parametrize(
+    ("quote_time", "update_time"),
+    [
+        ("2026-11-03 10:00:00.000000", "2026-11-03T10:00:00+08:00"),
+        ("2026-11-03T10:00:00+08:00", "2026-11-03T10:00:00+08:00"),
+        ("2026-11-03T02:00:00+00:00", "2026-11-03T02:00:00+00:00"),
+    ],
+)
+def test_quote_timestamp_is_independent_of_host_timezone(
+    monkeypatch: pytest.MonkeyPatch, host_tz: str, quote_time: str, update_time: str
+) -> None:
+    try:
+        with monkeypatch.context() as patch:
+            patch.setenv("TZ", host_tz)
+            time.tzset()
+            quote = quote_to_unified(
+                {
+                    "exchange_id": "SHFE",
+                    "instrument_id": "rb2610",
+                    "last_price": 3200,
+                    "bid_price1": 3199,
+                    "ask_price1": 3201,
+                    "datetime": quote_time,
+                },
+                _resolver(),
+            )
+            expected = datetime(2026, 11, 3, 2, tzinfo=UTC).timestamp()
+            assert quote.timestamp == int(expected * 1000)
+            assert quote.update_time == update_time
+            for purpose in ("sizing", "order"):
+                assert market_data_error(quote, now=expected + 1, max_age=5, purpose=purpose) is None
+    finally:
+        time.tzset()
+
+
+@pytest.mark.parametrize("raw_time", [None, "", "bad timestamp", float("nan"), 10**30])
+def test_invalid_quote_time_cannot_pass_market_data_validation(raw_time: object) -> None:
+    quote = quote_to_unified(
+        {
+            "exchange_id": "SHFE",
+            "instrument_id": "rb2610",
+            "last_price": 3200,
+            "bid_price1": 3199,
+            "ask_price1": 3201,
+            "datetime": raw_time,
+        },
+        _resolver(),
+    )
+    assert quote.timestamp == 0
+    for purpose in ("sizing", "order"):
+        assert market_data_error(quote, now=1_793_664_000, max_age=5, purpose=purpose) == "行情时间无效"
 
 
 def test_trade_reads_tqsdk_trade_entity_fields() -> None:

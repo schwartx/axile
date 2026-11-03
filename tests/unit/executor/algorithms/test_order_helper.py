@@ -317,6 +317,48 @@ class TestSubmitAndTrackOrderProjection:
         tracker.add_order.assert_not_called()
         assert executor.emit_audit_event.call_args.kwargs["reason_code"] == "COMMON.SUB_MIN_QTY"
 
+    @pytest.mark.parametrize("with_evidence", [False, True])
+    def test_forwards_market_data_evidence_and_purpose(self, with_evidence):
+        """行情证据和校验用途透传，渠道参数与跟踪信息保持不变。"""
+        executor = self._executor()
+        tracker = MagicMock()
+        quote = (
+            UnifiedPriceData(
+                symbol="rb2610",
+                last_price=100.0,
+                bid_price=99.0,
+                ask_price=101.0,
+                bid_volume=1.0,
+                ask_volume=1.0,
+                volume=10.0,
+                timestamp=1,
+                update_time="2026-03-22T00:00:00",
+            )
+            if with_evidence
+            else None
+        )
+        kwargs = {"market_data": quote, "market_data_purpose": "sizing"} if with_evidence else {}
+
+        order = submit_and_track_order(
+            executor,
+            tracker,
+            OrderDirection.BUY,
+            OrderType.LIMIT,
+            1.0,
+            100.0,
+            target_volume=1.0,
+            current_volume=0.0,
+            position_side="LONG",
+            **kwargs,
+        )
+
+        call_kwargs = executor.place_order.call_args.kwargs
+        assert call_kwargs["market_data"] is quote
+        assert call_kwargs["market_data_purpose"] == ("sizing" if with_evidence else None)
+        assert call_kwargs["position_side"] == "LONG"
+        assert tracker.add_order.call_args.args == (order,)
+        assert tracker.add_order.call_args.kwargs["position_side"] == "LONG"
+
     def test_pure_reduce_injects_reduce_only(self):
         """纯减仓 sub-min 应注入 reduce_only 后照常下单."""
         executor = self._executor()

@@ -15,6 +15,7 @@ from axile.executor.algorithms.defaults.ctp_target_pos_task.impl import (
     _place_volume_slices,
     ctp_target_pos_task_algorithm,
 )
+from axile.executor.algorithms.utils.order_tracker import OrderTracker
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.ctp.converters import account_to_unified
 from axile.executor.ctp.ctp_execute import CtpSessionRecoveryRequired
@@ -40,7 +41,8 @@ def test_ctp_split_failure_keeps_already_submitted_order():
         status=OrderStatus.PENDING,
     )
     executor.place_order.side_effect = [order, RuntimeError("native reject")]
-    tracker = MagicMock()
+    tracker = OrderTracker(executor)
+    tracker.add_order = MagicMock(wraps=tracker.add_order)
     orders, submitted = _place_volume_slices(
         executor, OrderDirection.BUY, 2, 10, offset_flag="0", trade_rule={}, tracker=tracker
     )
@@ -449,7 +451,8 @@ def test_target_pos_task_market_slices_use_market_bounds() -> None:
         )
         for index in range(2)
     ]
-    tracker = MagicMock()
+    tracker = OrderTracker(executor)
+    tracker.add_order = MagicMock(wraps=tracker.add_order)
     orders, submitted = _place_volume_slices(
         executor,
         OrderDirection.BUY,
@@ -584,10 +587,11 @@ def test_target_pos_task_does_not_trade_when_start_snapshot_is_unknown(source):
 
 def test_target_pos_task_forwards_tracker_cancel_error(monkeypatch):
     executor = _FuturesExecutor(TradeChannel.CTP)
-    tracker = MagicMock()
-    tracker.get_pending_count.return_value = 1
-    tracker.get_all_orders.return_value = []
-    tracker.get_all_trades.return_value = []
+    tracker = OrderTracker(executor)
+    tracker.get_pending_count = MagicMock(return_value=1)
+    tracker.get_all_orders = MagicMock(return_value=[])
+    tracker.get_all_trades = MagicMock(return_value=[])
+    tracker.wait_for_completion = MagicMock()
     tracker.explicit_error = None
     tracker.explicit_blocked_error = None
 
