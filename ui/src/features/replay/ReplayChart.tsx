@@ -38,6 +38,12 @@ interface Props {
 
 const controlClass = 'inline-flex min-h-7 min-w-7 cursor-pointer items-center justify-center rounded-chip text-ink-2 hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default disabled:opacity-40'
 
+function priceLabelOpacity(top: number, occupied: number[]) {
+  // 20px 内留净读数，外侧 16px 按距离退墨，不叠加时间缓动造成拖尾。
+  const fade = Math.max(0, Math.min(1, (Math.min(...occupied.map(other => Math.abs(top - other))) - 20) / 16))
+  return fade * fade * (3 - 2 * fade)
+}
+
 function drawTimeAxis(ctx: CanvasRenderingContext2D, height: number, range: ReplayRange, layout: ReplayChartLayout, theme: CanvasTheme) {
   canvasLine(ctx, layout.left, height - 18, layout.right, height - 18, theme.line)
   ctx.fillStyle = theme.ink
@@ -131,10 +137,23 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   }, [layers.market, slices, replayWindow, recorded.marketTrades, symbol, visibleRange, layout, projection, view])
   const maxBubble = bubbles.reduce((max, bubble) => Math.max(max, bubble.quantity), 1)
   const ownOrders = useMemo(() => orders.filter(replayOnBookOrder), [orders])
-  const depthOrders = futureDepth ? [] : ownOrders
+  const depthOrders = useMemo(() => futureDepth ? [] : ownOrders, [futureDepth, ownOrders])
   const decimals = instrument?.price_decimals ?? 6
   const priceText = useCallback((price: number | null) => replayNumber(price, decimals), [decimals])
   const quantityText = useCallback((quantity: number | null) => replayNumber(quantity, instrument?.quantity_decimals ?? 6), [instrument?.quantity_decimals])
+  const priceTick = instrument.price_tick ?? 10 ** -decimals
+  const hoverPrice = activeHover && view ? Math.round(replayYPrice(activeHover.y, view, layout) / priceTick) * priceTick : null
+  const orderPrices = useMemo(() => [...new Set(depthOrders.flatMap(order => order.price != null ? [order.price] : []))], [depthOrders])
+  const orderLabels: { price: number; top: number; y: number; pending: boolean; collapsed: boolean }[] = []
+  for (const price of [...orderPrices].sort((a, b) => Number(b === selected?.price) - Number(a === selected?.price) || b - a)) {
+    if (!view || price < view.min || price > view.max) continue
+    const y = replayPriceY(price, view, layout), top = priceLabelTop(y)
+    orderLabels.push({ price, y, top, pending: depthOrders.some(order => order.price === price && order.cancel_pending),
+      collapsed: orderLabels.some(label => !label.collapsed && Math.abs(label.top - top) < 20) })
+  }
+  const hoverOrder = orderLabels.find(label => priceText(label.price) === priceText(hoverPrice))
+  const hoverOccupied = hoverPriceTop == null ? [] : [hoverPriceTop]
+  const occupiedPrices = [...hoverOccupied, ...orderLabels.filter(label => !label.collapsed).map(label => label.top)]
   const heat = useMemo(() => {
     if (!view) return null
     if (!slices) return replayHeatCells(historyQuotes, visibleRange, drawThrough, view, layout, replayWindow.gaps)
@@ -175,7 +194,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
     const theme = readCanvasTheme(holder.current), css = getComputedStyle(holder.current)
     ctx.font = `12px ${theme.font}`; ctx.fillStyle = theme.surface; ctx.fillRect(0, 0, size.width, height)
     ctx.fillStyle = theme.ink
-    const measuredAxisWidth = Math.max(76, Math.ceil(Math.max(0, ...priceTicks.map(price => ctx.measureText(priceText(price)).width))) + 16)
+    const measuredAxisWidth = Math.max(76, Math.ceil(Math.max(0, ...[...priceTicks, ...orderPrices].map(price => ctx.measureText(priceText(price)).width))) + 16)
     if (measuredAxisWidth !== priceAxisWidth) { setPriceAxisWidth(measuredAxisWidth); return }
     if (!view || !heat) { ctx.fillText('这段记录尚无有效价位。', layout.left, height / 2); drawTimeAxis(ctx, height, visibleRange, layout, theme); return }
     const cursorX = replayTimeX(projection.time_us, visibleRange, layout)
@@ -256,7 +275,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       canvasLine(ctx, layout.left, y, layout.right, y, theme.line)
     }
     drawTimeAxis(ctx, height, visibleRange, layout, theme)
-  }, [priceAxisWidth, priceTicks, size, height, projection, replayWindow, visibleRange, symbol, executionId, selectedOrder, selectedExecution, view, layout, historyQuotes, timeline, marketSegments, priceText, quantityText, heat, maxHeat, recorded, drawThrough, cursorInside, bubbles, maxBubble, activeHover?.object])
+  }, [priceAxisWidth, priceTicks, orderPrices, size, height, projection, replayWindow, visibleRange, symbol, executionId, selectedOrder, selectedExecution, view, layout, historyQuotes, timeline, marketSegments, priceText, quantityText, heat, maxHeat, recorded, drawThrough, cursorInside, bubbles, maxBubble, activeHover?.object])
 
   const resetView = () => { setManualView(null); setTimeView(null); setHover(null) }
   const zoom = (factor: number) => {
@@ -396,17 +415,20 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
           else if (event.key === 'Escape') { setHover(null); setInspection(null) }
         }} />
       {view && priceTicks.map(price => {
+        if (orderPrices.includes(price)) return null
         const top = priceLabelTop(replayPriceY(price, view, layout))
-        // 20px 内留净读数，外侧 16px 按距离退墨，不叠加时间缓动造成拖尾。
-        const fade = hoverPriceTop == null ? 1 : Math.max(0, Math.min(1, (Math.abs(top - hoverPriceTop) - 20) / 16))
-        return <span key={price} className="replay-price-tick num" aria-hidden="true" style={{ ...priceLabelStyle, top, opacity: fade * fade * (3 - 2 * fade) }}>{priceText(price)}</span>
+        return <span key={price} className="replay-price-tick num" aria-hidden="true" style={{ ...priceLabelStyle, top, opacity: priceLabelOpacity(top, occupiedPrices) }}>{priceText(price)}</span>
       })}
-      {view && [...new Set(depthOrders.flatMap(order => order.price != null && order.price >= view.min && order.price <= view.max ? [order.price] : []))].map(price => <span key={price} className="replay-order-price num" data-pending={depthOrders.some(order => order.price === price && order.cancel_pending) || undefined} style={{ right: size.width - layout.priceX - 6, top: replayPriceY(price, view, layout) }} aria-label={`账户挂单价格 ${priceText(price)}`}>{priceText(price)}</span>)}
+      {orderLabels.map(label => <span key={label.price} className="replay-order-price num" data-pending={label.pending || undefined} data-collapsed={label.collapsed || undefined}
+        style={{ ...priceLabelStyle, top: label.top }} aria-hidden={label === hoverOrder || undefined} aria-label={`账户挂单价格 ${priceText(label.price)}`}>
+        <i aria-hidden="true" style={{ top: label.y - label.top }} />
+        <span style={{ opacity: label.collapsed || label === hoverOrder ? 0 : priceLabelOpacity(label.top, hoverOccupied) }}>{priceText(label.price)}</span>
+      </span>)}
       <div className="replay-chart-axis" data-outside={!cursorInside || undefined} style={{ left: layout.left - 12, right: size.width - layout.right - 12, top: height - 30 }}>
         <ValueSlider variant="axis" label="录制定位" min={0} max={Math.max(1, visibleRange.end_us - visibleRange.start_us - 1)} step={1} value={projection.time_us - visibleRange.start_us}
           formatValue={offset => cursorInside ? replayTime(visibleRange.start_us + offset) : `游标在当前视野之外，${replayTime(projection.time_us)}`} onChange={offset => { setHover(null); onSeek(visibleRange.start_us + offset) }} />
       </div>
-      {view && layout.columns && <ReplayDepthLadder quote={displayQuote} future={futureDepth} orders={depthOrders} view={view} layout={layout} height={height} executionId={executionId} selected={selectedOrder} onSelect={key => { onInspect(); onSelectOrder(key) }} priceText={priceText} quantityText={quantityText} hoverPrice={activeHover ? Math.round(replayYPrice(activeHover.y, view, layout) / (instrument.price_tick ?? 10 ** -decimals)) * (instrument.price_tick ?? 10 ** -decimals) : undefined} />}
+      {view && layout.columns && <ReplayDepthLadder quote={displayQuote} future={futureDepth} orders={depthOrders} view={view} layout={layout} height={height} executionId={executionId} selected={selectedOrder} onSelect={key => { onInspect(); onSelectOrder(key) }} priceText={priceText} quantityText={quantityText} hoverPrice={hoverPrice ?? undefined} />}
       {inspection && <div className="replay-inspection-float" aria-label="图中记录浮卡" style={{
         width: inspectionWidth,
         left: Math.max(8, Math.min(layout.right - inspectionWidth - 8, inspection.x + 12 + inspectionWidth <= layout.right ? inspection.x + 12 : inspection.x - 12 - inspectionWidth)),
@@ -421,7 +443,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       {activeHover && <>
         {activeHover.x <= layout.right && <div className="replay-crosshair" aria-hidden style={{ left: activeHover.x, top: layout.top, height: layout.bottom - layout.top }} />}
         <div className="replay-crosshair-horizontal" aria-hidden style={{ left: layout.left, right: size.width - layout.right, top: activeHover.y }} />
-        <span className="replay-crosshair-price num" style={{ ...priceLabelStyle, top: hoverPriceTop ?? undefined }}><i aria-hidden="true" style={{ top: activeHover.y - (hoverPriceTop ?? 0) }} />{view && priceText(Math.round(replayYPrice(activeHover.y, view, layout) / (instrument.price_tick ?? 10 ** -decimals)) * (instrument.price_tick ?? 10 ** -decimals))}</span>
+        <span className={`replay-crosshair-price num${hoverOrder ? ' replay-order-price' : ''}`} data-pending={hoverOrder?.pending || undefined} aria-label={hoverOrder ? `账户挂单价格 ${priceText(hoverPrice)}` : undefined} style={{ ...priceLabelStyle, top: hoverPriceTop ?? undefined }}><i aria-hidden="true" style={{ top: activeHover.y - (hoverPriceTop ?? 0) }} />{view && priceText(hoverPrice)}</span>
         <time className="replay-crosshair-time num" style={{ left: Math.max(layout.left, Math.min(layout.right - 140, activeHover.x - 70)), top: height - 24 }}>{replayTime(activeHover.time)}</time>
       </>}
     </div>

@@ -7,7 +7,7 @@ import type { ReplayWindow } from '@/features/replay/types'
 import { readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 
-it('悬停只显示轴标签，点击打开附近浮卡且不定位，移出和拖动清理读数', () => {
+it('价格轴融合委托与悬停读数并避让，点击打开浮卡，移出和拖动清理读数', () => {
   const source = readFileSync(new URL('../../../tests/replay-hover.fixture.ts', import.meta.url), 'utf8')
   const script = `const ui=${JSON.stringify(new URL('../../', import.meta.url).pathname)};\n${source}`
   const result = spawnSync(process.execPath, ['-e', script], { cwd: new URL('../../../', import.meta.url), encoding: 'utf8', timeout: 10_000 })
@@ -40,6 +40,7 @@ it('真实图表组件的可读ORD按归属列量，不把他单与未知归入�
   expect(html).toContain('账户挂单为当前时刻的未成交剩余量，包含其他执行')
   expect(html).toContain('账户成交标注')
   expect(html).toContain('轨迹不代表排队顺序')
+  expect(html.match(/aria-label="账户挂单价格 100"/g)).toHaveLength(1)
 })
 
 it('切换当前执行只改变归属展示，不改账户订单或数量', () => {

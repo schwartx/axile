@@ -158,8 +158,6 @@
 .replay-ladder-lines { position: absolute; inset: 0 auto auto 0; pointer-events: none; }
 .replay-ladder-list { position: absolute; inset: 28px 0 0 82px; overflow-y: auto; padding-right: 8px; }
 .replay-order-color { color: var(--color-chart-2); }
-.replay-order-price { position: absolute; transform: translateY(-50%); padding: 2px 6px; border-radius: 2px; background: var(--color-chart-2); color: var(--color-surface); text-align: left; font-size: 11px; line-height: 1.2; pointer-events: none; }
-.replay-order-price[data-pending="true"] { background: var(--color-warn); }
 .replay-ladder-row { width: 100%; align-items: center; height: 20px; text-align: right; color: var(--color-ink-1); white-space: nowrap; }
 .replay-ladder-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 button.replay-ladder-row:hover, .replay-ladder-list [data-hovered="true"] .replay-ladder-row { background: var(--color-fill); }
@@ -175,9 +173,14 @@ button.replay-ladder-row:focus-visible { outline: 2px solid var(--color-accent);
 .replay-ladder-amount > i { position: absolute; z-index: -1; inset-block: 1px; right: 0; background: currentColor; opacity: .18; }
 .replay-ladder-row { border-bottom: 1px solid var(--color-line); }
 
-.replay-price-tick, .replay-crosshair-price { position: absolute; pointer-events: none; color: var(--color-ink-2); font-size: 12px; line-height: 16px; white-space: nowrap; text-align: right; }
+.replay-price-tick, .replay-crosshair-price, .replay-order-price { position: absolute; pointer-events: none; color: var(--color-ink-2); font-size: 12px; line-height: 16px; white-space: nowrap; text-align: right; }
 .replay-crosshair-price { z-index: 1; color: var(--color-ink-1); font-weight: 500; }
-.replay-crosshair-price > i { position: absolute; left: -2px; width: 6px; border-top: 1px solid currentColor; }
+.replay-order-price { color: var(--color-chart-2); }
+.replay-order-price > span { display: block; }
+.replay-order-price[data-pending="true"] { color: var(--color-warn); }
+.replay-order-price > span, .replay-crosshair-price.replay-order-price { background: var(--color-chart-2); color: var(--color-surface); border-radius: 2px; }
+.replay-order-price[data-pending="true"] > span, .replay-crosshair-price.replay-order-price[data-pending="true"] { background: var(--color-warn); }
+.replay-crosshair-price > i, .replay-order-price > i { position: absolute; left: -2px; width: 6px; border-top: 1px solid currentColor; }
 .replay-crosshair-time { position: absolute; z-index: 1; pointer-events: none; background: var(--color-ink-1); color: var(--color-surface); padding: 2px 4px; font-size: 12px; line-height: 16px; white-space: nowrap; text-align: center; }
 .replay-selected-inspection { font-size: 12px; line-height: 1.6; }
 

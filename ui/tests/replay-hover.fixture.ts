@@ -145,4 +145,44 @@ returnButton.props.onClick(); draw()
 const returnsToCursor = !button('回到游标') && seeks.length === seeksBeforeReturn
 button('恢复视图').props.onClick(); draw()
 const resetsView = button('恢复视图').props.disabled
+
+find(tree, n => n.type === 'canvas').props.onPointerLeave()
+const working = { ...Object.values(scene.orders)[0] as any, confirmed: true, terminal: false, remaining_volume: 1, status: 'working' }
+const activeOrders = Object.fromEntries([
+  { ...working, key: 'A', price: 100.5, cancel_pending: true },
+  { ...working, key: 'B', price: 100.51 },
+  { ...working, key: 'C', price: 100.5 },
+].map(order => [order.key, order]))
+props.projection = { ...projection, orders: activeOrders }
+props.scene = { ...scene, orders: activeOrders }
+props.range = windowData.coverage[0]
+props.selectedOrder = 'A'
+draw()
+const orderLabel = (price: string) => find(tree, n => n.props?.className === 'replay-order-price num' && n.props?.['aria-label'] === `账户挂单价格 ${price}`)
+const selectedLabel = orderLabel('100.5'), nearbyLabel = orderLabel('100.51')
+assert.equal(selectedLabel.props['data-collapsed'], undefined, '选中委托优先保留价格文本')
+assert.equal(nearbyLabel.props['data-collapsed'], true, '密集委托保留刻线，不叠加价格文本')
+assert.equal(nearbyLabel.props.children[1].props.style.opacity, 0)
+assert.equal(selectedLabel.props['data-pending'], true, '同价任一委托待撤即保留警示语义')
+assert.ok(!middleTick(), '委托价与普通刻度同价时只绘制委托标签')
+const otherTick = find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.children === '100.4')
+assert.equal(otherTick.props.style.left, selectedLabel.props.style.left, '委托与轴刻度共用左边界')
+assert.equal(otherTick.props.style.width, selectedLabel.props.style.width, '委托与轴刻度共用宽度和右边界')
+assert.ok(otherTick.props.style.opacity < 1, '相邻普通刻度向委托价让位')
+for (const label of [selectedLabel, nearbyLabel]) {
+  assert.ok(Math.abs(label.props.style.top + label.props.children[0].props.style.top - replayPriceY(Number(label.props['aria-label'].split(' ')[1]), view, layout)) < 1e-8, '密集委托的刻线始终位于真实价格')
+}
+hover(100.5, 0)
+const mergedLabel = find(tree, n => n.props?.className === 'replay-crosshair-price num replay-order-price')
+assert.equal(mergedLabel.props.children[1], '100.5', '悬停与委托同价时合并读数')
+assert.equal(mergedLabel.props['data-pending'], true)
+assert.equal(orderLabel('100.5').props.children[1].props.style.opacity, 0, '合并后不重复显示委托价格')
+hover(100.55, 0)
+assert.equal(orderLabel('100.5').props.children[1].props.style.opacity, 0, '异价悬停靠近时委托文本让位，保留价位刻线')
+assert.ok(priceLabel(), '异价悬停保持独立读数')
+find(tree, n => n.type === 'canvas').props.onPointerLeave(); draw()
+assert.equal(orderLabel('100.5').props.children[1].props.style.opacity, 1, '移出后恢复委托价格')
+props.selectedOrder = 'B'; draw()
+assert.equal(orderLabel('100.51').props['data-collapsed'], undefined, '切换选中委托后优先级随之切换')
+assert.equal(orderLabel('100.5').props['data-collapsed'], true)
 console.log(JSON.stringify({ noFloatingCard, axisLabels, hasReadout, hoverDoesNotPause, clearedOnLeave, clickSelectsWithoutSeek, overlappingRecords, futureLabeled, clearedOnDrag, marketIdentity, explicitSeek, noPin, anchoredBesideClick, fixedDuringHover, staysOnLeave, escapeCloses, depthClickCloses, emptyClickCloses, returnsToCursor, resetsView }))
