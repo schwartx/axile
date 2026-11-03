@@ -180,7 +180,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
           const best = replayBestLevel(quote, side), next = historyQuotes[index + 1]
           if (!best || !currentReplayQuote(quote, quote.time_us, replayWindow.gaps)) return
           const end = replayQuoteEnd(quote, next?.time_us ?? drawThrough, drawThrough, replayWindow.gaps)
-          if (end < visibleRange.start_us || quote.time_us >= visibleRange.end_us || !quote.book_valid) return
+          if (end < visibleRange.start_us || quote.time_us >= visibleRange.end_us || (!quote.book_valid || !quote.available)) return
           const x = replayTimeX(Math.max(visibleRange.start_us, quote.time_us), visibleRange, layout), right = replayTimeX(Math.min(visibleRange.end_us, end), visibleRange, layout)
           const y = replayPriceY(best.price, view, layout)
           ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(Math.max(x + 1, right), y)

@@ -126,8 +126,10 @@ def test_snapshot_depth_does_not_turn_missing_levels_into_zero_liquidity(broker)
     data = replay.quote(broker.executor, quote)
     assert data["bids"] == [{"price": 9000.0, "quantity": 3.0}]
     assert data["available_depth"] == {"bid": 1, "ask": 1}
-    assert data["valid_until_us"] is None
-    assert not data["book_valid"]
+    assert data["valid_until_us"] == data["received_time_us"] + int(
+        broker.executor.account_config.quote_max_age_seconds * 1_000_000
+    )
+    assert data["book_valid"]
     assert data["field_quality"]["BidPrice2"] == "invalid"
 
 
@@ -300,6 +302,9 @@ def test_ctp_connection_exits_invalidate_the_recorded_generation(broker, tmp_pat
     executor = broker.executor
     recorder.attach(executor)
     recorder.configure(True, 1)
+    from tests.unit.server.test_execution_replay_native import wait_for
+
+    wait_for(lambda: recorder.status()["state"] == "recording")
     before = recorder._sync_generation
     try:
         if exit_kind == "close":

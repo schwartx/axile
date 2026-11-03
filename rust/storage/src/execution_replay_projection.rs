@@ -1023,7 +1023,7 @@ impl Projection {
                 self.invalidate_orders(&symbol, "disconnected");
                 self.synchronized.insert(symbol.clone(), false);
                 if let Some(quote) = self.quotes.get_mut(&symbol) {
-                    quote["book_valid"] = Value::Bool(false);
+                    quote["available"] = Value::Bool(false);
                 }
             }
         }
@@ -2611,7 +2611,8 @@ mod tests {
             .unwrap();
         let value = state.snapshot().unwrap();
         assert_eq!(value["orders"][compound("A", "O")]["confirmed_book"], false);
-        assert_eq!(value["quotes"]["B"]["book_valid"], false);
+        assert_eq!(value["quotes"]["B"]["available"], false);
+        assert_eq!(value["quotes"]["B"]["book_valid"], true);
         state
             .apply(&message(
                 5,
@@ -3153,7 +3154,7 @@ mod tests {
             state.apply(&message(8, "/connection", loss)).unwrap();
             let value = state.snapshot().unwrap();
             assert_eq!(value["orders"][compound("A", "O")]["confirmed_book"], false);
-            assert_eq!(value["quotes"]["A"]["book_valid"], false);
+            assert_eq!(value["quotes"]["A"]["available"], false);
             assert_eq!(value["orders"][compound("B", "B")]["confirmed_book"], true);
             assert_eq!(value["quotes"]["B"]["book_valid"], true);
         }

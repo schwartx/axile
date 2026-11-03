@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from axile.executor import replay as recording
 from axile.executor.instrument_catalog_records import EXCHANGES, normalize_catalog_symbol
+from axile.executor.quote_quality import quote_observation
 
 MISSING = object()
 _IDENTITIES = ("order_id", "exchange_order_id", "trade_id", "exchange_trade_id", "exchange_id", "instrument_id")
@@ -224,7 +225,7 @@ def quote(owner: object, row: Mapping[str, object]) -> dict[str, object]:
         asks=sides["ask"],
         available_depth={"bid": len(sides["bid"]), "ask": len(sides["ask"])},
         depth_coverage={"kind": "top_n", "bid": len(sides["bid"]), "ask": len(sides["ask"]), "unlisted": "unknown"},
-        book_valid=bool(sides["bid"] and sides["ask"] and sides["bid"][0]["price"] <= sides["ask"][0]["price"]),
+        **quote_observation(sides["bid"], sides["ask"]),
         last_price=number(row, "last_price"),
         last_price_kind="trade",
         volume=number(row, "volume"),

@@ -402,7 +402,7 @@ class ReplayRecorder:
                 data["sync_generation"] = self._sync_generation
         generation = data.setdefault("sync_generation", self._sync_generation)
         if (topic == "/order" or is_quote) and (type(generation) is not int or generation != self._sync_generation):
-            data["book_valid" if is_quote else "confirmed_book"] = False
+            data["available" if is_quote else "confirmed_book"] = False
         if generation is not None and (
             type(generation) is not int or generation < 0 or generation > self._sync_generation
         ):

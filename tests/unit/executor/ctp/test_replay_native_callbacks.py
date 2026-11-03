@@ -188,7 +188,7 @@ def test_connection_exit_clears_native_order_confirmation_and_quote_validity(rec
     assert connection["sync_generation"] == generation + 1
     order = state["orders"][json.dumps(["ag2612", "20260909:7:1:10"], separators=(",", ":"))]
     assert order["confirmed_book"] is False
-    assert state["quotes"]["ag2612"]["book_valid"] is False
+    assert state["quotes"]["ag2612"]["available"] is False
 
 
 @pytest.mark.parametrize(

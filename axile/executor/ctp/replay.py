@@ -8,10 +8,10 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 
 from axile.executor import replay as recording
-from axile.executor.algorithms.utils.clock import clock_now_us
 from axile.executor.ctp.converters import _time, stable_order_id
 from axile.executor.ctp.quote_time import resolve_quote_time
 from axile.executor.ctp_product_sessions import get_ctp_product_sessions
+from axile.executor.quote_quality import quote_observation
 from axile.executor.trading_calendar import CHINA_CALENDAR_ID
 
 _MISSING = object()
@@ -294,28 +294,15 @@ def quote(owner: object, row: object) -> dict[str, object]:
         sides[label] = levels
     data.update(_quote_time(owner, f))
     bids, asks = sides["bids"], sides["asks"]
-    source_time = data["source_time_us"]
     config = getattr(owner, "account_config", None)
     age = getattr(config, "quote_max_age_seconds", 0)
-    valid_until = (
-        source_time + int(age * 1_000_000)
-        if isinstance(source_time, int) and isinstance(age, int | float) and age > 0
-        else None
-    )
+    validity = int(age * 1_000_000) if isinstance(age, (int, float)) and math.isfinite(age) and age > 0 else None
     data.update(
         symbol=f.text("InstrumentID"),
         **sides,
         available_depth={"bid": len(bids), "ask": len(asks)},
         depth_coverage={"kind": "top_n", "bid": len(bids), "ask": len(asks), "unlisted": "unknown"},
-        book_valid=bool(
-            bids
-            and asks
-            and bids[0]["price"] <= asks[0]["price"]
-            and valid_until is not None
-            and isinstance(source_time, int)
-            and source_time <= clock_now_us() <= valid_until
-        ),
-        valid_until_us=valid_until,
+        **quote_observation(bids, asks, validity_us=validity),
         last_price=f.number("LastPrice"),
         last_price_kind="trade" if f.quality.get("LastPrice") == "known" else "unknown",
         volume=f.number("Volume"),

@@ -63,14 +63,14 @@ function windowAt(request: any) {
   return { ...make(JSON.stringify(request), request.start_us), coverage: [{ start_us: request.start_us, end_us: request.end_us }],
     ...(scenario === 'inspect' ? { messages: [{ schema_version: 1, recording_id: 'r', capture_seq: 3, time_us: 1_000_000, topic: '/trade', data: { symbol: 'X', trade_key: 'T', order_id: 'O1', execution_id: 'E1', quantity: 1, price: 100, direction: 'BUY', identity_quality: 'stable' } }, { schema_version: 1, recording_id: 'r', capture_seq: 4, time_us: 1_000_000, topic: '/noop', data: {} }] } : {}),
     ...(scenario === 'overview' ? { messages: [
-      { schema_version: 1, recording_id: 'r', capture_seq: 3, time_us: 1_000_000, topic: '/quote/X', data: { symbol: 'X', book_valid: true, bids: [{ price: 100, quantity: 1 }], asks: [{ price: 101, quantity: 2 }], valid_until_us: 40_000_000 } },
+      { schema_version: 1, recording_id: 'r', capture_seq: 3, time_us: 1_000_000, topic: '/quote/X', data: { symbol: 'X', book_valid: true, available: true, bids: [{ price: 100, quantity: 1 }], asks: [{ price: 101, quantity: 2 }], valid_until_us: 40_000_000 } },
       { schema_version: 1, recording_id: 'r', capture_seq: 4, time_us: 30_000_000, topic: '/order', data: { symbol: 'X', order_id: 'F', price: 100, quantity: 1, remaining_quantity: 1, status: 'working', confirmed_book: true } },
       { schema_version: 1, recording_id: 'r', capture_seq: 5, time_us: 35_000_000, topic: '/trade', data: { symbol: 'X', order_id: 'F', trade_key: 'future', identity_quality: 'stable', price: 100, quantity: 1 } },
       { schema_version: 1, recording_id: 'r', capture_seq: 6, time_us: 36_000_000, topic: '/order', data: { symbol: 'X', order_id: 'O2', price: 100, quantity: 1, remaining_quantity: 0, filled_quantity: 1, status: 'filled', terminal: true, sync_generation: 1 } },
-      { schema_version: 1, recording_id: 'r', capture_seq: 7, time_us: 38_000_000, topic: '/quote/X', data: { symbol: 'X', book_valid: true, bids: [{ price: 100, quantity: 9 }], asks: [{ price: 101, quantity: 8 }], valid_until_us: 40_000_000 } },
+      { schema_version: 1, recording_id: 'r', capture_seq: 7, time_us: 38_000_000, topic: '/quote/X', data: { symbol: 'X', book_valid: true, available: true, bids: [{ price: 100, quantity: 9 }], asks: [{ price: 101, quantity: 8 }], valid_until_us: 40_000_000 } },
     ] } : {}),
     ...(scenario === 'first-quote' ? { messages: [{ schema_version: 1, recording_id: 'r', capture_seq: 3, time_us: 1_000_000,
-      topic: '/quote/X', data: { symbol: 'X', book_valid: true, bids: [{ price: 100, quantity: 1 }], asks: [{ price: 101, quantity: 2 }], valid_until_us: 2_000_000 } }] } : {}) }
+      topic: '/quote/X', data: { symbol: 'X', book_valid: true, available: true, bids: [{ price: 100, quantity: 1 }], asks: [{ price: 101, quantity: 2 }], valid_until_us: 2_000_000 } }] } : {}) }
 }
 const pageDocument = { hidden: false, addEventListener: (_: string, listener: () => void) => listeners.add(listener), removeEventListener: (_: string, listener: () => void) => listeners.delete(listener) }
 Object.assign(globalThis, { window: { setTimeout, clearTimeout }, document: pageDocument,

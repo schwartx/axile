@@ -190,7 +190,8 @@
             "null"
           ],
           "minimum": 0,
-          "maximum": 9007199254740991
+          "maximum": 9007199254740991,
+          "description": "Local receipt time in microseconds; exchange clock offsets do not change this observation."
         },
         "publish_time_us": {
           "type": [
@@ -482,7 +483,8 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "description": "Structural validity of the observed book, independent of time and connection state."
         },
         "valid_until_us": {
           "type": [
@@ -490,7 +492,8 @@
             "null"
           ],
           "minimum": 0,
-          "maximum": 9007199254740991
+          "maximum": 9007199254740991,
+          "description": "Exclusive local receipt expiry. Null means no known validity interval beyond the observation."
         },
         "last_price": {
           "$ref": "#/$defs/nullableNumber"
@@ -584,7 +587,8 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "description": "Connection/generation availability, independent of book structure."
         },
         "availability": {
           "$ref": "#/$defs/nullableString"
@@ -838,7 +842,8 @@
             "null"
           ],
           "minimum": 0,
-          "maximum": 9007199254740991
+          "maximum": 9007199254740991,
+          "description": "Local receipt time in microseconds; exchange clock offsets do not change this observation."
         },
         "publish_time_us": {
           "type": [
@@ -1130,7 +1135,8 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "description": "Structural validity of the observed book, independent of time and connection state."
         },
         "valid_until_us": {
           "type": [
@@ -1138,7 +1144,8 @@
             "null"
           ],
           "minimum": 0,
-          "maximum": 9007199254740991
+          "maximum": 9007199254740991,
+          "description": "Exclusive local receipt expiry. Null means no known validity interval beyond the observation."
         },
         "last_price": {
           "$ref": "#/$defs/nullableNumber"
@@ -1218,7 +1225,8 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "description": "Connection/generation availability, independent of book structure."
         },
         "availability": {
           "$ref": "#/$defs/nullableString"
@@ -1407,7 +1415,8 @@
             "null"
           ],
           "minimum": 0,
-          "maximum": 9007199254740991
+          "maximum": 9007199254740991,
+          "description": "Local receipt time in microseconds; exchange clock offsets do not change this observation."
         },
         "publish_time_us": {
           "type": [
@@ -1699,7 +1708,8 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "description": "Structural validity of the observed book, independent of time and connection state."
         },
         "valid_until_us": {
           "type": [
@@ -1707,7 +1717,8 @@
             "null"
           ],
           "minimum": 0,
-          "maximum": 9007199254740991
+          "maximum": 9007199254740991,
+          "description": "Exclusive local receipt expiry. Null means no known validity interval beyond the observation."
         },
         "last_price": {
           "$ref": "#/$defs/nullableNumber"
@@ -1787,7 +1798,8 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "description": "Connection/generation availability, independent of book structure."
         },
         "availability": {
           "$ref": "#/$defs/nullableString"

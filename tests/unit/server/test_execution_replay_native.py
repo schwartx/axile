@@ -17,6 +17,60 @@ MAGIC = b"\x89MCAP0\r\n"
 POSITION_MERGES = json.loads(
     (Path(__file__).parents[2] / "fixtures/execution_replay/position-field-merge.json").read_text()
 )
+QUOTE_QUALITY = json.loads((Path(__file__).parents[2] / "fixtures/execution_replay/quote-quality.json").read_text())
+
+
+@pytest.mark.parametrize("case", QUOTE_QUALITY, ids=lambda case: case["name"])
+def test_quote_quality_real_mcap_and_frontend_recovery(make_recording, monkeypatch, tmp_path, case):
+    """相同事实穿过 Recorder/MCAP/原生窗口，连播与跳转不混淆结构和新鲜度。"""
+    import shutil
+    import subprocess
+
+    from axile.executor.quote_quality import quote_observation
+
+    recorder, now, root, recording_id = make_recording()
+    recorder.begin_execution("Q", ["X"])
+    now[0] += 10
+    observed = now[0]
+    monkeypatch.setattr("axile.executor.quote_quality.clock_now_us", lambda: observed)
+    bids = [dict(price=p, quantity=q) for p, q in case["bids"]]
+    asks = [dict(price=p, quantity=q) for p, q in case["asks"]]
+    data = {"symbol": "X", "bids": bids, "asks": asks, **quote_observation(bids, asks, validity_us=case["validity_us"])}
+    data["source_time_us"] = None if case["source_offset_us"] is None else observed + case["source_offset_us"]
+    recorder.observe("/quote/X", data)
+    now[0] += 5
+    recorder.observe("/execution", {"execution_id": "Q", "phase": "observe"})
+    now[0] += 2_000_000
+    recorder.end_execution("Q")
+    finished(recorder)
+    full = window(root, "Q", recording_id, TIME, now[0] + 1)
+    recovered = window(root, "Q", recording_id, observed + 6, now[0] + 1)
+    assert recovered["state_before_start"]["quotes"]["X"]["book_valid"] is case["book_valid"]
+    payload = tmp_path / "quote-windows.json"
+    payload.write_text(
+        json.dumps({"full": full, "recovered": recovered, "cursor": observed + max(6, case["cursor_offset_us"])})
+    )
+    ui = Path(__file__).parents[3] / "ui"
+    script = """
+import { projectReplay } from './src/features/replay/model.ts';
+const d = await Bun.file(process.argv[1]).json();
+const cursor = {time_us:d.cursor};
+const a = projectReplay(d.full,cursor).quotes.X;
+const b = projectReplay(d.recovered,cursor).quotes.X;
+if (JSON.stringify(a)!==JSON.stringify(b)) throw new Error('continuous/checkpoint differ');
+console.log(JSON.stringify(a));
+"""
+    result = subprocess.run(
+        [shutil.which("bun") or "bun", "-e", script, str(payload)],
+        cwd=ui,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+    )
+    projected = json.loads(result.stdout)
+    assert projected["book_valid"] is case["book_valid"]
+    assert projected["available"] is case["available"]
 
 
 def wait_for(predicate):
@@ -417,7 +471,7 @@ def test_actual_second_loss_rejects_query_proof_without_global_sync(make_recordi
     assert full["messages"][-1]["data"]["query_basis"] is None
     baseline = window(root, "E", recording_id, TIME + 10, TIME + 100)["state_before_start"]
     assert baseline["orders"]['["X","O"]']["confirmed_book"] is False
-    assert baseline["quotes"]["X"]["book_valid"] is False
+    assert baseline["quotes"]["X"]["available"] is False
 
 
 @pytest.mark.parametrize("invalidation", ["disconnect", "generation"])

@@ -304,7 +304,7 @@ def test_noncurrent_first_quote_cannot_restore_cob_but_current_quote_can(make_re
     recorder.observe("/quote/X", quote)
     finished(recorder)
     before_current = window(root, "E", recording_id, TIME + 3, TIME + 4)["state_before_start"]["quotes"]["X"]
-    assert before_current["book_valid"] is False
+    assert before_current["available"] is False
     assert before_current["bids"] == quote["bids"] and before_current["asks"] == quote["asks"]
     assert before_current["details"]["observed"] == "preserved"
     if generation_kind in {"old", "unknown"}:

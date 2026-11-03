@@ -6,10 +6,13 @@
 """
 
 from datetime import datetime as dt
+from math import isfinite
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, computed_field
 from typing_extensions import override
+
+from axile.executor.quote_quality import valid_book
 
 # ExtraData用于存储渠道特有的数据，使用Any是合理的
 # 因为不同渠道可能有不同类型的数据需要存储
@@ -59,11 +62,11 @@ class UnifiedPriceData(BaseModel):
     timestamp: int = Field(..., description="时间戳（毫秒）")
     update_time: str = Field(..., description="更新时间（ISO格式）")
 
-    # 盘口有效性标记
-    book_valid: bool = Field(
-        default=True,
-        description="买卖一是否为真实盘口命中；False 表示盘口无效，下游不应据此挂 maker 价",
-    )
+    @computed_field
+    @property
+    def book_valid(self) -> bool:
+        """盘口结构事实，不含时钟、新鲜度或连接状态。"""
+        return valid_book(self.bids, self.asks)
 
     # 渠道特有数据
     extra: ExtraData = Field(default={}, description="渠道特有数据，包含原始数据和渠道特定字段")
@@ -107,15 +110,7 @@ class UnifiedPriceData(BaseModel):
         bool
             当关键价格与时间字段有效时返回 ``True``。
         """
-        return (
-            bool(self.bids and self.asks)
-            and self.book_valid
-            and self.last_price > 0
-            and (self.bids[0][0] if self.bids else 0.0) > 0
-            and (self.asks[0][0] if self.asks else 0.0) > 0
-            and (self.bids[0][0] if self.bids else 0.0) <= (self.asks[0][0] if self.asks else 0.0)
-            and self.timestamp > 0
-        )
+        return self.book_valid and isfinite(self.last_price) and self.last_price > 0 and self.timestamp > 0
 
     @computed_field  # type: ignore[prop-decorator]
     @property

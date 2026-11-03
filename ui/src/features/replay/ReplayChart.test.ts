@@ -71,7 +71,7 @@ it('首个盘口到达前灰显预览，同刻按采集序号生效，过期或�
   const window: ReplayWindow = { recording_id: 'r', window_id: 'w', context: { schema_version: 1 },
     complete: true, next_cursor: null, state_before_start: { time_us: 0, state_through_seq: 0 }, coverage: [{ start_us: 0, end_us: 300 }], gaps: [],
     messages: [100, 200].map((time, index) => ({ schema_version: 1, recording_id: 'r', capture_seq: index + 1, time_us: time,
-      topic: '/quote/X', data: { symbol: 'X', book_valid: true, valid_until_us: time + 50,
+      topic: '/quote/X', data: { symbol: 'X', book_valid: true, available: true, valid_until_us: time + 50,
         bids: [{ price: 99, quantity: index ? 9 : 3 }], asks: [{ price: 101, quantity: index ? 8 : 4 }] } })) }
   const render = (time_us: number, capture_seq?: number) => {
     const projection = projectReplay(window, { time_us, capture_seq }), before = JSON.stringify(projection)

@@ -51,13 +51,13 @@ export function depthGap(gaps: ReplayGap[], timeUs: number, symbol: string): boo
 }
 
 export function currentReplayQuote(quote: ReplayQuote | undefined, timeUs: number, gaps: ReplayGap[]): ReplayQuote | null {
-  if (!quote?.book_valid || quote.time_us > timeUs || depthGap(gaps, timeUs, quote.symbol)) return null
+  if ((!quote?.book_valid || !quote.available) || quote.time_us > timeUs || depthGap(gaps, timeUs, quote.symbol)) return null
   return quote.time_us === timeUs || (quote.valid_until_us != null && timeUs < quote.valid_until_us && replayQuoteEnd(quote, timeUs, timeUs, gaps) === timeUs) ? quote : null
 }
 
 /** 未声明有效区间的快照只是一处观测，不延展为连续深度。 */
 export function replayQuoteEnd(quote: ReplayQuote, nextTimeUs: number, cursorUs: number, gaps: ReplayGap[]): number {
-  if (!quote.book_valid || depthGap(gaps, quote.time_us, quote.symbol)) return quote.time_us
+  if ((!quote.book_valid || !quote.available) || depthGap(gaps, quote.time_us, quote.symbol)) return quote.time_us
   let end = Math.min(nextTimeUs, cursorUs, quote.valid_until_us ?? quote.time_us)
   for (const gap of gaps) {
     if ((!gap.symbol || gap.symbol === quote.symbol) && (!gap.topic || gap.topic === 'depth' || gap.topic.startsWith('/quote'))
@@ -115,7 +115,7 @@ export function replayHeatCells(quotes: ReplayQuote[], range: ReplayRange, curso
   const columnWidth = 3, rowHeight = Math.max(2, Math.min(18, (layout.bottom - layout.top) * view.tick / (view.max - view.min)))
   for (let index = 0; index < quotes.length; index++) {
     const quote = quotes[index]
-    if (quote.time_us > cursorUs || !quote.book_valid || depthGap(gaps, quote.time_us, quote.symbol)) continue
+    if (quote.time_us > cursorUs || (!quote.book_valid || !quote.available) || depthGap(gaps, quote.time_us, quote.symbol)) continue
     const end = replayQuoteEnd(quote, quotes[index + 1]?.time_us ?? cursorUs, cursorUs, gaps)
     const fromX = Math.max(layout.left, replayTimeX(Math.max(range.start_us, quote.time_us), range, layout))
     const endX = Math.min(layout.right, replayTimeX(end, range, layout))

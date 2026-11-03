@@ -9,7 +9,7 @@ import type { ReplayOrder, ReplayProjection, ReplayQuote } from '@/features/repl
 import type { ReactElement } from 'react'
 
 const quote = (bids = 2, asks = bids): ReplayQuote => ({ symbol: 'X', bids: Array.from({ length: bids }, (_, index) => ({ price: 100 - index, quantity: index + 1 })),
-  asks: Array.from({ length: asks }, (_, index) => ({ price: 102 + index, quantity: index + 1 })), book_valid: true, valid_until_us: 1000,
+  asks: Array.from({ length: asks }, (_, index) => ({ price: 102 + index, quantity: index + 1 })), book_valid: true, available: true, valid_until_us: 1000,
   available_depth: 5, depth_coverage: null, last_price: null, last_price_kind: 'unknown', time_us: 100, capture_seq: 1 })
 const order = (rest: Partial<ReplayOrder> = {}): ReplayOrder => ({ key: 'O', order_id: 'O', symbol: 'X', direction: 'BUY', price: 99,
   confirmed: true, terminal: false, remaining_volume: 1, time_us: 200, capture_seq: 2, ...rest } as ReplayOrder)

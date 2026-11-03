@@ -17,7 +17,7 @@ const scenarios = [{ value: 'records', label: '委托与成交定位' }, { value
 
 function fixture(scenario: string): ReplayWindow {
   const dense = scenario === 'many', step = dense ? .0001 : 1
-  const depth = (bids: number, asks: number): ReplayData => ({ symbol: 'SYNTHETIC', book_valid: true, available_depth: 5,
+  const depth = (bids: number, asks: number): ReplayData => ({ symbol: 'SYNTHETIC', book_valid: true, available: true, available_depth: 5,
     valid_until_us: scenario === 'expiry' ? 600_000 : 2_000_000,
     bids: Array.from({ length: bids }, (_, index) => ({ price: 100 - index * step, quantity: index + 1 })),
     asks: Array.from({ length: asks }, (_, index) => ({ price: 100 + 2 * step + index * step, quantity: index + 2 })) })

@@ -44,7 +44,7 @@ function quote(data: ReplayData, time: number, seq: number, topic = ''): ReplayQ
   })
   const bids = levels(known(data, 'bids')), asks = levels(known(data, 'asks'))
   return {
-    symbol, bids, asks, book_valid: known(data, 'book_valid') === true,
+    symbol, bids, asks, book_valid: known(data, 'book_valid') === true, available: known(data, 'available') !== false,
     valid_until_us: integer(known(data, 'valid_until_us')),
     available_depth: number(known(data, 'available_depth')) ?? Math.min(bids.length, asks.length),
     depth_coverage: data.depth_coverage ? replayObject(data.depth_coverage) : null,
@@ -637,7 +637,7 @@ function applyConnection(state: ProjectionState, data: ReplayData, message: Repl
       state.view.orderHistory.push(state.view.orders[key])
     }
     if (state.view.quotes[symbol]) {
-      state.view.quotes[symbol] = { ...state.view.quotes[symbol], book_valid: false, time_us: message.time_us, capture_seq: message.capture_seq }
+      state.view.quotes[symbol] = { ...state.view.quotes[symbol], available: false, time_us: message.time_us, capture_seq: message.capture_seq }
       state.view.quoteHistory.push(state.view.quotes[symbol])
     }
   }
@@ -739,13 +739,13 @@ export function projectReplay(window: ReplayWindow, cursor: ReplayCursor, _symbo
   }
   state.view.time_us = cursor.time_us
   for (const [symbol, value] of Object.entries(state.view.quotes)) {
-    if (value.valid_until_us == null ? cursor.time_us > value.time_us : cursor.time_us >= value.valid_until_us) state.view.quotes[symbol] = { ...value, book_valid: false }
+    if (value.valid_until_us == null ? cursor.time_us > value.time_us : cursor.time_us >= value.valid_until_us) state.view.quotes[symbol] = { ...value, available: false }
   }
   for (const gap of window.gaps) {
     if (cursor.time_us >= gap.start_us && cursor.time_us < gap.end_us) {
       warn(state, gap.reason ?? '当前处于录制缺口')
       if (!gap.topic || gap.topic.includes('quote') || gap.topic === 'depth') {
-        for (const [symbol, value] of Object.entries(state.view.quotes)) if (!gap.symbol || gap.symbol === symbol) state.view.quotes[symbol] = { ...value, book_valid: false }
+        for (const [symbol, value] of Object.entries(state.view.quotes)) if (!gap.symbol || gap.symbol === symbol) state.view.quotes[symbol] = { ...value, available: false }
       }
     }
   }

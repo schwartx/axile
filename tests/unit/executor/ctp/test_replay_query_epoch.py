@@ -433,8 +433,8 @@ def test_quote_normalization_cannot_revalidate_a_pre_disconnect_book(recording):
     assert not worker.is_alive()
     state, messages = read_recording(recording, start)
     quote = next(event["data"] for event in messages if event["topic"].startswith("/quote/"))
-    assert quote["sync_generation"] == generation and quote["book_valid"] is False
-    assert state["quotes"][SYMBOL]["book_valid"] is False
+    assert quote["sync_generation"] == generation and quote["available"] is False
+    assert state["quotes"][SYMBOL]["available"] is False
 
 
 def test_capture_keeps_the_query_token_generation_instead_of_the_current_generation():

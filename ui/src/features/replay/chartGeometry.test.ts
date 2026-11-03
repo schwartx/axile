@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import { centerReplayPrice, currentReplayQuote, defaultReplayPriceView, replayChartLayout, replayHeatCells, replayMarketPriceSegments, replayOnBookOrder, replayPriceTicks, replayPriceY, replayQuoteEnd, replayRemainingQuantity, replayXTime, replayYPrice, zoomReplayPrice } from '@/features/replay/chartGeometry'
 import type { ReplayOrder, ReplayQuote, ReplayTrade } from '@/features/replay/types'
 
-const quote = (time: number, quantity = 5): ReplayQuote => ({ symbol: 'X', bids: [{ price: 100, quantity }], asks: [{ price: 101, quantity: 4 }], book_valid: true, valid_until_us: 1000, available_depth: 1, depth_coverage: null, last_price: null, last_price_kind: 'unknown', time_us: time, capture_seq: time })
+const quote = (time: number, quantity = 5): ReplayQuote => ({ symbol: 'X', bids: [{ price: 100, quantity }], asks: [{ price: 101, quantity: 4 }], book_valid: true, available: true, valid_until_us: 1000, available_depth: 1, depth_coverage: null, last_price: null, last_price_kind: 'unknown', time_us: time, capture_seq: time })
 const view = { min: 96, max: 105, tick: 1 }
 const range = { start_us: 0, end_us: 1000 }
 

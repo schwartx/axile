@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { projectReplay } from '@/features/replay/model'
 import type { ReplayData, ReplayMessage, ReplayWindow } from '@/features/replay/types'
+import quoteQuality from '../../../../tests/fixtures/execution_replay/quote-quality.json'
 import positionMerges from '../../../../tests/fixtures/execution_replay/position-field-merge.json'
 
 const key = (symbol: string, id: string) => JSON.stringify([symbol, id])
@@ -23,7 +24,7 @@ const fill = (id: string, quantity: number, rest: ReplayData = {}): ReplayData =
 
 describe('回放按本地已观察前缀恢复', () => {
   test('盘口档数来自每次观察，保留未知量和零量；连续播放与窗前恢复一致', () => {
-    const depth = { symbol: 'A', book_valid: true, valid_until_us: 1000,
+    const depth = { symbol: 'A', book_valid: true, available: true, valid_until_us: 1000,
       bids: [{ price: 98, quantity: 0 }, { price: 97 }, { price: 96, quantity: 8, field_quality: { quantity: 'invalid' } }, { price: 95, quantity: -1 }, { price: 94, quantity: 4, field_quality: { price: 'missing' } }],
       asks: [{ price: 99, quantity: 3 }, { price: 100, quantity: 4 }] }
     const messages = [message(1, '/quote/A', { ...depth, bids: depth.bids.slice(0, 2) }), message(2, '/quote/A', depth)]
@@ -124,7 +125,7 @@ describe('回放按本地已观察前缀恢复', () => {
 
   test('同微秒按seq步进，倒退不泄露未来订单与热力，录制段不可混入', () => {
     const quote = message(1, '/quote/A', { symbol: 'A', bids: [{ price: 98, quantity: 2 }], asks: [{ price: 99, quantity: 3 }],
-      book_valid: true, valid_until_us: 1000 }, 100)
+      book_valid: true, available: true, valid_until_us: 1000 }, 100)
     const window = windowOf([quote, message(2, '/order', order('x'), 100)])
     const before = projectReplay(window, { time_us: 100, capture_seq: 1 })
     expect(before.orders).toEqual({})
@@ -367,7 +368,7 @@ describe('回放按本地已观察前缀恢复', () => {
   })
 
   test('待撤仍在场，断线先失效，旧代回报不复活', () => {
-    const result = projectReplay(windowOf([message(1, '/quote/A', { symbol: 'A', bids: [{ price: 98, quantity: 2 }], asks: [], book_valid: true, valid_until_us: 5000 }, 50),
+    const result = projectReplay(windowOf([message(1, '/quote/A', { symbol: 'A', bids: [{ price: 98, quantity: 2 }], asks: [], book_valid: true, available: true, valid_until_us: 5000 }, 50),
       message(2, '/order', order('a', { sync_generation: 1 }), 100),
       message(3, '/command', { command_id: 'cancel-a', operation: 'cancel_order', phase: 'request', symbol: 'A', order_id: 'a' }, 200),
       message(4, '/connection', { connected: false, scope: { symbols: ['A'] }, sync_generation: 2 }, 300),
@@ -376,7 +377,7 @@ describe('回放按本地已观察前缀恢复', () => {
     expect(result.orderHistory[1].cancel_pending).toBe(true)
     expect(result.orderHistory[1].confirmed).toBe(true)
     expect(result.orders[key('A', 'a')].confirmed).toBe(false)
-    expect(result.quoteHistory.at(-1)?.book_valid).toBe(false)
+    expect(result.quoteHistory.at(-1)?.available).toBe(false)
     expect(result.quoteHistory.at(-1)?.time_us).toBe(300)
   })
 
@@ -418,7 +419,7 @@ describe('回放按本地已观察前缀恢复', () => {
 
   test('账户scope即使symbols为空也覆盖已知订单盘口及持仓', () => {
     const account = { kind: 'account', symbols: [] }
-    const messages = [message(1, '/quote/A', { symbol: 'A', book_valid: true, valid_until_us: 10_000,
+    const messages = [message(1, '/quote/A', { symbol: 'A', book_valid: true, available: true, valid_until_us: 10_000,
       bids: [{ price: 98, quantity: 5 }], asks: [] }), message(2, '/order', order('a')),
     message(3, '/account_observation', { scope: account, scope_complete: true,
       positions: [{ symbol: 'B', position_side: 'LONG', quantity: 3, available_quantity: 2, frozen_quantity: 1 }] }),
@@ -429,7 +430,7 @@ describe('回放按本地已观察前缀恢复', () => {
     const result = projectReplay(windowOf(messages), { time_us: 600 })
     expect(result.observedPositions[key('B', 'LONG')]).toMatchObject({ volume: 0, available_volume: 0, frozen_volume: 0 })
     expect(result.orders[key('A', 'a')].confirmed).toBe(false)
-    expect(result.quotes.A.book_valid).toBe(false)
+    expect(result.quotes.A.available).toBe(false)
     expect(result.quoteHistory.at(-1)?.time_us).toBe(600)
   })
 
@@ -577,14 +578,14 @@ describe('回放按本地已观察前缀恢复', () => {
   })
 
   test.each(['connected', 'ready', 'available', 'synchronized'])('同代次的%s失效也撤销盘口和订单确认，健康连接不自行恢复', flag => {
-    const messages = [message(1, '/quote/A', { symbol: 'A', book_valid: true, valid_until_us: 1000,
+    const messages = [message(1, '/quote/A', { symbol: 'A', book_valid: true, available: true, valid_until_us: 1000,
       bids: [{ price: 98, quantity: 2 }], asks: [{ price: 99, quantity: 3 }] }),
     message(2, '/order', order('a')),
     message(3, '/connection', { scope: { kind: 'account', symbols: [] }, sync_generation: 1, status: 'down', [flag]: false }),
     message(4, '/connection', { scope: { kind: 'account', symbols: [] }, sync_generation: 1, connected: true })]
     const result = projectReplay(windowOf(messages), { time_us: 400 })
     expect(result.orders[key('A', 'a')].confirmed).toBe(false)
-    expect(result.quotes.A.book_valid).toBe(false)
+    expect(result.quotes.A.available).toBe(false)
   })
 
   test.each(['returned', 'result', 'native_request', 'native_return', 'native_returned'])('撤单%s只是意图，完整重放和新旧检查点恢复都保持待确认', phase => {
@@ -893,4 +894,20 @@ describe('回放按本地已观察前缀恢复', () => {
     expect(projectReplay(windowOf([message(1, '/execution', { execution_id: 'E', phase: 'start' }), account, narrow]),
       { time_us: 300 }).orders[key('B', 'OB')].confirmed).toBe(true)
   })
+})
+
+for (const scenario of quoteQuality) test(`盘口结构与本地有效期连播/恢复一致：${scenario.name}`, () => {
+  const observed = 1_000_000
+  const data = { symbol: 'X', bids: scenario.bids.map(([price, quantity]) => ({ price, quantity })),
+    asks: scenario.asks.map(([price, quantity]) => ({ price, quantity })), book_valid: scenario.book_valid,
+    received_time_us: observed, source_time_us: scenario.source_offset_us == null ? null : observed + scenario.source_offset_us,
+    valid_until_us: scenario.validity_us == null ? null : observed + scenario.validity_us }
+  const cursor = { time_us: observed + scenario.cursor_offset_us }
+  const continuous = projectReplay(windowOf([message(1, '/quote/X', data, observed)]), cursor)
+  const recovered = projectReplay(windowOf([], { state_through_seq: 1, time_us: observed,
+    quotes: { X: { ...data, observed_at_us: observed, observed_seq: 1 } } }), cursor)
+  expect(continuous.quotes.X).toEqual(recovered.quotes.X)
+  expect(continuous.quotes.X.book_valid).toBe(scenario.book_valid)
+  expect(continuous.quotes.X.available).toBe(scenario.available)
+  expect(continuous.quotes.X.time_us).toBe(observed)
 })

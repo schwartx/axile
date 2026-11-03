@@ -179,8 +179,6 @@ def quote_to_unified(row: object) -> UnifiedPriceData:
         millisec = -1
     update_time = _time(day, clock, millisec)
     timestamp = int(datetime.fromisoformat(update_time).timestamp() * 1000) if update_time else 0
-    bid = _price(row, "BidPrice1")
-    ask = _price(row, "AskPrice1")
     return UnifiedPriceData(
         symbol=str(_value(row, "InstrumentID", "") or ""),
         last_price=_price(row, "LastPrice"),
@@ -198,7 +196,6 @@ def quote_to_unified(row: object) -> UnifiedPriceData:
         turnover=_float(row, "Turnover"),
         timestamp=timestamp,
         update_time=update_time,
-        book_valid=0 < bid <= ask and _float(row, "BidVolume1") > 0 and _float(row, "AskVolume1") > 0,
         extra={
             "lower_limit_price": _price(row, "LowerLimitPrice"),
             "upper_limit_price": _price(row, "UpperLimitPrice"),

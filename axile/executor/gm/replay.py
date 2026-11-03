@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 from axile.common.gm_symbols import GM_SYMBOL_RESOLVER
 from axile.executor import replay as recording
+from axile.executor.quote_quality import quote_observation
 
 _MISSING = object()
 _NON_TRADE_EXEC_TYPES = frozenset({"1", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "18", "19"})
@@ -264,8 +265,7 @@ def quote(row: object, *, source: str = "gm.tick") -> dict[str, object]:
         delivery_method="callback" if source == "gm.tick" else "query",
         available_depth={"bid": len(bids), "ask": len(asks)},
         depth_coverage={"kind": "top_n", "bid": len(bids), "ask": len(asks), "unlisted": "unknown"},
-        book_valid=bool(bids and asks and bids[0]["price"] <= asks[0]["price"] and source_time is not None),
-        valid_until_us=None,
+        **quote_observation(bids, asks),
         last_price=f.number("price"),
         last_price_kind="trade" if f.quality.get("price") == "known" else "unknown",
         volume=f.number("last_volume"),

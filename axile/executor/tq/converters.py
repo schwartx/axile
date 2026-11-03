@@ -60,8 +60,6 @@ def quote_to_unified(row: object, resolver: TQSymbolResolver) -> UnifiedPriceDat
     full_symbol = f"{exchange}.{local}" if exchange and "." not in local else local
     timestamp_nano = _value(row, "datetime", 0)
     update_time, timestamp = _quote_time(timestamp_nano)
-    bid = _float(row, "bid_price1")
-    ask = _float(row, "ask_price1")
     last = _float(row, "last_price")
     return UnifiedPriceData(
         symbol=resolver.to_axile(full_symbol),
@@ -80,7 +78,6 @@ def quote_to_unified(row: object, resolver: TQSymbolResolver) -> UnifiedPriceDat
         turnover=_float(row, "amount"),
         timestamp=timestamp,
         update_time=update_time,
-        book_valid=bid > 0 and ask > 0,
         extra={
             "tq_symbol": full_symbol,
             "exchange_id": str(_value(row, "exchange_id", "") or ""),

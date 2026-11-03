@@ -193,7 +193,7 @@ export function ExecutionReplayPage() {
     const order = Object.values(reviewed.value?.orders ?? {}).find(value => trade?.order_id != null && value.order_id === trade.order_id)
     if (order) setSelectedOrder(order.key)
   }
-  const firstQuote = events.find(event => event.topic === `/quote/${symbol}` && event.data.book_valid === true)
+  const firstQuote = events.find(event => event.topic === `/quote/${symbol}` && event.data.book_valid === true && event.data.available !== false)
 
   const transport = range && <div className="replay-chart-transport" aria-label="回放播放控制">
 <div className="replay-play-controls">

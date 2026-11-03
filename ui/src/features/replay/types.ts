@@ -82,6 +82,7 @@ export interface ReplayQuote {
   bids: ReplayLevel[]
   asks: ReplayLevel[]
   book_valid: boolean
+  available: boolean
   valid_until_us: number | null
   available_depth: number
   depth_coverage: ReplayData | null
