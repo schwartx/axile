@@ -521,6 +521,7 @@ impl BlockIndex {
     }
 
     /// `through_seq` fixes the visible prefix even if a writer commits more blocks.
+    #[cfg(test)]
     pub fn blocks(
         &self,
         recording: &str,
@@ -531,6 +532,7 @@ impl BlockIndex {
         self.blocks_in_time(recording, through_seq, after, limit, None)
     }
 
+    #[cfg(test)]
     pub fn blocks_in_time(
         &self,
         recording: &str,

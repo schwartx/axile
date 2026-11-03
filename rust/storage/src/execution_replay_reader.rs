@@ -406,6 +406,7 @@ fn read_committed_part(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn validate_part_bytes(
     bytes: &[u8],
     part: &PartDescriptor,
