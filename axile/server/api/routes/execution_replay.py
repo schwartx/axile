@@ -74,12 +74,16 @@ async def replay_manifest(execution_id: str) -> dict[str, object]:
     result = await _read(service.replay_manifest, account_id, execution_id)
     intent = await get_intent(execution_id)
     start_us = None
+    end_us = None
     if intent is not None and intent.account_id != account_id:
         raise HTTPException(409, detail="执行意图归属与执行不符")
     if intent is not None and intent.started_at is not None:
         delta = datetime.fromisoformat(intent.started_at) - datetime(1970, 1, 1, tzinfo=UTC)
         start_us = (delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds
-    return {**result, "execution_start_us": start_us}
+    if intent is not None and getattr(intent, "finished_at", None) is not None:
+        delta = datetime.fromisoformat(intent.finished_at) - datetime(1970, 1, 1, tzinfo=UTC)
+        end_us = (delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds
+    return {**result, "execution_start_us": start_us, "execution_end_us": end_us}
 
 
 @router.get("/executions/{execution_id}/replay/window")

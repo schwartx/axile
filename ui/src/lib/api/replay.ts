@@ -1,5 +1,5 @@
 import { ApiError, apiGet } from '@/lib/api/client'
-import type { ReplayManifest, ReplayMessage, ReplayRange, ReplayWindow } from '@/features/replay/types'
+import type { ReplayManifest, ReplayMessage, ReplayRange, ReplayRecording, ReplayWindow } from '@/features/replay/types'
 
 export interface ReplayStatus {
   desired: boolean
@@ -49,6 +49,7 @@ export function validateReplayManifest(value: unknown): ReplayManifest {
   const row = object(value)
   if (!Number.isSafeInteger(row.account_id) || typeof row.execution_id !== 'string' || !Array.isArray(row.recordings)) throw new Error('回放目录缺少账户或录制段身份')
   if (row.execution_start_us != null && (!Number.isSafeInteger(row.execution_start_us) || Number(row.execution_start_us) < 0)) throw new Error('执行开始时间无效')
+  if (row.execution_end_us != null && (!Number.isSafeInteger(row.execution_end_us) || Number(row.execution_end_us) < 0)) throw new Error('执行结束时间无效')
   for (const item of row.recordings) {
     const recording = object(item)
     if (typeof recording.recording_id !== 'string' || !ranges(recording.coverage)) throw new Error('回放目录包含无效覆盖范围')
@@ -162,4 +163,26 @@ export async function readReplayWindow(executionId: string, request: ReplayWindo
     cursors.add(page.next_cursor)
     cursor = page.next_cursor
   }
+}
+
+/** 按原录制段分别读取，保留每一段自己的基线和事件序号。 */
+export async function readReplayExecution(executionId: string, segments: readonly { recording: ReplayRecording; range: ReplayRange }[], symbol: string, signal?: AbortSignal): Promise<{ range: ReplayRange; window: ReplayWindow }[]> {
+  const result: { range: ReplayRange; window: ReplayWindow }[] = []
+  const read = async (recording: ReplayRecording, range: ReplayRange): Promise<void> => {
+    signal?.throwIfAborted()
+    const request: ReplayWindowRequest = { ...range, recording_id: recording.recording_id,
+      ...(recording.symbols_complete === true && symbol ? { symbols: [symbol] } : {}) }
+    try {
+      result.push({ range, window: await readReplayWindow(executionId, request, signal) })
+    } catch (error) {
+      if (!(error instanceof ReplayWindowBudgetError) || range.end_us - range.start_us <= 1) throw error
+      const middle = range.start_us + Math.floor((range.end_us - range.start_us) / 2)
+      await read(recording, { start_us: range.start_us, end_us: middle })
+      await read(recording, { start_us: middle, end_us: range.end_us })
+    }
+  }
+  for (const segment of segments) {
+    await read(segment.recording, segment.range)
+  }
+  return result
 }

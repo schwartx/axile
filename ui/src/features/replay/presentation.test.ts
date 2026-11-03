@@ -1,7 +1,27 @@
 import { expect, it } from 'bun:test'
-import { rememberReplaySymbols, replayCommandPresentation, replayFieldText, replayExecutionRange, replayRange, replayStream, replaySymbols, replayTime, replayWindowDuration, smallerReplayRange } from '@/features/replay/presentation'
+import { rememberReplaySymbols, replayCommandPresentation, replayFieldText, replayExecutionPlan, replayExecutionRange, replayExecutionTimeline, replayRange, replayStream, replaySymbols, replayTime, replayWindowDuration, smallerReplayRange } from '@/features/replay/presentation'
 import { projectReplay } from '@/features/replay/model'
 import type { ReplayData, ReplayRecording, ReplayWindow } from '@/features/replay/types'
+
+it('执行全程时间轴保留录制内外的真实空档', () => {
+  const coverage = [{ start_us: 10, end_us: 20 }, { start_us: 25, end_us: 30 }]
+  expect(replayExecutionTimeline(coverage, 5, 34)).toEqual({ range: { start_us: 5, end_us: 35 }, gaps: [
+    { start_us: 5, end_us: 10, reason: '录制未覆盖' }, { start_us: 20, end_us: 25, reason: '录制未覆盖' }, { start_us: 30, end_us: 35, reason: '录制未覆盖' },
+  ] })
+  expect(replayExecutionTimeline(coverage, 12, 28)).toEqual({ range: { start_us: 12, end_us: 29 }, gaps: [{ start_us: 20, end_us: 25, reason: '录制未覆盖' }] })
+  expect(replayExecutionTimeline([], 0, 10)).toBeNull()
+})
+
+it('跨录制段计划按执行时间截取，保留各段身份及覆盖空档', () => {
+  const later = { recording_id: 'B', context: { schema_version: 1 }, coverage: [{ start_us: 30, end_us: 40 }] }
+  const earlier = { recording_id: 'A', context: { schema_version: 1 }, coverage: [{ start_us: 0, end_us: 10 }, { start_us: 15, end_us: 20 }] }
+  const plan = replayExecutionPlan({ recordings: [later, earlier], execution_start_us: 5, execution_end_us: 34 })!
+  expect(plan.range).toEqual({ start_us: 5, end_us: 35 })
+  expect(plan.segments.map(segment => [segment.recording.recording_id, segment.range])).toEqual([
+    ['A', { start_us: 5, end_us: 10 }], ['A', { start_us: 15, end_us: 20 }], ['B', { start_us: 30, end_us: 35 }],
+  ])
+  expect(plan.gaps).toEqual([{ start_us: 10, end_us: 15, reason: '录制未覆盖' }, { start_us: 20, end_us: 30, reason: '录制未覆盖' }])
+})
 
 it('显示才转换毫秒，标签保留微秒并显示上海跨日', () => {
   expect(replayTime(Date.parse('2026-01-01T16:30:00Z') * 1000 + 123456, true)).toBe('2026-01-02 00:30:00.123456')

@@ -18,7 +18,7 @@ const side = (direction: string | null) => direction === 'BUY' ? '买' : directi
 
 export function inspectReplayOrder(order: ReplayOrder, format: InspectionFormat, x: number, y: number): InspectionRecord {
   const status = `${order.carry_in ? '窗前已存在 · ' : ''}${order.cancel_pending ? '撤单待确认' : replayStatusLabels[order.status ?? 'unknown'] ?? '状态未知'}`
-  return { id: `order:${order.capture_seq}`, object: `order:${order.key}`, kind: 'order', title: `账户委托 · ${replayOwnership(order, format.executionId).label}`,
+  return { id: `order:${order.recording_id ?? ''}:${order.capture_seq}`, object: `order:${order.key}`, kind: 'order', title: `账户委托 · ${replayOwnership(order, format.executionId).label}`,
     headline: `${side(order.direction)} ${format.quantity(order.volume)} ${format.unit} @ ${format.price(order.price)}`, status: `${status} · 剩余 ${format.quantity(order.remaining_volume)} ${format.unit}`,
     label: `${status} · ${format.price(order.price)} · 剩余 ${format.quantity(order.remaining_volume)}`, raw: `委托 ${order.order_id} · #${order.capture_seq}`,
     name: order.order_id, time: order.time_us, seq: order.capture_seq, future: replayFutureRecord(order.time_us, order.capture_seq, format.cursor), order: order.key, x, y }
@@ -26,7 +26,7 @@ export function inspectReplayOrder(order: ReplayOrder, format: InspectionFormat,
 
 export function inspectReplayTrade(trade: ReplayTrade, market: boolean, object: string, format: InspectionFormat, x: number, y: number): InspectionRecord {
   const quality = trade.conflict || trade.identity_quality !== 'stable' ? ' · 成交身份未确认' : ''
-  return { id: `${market ? 'market' : 'trade'}:${trade.capture_seq}`, object, kind: market ? 'market' : 'order',
+  return { id: `${market ? 'market' : 'trade'}:${trade.recording_id ?? ''}:${trade.capture_seq}`, object, kind: market ? 'market' : 'order',
     title: market ? '市场成交' : `账户逐笔 · ${replayOwnership(trade, format.executionId).label}`,
     headline: `${side(trade.direction)} ${format.quantity(trade.quantity)} ${format.unit} @ ${format.price(trade.price)}`,
     status: `${market ? trade.granularity === 'aggregate' ? '源聚合成交，不拆逐笔' : trade.granularity ?? '源粒度未知' : replayTradeLiquidity(trade)}${quality}`,

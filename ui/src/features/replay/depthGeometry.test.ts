@@ -16,6 +16,10 @@ const order = (rest: Partial<ReplayOrder> = {}): ReplayOrder => ({ key: 'O', ord
 const layout = replayChartLayout(1200, 420), range = { start_us: 0, end_us: 2000 }
 
 describe('动态盘口及委托位置', () => {
+  it('整次执行包含大量相同价位时仍能计算显示范围', () => {
+    const rows = Array.from({ length: 150_000 }, () => order({ price: 95 }))
+    expect(replayObservedPriceView([quote()], rows, [], 1)).toEqual({ min: 93, max: 105, tick: 1 })
+  })
   it('盘口行接近边缘时滚动并保留安全余量', () => {
     expect(replayDepthScrollTarget(80, 100, 40, 100)).toBeNull()
     expect(replayDepthScrollTarget(45, 65, 40, 100)).toBe(25)

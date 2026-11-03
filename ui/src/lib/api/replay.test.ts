@@ -1,10 +1,45 @@
 import { describe, expect, it, spyOn } from 'bun:test'
-import { readReplayWindow, replayWindowQuery, ReplayWindowBudgetError, validateReplayManifest, validateReplayPage } from '@/lib/api/replay'
+import { readReplayExecution, readReplayWindow, replayWindowQuery, ReplayWindowBudgetError, validateReplayManifest, validateReplayPage } from '@/lib/api/replay'
 import { replaySymbols, replayWindowRequest } from '@/features/replay/presentation'
 import type { ReplayRecording, ReplayWindow } from '@/features/replay/types'
 
 const request = { recording_id: 'rec-A', start_us: 100, end_us: 200, symbols: ['合约 A'] }
 const page = () => ({ recording_id: 'rec-A', window_id: 'w', state_before_start: {}, messages: [{ schema_version: 1, recording_id: 'rec-A', capture_seq: 3, time_us: 100, topic: '/trade', data: {} }], next_cursor: null, complete: true, coverage: [{ start_us: 100, end_us: 200 }], gaps: [], context: { schema_version: 1 } })
+
+it('整次执行逐段读取时保留各自身份和基线', async () => {
+  const preconnect = globalThis.fetch.preconnect
+  const fetchMock = spyOn(globalThis, 'fetch').mockImplementation(Object.assign(async (input: string | URL | Request) => {
+    const query = new URL(String(input), 'http://localhost').searchParams
+    const recording_id = query.get('recording_id')!
+    const start = Number(query.get('start_us')), end = Number(query.get('end_us'))
+    return new Response(JSON.stringify({ ...page(), recording_id, window_id: recording_id,
+      state_before_start: { recording_id, state_through_seq: 0 }, coverage: [{ start_us: start, end_us: end }],
+      messages: [{ ...page().messages[0], recording_id, capture_seq: 1, time_us: start }] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }, { preconnect }))
+  try {
+    const segments = ['rec-A', 'rec-B'].map((recording_id, index) => ({ recording: { recording_id, context: { schema_version: 1 }, coverage: [] }, range: { start_us: index * 100, end_us: index * 100 + 50 } }))
+    const result = await readReplayExecution('exec', segments, '')
+    expect(result.map(segment => [segment.window.recording_id, segment.window.state_before_start?.recording_id, segment.window.messages[0].capture_seq])).toEqual([['rec-A', 'rec-A', 1], ['rec-B', 'rec-B', 1]])
+  } finally { fetchMock.mockRestore() }
+})
+
+it('整次执行读取遇到预算时自动拆分，保留全部范围和独立基线', async () => {
+  const preconnect = globalThis.fetch.preconnect
+  const fetchMock = spyOn(globalThis, 'fetch').mockImplementation(Object.assign(async (input: string | URL | Request) => {
+    const query = new URL(String(input), 'http://localhost').searchParams
+    const start = Number(query.get('start_us')), end = Number(query.get('end_us'))
+    if (end - start > 25) return new Response(JSON.stringify({ detail: { code: 'REPLAY_BUDGET', message: '读取超过预算' } }), { status: 413 })
+    return new Response(JSON.stringify({ ...page(), window_id: String(start), state_before_start: { time_us: start },
+      coverage: [{ start_us: start, end_us: end }], messages: [{ ...page().messages[0], time_us: start }] }), { status: 200 })
+  }, { preconnect }))
+  try {
+    const recording = { recording_id: 'rec-A', context: { schema_version: 1 }, coverage: [] }
+    const result = await readReplayExecution('exec', [{ recording, range: { start_us: 100, end_us: 200 } }], '')
+    expect(result.map(segment => [segment.range.start_us, segment.range.end_us, segment.window.state_before_start?.time_us])).toEqual([
+      [100, 125, 100], [125, 150, 125], [150, 175, 150], [175, 200, 175],
+    ])
+  } finally { fetchMock.mockRestore() }
+})
 
 describe('回放只读窗口边界', () => {
   it('请求绑定录制段，保留完整整数微秒和不透明游标', () => {

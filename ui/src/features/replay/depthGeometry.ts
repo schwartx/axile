@@ -18,8 +18,10 @@ export function replayBestLevel(quote: ReplayQuote, side: '买' | '卖'): Record
 }
 
 export function replayObservedPriceView(quotes: ReplayQuote[], orders: ReplayOrder[], trades: ReplayTrade[], tick?: number | null): ReplayPriceView | null {
-  const levels = quotes.flatMap(quote => [...quote.bids, ...quote.asks])
-  levels.push(...[...orders, ...trades].flatMap(row => row.price != null && row.price > 0 ? [{ price: row.price, quantity: null }] : []))
+  const prices = new Set<number>()
+  for (const quote of quotes) for (const level of [...quote.bids, ...quote.asks]) if (Number.isFinite(level.price) && level.price > 0) prices.add(level.price)
+  for (const row of [...orders, ...trades]) if (row.price != null && Number.isFinite(row.price) && row.price > 0) prices.add(row.price)
+  const levels = [...prices].map(price => ({ price, quantity: null }))
   return levels.length ? defaultReplayPriceView({ bids: levels, asks: [] }, [], tick) : null
 }
 

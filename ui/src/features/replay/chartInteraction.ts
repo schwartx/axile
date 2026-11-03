@@ -2,7 +2,7 @@ import { replayOnBookOrder, replayPriceY, replayTimeX, type ReplayChartLayout } 
 import type { ReplayCursor, ReplayOrder, ReplayProjection, ReplayRange, ReplayTrade } from '@/features/replay/types'
 import type { ReplayPriceView } from '@/features/replay/chartGeometry'
 
-export const replayTradeKey = (trade: ReplayTrade) => `${trade.capture_seq}:${trade.key}`
+export const replayTradeKey = (trade: ReplayTrade) => `${trade.recording_id ? `${trade.recording_id}:` : ''}${trade.capture_seq}:${trade.key}`
 
 export interface ReplayOrderLayers { working: boolean; canceled: boolean; filled: boolean }
 

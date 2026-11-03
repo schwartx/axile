@@ -60,6 +60,7 @@ export interface ReplayRecording {
 }
 export interface ReplayManifest {
   execution_start_us?: number | null
+  execution_end_us?: number | null
   account_id: number
   execution_id: string
   availability: string
@@ -83,6 +84,7 @@ export interface ReplayWindow {
 }
 export interface ReplayLevel { price: number; quantity: number | null }
 export interface ReplayQuote {
+  recording_id?: string
   symbol: string
   bids: ReplayLevel[]
   asks: ReplayLevel[]
@@ -97,6 +99,7 @@ export interface ReplayQuote {
   capture_seq: number
 }
 export interface ReplayOrder {
+  recording_id?: string
   key: string
   order_id: string
   symbol: string
@@ -121,6 +124,7 @@ export interface ReplayOrder {
   native_identity: ReplayData
 }
 export interface ReplayTrade {
+  recording_id?: string
   key: string | null
   symbol: string
   order_id: string | null

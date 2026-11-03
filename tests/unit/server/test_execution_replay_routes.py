@@ -243,7 +243,7 @@ def test_manifest_positions_at_selected_execution_start(monkeypatch, tmp_path, s
         return {"account_id": 7}
 
     async def intent(_):
-        return SimpleNamespace(account_id=7, started_at=started_at)
+        return SimpleNamespace(account_id=7, started_at=started_at, finished_at="2026-11-02T12:04:00.123456Z")
 
     monkeypatch.setattr(execution_replay, "get_execution_status", status)
     monkeypatch.setattr(execution_replay, "get_intent", intent)
@@ -255,6 +255,7 @@ def test_manifest_positions_at_selected_execution_start(monkeypatch, tmp_path, s
         response = client.get("/account/executions/selected/replay")
         assert response.status_code == 200
         assert response.json()["execution_start_us"] == expected
+        assert response.json()["execution_end_us"] == 1793621040123456
 
 
 def test_manifest_rejects_intent_from_another_account(monkeypatch, tmp_path):

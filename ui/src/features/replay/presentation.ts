@@ -86,6 +86,37 @@ export function replayWindowRequest(recording: ReplayRecording, range: ReplayRan
     ...(recording.symbols_complete === true && symbol ? { symbols: [symbol] } : {}) }
 }
 
+/** 全程时间轴保留真实缺口，不把缺口变成可用覆盖。 */
+export function replayExecutionTimeline(coverage: readonly ReplayRange[], start?: number | null, end?: number | null): { range: ReplayRange; gaps: ReplayGap[] } | null {
+  if (!coverage.length) return null
+  const first = coverage[0].start_us, last = coverage[coverage.length - 1].end_us
+  const from = start ?? first
+  const to = end == null ? last : Math.min(Number.MAX_SAFE_INTEGER, end + 1)
+  if (from >= to) return null
+  const gaps: ReplayGap[] = []
+  let cursor = from
+  for (const interval of coverage) {
+    if (interval.end_us <= from || interval.start_us >= to) continue
+    if (interval.start_us > cursor) gaps.push({ start_us: cursor, end_us: Math.min(interval.start_us, to), reason: '录制未覆盖' })
+    cursor = Math.max(cursor, Math.min(interval.end_us, to))
+  }
+  if (cursor < to) gaps.push({ start_us: cursor, end_us: to, reason: '录制未覆盖' })
+  return { range: { start_us: from, end_us: to }, gaps }
+}
+
+/** 每个覆盖段保留原录制身份和基线，不能按时间把不同录制段的序号拼接。 */
+export function replayExecutionPlan(manifest: { recordings: ReplayRecording[]; execution_start_us?: number | null; execution_end_us?: number | null }): { range: ReplayRange; gaps: ReplayGap[]; segments: { recording: ReplayRecording; range: ReplayRange }[] } | null {
+  const coverage = manifest.recordings.flatMap(recording => recording.coverage).toSorted((a, b) => a.start_us - b.start_us || a.end_us - b.end_us)
+  const timeline = replayExecutionTimeline(coverage, manifest.execution_start_us, manifest.execution_end_us)
+  if (!timeline) return null
+  const segments = manifest.recordings.flatMap(recording => recording.coverage.flatMap(interval => {
+    const start_us = Math.max(interval.start_us, timeline.range.start_us)
+    const end_us = Math.min(interval.end_us, timeline.range.end_us)
+    return start_us < end_us ? [{ recording, range: { start_us, end_us } }] : []
+  })).toSorted((a, b) => a.range.start_us - b.range.start_us || a.range.end_us - b.range.end_us)
+  return { ...timeline, segments }
+}
+
 /** 只取同一已覆盖段，跨缺口时另选窗口，不将 UTC 拼成一条连续录制。 */
 export function replayRange(coverage: ReplayRange[], start?: number, durationUs = 20_000_000): ReplayRange | null {
   const range = start == null ? coverage[0] : coverage.find(item => start >= item.start_us && start < item.end_us)

@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process'
 
 const source = readFileSync(new URL('../../tests/replay-page.fixture.ts', import.meta.url), 'utf8')
 function pageCase(scenario: string) {
-  const script = `const ui=${JSON.stringify(new URL('../', import.meta.url).pathname)}; const scenario=${JSON.stringify(scenario)};\n${source}`
+  const script = 'const ui=' + JSON.stringify(new URL('../', import.meta.url).pathname) + '; const scenario=' + JSON.stringify(scenario) + ';\n' + source
   const result = spawnSync(process.execPath, ['-e', script], { cwd: new URL('../../', import.meta.url), encoding: 'utf8', timeout: 10_000 })
   if (result.status !== 0) throw Error(result.stderr || result.stdout || String(result.error))
   return JSON.parse(result.stdout.trim())
@@ -18,17 +18,17 @@ test('统一页头及多品种选择接入现有组件，不渲染原生下拉�
   expect(result.nativeControl).toBe(false)
 })
 
-test('主图时间轴定位实时更新游标，采用最终位置并保持暂停', () => {
-  const result = pageCase('draft-commit')
+test('主图时间轴定位实时更新游标并保持暂停', () => {
+  const result = pageCase('seek')
   expect(result.preview).toContain('08:00:05.000000')
-  expect(result.chartTimeBeforeCommit).toBe(5_000_000)
+  expect(result.chartTime).toBe(5_000_000)
   expect(result.cursor).toContain('08:00:07.000000')
   expect(result.playing).toBe(false)
 })
 
-test('五档倍速保持游标与播放状态，慢放及播放中调速按新倍率连续推进', () => {
+test('五档倍速保持游标与播放状态，播放中调速连续推进', () => {
   const result = pageCase('speed')
-  expect(result.options).toEqual(['0.1', '0.25', '0.5', '1', '2'].map(value => ({ value, label: `${value}×` })))
+  expect(result.options).toEqual(['0.1', '0.25', '0.5', '1', '2'].map(value => ({ value, label: value + '×' })))
   expect(result.initial).toBe('1')
   expect(result.paused).toMatchObject({ playing: false, speed: '0.1' })
   expect(result.paused.cursor).toContain('08:00:05.000000')
@@ -47,92 +47,14 @@ test('首屏保持真实起点，显式定位首个盘口后才展示该观察�
   const result = pageCase('first-quote')
   expect(result.before).toBe(false)
   expect(result.prominent).toBe(true)
-  expect(result.retained).toBe(true)
   expect(result.after).toBe(true)
   expect(result.cursor).toContain('08:00:01.000000')
   expect(result.playing).toBe(false)
 })
 
-test('从后窗选择此前成交时，重新读取真实成交所在窗口而非夹到当前窗起点', () => {
-  const result = pageCase('trade-seek')
-  expect(result.cursor).toContain('08:00:05.000000')
-  expect(result.playing).toBe(false)
-})
-
-test('窗口播放结束后再次播放，从当前窗口起点重新开始', () => {
-  const result = pageCase('restart')
-  expect(result.stopped).toContain('08:00:39.999999')
-  expect(result.cursor).toContain('08:00:20.500000')
-  expect(result.playing).toBe(true)
-})
-
-test('跨窗口加载期间隐藏，加载完成与返回页面都保持暂停', () => {
-  const result = pageCase('hidden')
-  expect(result.hiddenPlaying).toBe(false)
-  expect(result.playing).toBe(false)
-  expect(result.cursor).toContain('08:00:20.000000')
-})
-
-test('隐藏后在新窗完成前返回，也不恢复先前的自动续播', () => {
-  const result = pageCase('hidden-return-before-load')
-  expect(result.hiddenPlaying).toBe(false)
-  expect(result.playing).toBe(false)
-  expect(result.cursor).toContain('08:00:20.000000')
-})
-
-test('没有主动暂停时，下一窗口读取完成后继续播放', () => {
-  const result = pageCase('continue')
-  expect(result.playing).toBe(true)
-  expect(result.cursor).toContain('08:00:20.000000')
-})
-
-test('下一窗读取中显式定位回缓存首窗，仍应用新定位并丢弃迟到响应', () => {
-  const result = pageCase('cached-seek')
-  expect(result.loadingSkeleton).toBe(true)
-  expect(result.initial).toContain('08:00:10.000000')
-  expect(result.cursor).toContain('08:00:00.000000')
-  expect(result.afterLateResponse).toBe(result.cursor)
-  expect(result.afterNextSeek).toContain('08:00:05.000000')
-})
-
-test.each(['drag', 'duration'])('跨窗读取中主动%s，响应到达后仍保持暂停', action => {
-  const result = pageCase(`pause-${action}`)
-  expect(result.pausedBeforeLoad).toBe(true)
-  expect(result.playingAfterLoad).toBe(false)
-  if (action === 'drag') expect(result.seekLabel).toContain('08:00:25.000000')
-})
-
-test('首窗读取失败后仍能定位后窗，播放及步进不执行失效状态', () => {
-  const result = pageCase('missing')
-  expect(result.failed).toEqual({ seek: true, playDisabled: true, nextDisabled: false })
-  expect(result.recovered).toBe(true)
-  expect(result.orders).toBe(true)
-})
-
-test('读取失败时在原窗口内改定位也重新请求，而非只改失效游标', () => {
-  const result = pageCase('missing-seek')
-  expect(result.recovered).toBe(true)
-  expect(result.orders).toBe(true)
-  expect(result.cursor).toContain('08:00:00.500000')
-})
-
-test('实际订单列表及详情区分归属，冲突保留执行身份且不误计本次', () => {
-  const result = pageCase('ownership')
-  expect(result.O1.row).toContain('其他执行')
-  expect(result.O1.detail).toContain('其他执行 · 执行 E1')
-  expect(result.O2.row).toContain('本次执行')
-  expect(result.O2.detail).toContain('本次执行 · 执行 E2')
-  expect(result.M.row).toContain('人工')
-  expect(result.M.detail).toContain('归属： 人工')
-  expect(result.U.row).toContain('归属未知')
-  expect(result.C.row).toContain('归属未知')
-  expect(result.C.detail).toContain('归属未知 · 执行 E2')
-})
-
-
 test('点选图中成交暂停播放并关联委托及详情，但不改变游标或已应用观察', () => {
   const result = pageCase('inspect')
-  expect(result.linked).toMatchObject({ order: JSON.stringify(['X', 'O1']), trade: '3:T', chartTrade: '3:T', tab: 'trades' })
+  expect(result.linked).toMatchObject({ order: JSON.stringify(['X', 'O1']), trade: 'r:3:T', chartTrade: 'r:3:T', tab: 'trades' })
   expect(result.unchanged).toBe(true)
   expect(result.playing).toBe(false)
   expect(result.selectedOrder).toBe(JSON.stringify(['X', 'M']))
@@ -140,39 +62,56 @@ test('点选图中成交暂停播放并关联委托及详情，但不改变游�
   expect(result.tab).toBe('orders')
 })
 
-test('默认读取有界窗口，后续图层与游标状态独立，未来选择和倒退不泄漏终态', () => {
+test('整段图层与游标状态独立，未来选择和倒退不泄漏终态', () => {
   const result = pageCase('overview')
-  expect(result.initial).toMatchObject({ range: { start_us: 0, end_us: 10_000_000 }, sceneTrades: 1, currentTrades: 0, sceneStatus: 'filled', currentStatus: 'working' })
+  expect(result.initial).toMatchObject({ range: { start_us: 0, end_us: 40_000_000 }, sceneTrades: 1, currentTrades: 0, sceneStatus: 'filled', currentStatus: 'working' })
   expect(result.earlyBook).toBe(1)
   expect(result.lateBook).toBe(9)
   expect(result.restoredBook).toBe(1)
   expect(result.preview).toContain('未到达')
   expect(result.preview).not.toContain('已成交')
-  expect(result.future).toEqual({ selected: '5:future', currentTrades: 0 })
+  expect(result.future).toEqual({ selected: 'r:5:future', currentTrades: 0 })
 })
 
-test('后移短窗再切换窗口长度，保留当前位置且不跨越缺口', () => {
-  expect(pageCase('whole-after-window')).toEqual([
-    { later: { start_us: 2_000_000, end_us: 4_000_000 }, longer: { start_us: 2_000_000, end_us: 12_000_000 } },
-    { later: { start_us: 62_000_000, end_us: 64_000_000 }, longer: { start_us: 62_000_000, end_us: 72_000_000 } },
+test('整次执行跨录制段展示并播放，缺口内不沿用盘口和委托状态', () => {
+  const result = pageCase('full-execution')
+  expect(result.initial).toEqual({ range: { start_us: 0, end_us: 40_000_000 }, slices: [
+    ['r0', { start_us: 0, end_us: 10_000_000 }], ['r1', { start_us: 20_000_000, end_us: 40_000_000 }],
+  ], quotes: [[1_000_000, 10_000_000], [21_000_000, 40_000_000]], cursor: 0 })
+  expect(result.hasRecordingDialog).toBe(false)
+  expect(result.requests[0].ranges).toEqual([
+    { recording: 'r0', start_us: 0, end_us: 10_000_000 },
+    { recording: 'r1', start_us: 20_000_000, end_us: 40_000_000 },
   ])
+  expect(result.gap.quotes).toEqual([])
+  expect(result.gap.orders).toEqual([])
+  expect(result.gap.status).toBe(true)
+  expect(result.gap.rows).toContain('状态未知')
+  expect(result.later).toEqual({ quantity: 9, trades: ['r0:4:T', 'r1:4:T'] })
+  expect(result.played).toBe(25_000_000)
 })
 
-test('数据密集时页面自动缩小读取窗口', () => {
-  expect(pageCase('budget-retry')).toEqual({
-    requests: [
-      { start_us: 0, end_us: 10_000_000 },
-      { start_us: 0, end_us: 5_000_000 },
-      { start_us: 0, end_us: 2_500_000 },
-    ],
-    range: { start_us: 0, end_us: 2_500_000 },
-  })
-})
-
-
-test('共用录制打开后一次执行时，首次请求和游标均从该执行开始', () => {
+test('共用录制打开一次执行时，读取范围和游标从该执行开始', () => {
   const result = pageCase('selected-execution')
   expect(result.range).toEqual({ start_us: 25_000_123, end_us: 40_000_000 })
   expect(result.cursor).toBe(25_000_123)
   expect(result.playing).toBe(false)
+})
+
+test('页面隐藏后暂停，返回时不自动恢复播放', () => {
+  const result = pageCase('hidden')
+  expect(result.paused).toBe(true)
+  expect(result.after).toBe(result.atHide)
+  expect(result.playing).toBe(false)
+})
+
+test('播放结束后再次播放，从执行起点重新开始', () => {
+  const result = pageCase('restart')
+  expect(result.stopped).toContain('08:00:39.999999')
+  expect(result.cursor).toContain('08:00:00.500000')
+  expect(result.playing).toBe(true)
+})
+
+test('全程读取失败可以重试，不展示失效状态', () => {
+  expect(pageCase('retry')).toEqual({ failed: true, recovered: true, readCount: 2 })
 })
