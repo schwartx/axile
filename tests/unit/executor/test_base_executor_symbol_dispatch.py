@@ -12,6 +12,7 @@ from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor.base import AbstractExecutor
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.algorithms.core.base import AlgorithmInput, AlgorithmResult
+from axile.executor.algorithms.utils.clock import clock_now_ms
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_input import CTPAccountConfig, UnifiedStandardInput
@@ -196,7 +197,7 @@ def _price(symbol: str) -> UnifiedPriceData:
         ask_volume=1.0,
         volume=10.0,
         turnover=1000.0,
-        timestamp=1,
+        timestamp=clock_now_ms(),
         update_time="2026-03-21T00:00:00",
     )
 
@@ -1328,3 +1329,24 @@ def test_execute_empty_target_dispatches_existing_position_to_zero(monkeypatch, 
     assert calls == [("rb2610", 0.0)]
     assert output.success is True
     assert output.inputs.curr_target == {}
+
+
+def test_stale_planning_quote_blocks_without_dispatch(monkeypatch):
+    """昨日价格不能变成目标数量，也不能被聚合成零目标成功。"""
+    executor = _TestExecutor()
+    old = _price("rb2610")
+    old.timestamp -= 86400 * 1000
+    monkeypatch.setattr(executor, "get_market_data", lambda symbols: {"rb2610": old})
+    output = executor.execute(
+        UnifiedStandardInput(
+            curr_target={"rb2610": 0.1}, last_target={}, channel_type="ctp", account_config=executor.account_config
+        )
+    )
+    result = output.symbol_results["rb2610"]
+    assert result.status == ExecutionStatus.BLOCKED
+    assert result.target_volume is None
+    assert result.sizing.target_quantity is None
+    assert result.reason_code == "COMMON.MARKET_DATA.UNAVAILABLE"
+    assert "过期" in result.error
+    assert result.orders == []
+    assert not output.success

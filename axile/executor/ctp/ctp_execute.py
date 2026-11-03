@@ -1554,7 +1554,34 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         return None
 
     @override
+    def market_data_error(self, quote, *, purpose="order", now=None):
+        """复用 CTP 已有交易日、时效与涨跌停检查。"""
+        now = self.market_data_now() if now is None else now
+        if purpose == "sizing":
+            error = fresh_valuation_quote_error(
+                quote, now=now, trading_day=self._trading_day, max_age=self._config().quote_max_age_seconds
+            )
+        else:
+            error = "missing_quote" if quote is None else self._snapshot_quote_error(quote.symbol, quote, now=now)
+        if error is None:
+            return None
+        return {
+            "missing_quote": "行情未就绪",
+            "trading_day_mismatch": "行情交易日不匹配",
+            "invalid_receive_time": "行情接收时间无效",
+            "stale_exchange_time": "交易所行情时间过期或超前",
+            "stale_receive_time": "行情接收时间过期或超前",
+            "missing_two_sided_book": "缺少有效双边盘口",
+            "invalid_price_limits": "涨跌停或最小变价单位无效",
+            "missing_price_limits_or_tick": "缺少涨跌停或最小变价单位",
+            "invalid_book_price": "盘口价格无效",
+            "invalid_last_price": "参考价格无效",
+            "crossed_book": "盘口买卖价交叉",
+        }.get(error, "行情校验未通过")
+
+    @override
     def get_market_data(self, symbols):
+        """等待当前会话订阅确认及有效行情。"""
         self.initialize_websocket(symbols)
         deadline = clock_monotonic() + self._timeout
         while clock_monotonic() < deadline:
@@ -1600,7 +1627,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
     def _fresh_valuation_quote_error(self, quote):
         return fresh_valuation_quote_error(
             quote,
-            now=time.time(),
+            now=get_default_clock().time(),
             trading_day=self._trading_day,
             max_age=self._config().quote_max_age_seconds,
         )
@@ -1608,7 +1635,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
     def _snapshot_quote_error(self, symbol, quote, *, now=None):
         return quote_error(
             quote,
-            now=time.time() if now is None else now,
+            now=get_default_clock().time() if now is None else now,
             trading_day=self._trading_day,
             max_age=self._config().quote_max_age_seconds,
             tick=self.get_tick_size(symbol),

@@ -328,6 +328,7 @@ def on_tick(_context: Context, tick: TickLikeDict2) -> None:
 
         if dispatcher:
             unified_price = _convert_tick_to_unified(tick)
+            unified_price.extra.update(source="gm.subscription", time_basis="exchange")
             dispatcher.dispatch_price_data(unified_price)
 
     except Exception as e:

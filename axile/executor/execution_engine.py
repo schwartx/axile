@@ -17,6 +17,7 @@ from axile.executor.algorithms.core.base import AlgorithmInput, resolve_algorith
 from axile.executor.algorithms.exceptions import execution_error_message
 from axile.executor.execution_runtime import ExecutionRuntime
 from axile.executor.execution_session import ExecutionSession
+from axile.executor.market_data_validation import MarketDataUnavailableError
 from axile.executor.models.execution_result import (
     AlgorithmResult,
     ExecutionStatus,
@@ -452,6 +453,15 @@ class ExecutionEngine:
                 status=ExecutionStatus.BLOCKED,
                 sizing=task.sizing,
             )
+        except MarketDataUnavailableError as exc:
+            return self._build_failed_algorithm_result(
+                symbol=task.symbol,
+                algorithm_name=task.algorithm_name,
+                error=exc.execution_error,
+                status=ExecutionStatus.BLOCKED,
+                reason_code=exc.reason_code,
+                sizing=task.sizing,
+            )
         except Exception as exc:
             if bool(getattr(exc, "requires_session_recovery", False)):
                 raise
@@ -603,6 +613,12 @@ class ExecutionEngine:
                 account_assets=account_assets,
                 first_tick=clone_price_data(planning_market_data.get(symbol)),
                 sizing=sizing,
+                status=(
+                    ExecutionStatus.BLOCKED
+                    if sizing is not None and sizing.reason_code == "COMMON.MARKET_DATA.UNAVAILABLE"
+                    else ExecutionStatus.FAILED
+                ),
+                reason_code=sizing.reason_code if sizing is not None else None,
             )
         current_volume = self._owner.get_current_volume(symbol, account_assets)
         sizing.current_quantity = current_volume
@@ -1024,6 +1040,9 @@ class ExecutionEngine:
         weight = effective_curr_target.get(symbol, 0.0)
         if symbol not in planning_market_data:
             return f"{symbol} 缺少行情数据，无法规划 target_volume"
+        quote_error = self._owner.market_data_error(planning_market_data[symbol], purpose="sizing")
+        if quote_error:
+            return f"{symbol} 行情不可用于定量：{quote_error}"
         if weight != 0 and planning_market_data[symbol].last_price <= 0:
             return f"{symbol} 价格无效，无法规划 target_volume"
         return f"{symbol} 无法规划 target_volume"

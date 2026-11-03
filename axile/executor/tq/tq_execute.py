@@ -451,6 +451,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
         result: dict[str, UnifiedPriceData] = {}
         for row in rows.values():
             quote = quote_to_unified(row, runtime.resolver)
+            quote.extra.update(source="tq.subscription", time_basis="exchange")
             self._quotes[quote.symbol] = quote
             result[quote.symbol] = quote
         return result

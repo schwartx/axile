@@ -6,11 +6,18 @@
 
 from __future__ import annotations
 
+import math
 import os
 from typing import TYPE_CHECKING, cast
 
 from axile.channels import get_channel
 from axile.common.order_param_model import OrderParamModel
+from axile.executor.algorithms.utils.clock import get_default_clock
+from axile.executor.market_data_validation import (
+    DEFAULT_QUOTE_MAX_AGE_SECONDS,
+    MarketDataPurpose,
+    market_data_error,
+)
 from axile.executor.models.execution_result import (
     AlgorithmResult,
     ExecutionOutcome,
@@ -51,6 +58,21 @@ def _system_max_parallel_symbol_workers() -> int:
 
 class AbstractExecutorCapabilityMixin:
     """承载渠道可复用、可重写的默认能力实现."""
+
+    def market_data_now(self) -> float:
+        """返回行情校验时钟；仿真渠道覆盖为回放时间。"""
+        return get_default_clock().time()
+
+    def market_data_error(
+        self, quote: UnifiedPriceData | None, *, purpose: MarketDataPurpose = "order", now: float | None = None
+    ) -> str | None:
+        """复用追价的默认时效；具体渠道可补充交易日和盘口约束。"""
+        return market_data_error(
+            quote,
+            now=self.market_data_now() if now is None else now,
+            max_age=DEFAULT_QUOTE_MAX_AGE_SECONDS,
+            purpose=purpose,
+        )
 
     def get_all_symbols(
         self,
@@ -306,15 +328,23 @@ class AbstractExecutorCapabilityMixin:
                 continue
 
             price = market_data[symbol].last_price
-            if price <= 0:
-                executor.logger.warning(f"品种 {symbol} 价格无效: {price}")
+            quote_error = (
+                "行情品种不匹配"
+                if market_data[symbol].symbol != symbol
+                else executor.market_data_error(market_data[symbol], purpose="sizing")
+            )
+            if quote_error:
+                executor.logger.warning(f"品种 {symbol} 行情不可用: {quote_error}")
                 decisions[symbol] = TargetSizingDecision(
                     symbol=symbol,
                     status=TargetSizingStatus.UNAVAILABLE,
-                    reason_code="COMMON.SIZING.INVALID_PRICE",
+                    reason_code=(
+                        "COMMON.SIZING.INVALID_PRICE"
+                        if not math.isfinite(price) or price <= 0
+                        else "COMMON.MARKET_DATA.UNAVAILABLE"
+                    ),
                     account_weight=weight,
                     equity=account_assets.total_asset,
-                    reference_price=price,
                 )
                 continue
 

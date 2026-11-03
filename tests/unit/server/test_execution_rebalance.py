@@ -11,6 +11,8 @@ from axile.channels.gm_sessions import SHANGHAI, gm_session_context
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionArtifactType, ExecutionEventStatus, ExecutionEventType
 from axile.executor.abstract_executor.base import AbstractExecutor
+from axile.executor.abstract_executor.capability import AbstractExecutorCapabilityMixin
+from axile.executor.algorithms.utils.clock import clock_now_ms
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import ExecutionStatus, UnifiedStandardOutput
@@ -36,7 +38,7 @@ from tests.unit.server._execution_test_support import (
 )
 
 
-class _VolumeCalcStub:
+class _VolumeCalcStub(AbstractExecutorCapabilityMixin):
     logger: WarningLogger
 
     def __init__(self, logger: WarningLogger) -> None:
@@ -103,7 +105,7 @@ def test_calculate_target_volume_does_not_restore_forbidden_symbols_from_last_ta
             ask_volume=1.0,
             volume=1.0,
             turnover=1.0,
-            timestamp=1,
+            timestamp=clock_now_ms(),
             update_time="2026-03-13T00:00:00",
         )
     }

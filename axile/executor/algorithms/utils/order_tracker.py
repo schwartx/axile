@@ -31,6 +31,7 @@ from axile.executor.algorithms.exceptions import (
 from axile.executor.algorithms.utils.clock import Clock, get_default_clock
 from axile.executor.algorithms.utils.trading import cancel_pending_orders_via_query
 from axile.executor.constants.order_status import OrderStatus
+from axile.executor.market_data_validation import DEFAULT_QUOTE_MAX_AGE_SECONDS, market_data_error
 from axile.executor.models.order_channel_health import OrderChannelHealth
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
@@ -187,7 +188,7 @@ class OrderTracker:
     # 盘口新鲜度兜底：WS 深度流静默失效时 latest_prices 会冻住，据此挂/改被动价可能越过
     # 点差吃成 taker（REST 对账只兜底订单终态、不兜底盘口）。追价读价前若快照年龄超过
     # price_stale_after 秒，则刷新行情快照，并按 rest_price_refresh_interval 限频。
-    price_stale_after: float = 5.0
+    price_stale_after: float = DEFAULT_QUOTE_MAX_AGE_SECONDS
     rest_price_refresh_interval: float = 1.0
     _explicit_error: str | None = field(default=None, init=False)
     _order_errors: dict[str, str] = field(default_factory=dict, init=False)
@@ -411,9 +412,10 @@ class OrderTracker:
         bool
             快照带有效时间戳且年龄不超过 ``price_stale_after`` 秒时返回 ``True``。
         """
-        if price_data.timestamp <= 0:
-            return False
-        return 0 <= now - price_data.timestamp / 1000.0 <= self.price_stale_after
+        validator = getattr(self.executor, "market_data_error", None)
+        if callable(validator):
+            return validator(price_data, now=now) is None
+        return market_data_error(price_data, now=now, max_age=self.price_stale_after, purpose="order") is None
 
     def _rest_refresh_price(self, symbol: str, now: float) -> UnifiedPriceData | None:
         """盘口陈旧时刷新行情快照（限频、仅当前品种）.
