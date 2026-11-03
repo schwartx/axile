@@ -94,6 +94,13 @@ export function replayRange(coverage: ReplayRange[], start?: number, durationUs 
   return { start_us: from, end_us: Math.min(range.end_us, from + durationUs) }
 }
 
+/** 优先定位本次执行开始后的覆盖段，保留选择其他历史时段的能力。 */
+export function replayExecutionRange(coverage: ReplayRange[], startUs: number | null | undefined, durationUs: number): ReplayRange | null {
+  if (startUs == null) return replayRange(coverage, undefined, durationUs)
+  const range = coverage.find(item => item.end_us > startUs)
+  return range ? replayRange(coverage, Math.max(range.start_us, startUs), durationUs) : null
+}
+
 export function replayWindowDuration(value: string): number {
   return value === 'all' ? Number.MAX_SAFE_INTEGER : Number(value) * 1_000_000
 }

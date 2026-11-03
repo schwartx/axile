@@ -18,7 +18,7 @@ import { OrdersAndTrades, type ReplayDetailTab } from '@/features/replay/ReplayD
 import { OverflowText } from '@/components/ui/OverflowText'
 import { InkRewrite } from '@/components/ui/InkRewrite'
 import '@/features/replay/replay.css'
-import { rememberReplaySymbols, replayInstrument, replayNumber, replayRange, replayStream, replaySymbols, replayTime, replayWindowRequest, replayWindowDuration } from '@/features/replay/presentation'
+import { rememberReplaySymbols, replayInstrument, replayNumber, replayRange, replayExecutionRange, replayStream, replaySymbols, replayTime, replayWindowRequest, replayWindowDuration } from '@/features/replay/presentation'
 import { useReplayWindow } from '@/features/replay/useReplayWindow'
 import type { ReplayCursor, ReplayManifest, ReplayRange } from '@/features/replay/types'
 
@@ -53,8 +53,9 @@ export function ExecutionReplayPage() {
       if (controller.signal.aborted) return
       if (value.account_id !== accountId || value.execution_id !== executionId) throw new Error('这次执行不属于当前账户')
       setManifest(value)
-      const first = value.recordings[0]
-      if (first) { setRecordingId(first.recording_id); setSymbol(replaySymbols(first)[0] ?? ''); setRange(replayRange(first.coverage, undefined, replayWindowDuration(initialWindowDuration.current))) }
+      const duration = replayWindowDuration(initialWindowDuration.current)
+      const first = value.recordings.find(recording => replayExecutionRange(recording.coverage, value.execution_start_us, duration)) ?? value.recordings[0]
+      if (first) { setRecordingId(first.recording_id); setSymbol(replaySymbols(first)[0] ?? ''); setRange(replayExecutionRange(first.coverage, value.execution_start_us, duration) ?? replayRange(first.coverage, undefined, duration)) }
     }).catch(cause => { if (!controller.signal.aborted) setManifestError(cause instanceof Error ? cause : new Error(String(cause))) }).finally(() => { if (!controller.signal.aborted) setManifestLoading(false) })
     return () => controller.abort()
   }, [accountId, executionId, revision])

@@ -87,3 +87,12 @@ describe('回放只读窗口边界', () => {
     expect(count).toBe(2)
   })
 })
+
+
+it('执行开始时间保留整数微秒，拒绝非整数和越界值', () => {
+  const manifest = { account_id: 1, execution_id: 'E', recordings: [], execution_start_us: 1793621032000269 }
+  expect(validateReplayManifest(manifest).execution_start_us).toBe(manifest.execution_start_us)
+  for (const execution_start_us of [-1, 1.5, '123', Number.MAX_SAFE_INTEGER + 1]) {
+    expect(() => validateReplayManifest({ ...manifest, execution_start_us })).toThrow('开始时间无效')
+  }
+})

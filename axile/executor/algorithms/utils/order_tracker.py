@@ -1338,6 +1338,8 @@ class OrderTracker:
         """合并已有成交进度，避免订单状态回调回退成交数量."""
         merged_order = incoming_order.model_copy(deep=True)
         merged_order.extra = {**tracked_order.extra, **merged_order.extra}
+        # 后续状态回报的事务时间不能覆盖已跟踪订单的创建时间。
+        merged_order.create_time = tracked_order.create_time
         incoming_status = incoming_order.status
         baseline_filled_volume = max(tracked_order.filled_volume, incoming_order.filled_volume)
         merged_order.filled_volume = baseline_filled_volume

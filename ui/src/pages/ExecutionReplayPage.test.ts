@@ -156,3 +156,11 @@ test('后移短窗再切回整段，恢复当前覆盖时段起点且不跨越�
     { later: { start_us: 62_000_000, end_us: 64_000_000 }, whole: { start_us: 60_000_000, end_us: 100_000_000 } },
   ])
 })
+
+
+test('共用录制打开后一次执行时，首次请求和游标均从该执行开始', () => {
+  const result = pageCase('selected-execution')
+  expect(result.range).toEqual({ start_us: 25_000_123, end_us: 40_000_000 })
+  expect(result.cursor).toBe(25_000_123)
+  expect(result.playing).toBe(false)
+})

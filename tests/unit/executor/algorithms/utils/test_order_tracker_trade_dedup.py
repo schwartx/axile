@@ -150,3 +150,22 @@ def test_F10_missing_trade_id_still_uses_time_price_volume_fallback() -> None:
     tracker.on_trade_record(TradeRecord(trade_id="", **common))
     tracker.on_trade_record(TradeRecord(trade_id="   ", **common))
     assert len(tracker.get_all_trades()) == 1
+
+
+def test_status_callbacks_preserve_order_creation_time():
+    tracker = OrderTracker(executor=_FakeExecutor())
+    original = _pending_order("creation-time")
+    original.create_time = "2026-11-02T19:59:53.974000+08:00"
+    tracker.add_order(original)
+    canceled = original.model_copy(
+        update={
+            "status": OrderStatus.CANCELED,
+            "create_time": "2026-11-02T20:00:54.661000+08:00",
+            "update_time": "2026-11-02T20:00:54.424000+08:00",
+        }
+    )
+    tracker.on_order_update(canceled)
+    result = tracker.completed_orders[original.order_id]
+    assert result.create_time == original.create_time
+    assert result.update_time == canceled.update_time
+    assert result.status == OrderStatus.CANCELED

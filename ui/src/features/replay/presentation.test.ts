@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test'
-import { rememberReplaySymbols, replayCommandPresentation, replayFieldText, replayRange, replayStream, replaySymbols, replayTime } from '@/features/replay/presentation'
+import { rememberReplaySymbols, replayCommandPresentation, replayFieldText, replayExecutionRange, replayRange, replayStream, replaySymbols, replayTime } from '@/features/replay/presentation'
 import { projectReplay } from '@/features/replay/model'
 import type { ReplayData, ReplayRecording, ReplayWindow } from '@/features/replay/types'
 
@@ -97,4 +97,14 @@ it('重入原生拒绝不会被同步返回true掩盖，完整前缀和检查点
   expect(replayCommandPresentation(full.commands[0].data).failed).toBe(false)
   expect(replayCommandPresentation(full.commands.at(-1)!.data).failed).toBe(true)
   expect(replayCommandPresentation(restore.commands[0].data)).toEqual(replayCommandPresentation(full.commands.at(-1)!.data))
+})
+
+
+it('共用录制中的后一执行从自己的开始时间定位，缺口只向后选覆盖段', () => {
+  const coverage = [{ start_us: 100, end_us: 200 }, { start_us: 300, end_us: 500 }, { start_us: 600, end_us: 900 }]
+  expect(replayExecutionRange(coverage, 650, 1000)).toEqual({ start_us: 650, end_us: 900 })
+  expect(replayExecutionRange(coverage, 550, 1000)).toEqual({ start_us: 600, end_us: 900 })
+  expect(replayExecutionRange(coverage, 650, 20)).toEqual({ start_us: 650, end_us: 670 })
+  expect(replayExecutionRange(coverage, null, 1000)).toEqual({ start_us: 100, end_us: 200 })
+  expect(replayExecutionRange(coverage, 900, 1000)).toBeNull()
 })

@@ -42,6 +42,7 @@ mock.module(ui + 'lib/viewTransition.ts', () => ({ withViewTransition: (update: 
 mock.module(ui + 'components/ui/Tooltip.tsx', () => ({ Tooltip: () => null }))
 
 const manifest = { account_id: 7, execution_id: 'E2', availability: 'partial', recordings: [{ recording_id: 'r', symbols: scenario === 'controls' ? ['X', 'Y'] : ['X'], symbols_complete: true, coverage: [{ start_us: 0, end_us: 40_000_000 }], context: { schema_version: 1, instrument: {} } }] }
+if (scenario === 'selected-execution') Object.assign(manifest, { execution_start_us: 25_000_123 })
 if (scenario === 'whole-after-window') manifest.recordings[0].coverage.push({ start_us: 60_000_000, end_us: 100_000_000 })
 mock.module(ui + 'lib/api/replay.ts', () => ({
   getReplayManifest: () => new Promise(resolve => { pendingManifest = () => resolve(manifest) }),
@@ -268,4 +269,9 @@ if (scenario === 'overview') {
     rows[id] = { row: text(row).replace(/\s+/g, ' ').trim(), detail: text(detail).replace(/\s+/g, ' ').trim() }
   }
   console.log(JSON.stringify(rows))
+}
+
+if (scenario === 'selected-execution') {
+  const chart = find(tree, node => node.props?.symbolControl && node.props?.projection)
+  console.log(JSON.stringify({ range: chart.props.range, cursor: chart.props.projection.time_us, playing: playing() }))
 }

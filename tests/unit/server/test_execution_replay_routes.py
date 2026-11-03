@@ -233,3 +233,44 @@ def test_native_database_recording_and_http_window_roundtrip(monkeypatch, native
         assert accounting["own_seen_keys"] == [trade_key]
         assert accounting["execution_totals"][execution_id]["by_symbol"]["X"]["quantity"] == 2
         assert client.get(path + "/window", params=params | {"recording_id": "foreign-recording"}).status_code == 404
+
+
+@pytest.mark.parametrize("started_at, expected", [("2026-11-02T12:03:52.000269Z", 1793621032000269), (None, None)])
+def test_manifest_positions_at_selected_execution_start(monkeypatch, tmp_path, started_at, expected):
+    from types import SimpleNamespace
+
+    async def status(_):
+        return {"account_id": 7}
+
+    async def intent(_):
+        return SimpleNamespace(account_id=7, started_at=started_at)
+
+    monkeypatch.setattr(execution_replay, "get_execution_status", status)
+    monkeypatch.setattr(execution_replay, "get_intent", intent)
+    monkeypatch.setattr(execution_replay, "replay_root", lambda: tmp_path)
+    monkeypatch.setattr(execution_replay.service, "replay_manifest", lambda *args: {"account_id": 7, "recordings": []})
+    app = FastAPI()
+    app.include_router(execution_replay.router, prefix="/account")
+    with TestClient(app) as client:
+        response = client.get("/account/executions/selected/replay")
+        assert response.status_code == 200
+        assert response.json()["execution_start_us"] == expected
+
+
+def test_manifest_rejects_intent_from_another_account(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    async def status(_):
+        return {"account_id": 7}
+
+    async def intent(_):
+        return SimpleNamespace(account_id=8, started_at=None)
+
+    monkeypatch.setattr(execution_replay, "get_execution_status", status)
+    monkeypatch.setattr(execution_replay, "get_intent", intent)
+    monkeypatch.setattr(execution_replay, "replay_root", lambda: tmp_path)
+    monkeypatch.setattr(execution_replay.service, "replay_manifest", lambda *args: {"account_id": 7, "recordings": []})
+    app = FastAPI()
+    app.include_router(execution_replay.router, prefix="/account")
+    with TestClient(app) as client:
+        assert client.get("/account/executions/selected/replay").status_code == 409

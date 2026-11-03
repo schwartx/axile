@@ -46,6 +46,7 @@ export function replayWindowQuery(request: ReplayWindowRequest, cursor?: string)
 export function validateReplayManifest(value: unknown): ReplayManifest {
   const row = object(value)
   if (!Number.isSafeInteger(row.account_id) || typeof row.execution_id !== 'string' || !Array.isArray(row.recordings)) throw new Error('回放目录缺少账户或录制段身份')
+  if (row.execution_start_us != null && (!Number.isSafeInteger(row.execution_start_us) || Number(row.execution_start_us) < 0)) throw new Error('执行开始时间无效')
   for (const item of row.recordings) {
     const recording = object(item)
     if (typeof recording.recording_id !== 'string' || !ranges(recording.coverage)) throw new Error('回放目录包含无效覆盖范围')

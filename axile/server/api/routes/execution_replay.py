@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
@@ -9,6 +10,7 @@ from starlette.concurrency import run_in_threadpool
 
 from axile.server._native import _core
 from axile.server.api.routes.account_support import _get_account_or_404
+from axile.server.execution.intents import get_intent
 from axile.server.execution.registry import get_execution_status
 from axile.server.execution.worker_backend.manager import get_worker_backend_manager
 from axile.server.execution.worker_backend.replay import replay_root
@@ -69,7 +71,15 @@ async def replay_status(account_id: int) -> dict[str, object]:
 async def replay_manifest(execution_id: str) -> dict[str, object]:
     """读取历史录制段与覆盖原因，不调用当前渠道解释旧数据。"""
     account_id = await _execution_account(execution_id)
-    return await _read(service.replay_manifest, account_id, execution_id)
+    result = await _read(service.replay_manifest, account_id, execution_id)
+    intent = await get_intent(execution_id)
+    start_us = None
+    if intent is not None and intent.account_id != account_id:
+        raise HTTPException(409, detail="执行意图归属与执行不符")
+    if intent is not None and intent.started_at is not None:
+        delta = datetime.fromisoformat(intent.started_at) - datetime(1970, 1, 1, tzinfo=UTC)
+        start_us = (delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds
+    return {**result, "execution_start_us": start_us}
 
 
 @router.get("/executions/{execution_id}/replay/window")

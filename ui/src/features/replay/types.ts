@@ -59,6 +59,7 @@ export interface ReplayRecording {
   context: ReplayContext
 }
 export interface ReplayManifest {
+  execution_start_us?: number | null
   account_id: number
   execution_id: string
   availability: string
