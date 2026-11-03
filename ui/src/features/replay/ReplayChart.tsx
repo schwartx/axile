@@ -4,7 +4,7 @@ import { ValueSlider } from '@/components/ui/ValueSlider'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { canvasLine, prepareCanvas, readCanvasTheme, type CanvasTheme } from '@/components/viz/chartCanvas'
 import { centerReplayPrice, currentReplayQuote, replayChartLayout, replayHeatCells, replayMarketPriceSegments, replayOnBookOrder, replayPriceTicks, replayPriceY, replayQuoteEnd, replayRemainingQuantity, replayTimeX, replayXTime, replayYPrice, zoomReplayPrice, type ReplayChartLayout, type ReplayPriceView } from '@/features/replay/chartGeometry'
-import { clampReplayView, replayOrderFocus, replayOrderTimeline, replayTradeKey, replayVisibleOrderMarks, replayVisibleOrders, zoomReplayPriceAt, zoomReplayTime } from '@/features/replay/chartInteraction'
+import { replayContentRange, clampReplayView, replayOrderFocus, replayOrderTimeline, replayTradeKey, replayVisibleOrderMarks, replayVisibleOrders, zoomReplayPriceAt, zoomReplayTime } from '@/features/replay/chartInteraction'
 import { replayBubbleRadius, replayMarketBubbles } from '@/features/replay/marketBubbles'
 import { recordedDepth, replayBestLevel, replayObservedPriceView } from '@/features/replay/depthGeometry'
 import { inspectReplayOrder, inspectReplayTrade, nearestReplayInspection, replayFutureRecord, type InspectionRecord } from '@/features/replay/inspection'
@@ -86,7 +86,8 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   const [size, setSize] = useState({ width: 900, height: 300, revision: 0 })
   const [manualView, setManualView] = useState<ReplayPriceView | null>(null)
   const [timeView, setTimeView] = useState<ReplayRange | null>(null)
-  const visibleRange = timeView ?? range
+  const contentRange = useMemo(() => replayContentRange(scene, symbol, range), [scene, symbol, range])
+  const visibleRange = timeView ?? contentRange
   const [layers, setLayers] = useState({ working: true, canceled: true, filled: true, market: true, execution: true })
   const recorded = scene
   const drawThrough = recorded.time_us

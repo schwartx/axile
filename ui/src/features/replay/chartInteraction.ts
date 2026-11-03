@@ -19,6 +19,15 @@ export function replayVisibleOrders(history: ReplayOrder[], layers: ReplayOrderL
   })
 }
 
+/** 默认视野略过没有图表记录的前缀，手动浏览仍可返回完整窗口。 */
+export function replayContentRange(scene: ReplayProjection, symbol: string, bounds: ReplayRange): ReplayRange {
+  let start = bounds.end_us
+  for (const row of [...scene.quoteHistory.filter(quote => quote.available && quote.book_valid), ...scene.orderHistory, ...scene.marketTrades, ...scene.ownTrades]) {
+    if (row.symbol === symbol && row.time_us < bounds.end_us) start = Math.min(start, Math.max(bounds.start_us, row.time_us))
+  }
+  return start < bounds.end_us ? { ...bounds, start_us: start } : bounds
+}
+
 /** 浏览范围只覆盖当前已读取窗口，不改变回放游标。 */
 export function clampReplayView(view: ReplayRange, bounds: ReplayRange): ReplayRange {
   const duration = Math.max(1, Math.min(bounds.end_us - bounds.start_us, Math.round(view.end_us - view.start_us)))

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
-import { clampReplayView, replayOrderTimeline, replayVisibleOrders, zoomReplayPriceAt, zoomReplayTime } from '@/features/replay/chartInteraction'
-import type { ReplayOrder } from '@/features/replay/types'
+import { replayContentRange, clampReplayView, replayOrderTimeline, replayVisibleOrders, zoomReplayPriceAt, zoomReplayTime } from '@/features/replay/chartInteraction'
+import type { ReplayOrder, ReplayProjection } from '@/features/replay/types'
 
 const bounds = { start_us: 0, end_us: 10_000_000 }
 const order = (time_us: number, values: Partial<ReplayOrder> = {}): ReplayOrder => ({
@@ -62,5 +62,17 @@ describe('图表浏览与订单生命周期', () => {
     const rows = [order(200, { capture_seq: 3 }), order(200, { capture_seq: 4, terminal: true, status: 'filled' }), order(200, { capture_seq: 5, terminal: true, status: 'filled' }), order(400), order(150, { symbol: 'Y' })]
     expect(timeline(rows, 200, 3).marks.map(mark => mark.kind)).toEqual(['placed'])
     expect(timeline(rows, 300, 5).marks.map(mark => mark.kind)).toEqual(['placed', 'filled'])
+  })
+})
+
+
+describe('默认时间视野', () => {
+  const scene = { quoteHistory: [], orderHistory: [], marketTrades: [], ownTrades: [] } as unknown as ReplayProjection
+  it('跳过空白前缀，保留更早委托和窗口前延续状态', () => {
+    const withOrders = (times: number[]) => ({ ...scene, orderHistory: times.map(time => order(time)) })
+    expect(replayContentRange(withOrders([3_000_000]), 'X', bounds)).toEqual({ ...bounds, start_us: 3_000_000 })
+    expect(replayContentRange(withOrders([-100]), 'X', bounds)).toEqual(bounds)
+    expect(replayContentRange(withOrders([3_000_000]), 'Y', bounds)).toEqual(bounds)
+    expect(replayContentRange(scene, 'X', bounds)).toEqual(bounds)
   })
 })
