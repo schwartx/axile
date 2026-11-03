@@ -29,12 +29,18 @@ def config() -> CTPAccountConfig:
     )
 
 
+@pytest.fixture
+def executor(config):
+    executor = _submit_point_executor(config)
+    executor.get_market_data = Mock(return_value=executor._quotes)
+    return executor
+
+
 @pytest.mark.parametrize("entry", ["public", "ctp"])
 @pytest.mark.parametrize("field", ["direction", "order_type"])
 @pytest.mark.parametrize("invalid", _INVALID_VALUES)
-def test_invalid_order_intent_never_reaches_native_send(config, entry, field, invalid):
+def test_invalid_order_intent_never_reaches_native_send(executor, entry, field, invalid):
     """公开入口及直接渠道调用均不得查询资料、占用订单号或发送报单。"""
-    executor = _submit_point_executor(config)
     params = {"direction": OrderDirection.BUY, "order_type": OrderType.LIMIT}
     params[field] = invalid
     place = executor.place_order if entry == "public" else executor._place_order_impl
@@ -42,6 +48,7 @@ def test_invalid_order_intent_never_reaches_native_send(config, entry, field, in
     with pytest.raises(ValueError, match="不支持的买卖方向" if field == "direction" else "不支持的订单类型"):
         place("ag2612", **params, volume=1, price=9000, offset_flag="open")
 
+    executor.get_market_data.assert_not_called()
     executor._trader_api.ReqOrderInsert.assert_not_called()
     executor._ensure_instrument_symbols.assert_not_called()
     assert executor._order_keys == {}
@@ -59,9 +66,8 @@ def test_invalid_order_intent_never_reaches_native_send(config, entry, field, in
         {"offset_flag": "open", "offset": None},
     ],
 )
-def test_explicit_none_offset_never_reaches_native_send(config, entry, offsets):
+def test_explicit_none_offset_never_reaches_native_send(executor, entry, offsets):
     """显式空值不能触发默认开仓，也不能被另一个别名掩盖。"""
-    executor = _submit_point_executor(config)
     place = executor.place_order if entry == "public" else executor._place_order_impl
 
     with pytest.raises(CTPInputValidationError, match="开平标志.*不能为 None"):
@@ -76,9 +82,8 @@ def test_explicit_none_offset_never_reaches_native_send(config, entry, offsets):
 
 @pytest.mark.parametrize("entry", ["public", "ctp"])
 @pytest.mark.parametrize("offsets", [{}, {"offset_flag": "open"}, {"offset": "open"}, {"offset_flag": "close_today"}])
-def test_omitted_and_valid_offsets_keep_order_submission(config, monkeypatch, entry, offsets):
+def test_omitted_and_valid_offsets_keep_order_submission(executor, monkeypatch, entry, offsets):
     """未提供开平字段时继续推导，显式合法值保持原样发送。"""
-    executor = _submit_point_executor(config)
     _at_clock(monkeypatch, datetime(2026, 8, 24, 21, 29, tzinfo=_SHANGHAI))
     place = executor.place_order if entry == "public" else executor._place_order_impl
 
@@ -109,9 +114,8 @@ def test_native_builder_rejects_invalid_intent_before_field_construction(config,
 @pytest.mark.parametrize("entry", ["public", "ctp"])
 @pytest.mark.parametrize("direction", [OrderDirection.BUY, OrderDirection.SELL, "BUY", "SELL"])
 @pytest.mark.parametrize("order_type", [OrderType.LIMIT, OrderType.MARKET, "LIMIT", "MARKET"])
-def test_valid_order_intent_keeps_native_side_and_price_type(config, monkeypatch, entry, direction, order_type):
+def test_valid_order_intent_keeps_native_side_and_price_type(executor, monkeypatch, entry, direction, order_type):
     """合法枚举和精确字符串均只发送一次，并返回规范化订单。"""
-    executor = _submit_point_executor(config)
     _at_clock(monkeypatch, datetime(2026, 8, 24, 21, 29, tzinfo=_SHANGHAI))
     place = executor.place_order if entry == "public" else executor._place_order_impl
 

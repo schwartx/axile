@@ -17,6 +17,7 @@ from axile.executor.account_control.models import (
 )
 from axile.executor.account_control.presets import resolve_account_control_policy
 from axile.executor.account_control.snapshot import AccountControlCounterSnapshot
+from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.ctp.ctp_execute import CtpSessionRecoveryRequired
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
@@ -108,8 +109,21 @@ class _WrapperExecutor(AbstractExecutor):
         )
 
     def get_market_data(self, symbols: list[str]) -> dict[str, UnifiedPriceData]:
-        _ = symbols
-        return {}
+        now = clock_now()
+        return {
+            symbol: UnifiedPriceData(
+                symbol=symbol,
+                last_price=12.3,
+                bid_price=12.29,
+                ask_price=12.31,
+                bid_volume=100,
+                ask_volume=100,
+                volume=100,
+                timestamp=int(now.timestamp() * 1000),
+                update_time=now.isoformat(),
+            )
+            for symbol in symbols
+        }
 
     def _place_order_impl(
         self,

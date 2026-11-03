@@ -1,6 +1,7 @@
 """CTP 额度放行、本地拒绝与真实原生调用必须能够分别核对。"""
 
 from datetime import datetime
+from unittest.mock import Mock
 
 import pytest
 
@@ -11,8 +12,14 @@ from tests.unit.executor.ctp.test_requests import _SHANGHAI, _at_clock, _submit_
 from tests.unit.executor.test_account_control_monitor import make_guard, used
 
 
-def test_local_validation_consumes_allowance_but_does_not_record_native_submission(config):  # noqa: F811
+@pytest.fixture
+def executor(config):  # noqa: F811
     executor = _submit_point_executor(config)
+    executor.get_market_data = Mock(return_value=executor._quotes)
+    return executor
+
+
+def test_local_validation_consumes_allowance_but_does_not_record_native_submission(executor):
     guard = make_guard(baseline_count=0)
     executor.set_account_control_guard(guard)
     facts = []
@@ -28,8 +35,7 @@ def test_local_validation_consumes_allowance_but_does_not_record_native_submissi
 
 @pytest.mark.parametrize("public", [True, False])
 @pytest.mark.parametrize("code", [0, -3])
-def test_public_and_direct_channel_calls_share_native_recording(config, monkeypatch, public, code):  # noqa: F811
-    executor = _submit_point_executor(config)
+def test_public_and_direct_channel_calls_share_native_recording(executor, monkeypatch, public, code):
     _at_clock(monkeypatch, datetime(2026, 8, 24, 21, 29, tzinfo=_SHANGHAI))
     guard = make_guard(baseline_count=0)
     if public:
@@ -55,8 +61,7 @@ def test_public_and_direct_channel_calls_share_native_recording(config, monkeypa
     assert facts[-1].return_code == code
 
 
-def test_native_cancel_recorded_once_without_overwriting_order_callback(config, monkeypatch):  # noqa: F811
-    executor = _submit_point_executor(config)
+def test_native_cancel_recorded_once_without_overwriting_order_callback(executor, monkeypatch):
     _at_clock(monkeypatch, datetime(2026, 8, 24, 21, 29, tzinfo=_SHANGHAI))
     executor.set_account_control_guard(make_guard(baseline_count=0))
     facts = []
