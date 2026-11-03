@@ -43,6 +43,20 @@ describe('动态盘口及委托位置', () => {
     expect(html).not.toContain(' title=')
     expect((html.match(/class="replay-ladder-amount"/g) ?? [])).toHaveLength(10)
   })
+  it('盘口引导区不再绘制挂单横线', () => {
+    const view = { min: 90, max: 110, tick: 1 }
+    const html = renderToStaticMarkup(createElement(ReplayDepthLadder, { quote: quote(), orders: [order({ key: 'A' }), order({ key: 'B', cancel_pending: true })], view, layout, height: 420,
+      executionId: 'E', selected: 'A', onSelect: () => {}, onZoom: () => {}, priceText: String, quantityText: String }))
+    expect(html).not.toContain(`d="M 0 ${replayPriceY(99, view, layout)} h `)
+  })
+  it('悬停价格仅连接包含该价格的盘口行', () => {
+    const view = { min: 90, max: 110, tick: 1 }, depth = quote()
+    const props = { quote: depth, orders: [], view, layout, height: 420, executionId: 'E', selected: null, onSelect: () => {}, onZoom: () => {}, priceText: String, quantityText: String, hoverY: 123 }
+    const bucket = replayDepthBuckets(recordedDepth(depth), [], view, layout).find(row => row.minPrice === 99)!
+    const render = (hoverPrice: number) => renderToStaticMarkup(createElement(ReplayDepthLadder, { ...props, hoverPrice }))
+    expect(render(99)).toContain(`M 0 123 L 10 ${bucket.y} H 24 L 68 ${bucket.labelY} H 82`)
+    expect(render(95)).not.toContain('M 0 123 L 10')
+  })
   it('零量保留但不是买一；未知量保留价位，聚合不冒充零', () => {
     const depth = quote(4)
     depth.bids[0].quantity = 0; depth.bids[1].quantity = null

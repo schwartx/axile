@@ -12,7 +12,7 @@ import { getReplayManifest } from '@/lib/api/replay'
 import { projectReplay } from '@/features/replay/model'
 import { replayTradeKey } from '@/features/replay/chartInteraction'
 import { ReplayChart } from '@/features/replay/ReplayChart'
-import { appliedEventIndex, playbackCursor } from '@/features/replay/playback'
+import { appliedEventIndex, initialReplayCursor, playbackCursor } from '@/features/replay/playback'
 import { replayOwnership } from '@/features/replay/ownership'
 import { OrdersAndTrades, type ReplayDetailTab } from '@/features/replay/ReplayDetails'
 import { OverflowText } from '@/components/ui/OverflowText'
@@ -72,17 +72,19 @@ export function ExecutionReplayPage() {
     setKnownSymbols(previous => rememberReplaySymbols(previous, windowData))
     if (!symbol && discovered[0]) setSymbol(discovered[0])
   }, [windowData, symbol])
-  const requestedSeek = pendingSeek.current?.recording === recordingId && pendingSeek.current?.symbol === symbol ? pendingSeek.current.time_us : null
-  const initialCursor = useMemo(() => range && requestedSeek != null && requestedSeek >= range.start_us && requestedSeek < range.end_us ? { time_us: requestedSeek } : { time_us: range?.start_us ?? 0, capture_seq: Number(windowData?.state_before_start?.state_through_seq ?? 0) }, [range, requestedSeek, windowData?.state_before_start])
-  const currentCursor = useMemo(() => windowData && range && (cursorWindow !== windowData.window_id || requestedSeek != null) ? initialCursor : cursor, [windowData, range, cursorWindow, requestedSeek, initialCursor, cursor])
-  const projected = useMemo(() => {
-    try { return { value: windowData ? projectReplay(windowData, currentCursor, symbol) : null, error: null } }
-    catch (cause) { return { value: null, error: cause instanceof Error ? cause : new Error(String(cause)) } }
-  }, [windowData, currentCursor, symbol])
   const reviewed = useMemo(() => {
     try { return { value: windowData && range ? projectReplay(windowData, { time_us: range.end_us - 1 }, symbol) : null, error: null } }
     catch (cause) { return { value: null, error: cause instanceof Error ? cause : new Error(String(cause)) } }
   }, [windowData, range, symbol])
+  const requestedSeek = pendingSeek.current?.recording === recordingId && pendingSeek.current?.symbol === symbol ? pendingSeek.current.time_us : null
+  const defaultCursor = useMemo(() => windowData && reviewed.value && range ? initialReplayCursor(windowData, reviewed.value, symbol, range) : { time_us: range?.start_us ?? 0 }, [windowData, reviewed.value, symbol, range])
+  const initialCursor = useMemo(() => range && requestedSeek != null && requestedSeek >= range.start_us && requestedSeek < range.end_us ? { time_us: requestedSeek } : continuePlayback.current ? { time_us: range?.start_us ?? 0, capture_seq: Number(windowData?.state_before_start?.state_through_seq ?? 0) } : defaultCursor, [range, requestedSeek, windowData, defaultCursor])
+  const windowKey = windowData ? `${windowData.window_id}:${symbol}` : ''
+  const currentCursor = useMemo(() => windowData && range && (cursorWindow !== windowKey || requestedSeek != null) ? initialCursor : cursor, [windowData, range, windowKey, cursorWindow, requestedSeek, initialCursor, cursor])
+  const projected = useMemo(() => {
+    try { return { value: windowData ? projectReplay(windowData, currentCursor, symbol) : null, error: null } }
+    catch (cause) { return { value: null, error: cause instanceof Error ? cause : new Error(String(cause)) } }
+  }, [windowData, currentCursor, symbol])
   const projection = projected.value
   const events = useMemo(() => windowData?.messages ?? [], [windowData])
   const eventIndex = appliedEventIndex(events, currentCursor)
@@ -95,14 +97,14 @@ export function ExecutionReplayPage() {
   }, [])
   useEffect(() => {
     if (!windowData) { setPlaying(false); setSelectedOrder(null); setSelectedTrade(null); return }
-    if (range && (cursorWindow !== windowData.window_id || requestedSeek != null)) {
+    if (range && (cursorWindow !== windowKey || requestedSeek != null)) {
       setPlaying(false); setSelectedOrder(null); setSelectedTrade(null)
-      setCursorWindow(windowData.window_id)
+      setCursorWindow(windowKey)
       setCursor(initialCursor)
       pendingSeek.current = null
       if (continuePlayback.current === windowData.recording_id) { continuePlayback.current = null; if (!document.hidden) setPlaying(true) }
     }
-  }, [windowData, range, initialCursor, cursorWindow, requestedSeek])
+  }, [windowData, range, initialCursor, windowKey, cursorWindow, requestedSeek])
 
   const pauseAndSeek = useCallback((timeUs: number, captureSeq?: number) => {
     continuePlayback.current = null
@@ -130,7 +132,7 @@ export function ExecutionReplayPage() {
     else setCursor({ time_us: events[index].time_us, capture_seq: events[index].capture_seq })
   }, [events, range, windowData, projected.error])
   useEffect(() => {
-    if (!playing || !windowData || !range || cursorWindow !== windowData.window_id || projected.error || document.hidden) return
+    if (!playing || !windowData || !range || cursorWindow !== windowKey || projected.error || document.hidden) return
     let frame = 0
     const startWall = performance.now(), startUs = cursorRef.current.time_us
     let lastPublished = startWall - 1000 / 30
@@ -152,7 +154,7 @@ export function ExecutionReplayPage() {
     }
     frame = requestAnimationFrame(advance)
     return () => cancelAnimationFrame(frame)
-  }, [playing, speed, windowData, range, cursorWindow, projected.error, recording, windowDuration])
+  }, [playing, speed, windowData, range, windowKey, cursorWindow, projected.error, recording, windowDuration])
 
   const selectRecording = (value: string) => {
     continuePlayback.current = null
@@ -196,12 +198,12 @@ export function ExecutionReplayPage() {
   }
   const firstQuote = events.find(event => event.topic === `/quote/${symbol}` && event.data.book_valid === true && event.data.available !== false)
 
-  const transport = range && <div className="replay-chart-transport" aria-label="回放播放控制">
-<div className="replay-play-controls">
+  const playControls = range && <div className="replay-play-controls" role="group" aria-label="回放播放控制">
             <Tooltip content="前一观察"><button type="button" className={`${buttonClass} replay-transport-button`} onClick={() => step(-1)} disabled={!readReady || eventIndex < 0} aria-label="前一观察"><SkipBack size={14} aria-hidden /><span className="sr-only">上一步</span></button></Tooltip>
-            <Tooltip content={playing ? '暂停回放' : '播放回放'}><button type="button" className={`${buttonClass} replay-transport-button replay-play-button`} aria-label={playing ? '暂停回放' : '播放回放'} aria-pressed={playing} onClick={() => { continuePlayback.current = null; if (!playing && navigationTime >= range.end_us - 1) pauseAndSeek(range.start_us); setPlaying(value => !value) }} disabled={!readReady}>{playing ? <Pause size={14} aria-hidden /> : <Play size={14} aria-hidden />}<span className="sr-only"><InkRewrite text={playing ? '暂停' : '播放'} tone="label" /></span></button></Tooltip>
+            <Tooltip content={playing ? '暂停回放' : '播放回放'}><button type="button" className={`${buttonClass} replay-transport-button replay-play-button`} aria-label={playing ? '暂停回放' : '播放回放'} aria-pressed={playing} onClick={() => { continuePlayback.current = null; if (!playing && navigationTime >= range.end_us - 1) pauseAndSeek(defaultCursor.time_us); setPlaying(value => !value) }} disabled={!readReady}>{playing ? <Pause size={14} aria-hidden /> : <Play size={14} aria-hidden />}<span className="sr-only"><InkRewrite text={playing ? '暂停' : '播放'} tone="label" /></span></button></Tooltip>
             <Tooltip content="后一观察"><button type="button" className={`${buttonClass} replay-transport-button`} onClick={() => step(1)} disabled={!readReady || eventIndex >= events.length - 1} aria-label="后一观察"><SkipForward size={14} aria-hidden /><span className="sr-only">下一步</span></button></Tooltip>
           </div>
+  const transport = range && <div className="replay-chart-transport">
           <div role="group" aria-label="播放速度" className="replay-speed-picker"><Segmented size="sm" className="num" value={speed} onChange={setSpeed} options={['0.1', '0.25', '0.5', '1', '2'].map(value => ({ value, label: `${value}×` }))} /></div>
           <time className="replay-cursor-time num text-xs text-ink-1">{replayTime(navigationTime)} <span className="text-ink-2">{playing ? '播放中' : '已暂停'}</span></time>
           <span className="replay-target num text-xs text-ink-2">目标 {replayNumber(target, unit?.quantity_decimals)} / 本次成交 {replayNumber(ownQuantity, unit?.quantity_decimals)} {unit?.quantity_label}</span>
@@ -225,11 +227,11 @@ export function ExecutionReplayPage() {
       {projection && reviewed.value && windowData && !loaded.loading ? <OrdersAndTrades projection={projection} scene={reviewed.value} context={context} symbol={symbol} selected={activeOrder} onSelect={inspectOrder} selectedTradeKey={selectedTrade} onSelectTrade={inspectTrade} executionId={executionId} tab={detailTab} onTabChange={setDetailTab} onSeek={seekRecording} coverage={recording.coverage} gaps={windowData.gaps}>
       <div className="replay-main-chart">
         {loaded.loading && <div className="replay-empty" role="status">正在恢复所选时刻的状态，回放已暂停…</div>}
-        {projection && windowData && range && !loaded.loading && <ReplayChart window={windowData} range={range} projection={projection} scene={reviewed.value ?? projection} symbol={symbol} selectedOrder={activeOrder} onSelectOrder={inspectOrder} selectedTrade={selectedTrade} onSelectTrade={inspectTrade} onInspect={inspect} onSeek={pauseAndSeek} executionId={executionId} firstQuoteControl={<button type="button" className={`${buttonClass} replay-first-quote`} disabled={!readReady || !firstQuote} onClick={() => { if (firstQuote) pauseAndSeek(firstQuote.time_us) }}>跳到首个盘口</button>} symbolControl={symbols.length > 1 ? <Select ariaLabel="选择回放品种" searchable className={selectClass} value={symbol} options={symbols.map(value => ({ value, label: value }))} onChange={value => { continuePlayback.current = null; setPlaying(false); setSelectedOrder(null); setSelectedTrade(null); setSymbol(value) }} /> : <span className="text-[13px] font-semibold text-ink-1">{symbol || '无已录品种'}</span>}>{transport}</ReplayChart>}
+        {projection && windowData && range && !loaded.loading && <ReplayChart initialTimeUs={defaultCursor.time_us} window={windowData} range={range} projection={projection} scene={reviewed.value ?? projection} symbol={symbol} selectedOrder={activeOrder} onSelectOrder={inspectOrder} selectedTrade={selectedTrade} onSelectTrade={inspectTrade} onInspect={inspect} onSeek={pauseAndSeek} executionId={executionId} playControls={playControls} firstQuoteControl={<button type="button" className={`${buttonClass} replay-first-quote`} disabled={!readReady || !firstQuote} onClick={() => { if (firstQuote) pauseAndSeek(firstQuote.time_us) }}>跳到首个盘口</button>} symbolControl={symbols.length > 1 ? <Select ariaLabel="选择回放品种" searchable className={selectClass} value={symbol} options={symbols.map(value => ({ value, label: value }))} onChange={value => { continuePlayback.current = null; setPlaying(false); setSelectedOrder(null); setSelectedTrade(null); setSymbol(value) }} /> : <span className="text-[13px] font-semibold text-ink-1">{symbol || '无已录品种'}</span>}>{transport}</ReplayChart>}
         {!range && <p className="replay-empty">该录制段没有可读取的封口覆盖区间。</p>}
         {!loaded.loading && range && !readReady && <p className="replay-empty text-ink-2">所选窗口暂不可用。可在录制信息中切换窗口或重试。</p>}
       </div>
-      </OrdersAndTrades> : <div className="replay-empty" role="status">{loaded.loading ? '正在恢复所选时刻的状态，回放已暂停…' : '所选窗口暂不可用，可在录制信息中切换窗口。'}{range && <div className="w-full max-w-xl"><ValueSlider label="录制定位" min={0} max={Math.max(1, (currentCoverage?.end_us ?? range.end_us) - (currentCoverage?.start_us ?? range.start_us) - 1)} step={1} value={Math.max(0, (seekDraft ?? navigationTime) - (currentCoverage?.start_us ?? range.start_us))} formatValue={offset => replayTime((currentCoverage?.start_us ?? range.start_us) + offset)} onChange={offset => { continuePlayback.current = null; setPlaying(false); setSeekDraft((currentCoverage?.start_us ?? range.start_us) + offset) }} onChangeEnd={offset => seekRecording((currentCoverage?.start_us ?? range.start_us) + offset)} /></div>}{transport}</div>}
+      </OrdersAndTrades> : <div className="replay-empty" role="status">{loaded.loading ? '正在恢复所选时刻的状态，回放已暂停…' : '所选窗口暂不可用，可在录制信息中切换窗口。'}{range && <div className="w-full max-w-xl"><ValueSlider label="录制定位" min={0} max={Math.max(1, (currentCoverage?.end_us ?? range.end_us) - (currentCoverage?.start_us ?? range.start_us) - 1)} step={1} value={Math.max(0, (seekDraft ?? navigationTime) - (currentCoverage?.start_us ?? range.start_us))} formatValue={offset => replayTime((currentCoverage?.start_us ?? range.start_us) + offset)} onChange={offset => { continuePlayback.current = null; setPlaying(false); setSeekDraft((currentCoverage?.start_us ?? range.start_us) + offset) }} onChangeEnd={offset => seekRecording((currentCoverage?.start_us ?? range.start_us) + offset)} /></div>}{playControls}{transport}</div>}
     </>}
     <div id="replay-information" popover="auto" className="replay-information bg-surface text-ink-1" aria-label="录制信息与完整性说明">
       <div className="mb-4 flex items-center justify-between gap-4"><h2 className="text-sm font-medium">录制信息</h2><button type="button" popoverTarget="replay-information" popoverTargetAction="hide" className={buttonClass} aria-label="关闭录制信息"><X size={15} aria-hidden /></button></div>

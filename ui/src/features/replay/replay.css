@@ -92,6 +92,9 @@
 .replay-chart-playback > button { min-height: 28px; padding-inline: 6px; }
 .replay-chart-transport { display: flex; align-items: center; flex: 1; flex-wrap: wrap; gap: 12px; min-width: 0; }
 .replay-play-controls { gap: 2px; }
+.replay-playback-group { display: flex; align-items: center; gap: 2px; height: 24px; border: 1px solid var(--color-line); border-radius: var(--radius-chip); background: var(--color-surface); }
+.replay-playback-group > button, .replay-playback-group .replay-transport-button { min-width: 24px; min-height: 0; height: 22px; }
+@media (pointer: coarse) { .replay-playback-group { height: 46px; } .replay-playback-group > button, .replay-playback-group .replay-transport-button { min-width: 44px; min-height: 44px; height: 44px; } }
 .replay-play-controls .replay-transport-button { min-height: 28px; min-width: 28px; padding: 0; border-color: transparent; }
 .replay-play-button { color: var(--color-accent); }
 .replay-cursor-time { font-size: 12px; white-space: nowrap; }
@@ -145,6 +148,8 @@
 .replay-ladder-head > div { position: absolute; right: 8px; left: 82px; text-align: right; }
 .replay-ladder-head > div > :first-child, .replay-ladder-row > :first-child { text-align: left; }
 .replay-ladder-lines { position: absolute; inset: 0; pointer-events: none; }
+.replay-order-price { position: absolute; transform: translateY(-50%); padding: 2px 6px; border-radius: 2px; background: var(--color-accent); color: var(--color-surface); text-align: left; font-size: 11px; line-height: 1.2; pointer-events: none; }
+.replay-order-price[data-pending="true"] { background: var(--color-warn); }
 .replay-ladder-row { position: absolute; left: 82px; right: 8px; align-items: center; height: 20px; text-align: right; color: var(--color-ink-1); white-space: nowrap; }
 .replay-ladder-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .replay-ladder-row.is-grouped { height: 24px; }

@@ -1,4 +1,5 @@
-import type { ReplayCursor, ReplayMessage } from '@/features/replay/types'
+import { currentReplayQuote } from '@/features/replay/chartGeometry'
+import type { ReplayCursor, ReplayMessage, ReplayProjection, ReplayRange, ReplayWindow } from '@/features/replay/types'
 
 export function appliedEventIndex(messages: ReplayMessage[], cursor: ReplayCursor): number {
   let low = 0, high = messages.length
@@ -19,4 +20,18 @@ export function playbackCursor(messages: ReplayMessage[], current: ReplayCursor,
     return { time_us: event.time_us, capture_seq: event.capture_seq }
   }
   return { time_us: targetUs }
+}
+
+/** 只跳过开头无内容的时段，保留更早的业务事件与窗口前状态。 */
+export function initialReplayCursor(window: ReplayWindow, scene: ReplayProjection, symbol: string, range: ReplayRange): ReplayCursor {
+  const fallback = { time_us: range.start_us, capture_seq: Number(window.state_before_start?.state_through_seq ?? 0) }
+  const records = [...scene.quoteHistory.filter(quote => currentReplayQuote(quote, Math.max(range.start_us, quote.time_us), window.gaps)), ...scene.orderHistory, ...scene.ownTrades, ...scene.marketTrades, ...scene.commands]
+  const sequences = new Set<number>()
+  for (const row of records) {
+    if (row.symbol !== symbol) continue
+    if (row.capture_seq <= fallback.capture_seq) return fallback
+    sequences.add(row.capture_seq)
+  }
+  const first = window.messages.find(row => row.time_us >= range.start_us && row.time_us < range.end_us && sequences.has(row.capture_seq))
+  return first ? { time_us: first.time_us, capture_seq: first.capture_seq } : fallback
 }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { replayPriceY, replayRemainingQuantity, type ReplayChartLayout, type ReplayPriceView } from '@/features/replay/chartGeometry'
+import { replayRemainingQuantity, type ReplayChartLayout, type ReplayPriceView } from '@/features/replay/chartGeometry'
 import { recordedDepth, replayDepthBuckets, type ReplayDepthBucket } from '@/features/replay/depthGeometry'
 import { replayOwnership } from '@/features/replay/ownership'
 import { Tooltip } from '@/components/ui/Tooltip'
@@ -32,10 +32,11 @@ function useDepthSlots(buckets: ReplayDepthBucket[], geometry: string) {
   return state
 }
 
-export function ReplayDepthLadder({ quote, future = false, orders, view, layout, height, executionId, selected, onSelect, onZoom, priceText, quantityText }: {
+export function ReplayDepthLadder({ quote, future = false, orders, view, layout, height, executionId, selected, onSelect, onZoom, priceText, quantityText, hoverPrice, hoverY }: {
   quote: ReplayQuote | null; future?: boolean; orders: ReplayOrder[]; view: ReplayPriceView; layout: ReplayChartLayout; height: number
   executionId: string; selected: string | null; onSelect: (key: string) => void; onZoom: (view: ReplayPriceView) => void
   priceText: (price: number | null) => string; quantityText: (quantity: number | null) => string
+  hoverPrice?: number; hoverY?: number
 }) {
   const levels = useMemo(() => recordedDepth(quote), [quote])
   const buckets = useMemo(() => replayDepthBuckets(levels, orders, view, layout), [levels, orders, view, layout])
@@ -43,6 +44,7 @@ export function ReplayDepthLadder({ quote, future = false, orders, view, layout,
   const { slots, snap } = useDepthSlots(buckets, `${view.min}:${view.max}:${view.tick}:${layout.top}:${layout.bottom}:${layout.priceX}:${height}`)
   const max = Math.max(1, ...levels.map(level => level.quantity ?? 0))
   const aggregated = buckets.some(bucket => bucket.minPrice !== bucket.maxPrice)
+  const hoveredBucket = hoverPrice == null ? undefined : buckets.find(bucket => bucket.levels.length && hoverPrice >= bucket.minPrice - view.tick * 1e-6 && hoverPrice <= bucket.maxPrice + view.tick * 1e-6)
   const describe = (bucket: ReplayDepthBucket) => {
     const prices = bucket.minPrice === bucket.maxPrice ? priceText(bucket.minPrice) : `${priceText(bucket.minPrice)}–${priceText(bucket.maxPrice)}`
     const rank = bucket.levels.length === 1 ? `${bucket.levels[0].side}${bucket.levels[0].rank ?? '·0'}` : bucket.levels.length ? `${bucket.levels.length}档` : quote ? '档外' : '未知'
@@ -61,7 +63,7 @@ export function ReplayDepthLadder({ quote, future = false, orders, view, layout,
         <circle cx="6" cy={bucket.y} r="2" fill="var(--color-ink-2)" />
         <path className="replay-ladder-guide" style={{ d: `path("M 10 ${bucket.y} H 24 L 68 ${bucket.labelY} H 82")` }} d={`M 10 ${bucket.y} H 24 L 68 ${bucket.labelY} H 82`} fill="none" stroke="var(--color-ink-3)" strokeWidth=".7" />
       </g>)}
-      {orders.map(order => order.price != null && order.price >= view.min && order.price <= view.max ? <path key={order.key} d={`M 0 ${replayPriceY(order.price, view, layout)} h 59`} stroke={order.cancel_pending ? 'var(--color-warn)' : 'var(--color-accent)'} strokeWidth={order.key === selected ? 3 : 1.5} /> : null)}
+      {hoveredBucket && hoverY != null && <path d={`M 0 ${hoverY} L 10 ${hoveredBucket.y} H 24 L 68 ${hoveredBucket.labelY} H 82`} fill="none" stroke="var(--color-ink-2)" strokeWidth="1" strokeDasharray="4 3" />}
     </svg>
     <div role="list" aria-label={future ? '未到达的已录价位' : '当前已录价位'}>
       {slots.map(({ bucket, entering, expires }) => {
