@@ -147,14 +147,13 @@
 .replay-ladder-head > div, .replay-ladder-row { display: grid; grid-template-columns: 28px 60px minmax(70px, 1fr) 66px; gap: 4px; }
 .replay-ladder-head > div { position: absolute; right: 8px; left: 82px; text-align: right; }
 .replay-ladder-head > div > :first-child, .replay-ladder-row > :first-child { text-align: left; }
-.replay-ladder-lines { position: absolute; inset: 0; pointer-events: none; }
+.replay-ladder-lines { position: absolute; inset: 0 auto auto 0; pointer-events: none; }
+.replay-ladder-list { position: absolute; inset: 28px 0 0 82px; overflow-y: auto; padding-right: 8px; }
 .replay-order-price { position: absolute; transform: translateY(-50%); padding: 2px 6px; border-radius: 2px; background: var(--color-accent); color: var(--color-surface); text-align: left; font-size: 11px; line-height: 1.2; pointer-events: none; }
 .replay-order-price[data-pending="true"] { background: var(--color-warn); }
-.replay-ladder-row { position: absolute; left: 82px; right: 8px; align-items: center; height: 20px; text-align: right; color: var(--color-ink-1); white-space: nowrap; }
+.replay-ladder-row { width: 100%; align-items: center; height: 20px; text-align: right; color: var(--color-ink-1); white-space: nowrap; }
 .replay-ladder-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.replay-ladder-row.is-grouped { height: 24px; }
-.replay-ladder-price-range { display: flex; flex-direction: column; font-size: 10px; line-height: 11px; }
-button.replay-ladder-row:hover, .replay-ladder-row.is-selected { background: var(--color-accent-soft); }
+button.replay-ladder-row:hover, .replay-ladder-row.is-selected, .replay-ladder-list [data-hovered="true"] .replay-ladder-row { background: var(--color-accent-soft); }
 button.replay-ladder-row:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
 .replay-ladder-empty { position: absolute; top: 36px; left: 82px; color: var(--color-ink-2); line-height: 1.8; }
 .replay-ladder-note { position: absolute; bottom: 6px; left: 6px; right: 4px; color: var(--color-ink-2); }

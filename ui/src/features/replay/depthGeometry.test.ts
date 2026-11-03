@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { currentReplayQuote, replayChartLayout, replayHeatCells, replayPriceY } from '@/features/replay/chartGeometry'
 import { replayOrderFocus } from '@/features/replay/chartInteraction'
 import { recordedDepth, replayBestLevel, replayDepthBuckets, replayObservedPriceView, replayOrderBookPosition, replayOrderPositionContext, replayTradeLiquidity } from '@/features/replay/depthGeometry'
-import { ReplayDepthLadder } from '@/features/replay/ReplayDepthLadder'
+import { ReplayDepthLadder, replayDepthScrollTarget } from '@/features/replay/ReplayDepthLadder'
 import type { ReplayOrder, ReplayProjection, ReplayQuote } from '@/features/replay/types'
 import type { ReactElement } from 'react'
 
@@ -16,14 +16,19 @@ const order = (rest: Partial<ReplayOrder> = {}): ReplayOrder => ({ key: 'O', ord
 const layout = replayChartLayout(1200, 420), range = { start_us: 0, end_us: 2000 }
 
 describe('动态盘口及委托位置', () => {
-  it.each([[2, 2], [4, 4], [2, 7], [60, 80]])('实际买%d卖%d档不受 available_depth 固定值影响，聚合也不丢档', (bids, asks) => {
+  it('盘口行接近边缘时滚动并保留安全余量', () => {
+    expect(replayDepthScrollTarget(80, 100, 40, 100)).toBeNull()
+    expect(replayDepthScrollTarget(45, 65, 40, 100)).toBe(25)
+    expect(replayDepthScrollTarget(125, 145, 40, 100)).toBe(65)
+    expect(replayDepthScrollTarget(0, 20, 0, 100)).toBeNull()
+  })
+  it.each([[2, 2], [4, 4], [2, 7], [60, 80]])('实际买%d卖%d档不受 available_depth 固定值影响，逐档显示', (bids, asks) => {
     const depth = quote(bids, asks), levels = recordedDepth(depth), view = replayObservedPriceView([depth], [], [], 1)!
     const buckets = replayDepthBuckets(levels, [], view, layout)
     expect(levels).toHaveLength(bids + asks)
     expect(buckets.flatMap(bucket => bucket.levels)).toHaveLength(bids + asks)
     expect(buckets.every(bucket => bucket.labelY >= layout.top && bucket.labelY <= layout.bottom)).toBe(true)
-    expect(buckets.every((bucket, index) => index === 0 || bucket.labelY - buckets[index - 1].labelY >= 17.99)).toBe(true)
-    if (bids + asks > 100) expect(buckets.some(bucket => bucket.minPrice !== bucket.maxPrice)).toBe(true)
+    expect(buckets.every(bucket => bucket.minPrice === bucket.maxPrice)).toBe(true)
   })
   it('1224桌面高度仍直接列出全部十档，数量不大时不提前聚合', () => {
     const depth = quote(5), small = replayChartLayout(992, 281), view = replayObservedPriceView([depth], [], [], 1)!
@@ -37,7 +42,7 @@ describe('动态盘口及委托位置', () => {
     const row = buckets.find(bucket => bucket.minPrice === 99)!
     expect(row.y).toBe(replayPriceY(99, view, layout))
     const html = renderToStaticMarkup(createElement(ReplayDepthLadder, { quote: depth, orders: [order()], view, layout, height: 420,
-      executionId: 'E', selected: 'O', onSelect: () => {}, onZoom: () => {}, priceText: String, quantityText: String }))
+      executionId: 'E', selected: 'O', onSelect: () => {}, priceText: String, quantityText: String }))
     for (let rank = 1; rank <= 5; rank++) { expect(html).toContain(`买${rank}`); expect(html).toContain(`卖${rank}`) }
     expect(html).toContain('价位不代表排队顺序')
     expect(html).not.toContain(' title=')
@@ -46,16 +51,22 @@ describe('动态盘口及委托位置', () => {
   it('盘口引导区不再绘制挂单横线', () => {
     const view = { min: 90, max: 110, tick: 1 }
     const html = renderToStaticMarkup(createElement(ReplayDepthLadder, { quote: quote(), orders: [order({ key: 'A' }), order({ key: 'B', cancel_pending: true })], view, layout, height: 420,
-      executionId: 'E', selected: 'A', onSelect: () => {}, onZoom: () => {}, priceText: String, quantityText: String }))
+      executionId: 'E', selected: 'A', onSelect: () => {}, priceText: String, quantityText: String }))
     expect(html).not.toContain(`d="M 0 ${replayPriceY(99, view, layout)} h `)
   })
-  it('悬停价格仅连接包含该价格的盘口行', () => {
+  it('悬停价格高亮对应的盘口行', () => {
     const view = { min: 90, max: 110, tick: 1 }, depth = quote()
-    const props = { quote: depth, orders: [], view, layout, height: 420, executionId: 'E', selected: null, onSelect: () => {}, onZoom: () => {}, priceText: String, quantityText: String, hoverY: 123 }
-    const bucket = replayDepthBuckets(recordedDepth(depth), [], view, layout).find(row => row.minPrice === 99)!
+    const props = { quote: depth, orders: [], view, layout, height: 420, executionId: 'E', selected: null, onSelect: () => {}, priceText: String, quantityText: String }
     const render = (hoverPrice: number) => renderToStaticMarkup(createElement(ReplayDepthLadder, { ...props, hoverPrice }))
-    expect(render(99)).toContain(`M 0 123 L 10 ${bucket.y} H 24 L 68 ${bucket.labelY} H 82`)
-    expect(render(95)).not.toContain('M 0 123 L 10')
+    expect(render(99)).toContain('data-price="99:99" data-hovered="true"')
+    expect(render(95)).not.toContain('data-hovered="true"')
+  })
+  it('引导线连接真实价格与可见盘口行', () => {
+    const view = { min: 90, max: 110, tick: 1 }, depth = quote()
+    const props = { quote: depth, orders: [], view, layout, height: 68, executionId: 'E', selected: null, onSelect: () => {}, priceText: String, quantityText: String }
+    const html = renderToStaticMarkup(createElement(ReplayDepthLadder, props))
+    expect(html).toContain(`M 10 ${replayPriceY(103, view, layout)} H 24 L 68 38 H 82`)
+    expect(html).not.toContain(`M 10 ${replayPriceY(100, view, layout)} H 24`)
   })
   it('零量保留但不是买一；未知量保留价位，聚合不冒充零', () => {
     const depth = quote(4)
@@ -73,7 +84,7 @@ describe('动态盘口及委托位置', () => {
     const selected: string[] = [], orders = [order({ key: 'A', order_id: 'A', execution_id: 'E' }), order({ key: 'B', order_id: 'B', remaining_volume: null })]
     let tree!: ReactElement
     function Render() {
-      tree = ReplayDepthLadder({ quote: quote(), orders, view: { min: 95, max: 105, tick: 1 }, layout, height: 420, executionId: 'E', selected: 'A', onSelect: key => selected.push(key), onZoom: () => {}, priceText: String, quantityText: value => value == null ? '未知' : String(value) })
+      tree = ReplayDepthLadder({ quote: quote(), orders, view: { min: 95, max: 105, tick: 1 }, layout, height: 420, executionId: 'E', selected: 'A', onSelect: key => selected.push(key), priceText: String, quantityText: value => value == null ? '未知' : String(value) })
       return tree
     }
     renderToStaticMarkup(createElement(Render))

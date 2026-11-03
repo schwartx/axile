@@ -46,29 +46,18 @@ function positionDepthLabels(buckets: ReplayDepthBucket[], gap: number, layout: 
   for (let index = buckets.length - 1; index >= 0; index--) buckets[index].labelY = Math.min(buckets[index].labelY, index === buckets.length - 1 ? layout.bottom - gap / 2 : buckets[index + 1].labelY - gap)
 }
 
-/** 拥挤时明确按线性价格区间聚合；标签引导线不改变柱条的真实坐标。 */
+/** 每个真实价格独立显示；引导位置保留对应价格坐标。 */
 export function replayDepthBuckets(levels: RecordedDepthLevel[], orders: ReplayOrder[], view: ReplayPriceView, layout: ReplayChartLayout): ReplayDepthBucket[] {
-  const labelLayout = { ...layout, top: Math.max(28, layout.top) }
-  const prices = depthPriceRows(levels, orders, view), height = Math.max(1, labelLayout.bottom - labelLayout.top)
-  const individual = prices.size <= Math.max(1, Math.floor(height / 18)), gap = individual ? 18 : 26
-  const capacity = Math.max(1, Math.floor(height / gap))
-  const grouped = new Map<number, ReplayDepthBucket>()
-  for (const [price, row] of [...prices].sort(([a], [b]) => b - a)) {
+  const rows = [...depthPriceRows(levels, orders, view)].sort(([a], [b]) => b - a)
+  const buckets = rows.map(([price, row]) => {
+    const quantities = row.levels.flatMap(level => level.quantity == null ? [] : [level.quantity])
     const y = replayPriceY(price, view, layout)
-    const key = individual ? price : Math.min(capacity - 1, Math.floor((y - layout.top) / height * capacity))
-    const bucket = grouped.get(key) ?? { minPrice: price, maxPrice: price, y, labelY: y, levels: [], orders: [], quantity: null, unknown: false }
-    bucket.minPrice = Math.min(price, bucket.minPrice); bucket.maxPrice = Math.max(price, bucket.maxPrice)
-    bucket.levels.push(...row.levels); bucket.orders.push(...row.orders)
-    grouped.set(key, bucket)
-  }
-  const buckets = [...grouped.values()]
-  for (const bucket of buckets) {
-    const quantities = bucket.levels.flatMap(level => level.quantity == null ? [] : [level.quantity])
-    bucket.quantity = quantities.length ? Math.max(...quantities) : null
-    bucket.unknown = bucket.levels.some(level => level.quantity == null)
-    bucket.y = replayPriceY((bucket.minPrice + bucket.maxPrice) / 2, view, layout)
-  }
-  positionDepthLabels(buckets, gap, labelLayout)
+    return { minPrice: price, maxPrice: price, y, labelY: y, ...row,
+      quantity: quantities.length ? Math.max(...quantities) : null, unknown: row.levels.some(level => level.quantity == null) }
+  })
+  const top = Math.max(28, layout.top)
+  const gap = Math.min(18, (layout.bottom - top) / Math.max(1, buckets.length))
+  positionDepthLabels(buckets, gap, { ...layout, top })
   return buckets
 }
 
