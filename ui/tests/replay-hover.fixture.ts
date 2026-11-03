@@ -20,7 +20,7 @@ mock.module(ui + 'lib/viewTransition.ts', () => ({ withViewTransition: (fn: any)
 Object.assign(globalThis, { window: { setTimeout: (fn: () => void) => { timers.set(++nextTimer, fn); return nextTimer }, clearTimeout: (id: number) => timers.delete(id) } })
 const { ReplayChart } = await import(ui + 'features/replay/ReplayChart.tsx')
 const { projectReplay } = await import(ui + 'features/replay/model.ts')
-const { replayChartLayout, replayTimeX, replayPriceY } = await import(ui + 'features/replay/chartGeometry.ts')
+const { replayChartLayout, replayTimeX, replayPriceY, replayYPrice } = await import(ui + 'features/replay/chartGeometry.ts')
 const { replayObservedPriceView } = await import(ui + 'features/replay/depthGeometry.ts')
 const windowData: any = { recording_id: 'r', window_id: 'w', context: { schema_version: 1, instrument: { X: { price_tick: .01 } } }, coverage: [{ start_us: 0, end_us: 100 }], gaps: [], state_before_start: { time_us: 0, state_through_seq: 0 }, messages: [
   { schema_version: 1, recording_id: 'r', capture_seq: 1, time_us: 1, topic: '/quote/X', data: { symbol: 'X', book_valid: true, available: true, valid_until_us: 1000, bids: [{ price: 100, quantity: 3 }], asks: [{ price: 101, quantity: 4 }] } },
@@ -52,9 +52,24 @@ const hasReadout = Boolean(readout())
 const hoverDoesNotPause = pauses === 0
 const priceLabel = () => find(tree, n => n.props?.className === 'replay-crosshair-price num')
 const tickAtHover = find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.children === '100')
-assert.equal(tickAtHover.props.style.visibility, 'hidden', '悬停价格附近的刻度应让位')
+assert.equal(tickAtHover.props.style.opacity, 0, '悬停价格附近的刻度应完全让位')
 assert.equal(tickAtHover.props.style.left + tickAtHover.props.style.width, priceLabel().props.style.left + priceLabel().props.style.width, '悬停价格与普通刻度右对齐')
-assert.ok(find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.style.visibility !== 'hidden'), '远处刻度仍然可见')
+assert.ok(find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.style.opacity === 1), '远处刻度仍然完整可见')
+const middleTick = () => find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.children === '100.5')
+const middleTop = middleTick().props.style.top
+function yieldAt(distance: number) {
+  const y = middleTop + 8 + distance
+  hover(replayYPrice(y, view, layout), 0)
+  assert.equal(middleTick().props.style.top, middleTop, '让位不移动普通刻度')
+  assert.ok(Math.abs(priceLabel().props.style.top + priceLabel().props.children[0].props.style.top - y) < 1e-8, '读数与短刻线即时跟随，不添加追赶延迟')
+  return middleTick().props.style.opacity
+}
+for (const [distance, opacity] of [[40, 1], [36, 1], [32, .84375], [28, .5], [24, .15625], [20, 0], [0, 0], [-28, .5], [28, .5]]) {
+  assert.ok(Math.abs(yieldAt(distance) - opacity) < 1e-8, '刻度按距离平滑退墨，反向移动不积累动画')
+}
+for (const boundary of [20, 36]) {
+  assert.ok(Math.abs(yieldAt(boundary - .01) - yieldAt(boundary + .01)) < .001, '反复跨过让位边界不硬切闪烁')
+}
 hover(100.123456)
 assert.equal(priceLabel().props.children[1], '100.12', '保留品种价格精度')
 for (const price of [view.min, view.max]) {
@@ -67,7 +82,7 @@ hover(view.min)
 assert.equal(priceLabel().props.children[1], '100', '吸附到附近成交时保留对象价格')
 assert.equal(priceLabel().props.style.top + priceLabel().props.children[0].props.style.top, find(tree, n => n.props?.className === 'replay-crosshair-horizontal').props.style.top, '吸附后短刻线与十字线对齐')
 find(tree, n => n.type === 'canvas').props.onPointerLeave(); draw()
-assert.ok(!find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.style.visibility === 'hidden'), '移出后恢复普通刻度')
+assert.ok(!find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.style.opacity !== 1), '移出后恢复普通刻度')
 const clearedOnLeave = !readout() && !find(tree, n => n.props?.className === 'replay-crosshair-price num')
 const target = { style: {}, focus() {}, setPointerCapture() {}, hasPointerCapture: () => false, getBoundingClientRect: () => ({ left: 0, top: 0 }) }
 const clickEvent = { button: 0, pointerId: 1, clientX: replayTimeX(50, props.range, layout), clientY: replayPriceY(100, view, layout), currentTarget: target }

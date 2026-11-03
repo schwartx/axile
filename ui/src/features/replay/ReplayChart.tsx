@@ -397,7 +397,9 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
         }} />
       {view && priceTicks.map(price => {
         const top = priceLabelTop(replayPriceY(price, view, layout))
-        return <span key={price} className="replay-price-tick num" aria-hidden="true" style={{ ...priceLabelStyle, top, visibility: hoverPriceTop != null && Math.abs(top - hoverPriceTop) < 20 ? 'hidden' : undefined }}>{priceText(price)}</span>
+        // 20px 内留净读数，外侧 16px 按距离退墨，不叠加时间缓动造成拖尾。
+        const fade = hoverPriceTop == null ? 1 : Math.max(0, Math.min(1, (Math.abs(top - hoverPriceTop) - 20) / 16))
+        return <span key={price} className="replay-price-tick num" aria-hidden="true" style={{ ...priceLabelStyle, top, opacity: fade * fade * (3 - 2 * fade) }}>{priceText(price)}</span>
       })}
       {view && [...new Set(depthOrders.flatMap(order => order.price != null && order.price >= view.min && order.price <= view.max ? [order.price] : []))].map(price => <span key={price} className="replay-order-price num" data-pending={depthOrders.some(order => order.price === price && order.cancel_pending) || undefined} style={{ right: size.width - layout.priceX - 6, top: replayPriceY(price, view, layout) }} aria-label={`账户挂单价格 ${priceText(price)}`}>{priceText(price)}</span>)}
       <div className="replay-chart-axis" data-outside={!cursorInside || undefined} style={{ left: layout.left - 12, right: size.width - layout.right - 12, top: height - 30 }}>
