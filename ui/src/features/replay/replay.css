@@ -175,8 +175,10 @@ button.replay-ladder-row:focus-visible { outline: 2px solid var(--color-accent);
 .replay-ladder-amount > i { position: absolute; z-index: -1; inset-block: 1px; right: 0; background: currentColor; opacity: .18; }
 .replay-ladder-row { border-bottom: 1px solid var(--color-line); }
 
-.replay-crosshair-price, .replay-crosshair-time { position: absolute; z-index: 1; pointer-events: none; background: var(--color-ink-1); color: var(--color-surface); padding: 2px 4px; font-size: 12px; line-height: 16px; white-space: nowrap; text-align: right; }
-.replay-crosshair-time { text-align: center; }
+.replay-price-tick, .replay-crosshair-price { position: absolute; pointer-events: none; color: var(--color-ink-2); font-size: 12px; line-height: 16px; white-space: nowrap; text-align: right; }
+.replay-crosshair-price { z-index: 1; color: var(--color-ink-1); font-weight: 500; }
+.replay-crosshair-price > i { position: absolute; left: -2px; width: 6px; border-top: 1px solid currentColor; }
+.replay-crosshair-time { position: absolute; z-index: 1; pointer-events: none; background: var(--color-ink-1); color: var(--color-surface); padding: 2px 4px; font-size: 12px; line-height: 16px; white-space: nowrap; text-align: center; }
 .replay-selected-inspection { font-size: 12px; line-height: 1.6; }
 
 .replay-inspection-float { position: absolute; z-index: 3; display: flex; flex-direction: column; overflow: hidden; padding: 12px; border: 1px solid var(--color-line); border-radius: var(--radius-card); background: var(--color-surface); box-shadow: var(--shadow-card); }

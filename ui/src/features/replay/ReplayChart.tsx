@@ -120,6 +120,9 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   const layout = useMemo(() => ({ ...replayChartLayout(size.width, height, priceAxisWidth), top: selectedExecution ? 28 : 0 }), [size.width, height, priceAxisWidth, selectedExecution])
   const inspectionWidth = Math.min(320, layout.right - 16)
   const priceTicks = useMemo(() => view ? replayPriceTicks(view, layout.bottom - layout.top) : [], [view, layout.bottom, layout.top])
+  const priceLabelTop = (y: number) => Math.max(layout.top, Math.min(layout.bottom - 16, y - 8))
+  const hoverPriceTop = activeHover ? priceLabelTop(activeHover.y) : null
+  const priceLabelStyle = { left: layout.right + 2, width: layout.priceX - layout.right + 10 }
   const bubbles = useMemo(() => {
     if (!layers.market) return []
     const values = slices ? slices.flatMap(slice => slice.window.context.streams?.[symbol]?.market_trade?.availability === 'unavailable' ? [] : replayMarketBubbles(slice.scene.marketTrades, symbol, visibleRange, layout, projection, slice.window.gaps))
@@ -251,7 +254,6 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
     for (const price of priceTicks) {
       const y = replayPriceY(price, view, layout)
       canvasLine(ctx, layout.left, y, layout.right, y, theme.line)
-      ctx.fillStyle = theme.ink; ctx.textAlign = 'right'; ctx.fillText(priceText(price), layout.priceX + 12, Math.max(12, Math.min(layout.bottom, y + 4))); ctx.textAlign = 'left'
     }
     drawTimeAxis(ctx, height, visibleRange, layout, theme)
   }, [priceAxisWidth, priceTicks, size, height, projection, replayWindow, visibleRange, symbol, executionId, selectedOrder, selectedExecution, view, layout, historyQuotes, timeline, marketSegments, priceText, quantityText, heat, maxHeat, recorded, drawThrough, cursorInside, bubbles, maxBubble, activeHover?.object])
@@ -393,6 +395,10 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
           else if (event.key === 'Enter' && view) { event.preventDefault(); inspectAt(replayTimeX(projection.time_us, visibleRange, layout), replayPriceY(selected?.price ?? (view.min + view.max) / 2, view, layout), true) }
           else if (event.key === 'Escape') { setHover(null); setInspection(null) }
         }} />
+      {view && priceTicks.map(price => {
+        const top = priceLabelTop(replayPriceY(price, view, layout))
+        return <span key={price} className="replay-price-tick num" aria-hidden="true" style={{ ...priceLabelStyle, top, visibility: hoverPriceTop != null && Math.abs(top - hoverPriceTop) < 20 ? 'hidden' : undefined }}>{priceText(price)}</span>
+      })}
       {view && [...new Set(depthOrders.flatMap(order => order.price != null && order.price >= view.min && order.price <= view.max ? [order.price] : []))].map(price => <span key={price} className="replay-order-price num" data-pending={depthOrders.some(order => order.price === price && order.cancel_pending) || undefined} style={{ right: size.width - layout.priceX - 6, top: replayPriceY(price, view, layout) }} aria-label={`账户挂单价格 ${priceText(price)}`}>{priceText(price)}</span>)}
       <div className="replay-chart-axis" data-outside={!cursorInside || undefined} style={{ left: layout.left - 12, right: size.width - layout.right - 12, top: height - 30 }}>
         <ValueSlider variant="axis" label="录制定位" min={0} max={Math.max(1, visibleRange.end_us - visibleRange.start_us - 1)} step={1} value={projection.time_us - visibleRange.start_us}
@@ -413,7 +419,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       {activeHover && <>
         {activeHover.x <= layout.right && <div className="replay-crosshair" aria-hidden style={{ left: activeHover.x, top: layout.top, height: layout.bottom - layout.top }} />}
         <div className="replay-crosshair-horizontal" aria-hidden style={{ left: layout.left, right: size.width - layout.right, top: activeHover.y }} />
-        <span className="replay-crosshair-price num" style={{ left: layout.right + 2, width: layout.priceX - layout.right + 6, top: Math.max(0, Math.min(layout.bottom - 20, activeHover.y - 10)) }}>{view && priceText(Math.round(replayYPrice(activeHover.y, view, layout) / (instrument.price_tick ?? 10 ** -decimals)) * (instrument.price_tick ?? 10 ** -decimals))}</span>
+        <span className="replay-crosshair-price num" style={{ ...priceLabelStyle, top: hoverPriceTop ?? undefined }}><i aria-hidden="true" style={{ top: activeHover.y - (hoverPriceTop ?? 0) }} />{view && priceText(Math.round(replayYPrice(activeHover.y, view, layout) / (instrument.price_tick ?? 10 ** -decimals)) * (instrument.price_tick ?? 10 ** -decimals))}</span>
         <time className="replay-crosshair-time num" style={{ left: Math.max(layout.left, Math.min(layout.right - 140, activeHover.x - 70)), top: height - 24 }}>{replayTime(activeHover.time)}</time>
       </>}
     </div>

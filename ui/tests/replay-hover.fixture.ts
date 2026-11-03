@@ -1,4 +1,6 @@
+/// <reference types="bun" />
 import { mock } from 'bun:test'
+import assert from 'node:assert/strict'
 declare const ui: string
 let at = 0, slots: any[] = [], nextTimer = 0, tree: any
 const timers = new Map<number, () => void>(), seeks: number[] = [], selected: string[] = []
@@ -39,8 +41,8 @@ function find(node: any, predicate: (n: any) => boolean): any {
 const panel = () => find(tree, n => n.props?.['aria-label'] === '图中记录浮卡')
 draw()
 const layout = replayChartLayout(900, 300), view = replayObservedPriceView(scene.quoteHistory, [], [], .01)!
-function hover() {
-  find(tree, n => n.type === 'canvas').props.onPointerMove({ clientX: replayTimeX(49, props.range, layout), clientY: replayPriceY(100, view, layout), currentTarget: { style: {}, getBoundingClientRect: () => ({ left: 0, top: 0 }) } }); draw()
+function hover(price = 100, time = 49) {
+  find(tree, n => n.type === 'canvas').props.onPointerMove({ clientX: replayTimeX(time, props.range, layout), clientY: replayPriceY(price, view, layout), currentTarget: { style: {}, getBoundingClientRect: () => ({ left: 0, top: 0 }) } }); draw()
 }
 hover()
 const noFloatingCard = !panel()
@@ -48,7 +50,24 @@ const readout = () => find(tree, n => n.props?.['aria-label'] === '悬停读数'
 const axisLabels = Boolean(find(tree, n => n.props?.className === 'replay-crosshair-price num')) && Boolean(find(tree, n => n.props?.className === 'replay-crosshair-time num'))
 const hasReadout = Boolean(readout())
 const hoverDoesNotPause = pauses === 0
+const priceLabel = () => find(tree, n => n.props?.className === 'replay-crosshair-price num')
+const tickAtHover = find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.children === '100')
+assert.equal(tickAtHover.props.style.visibility, 'hidden', '悬停价格附近的刻度应让位')
+assert.equal(tickAtHover.props.style.left + tickAtHover.props.style.width, priceLabel().props.style.left + priceLabel().props.style.width, '悬停价格与普通刻度右对齐')
+assert.ok(find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.style.visibility !== 'hidden'), '远处刻度仍然可见')
+hover(100.123456)
+assert.equal(priceLabel().props.children[1], '100.12', '保留品种价格精度')
+for (const price of [view.min, view.max]) {
+  hover(price, 0)
+  const label = priceLabel()
+  assert.ok(label.props.style.top >= layout.top && label.props.style.top + 16 <= layout.bottom, '边缘价格读数不越界')
+  assert.ok(Math.abs(label.props.style.top + label.props.children[0].props.style.top - replayPriceY(price, view, layout)) < 1e-8, '短刻线保留真实价格位置')
+}
+hover(view.min)
+assert.equal(priceLabel().props.children[1], '100', '吸附到附近成交时保留对象价格')
+assert.equal(priceLabel().props.style.top + priceLabel().props.children[0].props.style.top, find(tree, n => n.props?.className === 'replay-crosshair-horizontal').props.style.top, '吸附后短刻线与十字线对齐')
 find(tree, n => n.type === 'canvas').props.onPointerLeave(); draw()
+assert.ok(!find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.style.visibility === 'hidden'), '移出后恢复普通刻度')
 const clearedOnLeave = !readout() && !find(tree, n => n.props?.className === 'replay-crosshair-price num')
 const target = { style: {}, focus() {}, setPointerCapture() {}, hasPointerCapture: () => false, getBoundingClientRect: () => ({ left: 0, top: 0 }) }
 const clickEvent = { button: 0, pointerId: 1, clientX: replayTimeX(50, props.range, layout), clientY: replayPriceY(100, view, layout), currentTarget: target }
