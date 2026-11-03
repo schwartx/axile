@@ -41,6 +41,48 @@ def _assert_market_event(event: dict[str, Any], status: ExecutionStatus) -> None
     assert event["details"]["decision"]["status"] == status.value
 
 
+@pytest.mark.parametrize(
+    "code,family",
+    [
+        (None, None),
+        ("CURRENT", ExecutionReasonFamily.SYSTEM),
+        ("CURRENT", None),
+        (None, ExecutionReasonFamily.ACCOUNT_STATE),
+    ],
+)
+def test_phase_merge_serialization_and_audit_use_one_reason_pair(code, family):
+    executor = _TestExecutor()
+    runtime = _AuditRuntime()
+    engine = ExecutionEngine(executor, runtime=runtime)
+    previous = AlgorithmResult(
+        symbol=SYMBOL,
+        status=ExecutionStatus.BLOCKED,
+        error="前阶段受阻",
+        reason_code=REASON,
+        reason_family=ExecutionReasonFamily.MARKET_RULE,
+    )
+    current = AlgorithmResult(
+        symbol=SYMBOL,
+        status=ExecutionStatus.FAILED,
+        error="当前阶段失败",
+        reason_code=code,
+        reason_family=family,
+        memory={"symbol_decision_reason_code": "FORGED", "symbol_decision_reason_family": "EXCHANGE"},
+    )
+    merged = engine._merge_algorithm_result(previous, current)
+    expected = (code, family) if code or family else (previous.reason_code, previous.reason_family)
+    assert (merged.reason_code, merged.reason_family) == expected
+    restored = AlgorithmResult.model_validate_json(merged.model_dump_json())
+    assert (restored.reason_code, restored.reason_family) == expected
+    for memory in ({}, current.memory, {"start_volume": 999, "error_count": 0}):
+        restored.memory = memory
+        engine._emit_symbol_decision_events(_input(executor, {SYMBOL: 1}), [restored])
+    assert runtime.events[0] == runtime.events[1] == runtime.events[2]
+    event = runtime.events[0]
+    assert event["reason_code"] == (expected[0] or "COMMON.SYMBOL_DECISION_MADE")
+    assert event["reason_family"] == (expected[1] or ExecutionReasonFamily.SYSTEM)
+
+
 def test_initial_planning_unavailable_emits_market_rule(monkeypatch: pytest.MonkeyPatch) -> None:
     executor = _TestExecutor()
     runtime = _AuditRuntime()

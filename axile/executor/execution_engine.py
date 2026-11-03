@@ -23,7 +23,6 @@ from axile.executor.models.execution_result import (
     ExecutionStatus,
     TargetSizingDecision,
     is_success_status,
-    outcome_from_status,
 )
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets, is_degraded_snapshot_source
 from axile.executor.models.unified_input import UnifiedStandardInput
@@ -281,19 +280,6 @@ class ExecutionEngine:
         """在单品种执行会话上运行算法."""
         algorithm_func = resolve_algorithm(algorithm_name, session)
         result = algorithm_func(session, algorithm_input)
-        failure = session.market_data_failure
-        if failure is not None and result.error == failure.execution_error and not is_success_status(result.status):
-            # 算法可恢复异常可能已转成结果；保留报单/成交证据，只修正尚未报单的阻断口径。
-            status = result.status
-            no_position_progress = result.final_volume is None or result.final_volume == result.memory.get(
-                "start_volume"
-            )
-            if status == ExecutionStatus.FAILED and not result.orders and not result.trades and no_position_progress:
-                status = ExecutionStatus.BLOCKED
-            result = result.model_copy(
-                update={"status": status, "outcome": outcome_from_status(status), "reason_code": failure.reason_code}
-            )
-            result.memory["symbol_decision_reason_family"] = ExecutionReasonFamily.MARKET_RULE.value
         merged_memory = dict(session.memory)
         merged_memory.update(result.memory)
         result.memory = merged_memory
@@ -465,6 +451,8 @@ class ExecutionEngine:
                 algorithm_name=task.algorithm_name,
                 error=exc.execution_error,
                 status=ExecutionStatus.BLOCKED,
+                reason_code=exc.reason_code,
+                reason_family=ExecutionReasonFamily.ACCOUNT_STATE,
                 sizing=task.sizing,
             )
         except MarketDataUnavailableError as exc:
@@ -474,7 +462,7 @@ class ExecutionEngine:
                 error=exc.execution_error,
                 status=ExecutionStatus.BLOCKED,
                 reason_code=exc.reason_code,
-                memory={"symbol_decision_reason_family": ExecutionReasonFamily.MARKET_RULE.value},
+                reason_family=ExecutionReasonFamily.MARKET_RULE,
                 sizing=task.sizing,
             )
         except Exception as exc:
@@ -610,10 +598,7 @@ class ExecutionEngine:
                 target_volume=target_volume,
                 first_tick=clone_price_data(planning_market_data.get(symbol)),
                 reason_code=reason_code,
-                memory={
-                    "symbol_decision_reason_code": reason_code,
-                    "symbol_decision_reason_family": ExecutionReasonFamily.MARKET_RULE.value,
-                },
+                reason_family=ExecutionReasonFamily.MARKET_RULE,
                 sizing=sizing,
             )
         if sizing is None or target_volume is None:
@@ -634,8 +619,8 @@ class ExecutionEngine:
                     else ExecutionStatus.FAILED
                 ),
                 reason_code=sizing.reason_code if sizing is not None else None,
-                memory=(
-                    {"symbol_decision_reason_family": ExecutionReasonFamily.MARKET_RULE.value}
+                reason_family=(
+                    ExecutionReasonFamily.MARKET_RULE
                     if sizing is not None and sizing.reason_code == "COMMON.MARKET_DATA.UNAVAILABLE"
                     else None
                 ),
@@ -953,8 +938,8 @@ class ExecutionEngine:
                             else ExecutionStatus.FAILED
                         ),
                         reason_code=sizing.reason_code if sizing is not None else None,
-                        memory=(
-                            {"symbol_decision_reason_family": ExecutionReasonFamily.MARKET_RULE.value}
+                        reason_family=(
+                            ExecutionReasonFamily.MARKET_RULE
                             if sizing is not None and sizing.reason_code == "COMMON.MARKET_DATA.UNAVAILABLE"
                             else None
                         ),
@@ -998,6 +983,7 @@ class ExecutionEngine:
         merged_memory.update(current.memory)
         merged_status = self._derive_symbol_result_status([previous, current])
         merged_error = self._derive_symbol_result_error([previous, current], merged_status)
+        reason_result = current if current.reason_code or current.reason_family else previous
 
         return AlgorithmResult(
             orders=[*previous.orders, *current.orders],
@@ -1017,7 +1003,8 @@ class ExecutionEngine:
             ),
             status=merged_status,
             error=merged_error,
-            reason_code=current.reason_code or previous.reason_code,
+            reason_code=reason_result.reason_code,
+            reason_family=reason_result.reason_family,
             symbol=previous.symbol,
             algorithm=current.algorithm or previous.algorithm,
         )
@@ -1128,22 +1115,13 @@ class ExecutionEngine:
                 continue
             is_skipped = result.status == ExecutionStatus.NOOP
             event_type = ExecutionEventType.SYMBOL_SKIPPED if is_skipped else ExecutionEventType.SYMBOL_DECISION_MADE
-            decision_reason_code = result.reason_code or result.memory.get("symbol_decision_reason_code")
-            decision_reason_family = result.memory.get("symbol_decision_reason_family")
-            reason_code = (
-                decision_reason_code
-                if isinstance(decision_reason_code, str)
-                else (
-                    result.sizing.reason_code
-                    if is_skipped and result.sizing is not None
-                    else ("COMMON.SYMBOL_SKIPPED" if is_skipped else "COMMON.SYMBOL_DECISION_MADE")
-                )
+            reason_code = result.reason_code or (
+                result.sizing.reason_code
+                if is_skipped and result.sizing is not None
+                else ("COMMON.SYMBOL_SKIPPED" if is_skipped else "COMMON.SYMBOL_DECISION_MADE")
             )
-            reason_family = (
-                ExecutionReasonFamily(decision_reason_family)
-                if isinstance(decision_reason_family, str)
-                and decision_reason_family in ExecutionReasonFamily._value2member_map_
-                else _SYMBOL_EVENT_REASON_FAMILY_MAP.get(result.status, ExecutionReasonFamily.SYSTEM)
+            reason_family = result.reason_family or _SYMBOL_EVENT_REASON_FAMILY_MAP.get(
+                result.status, ExecutionReasonFamily.SYSTEM
             )
             details: dict[str, object] = {
                 "decision": {
@@ -1183,6 +1161,7 @@ class ExecutionEngine:
         memory: dict[str, object] | None = None,
         sizing: TargetSizingDecision | None = None,
         reason_code: str | None = None,
+        reason_family: ExecutionReasonFamily | None = None,
     ) -> AlgorithmResult:
         """构造失败或明确阻断结果。"""
         return AlgorithmResult(
@@ -1196,6 +1175,7 @@ class ExecutionEngine:
             error=error,
             outcome_reason=outcome_reason or error,
             reason_code=reason_code,
+            reason_family=reason_family,
             symbol=symbol,
             algorithm=algorithm_name,
         )

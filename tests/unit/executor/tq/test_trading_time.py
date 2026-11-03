@@ -9,6 +9,7 @@ import pytest
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionReasonFamily
 from axile.executor.account_control.exceptions import AccountControlBlockedError
+from axile.executor.algorithms.utils.clock import clock_now_ms
 from axile.executor.models.execution_result import AlgorithmResult, ExecutionStatus, TargetSizingStatus
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import TQAccountConfig, UnifiedStandardInput
@@ -241,7 +242,7 @@ def test_engine_blocks_symbol_sessions_without_market_io(monkeypatch: pytest.Mon
                         ask_volume=1,
                         volume=1,
                         turnover=100,
-                        timestamp=1,
+                        timestamp=clock_now_ms(),
                         update_time="2026-08-24T09:30:00",
                     )
                     for symbol in symbols
@@ -269,7 +270,7 @@ def test_engine_blocks_symbol_sessions_without_market_io(monkeypatch: pytest.Mon
             ask_volume=1,
             volume=1,
             turnover=100,
-            timestamp=1,
+            timestamp=clock_now_ms(),
             update_time="2026-08-24T11:29:00",
         )
 
@@ -291,10 +292,7 @@ def test_engine_blocks_symbol_sessions_without_market_io(monkeypatch: pytest.Mon
     assert blocked.error is None
     assert blocked.outcome_reason == "非交易时段"
     assert blocked.reason_code == "COMMON.SESSION.CLOSED"
-    assert blocked.memory == {
-        "symbol_decision_reason_code": "COMMON.SESSION.CLOSED",
-        "symbol_decision_reason_family": ExecutionReasonFamily.MARKET_RULE.value,
-    }
+    assert blocked.reason_family == ExecutionReasonFamily.MARKET_RULE
     assert blocked.sizing is not None
     assert blocked.sizing.target_quantity == 1.0
     assert blocked.target_volume == 1.0
@@ -334,7 +332,7 @@ def test_execute_missing_required_contract_fails_before_any_order(monkeypatch: p
                         ask_volume=1,
                         volume=1,
                         turnover=100,
-                        timestamp=1,
+                        timestamp=clock_now_ms(),
                         update_time="2026-08-24T09:30:00",
                     )
                     for symbol in symbols
@@ -451,7 +449,7 @@ def test_engine_sizes_closed_symbols_from_cached_quotes(monkeypatch: pytest.Monk
             ask_volume=1,
             volume=1,
             turnover=100,
-            timestamp=1,
+            timestamp=clock_now_ms(),
             update_time="2026-08-24T11:29:00",
         )
         output = instance.execute(

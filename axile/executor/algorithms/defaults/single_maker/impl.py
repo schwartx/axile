@@ -25,7 +25,6 @@ from typing import Any, Literal
 from pydantic import Field
 
 from axile.domain.execution import ExecutionReasonFamily
-from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.algorithms.common.params import BaseAlgorithmParams, ChaseParamsMixin
 from axile.executor.algorithms.core.base import (
     ALL_ORDER_PARAM_MODELS,
@@ -38,7 +37,6 @@ from axile.executor.algorithms.core.base import (
 )
 from axile.executor.algorithms.exceptions import (
     RECOVERABLE_ALGORITHM_EXCEPTIONS,
-    execution_error_message,
     format_exception_message,
 )
 from axile.executor.algorithms.utils import (
@@ -151,8 +149,8 @@ def _missing_book_result(
         status=ExecutionStatus.BLOCKED,
         error="盘口买卖一无效，本轮未执行",
         reason_code="COMMON.MARKET_DATA.UNAVAILABLE",
+        reason_family=ExecutionReasonFamily.MARKET_RULE,
         memory={
-            "symbol_decision_reason_family": ExecutionReasonFamily.MARKET_RULE.value,
             "algorithm": algorithm_name,
             "target_volume": target_volume,
             "execution_details": execution_memory,
@@ -173,10 +171,7 @@ def _record_submit_failure(
     exc: BaseException,
 ) -> None:
     """把报单阶段的可恢复异常落到显式错误通道与执行记忆；原文进日志。"""
-    if isinstance(exc, AccountControlBlockedError):
-        tracker.explicit_blocked_error = exc.execution_error
-    else:
-        tracker.explicit_error = execution_error_message(exc, "报单")
+    tracker.record_exception(exc, "报单")
     error_message = format_exception_message(exc)
     executor.logger.error(f"{symbol} 下单失败: {error_message}")
     execution_memory[f"{symbol}_error"] = error_message
@@ -188,11 +183,11 @@ def _recover_outer_failure(
     exc: BaseException,
 ) -> tuple[UnifiedAccountAssets, float]:
     """外层可恢复异常的收尾：补显式错误并重读最终持仓。"""
-    if not isinstance(tracker.explicit_error, str):
-        tracker.explicit_error = execution_error_message(exc)
+    if not tracker.explicit_error:
+        tracker.record_exception(exc)
     executor.logger.exception("SINGLE-MAKER 执行失败")
     assets, final_volume, query_error = read_final_position(executor, executor.get_current_volume)
-    if query_error and not isinstance(tracker.explicit_error, str):
+    if query_error:
         tracker.explicit_error = query_error
     return assets, final_volume
 
@@ -320,7 +315,7 @@ def single_maker_callback(
 
             # 重新获取账户资产
             account_assets, final_volume, explicit_error = read_final_position(executor, executor.get_current_volume)
-            if explicit_error and not isinstance(tracker.explicit_error, str):
+            if explicit_error:
                 tracker.explicit_error = explicit_error
 
     except ExecutionTerminated:
@@ -343,11 +338,7 @@ def single_maker_callback(
             target_volume,
             orders,
             trades,
-            explicit_error=(tracker.explicit_error if isinstance(tracker.explicit_error, str) else None)
-            or (tracker.pending_reason if isinstance(tracker.pending_reason, str) else None),
-            explicit_blocked_error=tracker.explicit_blocked_error
-            if isinstance(tracker.explicit_blocked_error, str)
-            else None,
+            **tracker.outcome_inputs(),
         ),
         orders=orders,
         trades=trades,

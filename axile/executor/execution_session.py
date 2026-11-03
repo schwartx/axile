@@ -67,7 +67,6 @@ class ExecutionSession:
         self.memory: ObjectDict = {}
         self.audit_context: AuditContext = {}
         self._market_data: ContextVar[UnifiedPriceData | None] = ContextVar("session_market_data", default=None)
-        self.market_data_failure: MarketDataUnavailableError | None = None
         self._price_callbacks: dict[PriceDataCallback, PriceDataCallback] = {}
         self._audit_seq = 0
         self._audit_seq_lock = threading.Lock()
@@ -149,7 +148,6 @@ class ExecutionSession:
         validate()
         with order_submission_context(self.audit_context, validate=validate):
             order = self._owner.place_order(self.symbol, direction, order_type, volume, price, **kwargs)
-        self.market_data_failure = None
         return order
 
     def get_pending_orders(self) -> list[UnifiedOrder]:
@@ -262,8 +260,7 @@ class ExecutionSession:
                 "time_basis": None if quote is None else quote.extra.get("time_basis", "exchange"),
             },
         )
-        self.market_data_failure = MarketDataUnavailableError(self.symbol, error)
-        raise self.market_data_failure
+        raise MarketDataUnavailableError(self.symbol, error)
 
     def market_data_error(
         self, quote: UnifiedPriceData | None, *, purpose: MarketDataPurpose = "order", now: float | None = None

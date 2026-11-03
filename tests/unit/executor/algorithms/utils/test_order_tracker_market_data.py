@@ -154,11 +154,11 @@ def test_fallback_uses_one_frozen_snapshot_for_protection_and_each_child(monkeyp
     assert evidence[0].ask_price == 10.01
     if expire_after_first:
         assert "已过期" in tracker.explicit_error
-        assert session.market_data_failure is not None
+        assert tracker.outcome_inputs()["error_reason_code"] == "COMMON.MARKET_DATA.UNAVAILABLE"
         assert tracker.pending_orders["child-1"] is submitted[0]
     else:
         assert tracker.explicit_error is None
-        assert session.market_data_failure is None
+        assert tracker.outcome_inputs()["error_reason_code"] is None
 
 
 @pytest.mark.parametrize("invalid_book", [False, True])
@@ -208,7 +208,7 @@ def test_fallback_order_validation_reaches_final_submission_boundary(monkeypatch
 
     assert submitted == []
     assert tracker.all_done_event.is_set()
-    assert session.market_data_failure is not None
+    assert tracker.outcome_inputs()["error_reason_code"] == "COMMON.MARKET_DATA.UNAVAILABLE"
     assert ("缺少真实盘口" if invalid_book else "已过期") in tracker.explicit_error
     assert clock.time() == (1000 if invalid_book else 1006)
 

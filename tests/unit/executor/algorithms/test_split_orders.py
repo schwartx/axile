@@ -210,7 +210,7 @@ def test_real_algorithm_split_keeps_pricing_evidence_during_refresh(monkeypatch,
         "TWAP": TwapParams(total_duration=30, slices=1, max_wait_seconds=30),
         "POV": PovParams(participation_rate=1, interval_seconds=1, max_duration=1, complete_on_timeout=False),
     }[algorithm]
-    ExecutionEngine(owner)._run_algorithm_with_session(
+    result = ExecutionEngine(owner)._run_algorithm_with_session(
         session, algorithm, AlgorithmInput(SYMBOL, -3, {}, params=params)
     )
 
@@ -220,10 +220,10 @@ def test_real_algorithm_split_keeps_pricing_evidence_during_refresh(monkeypatch,
     assert evidence[0][1] == evidence[1][1] == original_quote
     if expire:
         assert len(owner.submissions) == 1
-        assert isinstance(session.market_data_failure, MarketDataUnavailableError)
+        assert result.reason_code == MarketDataUnavailableError.reason_code
     else:
         assert len(owner.submissions) == 2
-        assert session.market_data_failure is None
+        assert result.reason_code is result.reason_family is None
 
 
 def _submit(executor, tracker, direction, volume, target, current, price=100.0):

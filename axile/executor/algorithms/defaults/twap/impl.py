@@ -34,7 +34,6 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
-from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.algorithms.common.params import BaseAlgorithmParams
 from axile.executor.algorithms.core.base import (
     ALL_ORDER_PARAM_MODELS,
@@ -46,7 +45,6 @@ from axile.executor.algorithms.core.base import (
 )
 from axile.executor.algorithms.exceptions import (
     RECOVERABLE_ALGORITHM_EXCEPTIONS,
-    execution_error_message,
     format_exception_message,
 )
 from axile.executor.algorithms.utils import (
@@ -286,10 +284,7 @@ def _execute_one_slice(
     except RECOVERABLE_ALGORITHM_EXCEPTIONS as exc:
         if getattr(exc, "requires_session_recovery", False):
             raise
-        if isinstance(exc, AccountControlBlockedError):
-            tracker.explicit_blocked_error = exc.execution_error
-        else:
-            tracker.explicit_error = execution_error_message(exc, "报单")
+        tracker.record_exception(exc, "报单")
         error_message = format_exception_message(exc)
         executor.logger.error(f"{executor.symbol} 下单失败: {error_message}")
         detail["error"] = error_message
@@ -433,14 +428,14 @@ def twap(
     except RECOVERABLE_ALGORITHM_EXCEPTIONS as exc:
         if getattr(exc, "requires_session_recovery", False):
             raise
-        if not isinstance(tracker.explicit_error, str):
-            tracker.explicit_error = execution_error_message(exc)
+        if not tracker.explicit_error:
+            tracker.record_exception(exc)
         executor.logger.exception("TWAP 执行失败")
     finally:
         teardown_order_tracker(executor, tracker, None)
 
     account_assets, final_volume, explicit_error = read_final_position(executor, executor.get_current_volume)
-    if explicit_error and not isinstance(tracker.explicit_error, str):
+    if explicit_error:
         tracker.explicit_error = explicit_error
     orders = tracker.get_all_orders()
     trades = tracker.get_all_trades()
@@ -456,11 +451,7 @@ def twap(
             target_volume,
             orders,
             trades,
-            explicit_error=(tracker.explicit_error if isinstance(tracker.explicit_error, str) else None)
-            or (tracker.pending_reason if isinstance(tracker.pending_reason, str) else None),
-            explicit_blocked_error=tracker.explicit_blocked_error
-            if isinstance(tracker.explicit_blocked_error, str)
-            else None,
+            **tracker.outcome_inputs(),
         ),
         orders=orders,
         trades=trades,

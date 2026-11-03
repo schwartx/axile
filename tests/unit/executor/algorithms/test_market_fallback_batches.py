@@ -62,7 +62,14 @@ def test_market_batch_handles_synchronous_cancel_and_early_callbacks(monkeypatch
     assert [call["volume"] for call in executor.place_calls] == [3, 3, 3, 1]
     assert bounds_calls == [(OrderType.MARKET, info["trade_rule"])]
     assert all(
-        call["kwargs"] == {"offset_flag": "3", "position_side": "long", "trade_rule": info["trade_rule"]}
+        call["kwargs"]
+        == {
+            "offset_flag": "3",
+            "position_side": "long",
+            "trade_rule": info["trade_rule"],
+            "market_data": tracker.latest_prices[parent.symbol],
+            "market_data_purpose": "order",
+        }
         for call in executor.place_calls
     )
     if early_status == OrderStatus.FILLED:

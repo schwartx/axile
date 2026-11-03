@@ -44,7 +44,7 @@ def bind_session(monkeypatch, owner, consumed):
 
 
 def assert_stale_evidence(error, session, events, consumed, clock, reason="行情已过期"):
-    assert error is session.market_data_failure
+    assert isinstance(error, MarketDataUnavailableError)
     assert error.reason_code == "COMMON.MARKET_DATA.UNAVAILABLE"
     assert events[-1]["reason_code"] == error.reason_code
     assert events[-1]["details"] == {

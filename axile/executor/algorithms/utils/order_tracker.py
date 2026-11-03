@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from axile.common.logging import LogComponent, bind_log_context
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
+from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.algorithms.core.base import ExecutorProtocol
 from axile.executor.algorithms.exceptions import (
     RECOVERABLE_ALGORITHM_EXCEPTIONS,
@@ -31,7 +32,11 @@ from axile.executor.algorithms.exceptions import (
 from axile.executor.algorithms.utils.clock import Clock, get_default_clock
 from axile.executor.algorithms.utils.trading import cancel_pending_orders_via_query
 from axile.executor.constants.order_status import OrderStatus
-from axile.executor.market_data_validation import DEFAULT_QUOTE_MAX_AGE_SECONDS, market_data_error
+from axile.executor.market_data_validation import (
+    DEFAULT_QUOTE_MAX_AGE_SECONDS,
+    MarketDataUnavailableError,
+    market_data_error,
+)
 from axile.executor.models.order_channel_health import OrderChannelHealth
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
@@ -194,6 +199,11 @@ class OrderTracker:
     _order_errors: dict[str, str] = field(default_factory=dict, init=False)
     _cancel_restrictions: dict[str, str] = field(default_factory=dict, init=False)
     _explicit_blocked_error: str | None = field(default=None, init=False)
+    _error_reason: tuple[str | None, ExecutionReasonFamily | None] = field(default=(None, None), init=False)
+    _blocked_reason: tuple[str | None, ExecutionReasonFamily | None] = field(default=(None, None), init=False)
+    _order_error_reasons: dict[str, tuple[str | None, ExecutionReasonFamily | None]] = field(
+        default_factory=dict, init=False
+    )
 
     pending_orders: dict[str, UnifiedOrder] = field(default_factory=dict)
     completed_orders: dict[str, UnifiedOrder] = field(default_factory=dict)
@@ -226,6 +236,7 @@ class OrderTracker:
         """执行级重试仅更新自身错误，不能清除其他订单的失败。"""
         with self.lock:
             self._explicit_error = message
+            self._error_reason = (None, None)
 
     @property
     def explicit_blocked_error(self) -> str | None:
@@ -235,13 +246,55 @@ class OrderTracker:
 
     @explicit_blocked_error.setter
     def explicit_blocked_error(self, message: str | None) -> None:
-        """受阻说明只记录明确的账户控制拦截，不能清除其他失败。"""
+        """替换受阻说明时清除旧原因，不能清除其他失败。"""
         with self.lock:
             self._explicit_blocked_error = message
+            self._blocked_reason = (None, None)
+
+    def record_exception(self, exc: BaseException, operation: str = "执行", *, order_id: str | None = None) -> None:
+        """在捕获处保留异常含义；换单失败始终归属原订单。"""
+        reason_code, reason_family = None, None
+        if isinstance(exc, MarketDataUnavailableError):
+            reason_code, reason_family = exc.reason_code, ExecutionReasonFamily.MARKET_RULE
+        elif isinstance(exc, AccountControlBlockedError):
+            reason_code, reason_family = exc.reason_code, ExecutionReasonFamily.ACCOUNT_STATE
+        message = execution_error_message(exc, operation)
+        with self.lock:
+            if order_id is not None:
+                self._order_errors[order_id] = message
+                self._order_error_reasons[order_id] = (reason_code, reason_family)
+            elif reason_family is not None:
+                self._explicit_blocked_error = message
+                self._blocked_reason = (reason_code, reason_family)
+            else:
+                self._explicit_error = message
+                self._error_reason = (None, None)
+
+    def outcome_inputs(self) -> dict[str, Any]:
+        """持锁选出同一错误的说明与原因，供 summarize_outcome 一次判定。"""
+        with self.lock:
+            error = self._explicit_error
+            reason = self._error_reason
+            if not error and self._order_errors:
+                order_id = next(iter(self._order_errors))
+                error = self._order_errors[order_id]
+                reason = self._order_error_reasons.get(order_id, (None, None))
+            if not error:
+                error = self._pending_reason()
+                reason = (None, None)
+            return {
+                "explicit_error": error,
+                "error_reason_code": reason[0],
+                "error_reason_family": reason[1],
+                "explicit_blocked_error": self._explicit_blocked_error,
+                "blocked_reason_code": self._blocked_reason[0],
+                "blocked_reason_family": self._blocked_reason[1],
+            }
 
     def _set_order_error(self, order_id: str, message: str | None) -> None:
         """按原订单身份记录或清除本次换单错误。"""
         with self.lock:
+            self._order_error_reasons.pop(order_id, None)
             if message is None:
                 self._order_errors.pop(order_id, None)
             else:
@@ -349,6 +402,7 @@ class OrderTracker:
                 del self.pending_orders[tracked_order_id]
                 for candidate_id in self._extract_order_candidate_ids(order):
                     self._order_errors.pop(candidate_id, None)
+                    self._order_error_reasons.pop(candidate_id, None)
                     self._cancel_restrictions.pop(candidate_id, None)
 
                 # 追单中的撤单换单会先收到旧单终态，再写入新单。只有明确进入
@@ -674,15 +728,18 @@ class OrderTracker:
         else:
             self._cancel_restrictions.pop(order_id, None)
             self._order_errors[order_id] = item.query_error or item.reason
+            self._order_error_reasons.pop(order_id, None)
 
     @property
     def pending_reason(self) -> str | None:
         """仅在结算结果时说明仍在场的受限委托，不当作运行中的错误。"""
         with self.lock:
-            reasons = [
-                self._cancel_restrictions[key] for key in self.pending_orders if key in self._cancel_restrictions
-            ]
-            return f"委托撤单受限，仍需跟踪：{'；'.join(dict.fromkeys(reasons))}" if reasons else None
+            return self._pending_reason()
+
+    def _pending_reason(self) -> str | None:
+        """调用方持锁读取仍在场的受限委托。"""
+        reasons = [self._cancel_restrictions[key] for key in self.pending_orders if key in self._cancel_restrictions]
+        return f"委托撤单受限，仍需跟踪：{'；'.join(dict.fromkeys(reasons))}" if reasons else None
 
     def waiting_on_restriction(self) -> bool:
         """只有全部未决单均为正常撤单受限时才允许算法继续等待。"""
@@ -1044,7 +1101,7 @@ class OrderTracker:
                 ):
                     raise
                 self._logger.error(f"追单失败 {symbol}: {exc}")
-                self._set_order_error(order_id, execution_error_message(exc, "追单"))
+                self.record_exception(exc, "追单", order_id=order_id)
             finally:
                 with self.lock:
                     self._chasing_order_id = None
@@ -1253,7 +1310,7 @@ class OrderTracker:
                         chase_info.pop("market_order_fallback_pending_cancel", None)
                     raise
                 self._logger.error(f"市价单兜底前撤单失败 {symbol}: {exc}")
-                self._set_order_error(order_id, execution_error_message(exc, "撤单"))
+                self.record_exception(exc, "撤单", order_id=order_id)
                 self._mark_market_fallback_failed(
                     order_id,
                     reason_code="COMMON.MARKET_FALLBACK_CANCEL_FAILED",
@@ -1360,7 +1417,7 @@ class OrderTracker:
                     },
                 )
         except (MemoryError, *RECOVERABLE_ALGORITHM_EXCEPTIONS) as exc:
-            self._set_order_error(order_id, execution_error_message(exc, "报单"))
+            self.record_exception(exc, "报单", order_id=order_id)
             self._mark_market_fallback_failed(
                 order_id,
                 reason_code="COMMON.MARKET_FALLBACK_ORDER_FAILED",

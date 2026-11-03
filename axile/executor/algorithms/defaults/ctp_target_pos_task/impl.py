@@ -19,7 +19,6 @@ from pydantic import ConfigDict, Field
 
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
-from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.algorithms.common.params import BaseAlgorithmParams, ChaseParamsMixin
 from axile.executor.algorithms.core.base import (
     AlgorithmInput,
@@ -29,7 +28,6 @@ from axile.executor.algorithms.core.base import (
     OrderType,
     register_algorithm,
 )
-from axile.executor.algorithms.exceptions import execution_error_message
 from axile.executor.algorithms.utils import setup_order_tracker, teardown_order_tracker
 from axile.executor.algorithms.utils.final_position import read_final_position
 from axile.executor.algorithms.utils.order_tracker import ChaseConfig, OrderTracker
@@ -339,10 +337,7 @@ def _place_volume_slices(
             )
         except Exception as exc:
             if tracker is not None:
-                if isinstance(exc, AccountControlBlockedError):
-                    tracker.explicit_blocked_error = exc.execution_error
-                else:
-                    tracker.explicit_error = execution_error_message(exc, "报单")
+                tracker.record_exception(exc, "报单")
             if isinstance(exc, (MemoryError, ExecutionTerminated)) or bool(
                 getattr(exc, "requires_session_recovery", False)
             ):
@@ -780,7 +775,7 @@ def ctp_target_pos_task_algorithm(executor: ExecutorProtocol, algorithm_input: A
                 if p.symbol == symbol
             ),
         )
-        if explicit_error and not isinstance(tracker.explicit_error, str):
+        if explicit_error:
             tracker.explicit_error = explicit_error
         target_reached = final_net_position == target_volume
         target_gap = target_volume - final_net_position
@@ -801,8 +796,7 @@ def ctp_target_pos_task_algorithm(executor: ExecutorProtocol, algorithm_input: A
             target_volume,
             orders,
             trades,
-            tracker.explicit_error if isinstance(tracker.explicit_error, str) else None,
-            tracker.explicit_blocked_error if isinstance(tracker.explicit_blocked_error, str) else None,
+            **tracker.outcome_inputs(),
         )
         return AlgorithmResult(
             **conclusion,
@@ -844,16 +838,10 @@ def ctp_target_pos_task_algorithm(executor: ExecutorProtocol, algorithm_input: A
                 if p.symbol == symbol
             ),
         )
-        tracker_error = tracker.explicit_error if isinstance(tracker.explicit_error, str) else None
-        tracker_blocked = tracker.explicit_blocked_error if isinstance(tracker.explicit_blocked_error, str) else None
-        explicit_blocked_error = tracker_blocked or (
-            e.execution_error if isinstance(e, AccountControlBlockedError) else None
-        )
-        explicit_error = (
-            explicit_error
-            or tracker_error
-            or (None if explicit_blocked_error else execution_error_message(e, "持仓调整"))
-        )
+        if not tracker.explicit_error:
+            tracker.record_exception(e, "持仓调整")
+        if explicit_error:
+            tracker.explicit_error = explicit_error
         orders, trades = tracker.get_all_orders(), tracker.get_all_trades()
         return AlgorithmResult(
             **summarize_outcome(
@@ -862,8 +850,7 @@ def ctp_target_pos_task_algorithm(executor: ExecutorProtocol, algorithm_input: A
                 algorithm_input.target_volume,
                 orders,
                 trades,
-                explicit_error,
-                explicit_blocked_error,
+                **tracker.outcome_inputs(),
             ),
             orders=orders,
             trades=trades,

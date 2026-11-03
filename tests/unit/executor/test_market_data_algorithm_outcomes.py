@@ -1,4 +1,4 @@
-"""真实算法吞掉行情异常后的会话归因与执行结果边界。"""
+"""真实算法在捕获处保留行情归因，不依赖会话旁路。"""
 
 from threading import Event
 
@@ -26,6 +26,12 @@ from tests.unit.executor.test_base_executor_symbol_dispatch import _assets, _pri
 
 SYMBOL = "rb2612.SHFE"
 REASON = "COMMON.MARKET_DATA.UNAVAILABLE"
+ALGORITHMS = [
+    ("SINGLE-MAKER", SingleMakerParams(max_wait_seconds=30, chase_enabled=False)),
+    ("TWAP", TwapParams(total_duration=30, slices=1, max_wait_seconds=30)),
+    ("POV", PovParams(participation_rate=1, interval_seconds=1, max_duration=1, complete_on_timeout=False)),
+    ("TARGET-POS-TASK", CTPTargetPosTaskParams(max_wait_seconds=30, chase_enabled=False)),
+]
 
 
 class _FrozenClock:
@@ -157,11 +163,9 @@ def _expire_before_submit(
 
 
 def _assert_blocked(result: AlgorithmResult, session: ExecutionSession, owner: _QuoteExecutor) -> None:
-    failure = session.market_data_failure
-    assert isinstance(failure, MarketDataUnavailableError)
-    assert result.error == failure.execution_error
+    assert result.error
     assert result.reason_code == REASON
-    assert result.memory["symbol_decision_reason_family"] == ExecutionReasonFamily.MARKET_RULE.value
+    assert result.reason_family == ExecutionReasonFamily.MARKET_RULE
     assert result.status == ExecutionStatus.BLOCKED
     assert result.outcome == ExecutionOutcome.BLOCKED
     assert result.outcome_reason == result.error
@@ -198,18 +202,11 @@ def test_uncaught_market_data_error_keeps_blocked_reason_and_market_family(
 
 @pytest.mark.parametrize(
     "algorithm_name,params",
-    [
-        ("SINGLE-MAKER", SingleMakerParams(max_wait_seconds=30, chase_enabled=False)),
-        ("TWAP", TwapParams(total_duration=30, slices=1, max_wait_seconds=30)),
-        (
-            "POV",
-            PovParams(participation_rate=1, interval_seconds=1, max_duration=1, complete_on_timeout=False),
-        ),
-        ("TARGET-POS-TASK", CTPTargetPosTaskParams(max_wait_seconds=30, chase_enabled=False)),
-    ],
+    ALGORITHMS,
 )
+@pytest.mark.parametrize("diagnostics", ["keep", "clear", "forge"])
 def test_builtin_caught_pre_submit_stale_quote_is_blocked(
-    monkeypatch: pytest.MonkeyPatch, clock: _FrozenClock, execution, algorithm_name, params
+    monkeypatch: pytest.MonkeyPatch, clock: _FrozenClock, execution, algorithm_name, params, diagnostics
 ) -> None:
     owner, engine, session = execution
     algorithm = resolve_algorithm(algorithm_name, session)
@@ -218,23 +215,142 @@ def test_builtin_caught_pre_submit_stale_quote_is_blocked(
     def observe_algorithm(real_session, algorithm_input):
         result = algorithm(real_session, algorithm_input)
         raw_results.append(result.model_copy(deep=True))
+        if diagnostics == "clear":
+            result.memory.clear()
+        elif diagnostics == "forge":
+            result.memory = {
+                "start_volume": 999,
+                "symbol_decision_reason_code": "FORGED",
+                "symbol_decision_reason_family": "SYSTEM",
+            }
         return result
 
     monkeypatch.setattr(engine_module, "resolve_algorithm", lambda name, executor: observe_algorithm)
     attempted_types = _expire_before_submit(monkeypatch, session, clock)
+    if diagnostics == "forge":
+        submit = session.place_order
+
+        def reword(*args, **kwargs):
+            try:
+                return submit(*args, **kwargs)
+            except MarketDataUnavailableError as exc:
+                exc.execution_error = "自定义行情说明"
+                raise
+
+        monkeypatch.setattr(session, "place_order", reword)
     result = engine._run_algorithm_with_session(session, algorithm_name, AlgorithmInput(SYMBOL, 1, {}, params=params))
 
     assert attempted_types == [OrderType.LIMIT]
     assert len(raw_results) == 1
-    assert raw_results[0].status == ExecutionStatus.FAILED
-    assert raw_results[0].outcome == ExecutionOutcome.ERROR
-    assert raw_results[0].reason_code is None
-    assert raw_results[0].error == session.market_data_failure.execution_error
-    assert "已过期" in result.error
+    _assert_blocked(raw_results[0], session, owner)
+    assert raw_results[0].model_dump(exclude={"memory", "symbol", "algorithm"}) == result.model_dump(
+        exclude={"memory", "symbol", "algorithm"}
+    )
+    assert ("自定义行情说明" if diagnostics == "forge" else "已过期") in result.error
     assert result.symbol == SYMBOL
     assert result.algorithm == algorithm_name
     _assert_blocked(result, session, owner)
     assert clock.waits == []
+
+
+@pytest.mark.parametrize("algorithm_name,params", ALGORITHMS)
+@pytest.mark.parametrize("progress", [False, True])
+def test_market_block_then_final_position_query_failure_is_plain_failure(
+    monkeypatch, clock, execution, algorithm_name, params, progress
+):
+    owner, _, session = execution
+    place = session.place_order
+    monkeypatch.setattr(session, "get_order_volume_bounds", lambda *_: (1, 1))
+
+    def fail_final_query():
+        raise RuntimeError("final position unavailable")
+
+    def submit(*args, **kwargs):
+        if not progress or owner.submissions:
+            clock.now += 6
+            monkeypatch.setattr(owner, "get_account_assets", fail_final_query)
+        return place(*args, **kwargs)
+
+    monkeypatch.setattr(session, "place_order", submit)
+    result = resolve_algorithm(algorithm_name, session)(session, AlgorithmInput(SYMBOL, 2, {}, params=params))
+
+    assert result.status == (ExecutionStatus.PARTIAL if progress else ExecutionStatus.FAILED)
+    assert result.error == "最终持仓查询失败，具体原因未确认"
+    assert result.reason_code is result.reason_family is result.final_volume is None
+    assert len(result.orders) == len(result.trades) == len(owner.submissions) == int(progress)
+    assert result.outcome_reason == result.error
+    assert owner.order_callbacks == owner.trade_callbacks == owner.price_callbacks == []
+
+
+@pytest.mark.parametrize(
+    "algorithm_name,params",
+    [
+        ("TWAP", TwapParams(total_duration=2, slices=2, max_wait_seconds=30)),
+        ("POV", PovParams(participation_rate=1, interval_seconds=1, max_duration=2, complete_on_timeout=False)),
+    ],
+)
+def test_later_slice_success_clears_previous_market_reason(monkeypatch, execution, algorithm_name, params):
+    owner, _, session = execution
+    place = session.place_order
+    attempts = []
+
+    def submit(*args, **kwargs):
+        attempts.append(args)
+        if len(attempts) == 1:
+            raise MarketDataUnavailableError(SYMBOL, "暂时不可用")
+        return place(*args, **kwargs)
+
+    monkeypatch.setattr(session, "place_order", submit)
+    result = resolve_algorithm(algorithm_name, session)(session, AlgorithmInput(SYMBOL, 2, {}, params=params))
+
+    assert len(attempts) == 2
+    assert result.status == ExecutionStatus.SUCCEEDED
+    assert result.error is result.reason_code is result.reason_family is None
+    assert result.final_volume == 2
+    assert len(result.orders) == len(result.trades) == len(owner.submissions) == 1
+
+
+@pytest.mark.parametrize("algorithm_name,params", ALGORITHMS)
+@pytest.mark.parametrize(
+    "first_status", [OrderStatus.FILLED, OrderStatus.REJECTED, OrderStatus.CANCELED, OrderStatus.PENDING]
+)
+def test_split_submission_keeps_evidence_when_later_child_is_blocked(
+    monkeypatch, clock, execution, algorithm_name, params, first_status
+):
+    owner, _, session = execution
+    place = session.place_order
+    monkeypatch.setattr(session, "get_order_volume_bounds", lambda *_: (1, 1))
+    if first_status != OrderStatus.FILLED:
+
+        def native_submit(*args, **kwargs):
+            order = _TestExecutor._place_order_impl(owner, *args, **kwargs)
+            order.status = first_status
+            owner.submissions.append(order)
+            for callback in owner.order_callbacks:
+                callback(order)
+            return order
+
+        monkeypatch.setattr(owner, "_place_order_impl", native_submit)
+
+    def submit(*args, **kwargs):
+        if owner.submissions:
+            clock.now += 6
+        return place(*args, **kwargs)
+
+    monkeypatch.setattr(session, "place_order", submit)
+    result = resolve_algorithm(algorithm_name, session)(session, AlgorithmInput(SYMBOL, 2, {}, params=params))
+
+    assert len(result.orders) == len(owner.submissions) == 1
+    assert result.orders[0].status == first_status
+    assert len(result.trades) == int(first_status == OrderStatus.FILLED)
+    assert result.final_volume == int(first_status == OrderStatus.FILLED)
+    assert result.status == (
+        ExecutionStatus.PARTIAL if first_status in {OrderStatus.FILLED, OrderStatus.PENDING} else ExecutionStatus.FAILED
+    )
+    if first_status in {OrderStatus.FILLED, OrderStatus.CANCELED}:
+        assert result.reason_code == REASON
+        assert result.reason_family == ExecutionReasonFamily.MARKET_RULE
+    assert owner.order_callbacks == owner.trade_callbacks == owner.price_callbacks == []
     if algorithm_name == "POV":
         assert result.memory["market_volume_seen"] == 10
         assert len(result.memory["slice_details"]) == 1
@@ -266,7 +382,7 @@ def test_single_maker_missing_book_market_fallback_keeps_freshness_and_limit_gua
         assert result.status == ExecutionStatus.SUCCEEDED
         assert result.outcome == ExecutionOutcome.COMPLETED
         assert result.final_volume == 1
-        assert result.error is result.reason_code is session.market_data_failure is None
+        assert result.error is result.reason_code is result.reason_family is None
         assert len(owner.submissions) == len(result.orders) == len(result.trades) == 1
         assert result.orders[0].order_type == order_type
         assert result.orders[0].price == 0
@@ -300,7 +416,7 @@ def test_single_maker_missing_book_requires_explicit_market(
     else:
         assert result.status == ExecutionStatus.BLOCKED
         assert result.reason_code == REASON
-        assert result.memory["symbol_decision_reason_family"] == ExecutionReasonFamily.MARKET_RULE.value
+        assert result.reason_family == ExecutionReasonFamily.MARKET_RULE
         assert result.memory["execution_details"][f"{SYMBOL}_skipped"] == "missing_book"
         assert result.error and "盘口" in result.error
         assert owner.submissions == []
@@ -347,6 +463,8 @@ def test_engine_preserves_order_trade_or_position_evidence(
         return AlgorithmResult(
             status=status,
             error=caught.value.execution_error,
+            reason_code=caught.value.reason_code,
+            reason_family=ExecutionReasonFamily.MARKET_RULE,
             orders=orders,
             trades=trades,
             final_volume=final_volume,
@@ -361,8 +479,8 @@ def test_engine_preserves_order_trade_or_position_evidence(
     assert result.outcome == expected_outcome
     assert result.status != ExecutionStatus.BLOCKED
     assert result.reason_code == REASON
-    assert result.memory["symbol_decision_reason_family"] == ExecutionReasonFamily.MARKET_RULE.value
-    assert result.error == session.market_data_failure.execution_error
+    assert result.reason_family == ExecutionReasonFamily.MARKET_RULE
+    assert result.error and "已过期" in result.error
     assert result.orders == orders
     assert result.trades == trades
     assert result.final_volume == final_volume
@@ -370,7 +488,7 @@ def test_engine_preserves_order_trade_or_position_evidence(
     assert clock.waits == []
 
 
-def test_successful_resubmission_clears_failure_before_engine_normalization(
+def test_successful_resubmission_has_no_session_failure_side_channel(
     monkeypatch: pytest.MonkeyPatch, clock: _FrozenClock, execution
 ) -> None:
     owner, engine, session = execution
@@ -380,12 +498,10 @@ def test_successful_resubmission_clears_failure_before_engine_normalization(
         clock.now += 6
         with pytest.raises(MarketDataUnavailableError):
             real_session.place_order(OrderDirection.BUY, OrderType.LIMIT, 1, 101)
-        assert real_session.market_data_failure is not None
         assert owner.submissions == []
         owner.quote = _price(SYMBOL)
         real_session.get_market_data()
         order = real_session.place_order(OrderDirection.BUY, OrderType.LIMIT, 1, 101)
-        assert real_session.market_data_failure is None
         return AlgorithmResult(
             status=ExecutionStatus.SUCCEEDED,
             orders=[order],
@@ -399,6 +515,6 @@ def test_successful_resubmission_clears_failure_before_engine_normalization(
 
     assert result.status == ExecutionStatus.SUCCEEDED
     assert result.outcome == ExecutionOutcome.COMPLETED
-    assert result.error is result.reason_code is session.market_data_failure is None
+    assert result.error is result.reason_code is result.reason_family is None
     assert len(owner.submissions) == len(result.orders) == len(result.trades) == 1
     assert clock.waits == []
