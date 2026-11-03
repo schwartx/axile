@@ -20,7 +20,16 @@ export function ReplayDepthLadder({ quote, future = false, orders, view, layout,
   const levels = useMemo(() => recordedDepth(quote), [quote])
   const buckets = useMemo(() => replayDepthBuckets(levels, orders, view, layout), [levels, orders, view, layout])
   const [scrollTop, setScrollTop] = useState(0)
+  const [rowHover, setRowHover] = useState<number | null>(null)
   const list = useRef<HTMLDivElement>(null)
+  const initialPositioned = useRef(false)
+  useEffect(() => {
+    const element = list.current
+    if (initialPositioned.current || !element || !buckets.length) return
+    initialPositioned.current = true
+    const offsets = buckets.map((bucket, index) => 38 + index * 20 - bucket.y).sort((a, b) => a - b)
+    element.scrollTop = Math.max(0, offsets[Math.floor(offsets.length / 2)])
+  }, [buckets])
   const pendingScroll = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     if (hoverPrice == null) return
@@ -43,10 +52,8 @@ export function ReplayDepthLadder({ quote, future = false, orders, view, layout,
     <svg className="replay-ladder-lines" width="82" height={height} aria-hidden="true">
       {buckets.map((bucket, index) => {
         const rowY = 38 + index * 20 - scrollTop
-        return rowY - 10 >= 28 && rowY + 10 <= height ? <g key={bucket.minPrice}>
-          <circle cx="6" cy={bucket.y} r="2" fill="var(--color-ink-2)" />
-          <path d={`M 10 ${bucket.y} H 24 L 68 ${rowY} H 82`} fill="none" stroke="var(--color-ink-3)" strokeWidth=".7" />
-        </g> : null
+        const highlighted = rowHover === bucket.minPrice || (hoverPrice != null && Math.abs(hoverPrice - bucket.minPrice) <= view.tick * 1e-6)
+        return rowY - 10 >= 28 && rowY + 10 <= height ? <path key={bucket.minPrice} d={`M 0 ${bucket.y} H 12 C 38 ${bucket.y}, 42 ${rowY}, 68 ${rowY} H 82`} fill="none" stroke={highlighted ? 'var(--color-accent)' : 'var(--color-ink-3)'} strokeWidth={highlighted ? 1.5 : .7} /> : null
       })}
     </svg>
     <div ref={list} role="list" className="replay-ladder-list" aria-label={future ? '未到达的已录价位' : '当前已录价位'} tabIndex={0} onWheel={stopAutoScroll} onTouchStart={stopAutoScroll} onPointerDown={stopAutoScroll} onKeyDown={stopAutoScroll} onScroll={event => setScrollTop(event.currentTarget.scrollTop)}>
@@ -60,7 +67,7 @@ export function ReplayDepthLadder({ quote, future = false, orders, view, layout,
         const content = <><span className={level?.side === '买' ? 'replay-depth-bid' : 'replay-depth-ask'}>{rank}</span><span>{price}</span><span className="replay-ladder-amount"><i aria-hidden="true" className={level?.side === '买' ? 'replay-depth-bid' : 'replay-depth-ask'} style={{ width: `${(bucket.quantity ?? 0) / max * 100}%` }} /><span>{amount}</span></span><span className={bucket.orders.some(order => order.cancel_pending) ? 'text-warn' : 'text-accent'}>{own}</span></>
         const multiple = bucket.orders.length > 1
         const button = <button type="button" aria-label={multiple ? `${title}；展开 ${bucket.orders.length} 张同价挂单` : title} className={`replay-ladder-row ${bucket.orders.some(order => order.key === selected) ? 'is-selected' : ''}`} onClick={event => { if (multiple) event.currentTarget.focus(); else onSelect(bucket.orders[0].key) }}>{content}</button>
-        return <div role="listitem" key={bucket.minPrice} data-price={`${bucket.minPrice}:${bucket.maxPrice}`} data-hovered={hoverPrice != null && Math.abs(hoverPrice - bucket.minPrice) <= view.tick * 1e-6 || undefined}>
+        return <div role="listitem" key={bucket.minPrice} data-price={`${bucket.minPrice}:${bucket.maxPrice}`} data-hovered={hoverPrice != null && Math.abs(hoverPrice - bucket.minPrice) <= view.tick * 1e-6 || undefined} onPointerEnter={() => setRowHover(bucket.minPrice)} onPointerLeave={() => setRowHover(null)}>
           {multiple ? <Tooltip interactive delay={0} content={<div aria-label={`${price} 的账户挂单`}><p>{price} · {bucket.orders.length} 张挂单 · 剩余 {own}</p><div className="replay-ladder-orders">{bucket.orders.map(order => <button key={order.key} type="button" aria-pressed={order.key === selected} onClick={() => onSelect(order.key)}><span>{order.order_id} · {replayOwnership(order, executionId).label}</span><span>{order.direction === 'BUY' ? '买' : order.direction === 'SELL' ? '卖' : '方向未知'} · 剩余 {quantityText(order.remaining_volume)}{order.cancel_pending ? ' · 待撤' : ''}</span></button>)}</div><p>价格档位不代表排队顺序</p></div>}>{button}</Tooltip> : bucket.orders.length ? button : <div className="replay-ladder-row">{content}</div>}
         </div>
       })}

@@ -57,7 +57,7 @@ chartCanvas.props.onPointerDown(clickEvent); chartCanvas.props.onPointerUp(click
 const clickSelectsWithoutSeek = Boolean(panel()) && pauses > 0 && seeks.length === 0 && JSON.stringify(projection) === before
 const overlappingRecords = inspection.records.some((item: any) => item.kind === 'market') && inspection.records.some((item: any) => item.order) && inspection.records.some((item: any) => item.trade)
 const futureLabeled = inspection.record.future
-const anchoredBesideClick = panel().props.style.bottom === 300 - clickEvent.clientY + 12 && panel().props.style.left >= 8
+const anchoredBesideClick = panel().props.style.top >= 8 && panel().props.style.top + panel().props.style.maxHeight <= 292 && panel().props.style.left >= 8
 const fixedPosition = JSON.stringify(panel().props.style)
 hover()
 const fixedDuringHover = JSON.stringify(panel().props.style) === fixedPosition
@@ -68,7 +68,7 @@ const escapeCloses = !panel()
 chartCanvas = find(tree, n => n.type === 'canvas')
 const edgeClick = { ...clickEvent, clientX: replayTimeX(98, props.range, layout), clientY: replayPriceY(101, view, layout) }
 chartCanvas.props.onPointerDown(edgeClick); chartCanvas.props.onPointerUp(edgeClick); draw()
-const edgeFlips = Boolean(panel()) && panel().props.style.left < edgeClick.clientX && panel().props.style.top === edgeClick.clientY + 12
+const depthClickCloses = !panel()
 chartCanvas = find(tree, n => n.type === 'canvas')
 chartCanvas.props.onPointerDown(clickEvent); chartCanvas.props.onPointerUp(clickEvent); draw()
 
@@ -111,4 +111,4 @@ returnButton.props.onClick(); draw()
 const returnsToCursor = !button('回到游标') && seeks.length === seeksBeforeReturn
 button('恢复视图').props.onClick(); draw()
 const resetsView = button('恢复视图').props.disabled
-console.log(JSON.stringify({ noFloatingCard, axisLabels, hasReadout, hoverDoesNotPause, clearedOnLeave, clickSelectsWithoutSeek, overlappingRecords, futureLabeled, clearedOnDrag, marketIdentity, explicitSeek, noPin, anchoredBesideClick, fixedDuringHover, staysOnLeave, escapeCloses, edgeFlips, emptyClickCloses, returnsToCursor, resetsView }))
+console.log(JSON.stringify({ noFloatingCard, axisLabels, hasReadout, hoverDoesNotPause, clearedOnLeave, clickSelectsWithoutSeek, overlappingRecords, futureLabeled, clearedOnDrag, marketIdentity, explicitSeek, noPin, anchoredBesideClick, fixedDuringHover, staysOnLeave, escapeCloses, depthClickCloses, emptyClickCloses, returnsToCursor, resetsView }))

@@ -231,7 +231,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
     for (const price of priceTicks) {
       const y = replayPriceY(price, view, layout)
       canvasLine(ctx, layout.left, y, layout.right, y, theme.line)
-      ctx.fillStyle = theme.ink; ctx.textAlign = 'left'; ctx.fillText(priceText(price), layout.right + 6, Math.max(12, Math.min(layout.bottom, y + 4)))
+      ctx.fillStyle = theme.ink; ctx.textAlign = 'right'; ctx.fillText(priceText(price), layout.priceX + 12, Math.max(12, Math.min(layout.bottom, y + 4))); ctx.textAlign = 'left'
     }
     drawTimeAxis(ctx, height, visibleRange, layout, theme)
   }, [priceAxisWidth, priceTicks, size, height, projection, replayWindow, visibleRange, symbol, executionId, selectedOrder, selectedExecution, view, layout, historyQuotes, visibleOrders, marketSegments, priceText, quantityText, heat, maxHeat, recorded, drawThrough, cursorInside, bubbles, maxBubble, activeHover?.object])
@@ -291,7 +291,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
     const next = { cursor: hoverCursor, ...hit, records: [hit, ...records.filter(record => record.id !== hit.id)] }
     setHover(next)
     if (select) {
-      if (next.id === 'pointer') setInspection(null)
+      if (next.kind === 'depth') setInspection(null)
       else { onInspect(); setInspection({ record: next, records: next.records, x, y }) }
     }
     return next
@@ -372,7 +372,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
           else if (event.key === 'Enter' && view) { event.preventDefault(); inspectAt(replayTimeX(projection.time_us, visibleRange, layout), replayPriceY(selected?.price ?? (view.min + view.max) / 2, view, layout), true) }
           else if (event.key === 'Escape') { setHover(null); setInspection(null) }
         }} />
-      {view && [...new Set(depthOrders.flatMap(order => order.price != null && order.price >= view.min && order.price <= view.max ? [order.price] : []))].map(price => <span key={price} className="replay-order-price num" data-pending={depthOrders.some(order => order.price === price && order.cancel_pending) || undefined} style={{ left: layout.right, top: replayPriceY(price, view, layout) }} aria-label={`账户挂单价格 ${priceText(price)}`}>{priceText(price)}</span>)}
+      {view && [...new Set(depthOrders.flatMap(order => order.price != null && order.price >= view.min && order.price <= view.max ? [order.price] : []))].map(price => <span key={price} className="replay-order-price num" data-pending={depthOrders.some(order => order.price === price && order.cancel_pending) || undefined} style={{ right: size.width - layout.priceX - 6, top: replayPriceY(price, view, layout) }} aria-label={`账户挂单价格 ${priceText(price)}`}>{priceText(price)}</span>)}
       <div className="replay-chart-view-controls replay-chart-tools" role="group" aria-label="图表工具" style={{ left: layout.left + 8, top: layout.top + 8 }}>
         <Tooltip content="聚焦委托过程"><button type="button" className={controlClass} aria-label="聚焦委托过程" disabled={!view || !selected} onClick={focusOrder}><Crosshair size={14} aria-hidden /></button></Tooltip>
         <Tooltip content="图层与图例说明"><button type="button" className={controlClass} popoverTarget="replay-chart-legend" aria-label="图层与图例说明"><Info size={15} aria-hidden /></button></Tooltip>
@@ -385,8 +385,8 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       {inspection && <div className="replay-inspection-float" aria-label="图中记录浮卡" style={{
         width: inspectionWidth,
         left: Math.max(8, Math.min(layout.right - inspectionWidth - 8, inspection.x + 12 + inspectionWidth <= layout.right ? inspection.x + 12 : inspection.x - 12 - inspectionWidth)),
-        ...(inspection.y <= height / 2 ? { top: inspection.y + 12 } : { bottom: height - inspection.y + 12 }),
-        maxHeight: Math.max(0, (inspection.y <= height / 2 ? height - inspection.y : inspection.y) - 20),
+        top: Math.max(8, Math.min(height - 400, inspection.y + 12)),
+        maxHeight: Math.max(0, height - Math.max(8, Math.min(height - 400, inspection.y + 12)) - 8),
       }}>
         <ReplayInspector record={inspection.record} records={inspection.records} onChoose={record => setInspection({ ...inspection, record })}
           onClose={() => { setInspection(null); canvas.current?.focus() }}

@@ -1,4 +1,7 @@
 import { expect, it } from 'bun:test'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { ReplayInspector } from '@/features/replay/ReplayInspector'
 import { inspectReplayOrder, inspectReplayTrade, nearestReplayInspection, replayInspectionObjects, type InspectionRecord } from '@/features/replay/inspection'
 import { replayVisibleOrderMarks, type OrderMark } from '@/features/replay/chartInteraction'
 import { replayChartLayout } from '@/features/replay/chartGeometry'
@@ -7,6 +10,17 @@ import type { ReplayOrder, ReplayTrade } from '@/features/replay/types'
 const order = { key: 'O', order_id: 'O', symbol: 'X', price: 100, volume: 2, remaining_volume: 1, direction: 'SELL', status: 'working', capture_seq: 2, time_us: 50, execution_id: 'E' } as ReplayOrder
 const format = { executionId: 'E', cursor: { time_us: 50, capture_seq: 1 }, unit: '手', price: String, quantity: (value: number | null) => value == null ? '未知' : String(value) }
 const record = (id: string, x: number) => ({ id, object: id, x, y: 10 } as InspectionRecord)
+
+it('单条市场记录显示真实记录详情而非聚合说明', () => {
+  const trade = { symbol: 'X', price: 100, quantity: 1, direction: 'SELL', attributes: {}, granularity: 'aggregate', capture_seq: 3, time_us: 50, identity_quality: 'stable', source: 'feed' } as ReplayTrade
+  const item = inspectReplayTrade(trade, true, 'group', format, 11, 20)
+  const summary = { ...item, id: 'group', raw: '像素聚合说明' }
+  const html = renderToStaticMarkup(createElement(ReplayInspector, { record: summary, records: [summary, item], onChoose: () => {}, onView: () => {}, onSeek: () => {}, onClose: () => {} }))
+  expect(html).toContain('记录详情')
+  expect(html).toContain('feed')
+  expect(html).toContain('源聚合成交，不拆逐笔')
+  expect(html).not.toContain('像素聚合说明')
+})
 
 it('摘要按对象提供状态量价，原始身份单独保留，未来按同微秒seq判断', () => {
   const result = inspectReplayOrder(order, format, 10, 20)

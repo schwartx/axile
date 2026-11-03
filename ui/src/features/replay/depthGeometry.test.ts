@@ -65,8 +65,8 @@ describe('动态盘口及委托位置', () => {
     const view = { min: 90, max: 110, tick: 1 }, depth = quote()
     const props = { quote: depth, orders: [], view, layout, height: 68, executionId: 'E', selected: null, onSelect: () => {}, priceText: String, quantityText: String }
     const html = renderToStaticMarkup(createElement(ReplayDepthLadder, props))
-    expect(html).toContain(`M 10 ${replayPriceY(103, view, layout)} H 24 L 68 38 H 82`)
-    expect(html).not.toContain(`M 10 ${replayPriceY(100, view, layout)} H 24`)
+    expect(html).toContain(`M 0 ${replayPriceY(103, view, layout)} H 12 C 38 ${replayPriceY(103, view, layout)}, 42 38, 68 38 H 82`)
+    expect(html).not.toContain(`M 0 ${replayPriceY(100, view, layout)} H 12`)
   })
   it('零量保留但不是买一；未知量保留价位，聚合不冒充零', () => {
     const depth = quote(4)
