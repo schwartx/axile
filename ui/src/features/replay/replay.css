@@ -164,14 +164,12 @@
 .replay-depth-ask { color: var(--color-down); }
 .replay-ladder-row > .replay-depth-ask, .replay-chart-legend > .replay-depth-ask { color: color-mix(in oklab, var(--color-down) 80%, var(--color-ink-1) 20%); }
 .replay-depth-ladder { position: absolute; top: 0; right: 0; border-left: 1px solid var(--color-line); font-size: 11px; }
-.replay-ladder-head { display: flex; align-items: center; height: 28px; padding-left: 6px; color: var(--color-ink-2); }
-.replay-ladder-head > div, .replay-ladder-row { display: grid; grid-template-columns: 28px minmax(60px, 1fr) 70px; gap: 4px; }
-.replay-ladder-row { grid-template-columns: 28px minmax(max-content, 1fr) 70px; }
-.replay-ladder-head > div { position: absolute; right: 8px; left: 48px; text-align: right; }
-.replay-ladder-head > div > :first-child, .replay-ladder-row > :first-child { text-align: left; }
-.replay-ladder-head > div > :nth-child(2) { justify-self: start; width: 48px; }
+.replay-ladder-head { position: sticky; top: 0; z-index: 1; align-items: center; height: 28px; text-align: right; color: var(--color-ink-2); background: var(--color-surface); }
+.replay-ladder-head, .replay-ladder-list > [role="listitem"], .replay-ladder-row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; }
+.replay-ladder-head > :nth-child(2) { justify-self: start; width: 48px; }
+.replay-ladder-head > :last-child { padding-inline: 3px; }
 .replay-ladder-lines { position: absolute; inset: 0 auto auto 0; pointer-events: none; }
-.replay-ladder-list { position: absolute; inset: 28px 0 0 48px; overflow-y: auto; padding-right: 8px; }
+.replay-ladder-list { position: absolute; inset: 0 0 0 48px; display: grid; grid-template-columns: minmax(28px, max-content) max-content minmax(70px, 1fr); grid-template-rows: 28px; grid-auto-rows: 20px; align-content: start; column-gap: 4px; overflow: auto; padding-right: 8px; }
 .replay-order-color { color: var(--color-chart-2); }
 .replay-ladder-row { width: 100%; align-items: center; height: 20px; text-align: right; color: var(--color-ink-1); white-space: nowrap; }
 .replay-ladder-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }

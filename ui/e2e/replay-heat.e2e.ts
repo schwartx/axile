@@ -25,6 +25,39 @@ test('own orders show separate buy and sell tags beside price in the compact lad
   await page.screenshot({ path: testInfo.outputPath('compact-own-orders.png') })
 })
 
+test('ladder headers and all ranks align with a visible scrollbar and stay aligned after scrolling', async ({ page }, testInfo) => {
+  await page.goto('/tests/replay-depth.fixture.html')
+  await page.getByRole('button', { name: '验收场景' }).click()
+  await page.getByRole('option', { name: '买120 / 卖120 · 聚合' }).click()
+  await page.addStyleTag({ content: '.replay-ladder-list { scrollbar-gutter: stable; }' })
+  const list = page.getByRole('list', { name: '当前已录价位' })
+  await expect(list.getByRole('listitem')).toHaveCount(240)
+  for (const dark of [true, false]) {
+    await page.evaluate(dark => document.documentElement.classList.toggle('dark', dark), dark)
+    await list.evaluate(element => { element.scrollTop = element.scrollHeight })
+    const geometry = await list.evaluate(element => {
+      const right = (node: Element) => {
+        const range = document.createRange()
+        range.selectNodeContents(node)
+        return range.getBoundingClientRect().right
+      }
+      const head = element.querySelector('.replay-ladder-head')!
+      const headers = [...head.children].map(right)
+      const rows = [...element.querySelectorAll('.replay-ladder-row')]
+      return {
+        scrollbar: element.offsetWidth - element.clientWidth,
+        aligned: rows.every(row => [row.children[0], row.querySelector('.replay-ladder-price > span')!, row.querySelector('.replay-ladder-amount > span')!]
+          .every((cell, index) => Math.abs(right(cell) - headers[index]) < .5)),
+        sticky: Math.abs(head.getBoundingClientRect().top - element.getBoundingClientRect().top) < .5,
+      }
+    })
+    expect(geometry.scrollbar).toBeGreaterThan(0)
+    expect(geometry.aligned).toBe(true)
+    expect(geometry.sticky).toBe(true)
+  }
+  await page.screenshot({ path: testInfo.outputPath('aligned-depth-columns.png') })
+})
+
 test('large-canvas timeline drag reuses history while seeking in both directions', async ({ browser }, testInfo) => {
   const context = await browser.newContext({ viewport: { width: 2000, height: 1200 }, deviceScaleFactor: 2 })
   const page = await context.newPage()

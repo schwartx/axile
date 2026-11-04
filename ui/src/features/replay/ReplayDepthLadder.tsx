@@ -36,7 +36,7 @@ export function ReplayDepthLadder({ quote, future = false, orders, view, layout,
     pendingScroll.current = setTimeout(() => {
       const element = list.current, row = element?.querySelector<HTMLElement>('[data-hovered="true"]')
       if (!element || !row) return
-      const top = row.offsetTop, target = replayDepthScrollTarget(top, top + row.offsetHeight, element.scrollTop, element.clientHeight)
+      const top = row.offsetTop - 28, target = replayDepthScrollTarget(top, top + row.offsetHeight, element.scrollTop, element.clientHeight - 28)
       if (target != null) element.scrollTo({ top: target, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' })
     }, 150)
     return () => { if (pendingScroll.current != null) clearTimeout(pendingScroll.current) }
@@ -48,7 +48,6 @@ export function ReplayDepthLadder({ quote, future = false, orders, view, layout,
   }
   const max = Math.max(1, ...levels.map(level => level.quantity ?? 0))
   return <div className="replay-depth-ladder num" data-future={future} style={{ left: layout.priceX + 16, height }} aria-label={future ? '未到达的首个已录盘口' : '当前盘口'}>
-    <div className="replay-ladder-head"><div><span>档位</span><Tooltip content="价格旁的买／卖标签为回放游标时刻，账户在该价位的有效委托未成交剩余量，包含其他执行；不代表持仓或排队位置。"><button type="button" className="text-right" aria-label="价格与账户挂单说明">价格</button></Tooltip><span>市场量</span></div></div>
     <svg className="replay-ladder-lines" width="48" height={height} aria-hidden="true">
       {buckets.map((bucket, index) => {
         const rowY = 38 + index * 20 - scrollTop
@@ -57,6 +56,7 @@ export function ReplayDepthLadder({ quote, future = false, orders, view, layout,
       })}
     </svg>
     <div ref={list} role="list" className="replay-ladder-list" aria-label={future ? '未到达的已录价位' : '当前已录价位'} tabIndex={0} onWheel={stopAutoScroll} onTouchStart={stopAutoScroll} onPointerDown={stopAutoScroll} onKeyDown={stopAutoScroll} onScroll={event => setScrollTop(event.currentTarget.scrollTop)}>
+      <div className="replay-ladder-head"><span>档位</span><Tooltip content="价格旁的买／卖标签为回放游标时刻，账户在该价位的有效委托未成交剩余量，包含其他执行；不代表持仓或排队位置。"><button type="button" className="text-right" aria-label="价格与账户挂单说明">价格</button></Tooltip><span>市场量</span></div>
       {buckets.map(bucket => {
         const level = bucket.levels[0], price = priceText(bucket.minPrice)
         const rank = level ? `${level.side}${level.rank ?? '·0'}` : quote ? '档外' : '未知'
