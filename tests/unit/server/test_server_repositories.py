@@ -268,7 +268,7 @@ def test_latest_targets_match_exact_pairs_and_skip_null_history() -> None:
                     TargetWeightSnapshot(
                         account_id=account.id,
                         portfolio_id=portfolio.id,
-                        normalized_weights={"BTCUSDT": i / 300},
+                        normalized_weights={"600000.SH": i / 300},
                         source="manual",
                     )
                     for i in range(300)
