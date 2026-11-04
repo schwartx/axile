@@ -71,7 +71,7 @@ function reset() { find(tree, n => n.props?.['aria-label'] === '恢复视图').p
 draw()
 const initial = axisLeft()
 const initialLabel = find(tree, n => n.props?.className === 'replay-price-tick num')
-assert.equal(900 - 346 - (initial - 2), initialLabel.props.style.width + 4, '主图到盘口间只有一个价格槽，不预留第二列')
+assert.equal(900 - 346 - initial, initialLabel.props.style.width, '主图到盘口间只有一个价格槽，不预留第二列')
 canvas().props.onPointerDown(event(100, 100)); draw()
 canvas().props.onPointerMove(event(100, 700)); draw()
 assert.equal(axisLeft(), initial, '上下平移跨整数位期间锁住主图边界')
@@ -161,7 +161,7 @@ assert.ok(strokes.includes('gray'), '同刻采集序号尚未到达的委托保�
 const beforeOrderHover = offscreen.length
 const { replayChartLayout, replayTimeX, replayPriceY } = await import(ui + 'features/replay/chartGeometry.ts')
 const { replayObservedPriceView } = await import(ui + 'features/replay/depthGeometry.ts')
-const orderLayout = replayChartLayout(900, 300, 900 - 346 - (axisLeft() - 2))
+const orderLayout = replayChartLayout(900, 300, 900 - 346 - axisLeft())
 const orderView = replayObservedPriceView(props.scene.quoteHistory, props.scene.orderHistory, [], null)!
 canvas().props.onPointerMove(event(replayTimeX(50, props.range, orderLayout), replayPriceY(1.25, orderView, orderLayout))); draw()
 assert.ok(arcs.some(arc => arc[2] === 5), '悬停仍放大命中的委托标记')
