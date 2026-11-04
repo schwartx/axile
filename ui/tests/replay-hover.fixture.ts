@@ -51,9 +51,26 @@ function hover(price = 100, time = 49) {
 hover()
 const noFloatingCard = !panel()
 const readout = () => find(tree, n => n.props?.['aria-label'] === '悬停读数')
-const axisLabels = Boolean(find(tree, n => n.props?.className === 'replay-crosshair-price num')) && Boolean(find(tree, n => n.props?.className === 'replay-crosshair-time num'))
+const axisLabels = Boolean(find(tree, n => n.props?.className === 'replay-crosshair-price num')) && Boolean(find(tree, n => n.props?.className === 'replay-hover-time'))
 const hasReadout = Boolean(readout())
 const hoverDoesNotPause = pauses === 0
+const cursorTime = () => find(tree, n => n.props?.className === 'replay-cursor-time num')
+const hoverTime = () => find(find(tree, n => n.props?.className === 'replay-chart-meta'), n => n.type === 'time')
+const timeRuler = () => find(tree, n => n.props?.className === 'replay-time-ruler')
+for (const time of [0, 49, 99]) {
+  hover(100.5, time)
+  const current = cursorTime().props.style
+  assert.ok(hoverTime(), '悬停时间始终位于图表上方的固定读数位')
+  assert.ok(!find(find(tree, n => n.props?.className === 'replay-chart-plot'), n => n.type === 'time' && n.props?.['aria-label']?.startsWith('悬停时间')), '图内不再绘制悬停时间')
+  assert.match(hoverTime().props.children, /^\d{2}:\d{2}:\d{2}\.\d{6}$/, '悬停仍保留微秒精度')
+  for (const tick of timeRuler().props.children) {
+    const label = tick.props.children[1].props.style
+    const left = layout.left + tick.props.style.left + label.left
+    const intersects = (other: any) => left < other.left + other.width && other.left < left + label.width
+    assert.equal(label.opacity, intersects(current) ? 0 : 1, '普通刻度仅避让当前播放时间，不受悬停位置影响')
+  }
+}
+hover()
 const priceLabel = () => find(tree, n => n.props?.className?.startsWith('replay-crosshair-price num'))
 const tickAtHover = find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.children === '100.00')
 assert.equal(tickAtHover.props.style.opacity, 0, '悬停与刻度同价时，仅隐藏重叠文字')
@@ -85,6 +102,7 @@ assert.equal(priceLabel().props.style.top + priceLabel().props.children[0].props
 find(tree, n => n.type === 'canvas').props.onPointerLeave(); draw()
 assert.equal(JSON.stringify(middleTick().props.style), fixedAxis, '移出后固定刻度与轴宽保持不变')
 assert.ok(!find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.style.opacity !== 1), '移出后普通刻度持续可见')
+assert.equal(hoverTime().props.children, '—', '移出后读数位保留占位，不引起布局跳动')
 const clearedOnLeave = !readout() && !find(tree, n => n.props?.className === 'replay-crosshair-price num')
 const target = { style: {}, focus() {}, setPointerCapture() {}, hasPointerCapture: () => false, getBoundingClientRect: () => ({ left: 0, top: 0 }) }
 const clickEvent = { button: 0, pointerId: 1, clientX: replayTimeX(50, props.range, layout), clientY: replayPriceY(100, view, layout), currentTarget: target }

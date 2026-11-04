@@ -121,8 +121,6 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   const cursorWidth = replayTime(projection.time_us).length * timeCharacterWidth + (cursorInside ? 8 : 24)
   const cursorLeft = replayTimeLabelLeft(cursorX, cursorWidth, layout)
   const timeTicks = useMemo(() => replayTimeTicks(visibleRange, layout, timeCharacterWidth), [visibleRange, layout, timeCharacterWidth])
-  const hoverTimeWidth = activeHover ? replayTime(activeHover.time).length * timeCharacterWidth + 8 : 0
-  const hoverTimeLeft = activeHover ? replayTimeLabelLeft(activeHover.x, hoverTimeWidth, layout) : 0
   const inspectionWidth = Math.min(320, layout.right - 16)
   const priceTicks = useMemo(() => view ? replayPriceTicks(view, layout.bottom - layout.top) : [], [view, layout.bottom, layout.top])
   const priceLabelTop = (y: number) => Math.max(layout.top, Math.min(layout.bottom - 16, y - 8))
@@ -456,7 +454,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
 
   return <section aria-label="历史深度与自有委托" className="replay-chart" >
     <div className="replay-chart-playback">{symbolControl}{children}</div>
-    <div className="replay-chart-meta"><div className="replay-chart-meta-main"><div className="replay-chart-legend"><span className="replay-depth-bid"><Minus size={14} aria-hidden />买一</span><span className="replay-depth-ask"><Minus size={14} aria-hidden />卖一</span><span><Minus size={14} aria-hidden />成交价</span>{layers.market && <span><Circle size={10} aria-hidden />市场成交</span>}<span className="replay-order-color"><Minus size={14} aria-hidden />账户委托</span><span><Minus size={14} aria-hidden />未到达</span></div>      <div className="replay-chart-view-controls replay-chart-navigation" role="group" aria-label="图表导航">
+    <div className="replay-chart-meta"><div className="replay-chart-meta-main"><div className="replay-chart-legend"><span className="replay-depth-bid"><Minus size={14} aria-hidden />买一</span><span className="replay-depth-ask"><Minus size={14} aria-hidden />卖一</span><span><Minus size={14} aria-hidden />成交价</span>{layers.market && <span><Circle size={10} aria-hidden />市场成交</span>}<span className="replay-order-color"><Minus size={14} aria-hidden />账户委托</span><span><Minus size={14} aria-hidden />未到达</span></div><span className="replay-hover-time">指向 <time className="num" aria-label={activeHover ? `悬停时间 ${replayTime(activeHover.time)}` : '未指向图表'}>{activeHover ? replayTime(activeHover.time) : '—'}</time></span>      <div className="replay-chart-view-controls replay-chart-navigation" role="group" aria-label="图表导航">
       <div className="replay-chart-return-slot">      {!cursorInside && <div className="replay-chart-return">
         <Tooltip content={`游标在${projection.time_us < visibleRange.start_us ? '左' : '右'}侧 · 回到游标`}><button type="button" className={controlClass} aria-label="回到游标" onClick={() => { const span = visibleRange.end_us - visibleRange.start_us; setTimeView(clampReplayView({ start_us: projection.time_us - span / 2, end_us: projection.time_us + span / 2 }, range)) }}>{projection.time_us < visibleRange.start_us ? <ArrowLeft size={15} aria-hidden /> : <ArrowRight size={15} aria-hidden />}</button></Tooltip>
       </div>}
@@ -522,7 +520,6 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
         {activeHover.x <= layout.right && <div className="replay-crosshair" aria-hidden style={{ left: activeHover.x, top: layout.top, height: axisY - layout.top }} />}
         <div className="replay-crosshair-horizontal" aria-hidden style={{ left: layout.left, right: size.width - layout.right, top: activeHover.y }} />
         <span className={`replay-crosshair-price num${hoverOrder ? ' replay-order-price' : ''}`} data-pending={hoverOrder?.pending || undefined} aria-label={`悬停价格 ${axisPriceText(hoverPrice)}`} style={{ ...priceLabelStyle, top: hoverPriceTop ?? undefined }}><i aria-hidden="true" style={{ top: activeHover.y - (hoverPriceTop ?? 0) }} /><span>{view && axisPriceText(hoverPrice)}</span></span>
-        <time className="replay-crosshair-time num" aria-label={`悬停时间 ${replayTime(activeHover.time)}`} style={{ left: hoverTimeLeft, width: hoverTimeWidth, top: axisY - 24 }}>{replayTime(activeHover.time)}</time>
       </>}
     </div>
     <div className="replay-outside-orders flex flex-wrap gap-2" aria-label="价位范围之外的自有委托">{outside.map(order => <button key={order.key} className="min-h-8 cursor-pointer rounded-chip bg-fill px-2 text-xs text-ink-2 focus-visible:outline-2 focus-visible:outline-accent" onClick={() => { onSelectOrder(order.key); if (view && order.price != null) setManualView(centerReplayPrice(view, order.price)) }}>{order.price! > view!.max ? '上方' : '下方'} {order.order_id} · {replayOwnership(order, executionId).label} · {priceText(order.price)} · 定位</button>)}</div>

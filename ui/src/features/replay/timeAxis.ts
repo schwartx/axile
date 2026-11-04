@@ -29,8 +29,7 @@ export function replayTimeTicks(range: ReplayRange, layout: ReplayChartLayout, c
   })
 }
 
-/** 当前时间优先占位；普通标签按距离退墨，不追赶播放头。 */
+/** 动态读数优先占位；只隐藏相交文字，不让邻近刻度渐隐。 */
 export function replayTimeTickOpacity(left: number, width: number, currentLeft: number, currentWidth: number): number {
-  const gap = Math.max(currentLeft - left - width, left - currentLeft - currentWidth)
-  return Math.max(0, Math.min(1, gap / 12))
+  return left < currentLeft + currentWidth && currentLeft < left + width ? 0 : 1
 }

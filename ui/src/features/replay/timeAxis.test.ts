@@ -36,11 +36,11 @@ it('边缘只移动文字，不移动刻线；窄图仍保留可读标签', () =
   expect(ticks[0].left + ticks[0].width).toBeLessThanOrEqual(narrow.right)
 })
 
-it('当前读数优先，普通标签按距离让位，反向移动不积累动画', () => {
+it('动态读数只隐藏相交文字，相邻刻度不渐隐且左右对称', () => {
   expect(replayTimeTickOpacity(100, 80, 140, 110)).toBe(0)
-  expect(replayTimeTickOpacity(100, 80, 180, 110)).toBe(0)
-  expect(replayTimeTickOpacity(100, 80, 186, 110)).toBe(.5)
-  expect(replayTimeTickOpacity(100, 80, 192, 110)).toBe(1)
-  expect(replayTimeTickOpacity(186, 110, 100, 80)).toBe(.5)
-  expect(replayTimeTickOpacity(100, 80, 186, 110)).toBe(.5)
+  expect(replayTimeTickOpacity(100, 80, 179, 110)).toBe(0)
+  expect(replayTimeTickOpacity(100, 80, 180, 110)).toBe(1)
+  expect(replayTimeTickOpacity(100, 80, 186, 110)).toBe(1)
+  expect(replayTimeTickOpacity(140, 110, 100, 80)).toBe(0)
+  expect(replayTimeTickOpacity(180, 110, 100, 80)).toBe(1)
 })

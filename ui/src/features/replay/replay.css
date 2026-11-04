@@ -101,10 +101,11 @@
 .replay-time-ruler { position: absolute; height: 1px; border-top: 1px solid var(--color-line); pointer-events: none; }
 .replay-time-tick { position: absolute; top: -1px; }
 .replay-time-tick > i { display: block; height: 5px; border-left: 1px solid var(--color-ink-3); }
-.replay-time-tick > time, .replay-cursor-time { position: absolute; top: 8px; font-family: var(--font-mono); font-size: 11px; line-height: 20px; text-align: center; white-space: nowrap; }
+.replay-time-tick > time, .replay-cursor-time { position: absolute; box-sizing: border-box; top: 8px; padding-inline: 4px; font-family: var(--font-mono); font-size: 11px; font-weight: 400; line-height: 20px; text-align: center; white-space: nowrap; }
 .replay-time-tick > time { color: var(--color-ink-2); }
-.replay-cursor-time { z-index: 2; pointer-events: none; color: var(--color-ink-1); background: var(--color-surface); border-top: 1px solid var(--color-accent); font-weight: 500; }
-.replay-cursor-time[data-outside] { border-top-color: var(--color-line); }
+.replay-cursor-time { z-index: 2; pointer-events: none; color: var(--color-ink-1); background: var(--color-surface); }
+.replay-hover-time { display: inline-flex; align-items: baseline; gap: 6px; flex-shrink: 0; color: var(--color-ink-2); white-space: nowrap; }
+.replay-hover-time > time { display: inline-block; width: 15ch; font-family: var(--font-mono); }
 .replay-cursor-line { position: absolute; width: 1px; background: var(--color-accent); pointer-events: none; }
 .replay-speed-picker { display: flex; align-items: center; flex-shrink: 0; padding-inline-start: 8px; border-inline-start: 1px solid var(--color-line); }
 .replay-speed-picker > div { padding-block: 0; background: transparent; }
@@ -116,7 +117,7 @@
 .replay-loading-axis { position: absolute; left: 12px; right: 386px; bottom: 32px; border-top: 1px solid var(--color-line); pointer-events: none; }
 .replay-loading-axis > time { padding-inline: 4px; }
 @media (max-width: 599px) { .replay-loading-axis { right: 52px; } }
-.replay-chart-axis [role="slider"]:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.replay-chart-plot:has(.replay-chart-axis [role="slider"]:focus-visible) .replay-cursor-time { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
 .replay-chart-axis[data-outside] [data-slider-thumb] { visibility: hidden; }
 .replay-information { position: fixed; inset: 0; width: min(480px, calc(100vw - 24px)); max-height: min(720px, calc(100dvh - 32px)); overflow: auto; margin: auto; padding: 20px; border: 1px solid var(--color-line); border-radius: var(--radius-card); }
 @media (pointer: coarse) {
@@ -191,7 +192,6 @@ button.replay-ladder-row:focus-visible { outline: 2px solid var(--color-accent);
 .replay-order-price > span { background: var(--color-chart-2); color: var(--color-surface); border-radius: 2px; }
 .replay-order-price[data-pending="true"] > span { background: var(--color-warn); }
 .replay-crosshair-price > i, .replay-order-price > i { position: absolute; left: -2px; width: 6px; border-top: 1px solid currentColor; }
-.replay-crosshair-time { position: absolute; z-index: 1; pointer-events: none; background: var(--color-ink-1); color: var(--color-surface); padding: 2px 4px; font-family: var(--font-mono); font-size: 11px; line-height: 16px; white-space: nowrap; text-align: center; }
 .replay-selected-inspection { font-size: 12px; line-height: 1.6; }
 
 .replay-inspection-float { position: absolute; z-index: 3; display: flex; flex-direction: column; overflow: hidden; padding: 12px; border: 1px solid var(--color-line); border-radius: var(--radius-card); background: var(--color-surface); box-shadow: var(--shadow-card); }
