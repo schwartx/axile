@@ -32,10 +32,10 @@ mock.module('react/jsx-dev-runtime', () => ({ jsxDEV: jsx, Fragment: 'fragment' 
 mock.module('lucide-react', () => Object.fromEntries(['ArrowLeft', 'ArrowRight', 'Check', 'Circle', 'Crosshair', 'Info', 'Minus', 'RotateCcw', 'X'].map(name => [name, () => null])))
 for (const name of ['Tooltip', 'ValueSlider', 'Segmented', 'Select']) mock.module(ui + `components/ui/${name}.tsx`, () => ({ [name]: () => null }))
 mock.module(ui + 'features/replay/ReplayDepthLadder.tsx', () => ({ ReplayDepthLadder: () => null }))
-const offscreen: any[] = [], composites: any[] = [], rects: any[] = [], arcs: any[] = [], strokes: any[] = []
+const offscreen: any[] = [], composites: any[] = [], blits: any[] = [], rects: any[] = [], arcs: any[] = [], strokes: any[] = []
 let historyPaints = 0, orderPaints = 0
 const context = new Proxy({ measureText: (text: string) => ({ width: [...text].reduce((sum, char) => sum + (char === '1' ? 5 : 7), 0) }),
-  drawImage: (layer: any) => composites.push(layer), rect: (...args: any[]) => rects.push(args),
+  drawImage: (layer: any, ...bounds: number[]) => { composites.push(layer); blits.push(bounds) }, rect: (...args: any[]) => rects.push(args),
   arc: (...args: any[]) => arcs.push(args), stroke: () => strokes.push(context.strokeStyle) } as any, { get: (object, key) => object[key] ?? (() => {}) })
 mock.module(ui + 'components/viz/chartCanvas.ts', () => ({ prepareCanvas: (canvas: any) => canvas === target ? context : new Proxy({
   fillRect: () => historyPaints++, stroke: () => orderPaints++,
@@ -80,12 +80,20 @@ const expanded = axisLeft()
 assert.ok(expanded < initial, '松手后才为多出的整数位扩宽')
 reset()
 assert.equal(axisLeft(), initial, '恢复视图收回历史长读数的多余宽度')
-const labelBefore = tick()
+const labelBefore = tick(), beforePriceScale = historyPaints
 canvas().props.onPointerDown(event(550, 100)); draw()
-canvas().props.onPointerMove(event(550, 700)); draw()
+for (const y of [150, 200, 400, 700]) {
+  canvas().props.onPointerMove(event(550, y)); draw()
+  assert.equal(historyPaints, beforePriceScale, '连续价格轴缩放不重建历史热力图')
+}
+assert.ok(JSON.stringify(find(tree, n => n.props?.className === 'replay-heat-scale')).includes('历史缩放预览'), '新增视野明确标识为预览，不能误认为没有挂量')
+const transformed = blits.at(-4), scale = Math.exp(-600 / 160)
+assert.ok(Math.abs(transformed[1] - 100 * (1 - scale)) < 1e-6, '历史图像按鼠标锚点纵向缩放')
+assert.ok(Math.abs(transformed[3] - 300 * scale) < 1e-6, '历史图像与实时价格轴共享缩放比例')
 assert.equal(axisLeft(), initial, '价格轴缩放期间也锁宽')
 assert.notEqual(tick(), labelBefore, '价格轴拖动确实缩放刻度')
 dragEnd('onPointerCancel')
+assert.ok(historyPaints > beforePriceScale, '手势取消后按最终价格范围精确补绘')
 reset()
 const afterScale = axisLeft()
 canvas().props.onPointerDown(event(100, 100)); draw()
@@ -96,12 +104,14 @@ assert.ok(axisLeft() < afterScale, '失去捕获也要结束锁宽并补足空�
 reset()
 props.window = { ...data, recording_id: 'other-recording' }; draw()
 assert.equal(axisLeft(), initial, '切换录制重新适配紧凑轴宽')
-const beforeWheel = axisLeft()
+const beforeWheel = axisLeft(), beforeWheelPaints = historyPaints
 for (let i = 0; i < 3; i++) {
   listeners.get('wheel')!({ clientX: 550, clientY: 100, deltaY: 400, deltaMode: 0, preventDefault() {} }); draw()
   assert.equal(axisLeft(), beforeWheel, '连续滚轮期间锁宽')
+  assert.equal(historyPaints, beforeWheelPaints, '连续价格轴滚轮不重建历史热力图')
 }
 for (const [id, fn] of [...timers]) { timers.delete(id); fn() } draw()
+assert.ok(historyPaints > beforeWheelPaints, '滚轮停止后精确补绘历史')
 assert.ok(axisLeft() < beforeWheel, '滚轮停止后为更长读数扩宽')
 props.window = { ...props.window, window_id: 'next-window' }; draw()
 assert.equal(axisLeft(), initial, '翻窗恢复视图后不保留历史最大宽度')
