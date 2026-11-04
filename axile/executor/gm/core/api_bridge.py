@@ -146,7 +146,7 @@ class CurrentRequest:
 
     def as_kwargs(self) -> dict[str, Any]:
         """返回 ``current`` 请求的关键字参数."""
-        return {"symbols": self.symbols}
+        return {"symbols": self.symbols, "include_call_auction": True}
 
 
 @dataclass(slots=True, frozen=True)
