@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 declare const ui: string
 const viewFrames = new Map<number, FrameRequestCallback>(); let viewFrameId = 0
 let at = 0, dirty = false, tree: any
+const savedWidths = new Map<string, string>()
 const slots: any[] = [], effects: (() => void)[] = [], timers = new Map<number, () => void>()
 let timerId = 0
 mock.module('react', () => ({
@@ -46,7 +47,7 @@ const observer = class { constructor(callback: () => void) { observers.push(call
 Object.assign(globalThis, { ResizeObserver: observer, MutationObserver: observer,
   getComputedStyle: () => ({ getPropertyValue: () => 'monospace' }),
   document: { documentElement: {}, createElement: () => { const layer = {}; offscreen.push(layer); return layer }, fonts: { addEventListener() {}, removeEventListener() {} } },
-  window: { requestAnimationFrame: (fn: FrameRequestCallback) => { viewFrames.set(++viewFrameId, fn); return viewFrameId }, cancelAnimationFrame: (id: number) => viewFrames.delete(id), setTimeout: (fn: () => void) => { timers.set(++timerId, fn); return timerId }, clearTimeout: (id: number) => timers.delete(id) },
+  window: { localStorage: { getItem: () => null, setItem: (key: string, value: string) => savedWidths.set(key, value) }, requestAnimationFrame: (fn: FrameRequestCallback) => { viewFrames.set(++viewFrameId, fn); return viewFrameId }, cancelAnimationFrame: (id: number) => viewFrames.delete(id), setTimeout: (fn: () => void) => { timers.set(++timerId, fn); return timerId }, clearTimeout: (id: number) => timers.delete(id) },
 })
 const heatMock = await import(ui + '../tests/replay-heat.mock.ts')
 mock.module(ui + 'features/replay/useReplayHeat.ts', () => heatMock)
@@ -180,4 +181,12 @@ assert.equal(offscreen.length, beforeOrderHover, '委托高亮只重画命中标
 const beforeSelection = offscreen.length
 props.selectedOrder = 'A'; draw()
 assert.equal(offscreen.length, beforeSelection + 2, '选中委托仅重建委托两色层，不重绘盘口历史')
+const widthHandle = () => find(tree, n => n.props?.['aria-label'] === '调整图表与盘口的宽度').props
+const originalAxis = axisLeft()
+widthHandle().onCommit(450); draw()
+assert.equal(originalAxis - axisLeft(), 104, '调宽盘口同时收窄图表')
+assert.equal(savedWidths.get('axon.replay.depthWidth'), '450', '保存盘口宽度')
+assert.equal(widthHandle().valueAt(0), widthHandle().max, '拖动超过边界时夹紧')
+widthHandle().onReset(); draw()
+assert.equal(axisLeft(), originalAxis, '双击恢复默认盘口宽度')
 console.log('ok')

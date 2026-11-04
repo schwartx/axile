@@ -1,3 +1,4 @@
+import { ResizeHandle } from '@/components/ui/ResizeHandle'
 import { useCallback, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react'
 import { ArrowLeft, ArrowRight, Check, Circle, Crosshair, Info, Minus, RotateCcw, X } from 'lucide-react'
 import { ValueSlider } from '@/components/ui/ValueSlider'
@@ -24,6 +25,7 @@ interface Props {
   scene?: ReplayProjection
   slices?: ReplayExecutionSlice[]
   playControls?: ReactNode
+  fullscreenControl?: ReactNode
   firstQuoteControl?: ReactNode
   symbolControl?: ReactNode
   window: ReplayWindow
@@ -80,13 +82,20 @@ function drawOrderHistory(ctx: CanvasRenderingContext2D, timeline: ReturnType<ty
 }
 
 /** 同一画布中的历史深度、COB 与 ORD 只共享一份价位映射。 */
-export function ReplayChart({ window: replayWindow, range, projection, symbol, executionId, selectedOrder, onSelectOrder, onSeek, selectedTrade, onSelectTrade, onInspect, playControls, firstQuoteControl, symbolControl, children, scene = projection, slices, initialTimeUs = range.start_us }: Props) {
+export function ReplayChart({ window: replayWindow, range, projection, symbol, executionId, selectedOrder, onSelectOrder, onSeek, selectedTrade, onSelectTrade, onInspect, playControls, fullscreenControl, firstQuoteControl, symbolControl, children, scene = projection, slices, initialTimeUs = range.start_us }: Props) {
   const holder = useRef<HTMLDivElement>(null), canvas = useRef<HTMLCanvasElement>(null), hoverCanvas = useRef<HTMLCanvasElement>(null)
   const historyLayers = useRef<HTMLCanvasElement[]>([]), orderLayers = useRef<HTMLCanvasElement[]>([])
   const seekCallback = useRef(onSeek), sliderDragging = useRef(false)
   useLayoutEffect(() => { seekCallback.current = onSeek }, [onSeek])
   const seekScheduler = useMemo(() => replaySeekScheduler(time => seekCallback.current(time), callback => window.requestAnimationFrame(callback), frame => window.cancelAnimationFrame(frame)), [])
   const [size, setSize] = useState({ width: 900, height: 300, revision: 0 })
+  const [depthWidth, setDepthWidth] = useState(346)
+  const [resizingDepth, setResizingDepth] = useState(false)
+  useLayoutEffect(() => {
+    const stored = window.localStorage?.getItem('axon.replay.depthWidth')
+    const value = Number(stored)
+    if (stored != null && Number.isFinite(value) && value >= 346) setDepthWidth(value)
+  }, [])
   const [manualView, setManualView] = useState<ReplayPriceView | null>(null)
   const [timePreview, setTimePreview] = useState<ReplayRange | null>(null)
   const [timeView, setTimeView] = useState<ReplayRange | null>(null)
@@ -130,7 +139,14 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   const historyView = axisInteracting && pricePreview ? pricePreview : view
   const wheelTimer = useRef<number | null>(null)
   const [timeCharacterWidth, setTimeCharacterWidth] = useState(6.6)
-  const layout = useMemo(() => ({ ...replayChartLayout(size.width, height, priceAxisWidth), top: selectedExecution ? 28 : 0 }), [size.width, height, priceAxisWidth, selectedExecution])
+  const layout = useMemo(() => ({ ...replayChartLayout(size.width, height, priceAxisWidth, depthWidth), top: selectedExecution ? 28 : 0 }), [size.width, height, priceAxisWidth, depthWidth, selectedExecution])
+  const maxDepthWidth = Math.max(346, size.width - priceAxisWidth - 240)
+  const clampDepthWidth = (value: number) => Math.min(maxDepthWidth, Math.max(346, value))
+  const saveDepthWidth = (value: number) => {
+    const next = clampDepthWidth(value)
+    setDepthWidth(next)
+    window.localStorage.setItem('axon.replay.depthWidth', String(next))
+  }
   const axisY = layout.bottom + 12
   const cursorX = replayTimeX(projection.time_us, visibleRange, layout)
   const cursorWidth = replayTime(projection.time_us).length * timeCharacterWidth + (cursorInside ? 8 : 24)
@@ -510,9 +526,10 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
         <Tooltip content="图层与图例说明"><button type="button" className={controlClass} popoverTarget="replay-chart-legend" aria-label="图层与图例说明"><Info size={15} aria-hidden /></button></Tooltip>
         </div>
         {firstQuoteControl}
+        {fullscreenControl}
       </div>
     </div><div className="replay-depth-status">{outsideDepth > 0 && <span className="replay-depth-fit-slot"><Tooltip content={`当前视野外有 ${outsideDepth} 个已录档位`}><button type="button" className="text-accent focus-visible:outline-2 focus-visible:outline-accent" style={{ visibility: outsideDepth > 0 ? 'visible' : 'hidden' }} disabled={outsideDepth === 0} onClick={() => setManualView(null)}>显示全部档位</button></Tooltip></span>}<span className="replay-heat-scale"><span className="replay-heat-caption"><span>{heatError ?? (heatPending || axisInteracting ? heat ? '历史缩放预览 · 结束后补绘' : '历史深度计算中' : heat?.known ? '挂量峰值' : '挂量尚未知')}</span></span><span className="replay-heat-legend" style={{ visibility: heat?.known ? 'visible' : 'hidden' }} aria-hidden={!heat?.known}><i aria-hidden /><span><span>0</span><span>{quantityText(maxHeat / 2)}</span><span>{quantityText(maxHeat)}</span></span></span></span></div></div>
-    <div ref={holder} className="replay-chart-plot">
+    <div ref={holder} className={`replay-chart-plot${resizingDepth ? ' select-none' : ''}`}>
       <p id="replay-scene-summary" className="sr-only">已读取时段，游标之后的记录灰显为未到达，已录自有成交 {recorded.ownTrades.filter(trade => trade.symbol === symbol && trade.time_us >= visibleRange.start_us && trade.time_us < visibleRange.end_us).length} 笔。盘口与委托状态对应游标 {replayTime(projection.time_us)}。</p>
       <canvas ref={canvas} style={{ height }} className="block w-full touch-none cursor-crosshair focus-visible:outline-2 focus-visible:outline-accent" tabIndex={0}
         aria-describedby="replay-scene-summary"
@@ -556,6 +573,12 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
           formatValue={offset => cursorInside ? replayTime(visibleRange.start_us + offset) : `游标在当前视野之外，${replayTime(projection.time_us)}`} onChange={offset => { setHover(null); setInspection(null); const time = Math.min(visibleRange.end_us - 1, visibleRange.start_us + offset); if (sliderDragging.current) seekScheduler.schedule(time); else onSeek(time) }}
           onChangeEnd={() => { seekScheduler.flush(); sliderDragging.current = false }} />
       </div>
+      {layout.columns && <ResizeHandle orientation="vertical" aria-label="调整图表与盘口的宽度"
+        title="左右拖动调整盘口宽度 · 双击恢复默认" className="replay-depth-resize"
+        style={{ left: layout.priceX + 13, height }} value={clampDepthWidth(depthWidth)}
+        min={346} max={maxDepthWidth} step={-24} onChange={setDepthWidth} onCommit={saveDepthWidth}
+        onReset={() => saveDepthWidth(346)} onResizeChange={setResizingDepth}
+        valueAt={x => clampDepthWidth(size.width - (x - (holder.current?.getBoundingClientRect().left ?? 0)) + 8)} />}
       {view && layout.columns && <ReplayDepthLadder quote={displayQuote} future={futureDepth} orders={depthOrders} view={view} layout={layout} height={height} executionId={executionId} selected={selectedOrder} onSelect={key => { onInspect(); onSelectOrder(key) }} priceText={priceText} quantityText={quantityText} hoverPrice={hoverPrice ?? undefined} />}
       {inspection && <div className="replay-inspection-float" aria-label="图中记录浮卡" style={{
         width: inspectionWidth,

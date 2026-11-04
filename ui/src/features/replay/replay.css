@@ -238,3 +238,9 @@ button.replay-ladder-row:focus-visible { outline: 2px solid var(--color-accent);
   .replay-depth-ladder * { transition: none; animation: none; }
   .replay-depth-ladder [data-leaving="true"] { display: none; }
 }
+
+.replay-workbench-fullscreen { position: fixed; inset: 0; z-index: 50; height: 100dvh; padding: 8px; }
+.replay-workbench-fullscreen .replay-desk-header { display: none; }
+.replay-fullscreen-account { max-width: 20ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.replay-depth-resize { position: absolute; top: 0; width: 5px; z-index: 10; }

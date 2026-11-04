@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useParams } from 'react-router'
-import { Circle, Crosshair, Info, Minus, Pause, Play, RefreshCw, RotateCcw, SkipBack, SkipForward } from 'lucide-react'
+import { Circle, Crosshair, Info, Maximize, Minimize, Minus, Pause, Play, RefreshCw, RotateCcw, SkipBack, SkipForward } from 'lucide-react'
 import { AccountPageTitle } from '@/features/account/pageHead'
 import { useDomainStore } from '@/stores/domain'
 import { Select } from '@/components/ui/Select'
@@ -30,6 +30,33 @@ type LoadedExecution = { key: string; value: LoadedPart[] | null; error: Error |
 
 export function ExecutionReplayPage() {
   const { id, executionId = '' } = useParams(), accountId = Number(id)
+  const [fullscreen, setFullscreen] = useState(false)
+  const [fullscreenError, setFullscreenError] = useState(false)
+  const ownsFullscreen = useRef(false)
+  useEffect(() => {
+    const sync = () => {
+      if (!document.fullscreenElement) ownsFullscreen.current = false
+      setFullscreen(ownsFullscreen.current && document.fullscreenElement === document.documentElement)
+    }
+    document.addEventListener('fullscreenchange', sync)
+    return () => {
+      document.removeEventListener('fullscreenchange', sync)
+      if (ownsFullscreen.current && document.fullscreenElement) void document.exitFullscreen().catch(() => {})
+    }
+  }, [])
+  const toggleFullscreen = async () => {
+    setFullscreenError(false)
+    try {
+      if (fullscreen) await document.exitFullscreen()
+      else {
+        ownsFullscreen.current = true
+        await document.documentElement.requestFullscreen()
+      }
+    } catch {
+      ownsFullscreen.current = false
+      setFullscreenError(true)
+    }
+  }
   const location = useLocation()
   const journalPath = `/accounts/${accountId}/executions`
   const detailPath = `${journalPath}/${executionId}`
@@ -173,18 +200,21 @@ export function ExecutionReplayPage() {
     <Tooltip content={playing ? '暂停回放' : '播放回放'}><button type="button" className={buttonClass + ' replay-transport-button replay-play-button'} aria-label={playing ? '暂停回放' : '播放回放'} aria-pressed={playing} onClick={() => { if (!playing && cursor.time_us >= range.end_us - 1) setCursor({ time_us: range.start_us }); setPlaying(value => !value) }} disabled={!readReady}>{playing ? <Pause size={14} aria-hidden /> : <Play size={14} aria-hidden />}<span className="sr-only"><InkRewrite text={playing ? '暂停' : '播放'} tone="label" /></span></button></Tooltip>
     <Tooltip content="后一观察"><button type="button" className={buttonClass + ' replay-transport-button'} onClick={() => step(1)} disabled={!readReady || overlapping || eventIndex >= events.length - 1} aria-label="后一观察"><SkipForward size={14} aria-hidden /><span className="sr-only">下一步</span></button></Tooltip>
   </div>
+  const fullscreenControl = <Tooltip content={fullscreen ? '退出全屏（Esc）' : '全屏'}><button type="button" className={buttonClass} aria-label={fullscreen ? '退出全屏' : '全屏'} aria-pressed={fullscreen} onClick={() => void toggleFullscreen()}>{fullscreen ? <Minimize size={14} aria-hidden /> : <Maximize size={14} aria-hidden />}</button></Tooltip>
   const transport = range && <div className="replay-chart-transport">
+    {fullscreen && <span className="replay-fullscreen-account text-xs text-ink-2">{item?.name ?? `账户 ${accountId}`}</span>}
     <div role="group" aria-label="播放速度" className="replay-speed-picker"><Segmented size="sm" className="num" value={speed} onChange={setSpeed} options={['0.1', '0.25', '0.5', '1', '2'].map(value => ({ value, label: value + '×' }))} /></div>
     <span className="text-xs text-ink-2">{playing ? '播放中' : '已暂停'}</span>
     {stateLabel && <span className="text-xs text-warn" role="status">{stateLabel}</span>}
     <span className="replay-target num text-xs text-ink-2">目标 {replayNumber(target, unit?.quantity_decimals)} / 本次成交 {replayNumber(ownQuantity, unit?.quantity_decimals)} {unit?.quantity_label}</span>
   </div>
 
-  return <section className="replay-workbench" aria-label="执行回放">
+  return <section className={`replay-workbench${fullscreen ? ' replay-workbench-fullscreen' : ''}`} aria-label="执行回放">
     <header className="replay-desk-header">
       <div className="flex min-w-0 flex-wrap items-center gap-3"><AccountPageTitle accountId={accountId} page="执行回放" name={item?.name} channel={item?.trade_channel ?? context?.channel} market={item?.market} flip={false} back={back} /></div>
       <div className="replay-header-actions"><button type="button" onClick={() => setRevision(value => value + 1)} className={buttonClass} aria-label="重新读取已封口记录" disabled={manifestLoading || loaded.loading}><RefreshCw size={14} aria-hidden /></button></div>
     </header>
+    {fullscreenError && <p role="alert" className="text-xs text-warn">无法切换全屏，请重试或检查浏览器权限。</p>}
     <div className="replay-read-errors" hidden={!manifestError && !loaded.error && !overview.error && !projectionResult.error}>
       <ErrorNotice intent="read" title="回放目录读取失败" error={manifestError} onRetry={() => setRevision(value => value + 1)} />
       <ErrorNotice intent="read" title="执行回放读取失败" error={loaded.error ?? overview.error ?? projectionResult.error} onRetry={() => setRevision(value => value + 1)} />
@@ -195,11 +225,11 @@ export function ExecutionReplayPage() {
     {plan && !loaded.loading && !loaded.error && !overview.error && !overview.value && <p className="replay-empty">本次执行没有可读取的录制时段。</p>}
     {projection && scene && windowData && context && range && !loaded.loading ? <OrdersAndTrades projection={projection} scene={scene} context={context} symbol={symbol} selected={activeOrder} onSelect={inspectOrder} selectedTradeKey={selectedTrade} onSelectTrade={inspectTrade} executionId={executionId} tab={detailTab} onTabChange={setDetailTab} onSeek={pauseAndSeek} coverage={slices.map(slice => slice.range)} gaps={overview.value!.gaps}>
       <div className="replay-main-chart">
-        <ReplayChart initialTimeUs={range.start_us} window={windowData} range={range} projection={projection} scene={scene} slices={slices} symbol={symbol} selectedOrder={activeOrder} onSelectOrder={inspectOrder} selectedTrade={selectedTrade} onSelectTrade={inspectTrade} onInspect={inspect} onSeek={pauseAndSeek} executionId={executionId} playControls={playControls} firstQuoteControl={<button type="button" className={buttonClass + ' replay-first-quote'} disabled={!readReady || !firstQuote} onClick={() => { if (firstQuote) pauseAndSeek(firstQuote.time_us, firstQuote.capture_seq) }}>跳到首个盘口</button>} symbolControl={symbols.length > 1 ? <Select ariaLabel="选择回放品种" searchable className={selectClass} value={symbol} options={symbols.map(value => ({ value, label: value }))} onChange={value => { setPlaying(false); setSelectedOrder(null); setSelectedTrade(null); setSymbol(value) }} /> : <span className="text-[13px] font-semibold text-ink-1">{symbol || '无已录品种'}</span>}>{transport}</ReplayChart>
+        <ReplayChart initialTimeUs={range.start_us} window={windowData} range={range} projection={projection} scene={scene} slices={slices} symbol={symbol} selectedOrder={activeOrder} onSelectOrder={inspectOrder} selectedTrade={selectedTrade} onSelectTrade={inspectTrade} onInspect={inspect} onSeek={pauseAndSeek} executionId={executionId} playControls={playControls} fullscreenControl={fullscreenControl} firstQuoteControl={<button type="button" className={buttonClass + ' replay-first-quote'} disabled={!readReady || !firstQuote} onClick={() => { if (firstQuote) pauseAndSeek(firstQuote.time_us, firstQuote.capture_seq) }}>跳到首个盘口</button>} symbolControl={symbols.length > 1 ? <Select ariaLabel="选择回放品种" searchable className={selectClass} value={symbol} options={symbols.map(value => ({ value, label: value }))} onChange={value => { setPlaying(false); setSelectedOrder(null); setSelectedTrade(null); setSymbol(value) }} /> : <span className="text-[13px] font-semibold text-ink-1">{symbol || '无已录品种'}</span>}>{transport}</ReplayChart>
       </div>
     </OrdersAndTrades> : plan && loaded.loading && <ReplayStage><div className="replay-chart-column"><div className="replay-chart-area"><div className="replay-main-chart">
       <div className="replay-chart-playback"><span className="text-[13px] font-semibold text-ink-1">{symbol || '品种未知'}</span>{transport}</div>
-      <div className="replay-chart-meta"><div className="replay-chart-legend"><span className="replay-depth-bid"><Minus size={14} aria-hidden />买一</span><span className="replay-depth-ask"><Minus size={14} aria-hidden />卖一</span><span><Minus size={14} aria-hidden />成交价</span><span><Circle size={10} aria-hidden />市场成交</span><span className="replay-order-color"><Minus size={14} aria-hidden />账户委托</span><span><Minus size={14} aria-hidden />未到达</span></div><div className="replay-chart-view-controls replay-chart-navigation"><div className="replay-chart-return-slot" /><div className="replay-playback-group">{playControls}<button type="button" className="min-h-7 min-w-7 text-ink-2 opacity-40" aria-label="恢复视图" disabled><RotateCcw size={15} aria-hidden /></button><button type="button" className="min-h-7 min-w-7 text-ink-2 opacity-40" aria-label="聚焦委托过程" disabled><Crosshair size={14} aria-hidden /></button><button type="button" className="min-h-7 min-w-7 text-ink-2 opacity-40" aria-label="图层与图例说明" disabled><Info size={15} aria-hidden /></button></div><button type="button" className={buttonClass + ' replay-first-quote'} disabled>跳到首个盘口</button></div></div>
+      <div className="replay-chart-meta"><div className="replay-chart-legend"><span className="replay-depth-bid"><Minus size={14} aria-hidden />买一</span><span className="replay-depth-ask"><Minus size={14} aria-hidden />卖一</span><span><Minus size={14} aria-hidden />成交价</span><span><Circle size={10} aria-hidden />市场成交</span><span className="replay-order-color"><Minus size={14} aria-hidden />账户委托</span><span><Minus size={14} aria-hidden />未到达</span></div><div className="replay-chart-view-controls replay-chart-navigation"><div className="replay-chart-return-slot" /><div className="replay-playback-group">{playControls}<button type="button" className="min-h-7 min-w-7 text-ink-2 opacity-40" aria-label="恢复视图" disabled><RotateCcw size={15} aria-hidden /></button><button type="button" className="min-h-7 min-w-7 text-ink-2 opacity-40" aria-label="聚焦委托过程" disabled><Crosshair size={14} aria-hidden /></button><button type="button" className="min-h-7 min-w-7 text-ink-2 opacity-40" aria-label="图层与图例说明" disabled><Info size={15} aria-hidden /></button></div><button type="button" className={buttonClass + ' replay-first-quote'} disabled>跳到首个盘口</button>{fullscreenControl}</div></div>
       <div className="replay-chart-plot"><div className="replay-empty h-full" role="status">正在读取整个执行的录制…</div><div className="replay-loading-axis" aria-hidden="true"><time className="replay-cursor-time num">{replayTime(cursor.time_us)}</time></div></div>
     </div></div><section className="replay-dock" aria-label="回放明细"><div className="replay-dock-header"><Segmented value={detailTab} options={[{ value: 'orders', label: '委托' }, { value: 'trades', label: '成交' }, { value: 'commands', label: '报撤观察' }, { value: 'positions', label: '持仓' }]} onChange={setDetailTab} size="sm" /></div></section></div></ReplayStage>}
   </section>

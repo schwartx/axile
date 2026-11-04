@@ -124,3 +124,11 @@ test('播放结束后再次播放，从执行起点重新开始', () => {
 test('全程读取失败可以重试，不展示失效状态', () => {
   expect(pageCase('retry')).toEqual({ failed: true, recovered: true, readCount: 2 })
 })
+
+test('全屏保留游标和明细页签，按钮和浏览器退出均同步状态', () => {
+  expect(pageCase('fullscreen')).toEqual({ entered: true, label: '退出全屏', preserved: true, error: false, escaped: true, exited: true })
+})
+
+test('浏览器拒绝全屏时提示失败并保持普通布局', () => {
+  expect(pageCase('fullscreen-error')).toMatchObject({ entered: false, label: '全屏', preserved: true, error: true, exited: true })
+})

@@ -42,7 +42,7 @@ const returnStates: Record<string, unknown> = {
   'return-other-account': { replayReturn: { to: '/accounts/8/executions' } },
 }
 mock.module('react-router', () => ({ useParams: () => ({ id: '7', executionId: 'E2' }), useLocation: () => ({ state: returnStates[scenario] ?? null }) }))
-mock.module('lucide-react', () => Object.fromEntries(['Circle', 'Crosshair', 'Minus', 'RotateCcw', 'Info', 'Pause', 'Play', 'RefreshCw', 'SkipBack', 'SkipForward'].map(name => [name, () => null])))
+mock.module('lucide-react', () => Object.fromEntries(['Circle', 'Crosshair', 'Maximize', 'Minimize', 'Minus', 'RotateCcw', 'Info', 'Pause', 'Play', 'RefreshCw', 'SkipBack', 'SkipForward'].map(name => [name, () => null])))
 for (const [path, name] of [['features/account/pageHead.tsx', 'AccountPageTitle'], ['components/ui/Select.tsx', 'Select'], ['components/ui/ErrorNotice.tsx', 'ErrorNotice'], ['components/ui/Segmented.tsx', 'Segmented'], ['components/ui/OverflowText.tsx', 'OverflowText'], ['components/ui/InkRewrite.tsx', 'InkRewrite'], ['features/replay/ReplayChart.tsx', 'ReplayChart']]) mock.module(ui + path, () => ({ [name]: () => null }))
 mock.module(ui + 'stores/domain.ts', () => ({ useDomainStore: (select: any) => select({ accounts: [{ account_id: 7, name: 'demo', trade_channel: 'binance', market: 'crypto' }] }) }))
 mock.module(ui + 'lib/viewTransition.ts', () => ({ withViewTransition: (update: () => void) => update() }))
@@ -87,6 +87,18 @@ mock.module(ui + 'lib/api/replay.ts', () => ({
   },
 }))
 const pageDocument = { hidden: false, addEventListener: (_: string, listener: () => void) => listeners.add(listener), removeEventListener: (_: string, listener: () => void) => listeners.delete(listener) }
+Object.assign(pageDocument, {
+  fullscreenElement: null,
+  documentElement: { requestFullscreen: async () => {
+    if (scenario === 'fullscreen-error') throw Error('denied')
+    ;(pageDocument as any).fullscreenElement = (pageDocument as any).documentElement
+    for (const listener of [...listeners]) listener()
+  } },
+  exitFullscreen: async () => {
+    ;(pageDocument as any).fullscreenElement = null
+    for (const listener of [...listeners]) listener()
+  },
+})
 Object.assign(globalThis, { window: { setTimeout, clearTimeout }, document: pageDocument,
   requestAnimationFrame: (fn: (now: number) => void) => { frames.set(++rafId, fn); return rafId }, cancelAnimationFrame: (id: number) => frames.delete(id) })
 Object.defineProperty(globalThis, 'performance', { value: { now: () => wall }, configurable: true })
@@ -131,6 +143,21 @@ function expand(node: any): any {
 flush(); pendingManifest!(); await settle()
 if (scenario.startsWith('return-')) {
   console.log(JSON.stringify(find(tree, node => node.props?.page === '执行回放').props.back))
+} else if (scenario === 'fullscreen' || scenario === 'fullscreen-error') {
+  chart().props.onSeek(5_000_000); flush()
+  details().props.onTabChange('trades'); flush()
+  const before = chart().props.projection
+  const control = () => chart().props.fullscreenControl.props.children
+  control().props.onClick(); await settle()
+  const entered = tree.props.className.includes('replay-workbench-fullscreen')
+  const label = control().props['aria-label']
+  const preserved = chart().props.projection === before && details().props.tab === 'trades'
+  const error = text(tree).includes('无法切换全屏')
+  await (pageDocument as any).exitFullscreen(); await settle()
+  const escaped = !tree.props.className.includes('replay-workbench-fullscreen')
+  control().props.onClick(); await settle()
+  if (scenario === 'fullscreen') { control().props.onClick(); await settle() }
+  console.log(JSON.stringify({ entered, label, preserved, error, escaped, exited: !tree.props.className.includes('replay-workbench-fullscreen') }))
 } else if (scenario === 'controls') {
   const title = find(tree, node => node.props?.page === '执行回放').props
   const picker = chart().props.symbolControl

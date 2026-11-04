@@ -97,3 +97,15 @@ it('价格轴容纳完整读数，刻度规整且不累加推算价差的浮点�
   expect(replayPriceTicks({ min: 0.00000001, max: 0.00000005, tick: 0.00000001 }, 240)).toEqual([0.00000001, 0.00000002, 0.00000003, 0.00000004, 0.00000005])
   expect(replayPriceTicks({ min: 100, max: 101, tick: 0.25 }, 240)).toEqual([100, 100.5, 101])
 })
+
+it('盘口调宽同步图表与价格轴，限制两侧最小宽度，窄屏仍隐藏盘口', () => {
+  const initial = replayChartLayout(1200, 400, 60)
+  const wider = replayChartLayout(1200, 400, 60, 500)
+  expect(initial.right - wider.right).toBe(154)
+  expect(initial.priceX - wider.priceX).toBe(154)
+  expect(initial.cobX - wider.cobX).toBe(154)
+  expect(replayChartLayout(1200, 400, 60, 5000).right).toBe(240)
+  expect(replayChartLayout(1200, 400, 60, 1)).toEqual(initial)
+  expect(replayChartLayout(390, 400, 60, 500).right).toBe(318)
+  expect(replayChartLayout(390, 400, 60, 500).columns).toBe(false)
+})
