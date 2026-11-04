@@ -8,6 +8,8 @@ from axile.executor.constants.order_status import OrderStatus
 from axile.executor.models.execution_result import ExecutionOutcome, ExecutionStatus, outcome_from_status
 from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
 
+TARGET_NOT_REACHED = "COMMON.TARGET.NOT_REACHED"
+
 
 class OutcomeSummary(TypedDict):
     """算法结果的明确状态、错误与可序列化持仓字段；outcome 恒等于 f(status)。"""
@@ -68,6 +70,8 @@ def summarize_outcome(
             error = explicit_blocked_error or f"目标未完成: 当前持仓={final}，目标持仓={target}"
             if explicit_blocked_error:
                 reason_code, reason_family = blocked_reason_code, blocked_reason_family
+            else:
+                reason_code, reason_family = TARGET_NOT_REACHED, ExecutionReasonFamily.EXECUTION_STRATEGY
     return {
         "status": status,
         "error": error,

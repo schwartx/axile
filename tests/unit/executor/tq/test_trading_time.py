@@ -11,7 +11,7 @@ from axile.domain.execution import ExecutionReasonFamily
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.algorithms.utils.clock import clock_now_ms
 from axile.executor.models.execution_result import AlgorithmResult, ExecutionStatus, TargetSizingStatus
-from axile.executor.models.unified_account_assets import UnifiedAccountAssets
+from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_input import TQAccountConfig, UnifiedStandardInput
 from axile.executor.models.unified_order import OrderDirection, OrderType
 from axile.executor.models.unified_price import UnifiedPriceData
@@ -212,6 +212,7 @@ def test_engine_blocks_symbol_sessions_without_market_io(monkeypatch: pytest.Mon
     monkeypatch.setattr(TQExecutor, "_build_api", staticmethod(lambda _config: api))
     instance = TQExecutor(TQAccountConfig(account_mode="kq", tq_username="user", tq_password="secret"))
     market_requests: list[list[str]] = []
+    holdings: list[Position] = []
     try:
         monkeypatch.setattr(instance, "_check_trading_time", lambda: True)
         monkeypatch.setattr(
@@ -224,14 +225,17 @@ def test_engine_blocks_symbol_sessions_without_market_io(monkeypatch: pytest.Mon
         monkeypatch.setattr(
             instance,
             "get_account_assets",
-            lambda: UnifiedAccountAssets(available_cash=1_000, total_asset=1_000, market_value=0, positions=[]),
+            lambda: UnifiedAccountAssets(
+                available_cash=1_000, total_asset=1_000, market_value=0, positions=list(holdings)
+            ),
         )
         monkeypatch.setattr(instance, "_calculate_generic_volume", lambda *_args, **_kwargs: 1.0)
         monkeypatch.setattr(
             instance,
             "get_market_data",
             lambda symbols: (
-                market_requests.append(symbols)
+                setattr(instance._quotes["rb2610"], "timestamp", clock_now_ms())
+                or market_requests.append(symbols)
                 or {
                     symbol: UnifiedPriceData(
                         symbol=symbol,
@@ -251,16 +255,24 @@ def test_engine_blocks_symbol_sessions_without_market_io(monkeypatch: pytest.Mon
         )
         monkeypatch.setattr(instance, "initialize_websocket", lambda _symbols: None)
         monkeypatch.setattr(instance, "cancel_all_orders", lambda: None)
-        monkeypatch.setattr(
-            "axile.executor.execution_engine.resolve_algorithm",
-            lambda _name, _session: (
-                lambda _session, algorithm_input: AlgorithmResult(
+
+        def algorithm(_session, algorithm_input):
+            holdings.append(
+                Position(
                     symbol=algorithm_input.symbol,
-                    algorithm="SINGLE-MAKER",
-                    target_volume=algorithm_input.target_volume,
+                    volume=algorithm_input.target_volume,
+                    available_volume=algorithm_input.target_volume,
+                    market_value=100,
+                    direction=PositionDirection.LONG,
                 )
-            ),
-        )
+            )
+            return AlgorithmResult(
+                symbol=algorithm_input.symbol,
+                algorithm="SINGLE-MAKER",
+                target_volume=algorithm_input.target_volume,
+            )
+
+        monkeypatch.setattr("axile.executor.execution_engine.resolve_algorithm", lambda *_args: algorithm)
         instance._quotes["rb2610"] = UnifiedPriceData(
             symbol="rb2610",
             last_price=100,
