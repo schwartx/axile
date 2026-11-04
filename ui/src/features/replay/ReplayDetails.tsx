@@ -1,5 +1,5 @@
 import { ReplayStage } from '@/features/replay/ReplayStage'
-import { Fragment, memo, type ReactNode } from 'react'
+import { Fragment, memo, useMemo, type ReactNode } from 'react'
 import { ContentSwap } from '@/components/ui/ContentSwap'
 import { Segmented } from '@/components/ui/Segmented'
 import { OverflowText } from '@/components/ui/OverflowText'
@@ -58,11 +58,15 @@ const RecordedFields = memo(function RecordedFields({ value, context, kind, exec
 
 export function OrdersAndTrades({ projection, scene = projection, context, symbol, selected, onSelect, selectedTradeKey, onSelectTrade, executionId, tab, onTabChange, onSeek, coverage, gaps = [], children }: { selectedTradeKey: string | null; onSelectTrade: (key: string) => void; children?: ReactNode; onTabChange: (tab: ReplayDetailTab) => void; tab: ReplayDetailTab; onSeek: (time: number) => void; coverage: ReplayRange[]; gaps?: ReplayGap[]; scene?: ReplayProjection; projection: ReplayProjection; context: ReplayContext; symbol: string; selected: string | null; onSelect: (key: string) => void; executionId: string }) {
   const instrument = replayInstrument(context, symbol), decimals = instrument.quantity_decimals ?? 6
-  const firstOrders = new Map<string, ReplayOrder>()
-  if (tab === 'orders') for (const order of scene.orderHistory) if (order.symbol === symbol && !firstOrders.has(order.key)) firstOrders.set(order.key, order)
-  const orders = [...firstOrders.values()].map(order => projection.orders[order.key] ?? order)
-  const currentTrades = new Map(tab === 'trades' ? projection.ownTrades.map(trade => [replayTradeKey(trade), trade]) : [])
-  const trades = tab === 'trades' ? scene.ownTrades.filter(trade => trade.symbol === symbol).map(trade => currentTrades.get(replayTradeKey(trade)) ?? trade) : []
+  const firstOrders = useMemo(() => {
+    const first = new Map<string, ReplayOrder>()
+    if (tab === 'orders') for (const order of scene.orderHistory) if (order.symbol === symbol && !first.has(order.key)) first.set(order.key, order)
+    return [...first.values()]
+  }, [scene.orderHistory, symbol, tab])
+  const orders = useMemo(() => firstOrders.map(order => projection.orders[order.key] ?? order), [firstOrders, projection.orders])
+  const currentTrades = useMemo(() => new Map(tab === 'trades' ? projection.ownTrades.map(trade => [replayTradeKey(trade), trade]) : []), [projection.ownTrades, tab])
+  const recordedTrades = useMemo(() => tab === 'trades' ? scene.ownTrades.filter(trade => trade.symbol === symbol) : [], [scene.ownTrades, symbol, tab])
+  const trades = useMemo(() => recordedTrades.map(trade => currentTrades.get(replayTradeKey(trade)) ?? trade), [recordedTrades, currentTrades])
   const selectedTrade = selectedTradeKey == null ? trades.findLast(trade => currentTrades.has(replayTradeKey(trade))) : trades.find(trade => replayTradeKey(trade) === selectedTradeKey)
   const canSeek = (time: number) => coverage.some(range => time >= range.start_us && time < range.end_us)
   const seek = (time: number) => { if (canSeek(time)) onSeek(time) }

@@ -595,7 +595,7 @@ export function ExecutionDetailPage() {
           />
         </div>
         {executionId && <div className="ml-auto flex shrink-0 items-center gap-2 whitespace-nowrap">
-          <Link to={`/accounts/${accountId}/executions/${executionId}/replay`} className="inline-flex min-h-9 items-center justify-center rounded-lg border border-line px-3 py-1.5 text-[13px] text-accent hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent">查看回放</Link>
+          <Link to={`/accounts/${accountId}/executions/${executionId}/replay`} state={{ replayReturn: { to: location.pathname, state: fromPerformance ? { performanceReturn: performancePath } : { journalReturn } } }} className="inline-flex min-h-9 items-center justify-center rounded-lg border border-line px-3 py-1.5 text-[13px] text-accent hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent">查看回放</Link>
           <EvidenceExportButton target={{ kind: 'execution', accountId, executionId }} accountName={item?.name}
             isRunning={isLive || ['QUEUED', 'RUNNING', 'TERMINATING'].includes(status.data?.status ?? '')}
             disabled={status.data != null && status.data.account_id !== accountId} />

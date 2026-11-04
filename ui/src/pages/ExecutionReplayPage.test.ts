@@ -18,6 +18,15 @@ test('统一页头及多品种选择接入现有组件，不渲染原生下拉�
   expect(result.nativeControl).toBe(false)
 })
 
+test('回放按入口返回，保留列表筛选和详情原始来源，拒绝外部及跨账户目标', () => {
+  expect(pageCase('return-journal')).toEqual({ to: '/accounts/7/executions?status=执行失败&range=7', label: '返回执行记录' })
+  expect(pageCase('return-detail')).toEqual({ to: '/accounts/7/executions/E2', label: '返回执行详情', state: { journalReturn: '/accounts/7/executions?range=7' } })
+  expect(pageCase('return-performance')).toEqual({ to: '/accounts/7/executions/E2', label: '返回执行详情', state: { performanceReturn: '/accounts/7/history' } })
+  for (const scenario of ['return-external', 'return-other-account']) {
+    expect(pageCase(scenario)).toEqual({ to: '/accounts/7/executions/E2', label: '返回执行详情' })
+  }
+})
+
 test('主图时间轴定位实时更新游标并保持暂停', () => {
   const result = pageCase('seek')
   expect(result.preview).toContain('08:00:05.000000')

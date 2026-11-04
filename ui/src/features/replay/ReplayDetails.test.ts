@@ -139,9 +139,14 @@ test('委托和成交单击选中并定位；未来记录可定位，覆盖边�
   for (const cursor of [50, 200]) for (const end of [100, 300]) {
     const selected: string[] = [], sought: number[] = []
     for (const type of ['tr', 'button']) {
-      const tree = OrdersAndTrades({ projection: projectReplay(window, { time_us: cursor }), scene, context: window.context,
-        symbol: 'X', selected: null, selectedTradeKey: null, onSelect: key => selected.push(key), onSelectTrade: key => selected.push(key),
-        executionId: 'E', tab: type === 'tr' ? 'orders' : 'trades', onTabChange() {}, onSeek: time => sought.push(time), coverage: [{ start_us: 100, end_us: end }] })
+      let tree: ReactNode
+      function Capture() {
+        tree = OrdersAndTrades({ projection: projectReplay(window, { time_us: cursor }), scene, context: window.context,
+          symbol: 'X', selected: null, selectedTradeKey: null, onSelect: key => selected.push(key), onSelectTrade: key => selected.push(key),
+          executionId: 'E', tab: type === 'tr' ? 'orders' : 'trades', onTabChange() {}, onSeek: time => sought.push(time), coverage: [{ start_us: 100, end_us: end }] })
+        return null
+      }
+      renderToStaticMarkup(createElement(Capture))
       const row = findElement(tree, element => element.type === type && element.props['data-future'] !== undefined)!
       expect(row.props['data-future']).toBe(cursor < 100)
       const count = selected.length

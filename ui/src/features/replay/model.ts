@@ -546,6 +546,7 @@ function rebuildTotals(state: ProjectionState) {
   }
 }
 function applyObservation(state: ProjectionState, data: ReplayData, message: ReplayMessage) {
+  state.view.derivedPositions = { ...state.view.derivedPositions }
   const positions = rows(data.positions).flatMap(raw => {
     const value = position(replayObject(raw), message.time_us)
     return value ? [value] : []
@@ -701,23 +702,69 @@ type ReplayProgress = { state: ProjectionState; next: number; seen: Set<number>;
 function detachView(view: ReplayProjection): ReplayProjection {
   return { ...view, quotes: { ...view.quotes }, orders: { ...view.orders }, targets: { ...view.targets },
     targetsByExecution: Object.fromEntries(Object.entries(view.targetsByExecution).map(([key, values]) => [key, { ...values }])),
-    observedPositions: { ...view.observedPositions }, derivedPositions: { ...view.derivedPositions },
-    ownTrades: [...view.ownTrades], marketTrades: [...view.marketTrades], commands: [...view.commands],
-    quoteHistory: [...view.quoteHistory], orderHistory: [...view.orderHistory], warnings: [...view.warnings] }
+    observedPositions: { ...view.observedPositions },
+    warnings: [...view.warnings] }
 }
 
-/** 每个读取窗口只保留一个前进状态；反向定位仍走完整重建。 */
+function copyProgress(progress: ReplayProgress): ReplayProgress {
+  const state = progress.state
+  return { ...progress, seen: new Set(progress.seen), state: { ...state,
+    view: { ...state.view }, ownSeen: new Set(state.ownSeen), marketSeen: new Set(state.marketSeen),
+    ownFacts: new Map(state.ownFacts), marketFacts: new Map(state.marketFacts),
+    orderChanges: { ...state.orderChanges }, setRevisions: { ...state.setRevisions }, setObservations: { ...state.setObservations },
+    generations: { ...state.generations }, knownScopes: new Set(state.knownScopes), basis: { ...state.basis },
+    executions: { ...state.executions }, pending: new Map([...state.pending].map(([key, value]) => [key, { ...value }])),
+    orderFacts: { ...state.orderFacts }, positionFacts: { ...state.positionFacts }, ownLastFactSeq: new Map(state.ownLastFactSeq),
+    commandFacts: { ...state.commandFacts }, commandOwners: new Map(state.commandOwners), cancelOrders: new Set(state.cancelOrders),
+    orderAmounts: state.orderAmounts && new Map([...state.orderAmounts].map(([key, value]) => [key, { ...value }])),
+  } }
+}
+
+const cursorBefore = (left: ReplayCursor, right: ReplayCursor) => left.time_us < right.time_us
+  || left.time_us === right.time_us && (left.capture_seq ?? Infinity) < (right.capture_seq ?? Infinity)
+
+/** 稀疏检查点保存完整归约状态；只追加的历史共用一份前缀，不随检查点复制。 */
 export function createReplayProjector(window: ReplayWindow) {
+  const stride = Math.max(256, Math.ceil(window.messages.length / 16))
+  const checkpoints = new Map<number, { cursor: ReplayCursor; progress: ReplayProgress; lengths: number[] }>()
+  let histories: Pick<ReplayProjection, 'quoteHistory' | 'orderHistory' | 'commands'> | undefined
   let progress: ReplayProgress | undefined, previous: ReplayCursor | undefined
+  const historyKeys = ['quoteHistory', 'orderHistory', 'commands'] as const
+  const save = (current: ReplayProgress) => {
+    if (checkpoints.has(current.next)) return
+    const saved = copyProgress(current), view = saved.state.view
+    const lengths = historyKeys.map(key => view[key].length)
+    if (!histories || current.next > Math.max(...checkpoints.keys())) histories = {
+      quoteHistory: current.state.view.quoteHistory, orderHistory: current.state.view.orderHistory, commands: current.state.view.commands,
+    }
+    view.quoteHistory = []; view.orderHistory = []; view.commands = []
+    checkpoints.set(current.next, { cursor: { time_us: current.previousTime ?? 0, capture_seq: view.capture_seq }, progress: saved, lengths })
+  }
   return (cursor: ReplayCursor): ReplayProjection => {
-    if (!previous || cursor.time_us < previous.time_us || cursor.time_us === previous.time_us
-      && (cursor.capture_seq ?? Infinity) < (previous.capture_seq ?? Infinity)) progress = undefined
+    if (previous && cursorBefore(cursor, previous)) {
+      const checkpoint = [...checkpoints.values()].filter(value => !cursorBefore(cursor, value.cursor))
+        .sort((left, right) => left.progress.next - right.progress.next).at(-1)
+      progress = checkpoint ? copyProgress(checkpoint.progress) : undefined
+      if (progress && checkpoint && histories) {
+        const view = progress.state.view
+        view.quoteHistory = histories.quoteHistory.slice(0, checkpoint.lengths[0])
+        view.orderHistory = histories.orderHistory.slice(0, checkpoint.lengths[1])
+        view.commands = histories.commands.slice(0, checkpoint.lengths[2])
+      }
+    }
     progress ??= { state: seed(window), next: 0, seen: new Set(), previousTime: integer(window.state_before_start?.time_us) }
     try {
-      const result = project(window, cursor, progress)
+      let result: ReplayProjection
+      let before: number
+      do {
+        before = progress.next
+        const end = Math.min(window.messages.length, (Math.floor(before / stride) + 1) * stride)
+        result = project(window, cursor, progress, end)
+        if (progress.next === end && end > 0) save(progress)
+      } while (progress.next > before && progress.next < window.messages.length && progress.next % stride === 0)
       previous = { ...cursor }
       return result
-    } catch (cause) { progress = undefined; previous = undefined; throw cause }
+    } catch (cause) { progress = undefined; previous = undefined; checkpoints.clear(); histories = undefined; throw cause }
   }
 }
 
@@ -726,7 +773,7 @@ export function projectReplay(window: ReplayWindow, cursor: ReplayCursor, _symbo
   return project(window, cursor, { state: seed(window), next: 0, seen: new Set(), previousTime: integer(window.state_before_start?.time_us) })
 }
 
-function project(window: ReplayWindow, cursor: ReplayCursor, progress: ReplayProgress): ReplayProjection {
+function project(window: ReplayWindow, cursor: ReplayCursor, progress: ReplayProgress, end = window.messages.length): ReplayProjection {
   const { state, seen: seenSequences } = progress
   const baseline = replayObject(window.state_before_start)
   if (text(baseline.recording_id) && baseline.recording_id !== window.recording_id) throw new Error('回放基线不属于当前录制段')
@@ -734,8 +781,15 @@ function project(window: ReplayWindow, cursor: ReplayCursor, progress: ReplayPro
   if ((integer(baseline.time_us) ?? 0) > cursor.time_us || (cursor.capture_seq != null && cursor.capture_seq < (integer(baseline.state_through_seq) ?? 0))) throw new Error('游标早于窗口基线，请重新加载时间窗口')
   let last = state.view.capture_seq
   let previousTime = progress.previousTime
-  let changed = false
-  for (; progress.next < window.messages.length; progress.next++) {
+  let changed = false, totalsChanged = !progress.ready, positionsChanged = !progress.ready
+  const detached = new Set<keyof ReplayProjection>()
+  const detach = (key: 'ownTrades' | 'marketTrades' | 'commands' | 'quoteHistory' | 'orderHistory') => {
+    if (detached.has(key)) return
+    detached.add(key)
+    // 数组元素按替换更新，旧输出和检查点继续持有原数组。
+    Object.assign(state.view, { [key]: [...state.view[key]] })
+  }
+  for (; progress.next < end; progress.next++) {
     const message = window.messages[progress.next]
     if (message.recording_id !== window.recording_id) throw new Error('回放窗口混入其他录制段')
     if (message.schema_version !== 1 || !Number.isSafeInteger(message.time_us) || message.time_us < 0
@@ -748,6 +802,16 @@ function project(window: ReplayWindow, cursor: ReplayCursor, progress: ReplayPro
     changed = true
     seenSequences.add(message.capture_seq); last = message.capture_seq; previousTime = message.time_us
     const topic = message.topic.replace(/^\//, ''), data = replayObject(message.data)
+    if (topic.startsWith('quote/')) detach('quoteHistory')
+    else if (topic.startsWith('market_trade/')) detach('marketTrades')
+    else if (['order', 'order_set', 'trade', 'command', 'connection'].includes(topic)) {
+      detach('orderHistory')
+      if (topic === 'trade' || topic === 'command') { detach('ownTrades'); totalsChanged = true; positionsChanged = true }
+      if (topic === 'command') detach('commands')
+      if (topic === 'connection') detach('quoteHistory')
+    }
+    if (topic === 'execution') totalsChanged = true
+    if (topic === 'account_observation') positionsChanged = true
     if (topic.startsWith('quote/')) { const value = quote(data, message.time_us, message.capture_seq, topic); if (value) { state.view.quotes[value.symbol] = value; state.view.quoteHistory.push(value) } }
     else if (topic.startsWith('market_trade/')) applyTrade(state, { ...data, symbol: symbolOf(data, topic) }, message, true)
     else if (topic === 'order') applyOrder(state, data, message)
@@ -783,13 +847,15 @@ function project(window: ReplayWindow, cursor: ReplayCursor, progress: ReplayPro
     state.view.capture_seq = message.capture_seq
   }
   progress.previousTime = previousTime
-  if (changed || !progress.ready) {
-    rebuildTotals(state)
-    derivePositions(state)
-    state.view.ownTrades.sort((left, right) => left.capture_seq - right.capture_seq)
-    state.view.marketTrades.sort((left, right) => left.capture_seq - right.capture_seq)
-    progress.ready = true
+  if (totalsChanged) rebuildTotals(state)
+  if (positionsChanged) derivePositions(state)
+  for (const key of ['ownTrades', 'marketTrades'] as const) {
+    if (detached.has(key) || !progress.ready) {
+      detach(key)
+      state.view[key].sort((left, right) => left.capture_seq - right.capture_seq)
+    }
   }
+  progress.ready = true
   // 游标过期和缺口只影响输出，不能污染下一帧继续使用的事件状态。
   const view = { ...state.view, time_us: cursor.time_us, quotes: { ...state.view.quotes }, warnings: [...state.view.warnings] }
   for (const [symbol, value] of Object.entries(view.quotes)) {

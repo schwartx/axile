@@ -3,12 +3,16 @@ import { mock } from 'bun:test'
 import assert from 'node:assert/strict'
 declare const ui: string
 let at = 0, slots: any[] = [], nextTimer = 0, tree: any
-const timers = new Map<number, () => void>(), seeks: number[] = [], selected: string[] = []
-let pauses = 0, inspection: any
+const timers = new Map<number, () => void>(), frames = new Map<number, FrameRequestCallback>(), seeks: number[] = [], selected: string[] = []
+const cleanups = new Map<number, () => void>()
+const equalDeps = (left: any[], right: any[]) => left?.length === right.length && left.every((value, index) => Object.is(value, right[index]))
+let pauses = 0, inspection: any, basePaints = 0, hoverPaints = 0
 mock.module('react', () => ({
   useRef: (initial: any) => { const i = at++; return slots[i] ??= { current: initial } },
   useState: (initial: any) => { const i = at++; slots[i] ??= { value: initial }; return [slots[i].value, (next: any) => { slots[i].value = typeof next === 'function' ? next(slots[i].value) : next }] },
-  useMemo: (fn: any) => fn(), useCallback: (fn: any) => fn, useLayoutEffect: () => {},
+  useMemo: (fn: any, deps: any[]) => { const i = at++; if (!slots[i] || !equalDeps(slots[i].deps, deps)) slots[i] = { value: fn(), deps }; return slots[i].value },
+  useCallback: (fn: any, deps: any[]) => { const i = at++; if (!slots[i] || !equalDeps(slots[i].deps, deps)) slots[i] = { value: fn, deps }; return slots[i].value },
+  useLayoutEffect: (fn: any, deps: any[]) => { const i = at++; if (!slots[i] || !equalDeps(slots[i].deps, deps)) { cleanups.get(i)?.(); slots[i] = { deps }; if (fn.toString().includes('prepareCanvas(canvas.current')) basePaints++; if (fn.toString().includes('prepareCanvas(hoverCanvas.current')) hoverPaints++; const cleanup = fn(); if (cleanup) cleanups.set(i, cleanup); else cleanups.delete(i) } },
 }))
 const jsx = (type: any, props: any) => ({ type, props })
 mock.module('react/jsx-runtime', () => ({ jsx, jsxs: jsx, Fragment: 'fragment' }))
@@ -17,7 +21,7 @@ mock.module('lucide-react', () => Object.fromEntries(['ArrowLeft', 'ArrowRight',
 for (const name of ['Tooltip', 'ValueSlider', 'Segmented', 'Select']) mock.module(ui + `components/ui/${name}.tsx`, () => ({ [name]: () => null }))
 mock.module(ui + 'features/replay/ReplayDepthLadder.tsx', () => ({ ReplayDepthLadder: () => null }))
 mock.module(ui + 'lib/viewTransition.ts', () => ({ withViewTransition: (fn: any) => fn() }))
-Object.assign(globalThis, { window: { setTimeout: (fn: () => void) => { timers.set(++nextTimer, fn); return nextTimer }, clearTimeout: (id: number) => timers.delete(id) } })
+Object.assign(globalThis, { window: { setTimeout: (fn: () => void) => { timers.set(++nextTimer, fn); return nextTimer }, clearTimeout: (id: number) => timers.delete(id), requestAnimationFrame: (fn: FrameRequestCallback) => { frames.set(++nextTimer, fn); return nextTimer }, cancelAnimationFrame: (id: number) => frames.delete(id) } })
 let inspectedOrders = 0
 const inspectionModule = await import(ui + 'features/replay/inspection.ts')
 const inspectOrder = inspectionModule.inspectReplayOrder
@@ -48,7 +52,10 @@ const layout = replayChartLayout(900, 300, 40), view = replayObservedPriceView(s
 function hover(price = 100, time = 49) {
   find(tree, n => n.type === 'canvas').props.onPointerMove({ clientX: replayTimeX(time, props.range, layout), clientY: replayPriceY(price, view, layout), currentTarget: { style: {}, getBoundingClientRect: () => ({ left: 0, top: 0 }) } }); draw()
 }
+const paintsBeforeHover = basePaints, overlaysBeforeHover = hoverPaints
 hover()
+assert.equal(basePaints, paintsBeforeHover, '悬停不重新绘制底图')
+assert.ok(hoverPaints > overlaysBeforeHover, '悬停只触发独立高亮画布')
 const noFloatingCard = !panel()
 const readout = () => find(tree, n => n.props?.['aria-label'] === '悬停读数')
 const axisLabels = Boolean(find(tree, n => n.props?.className === 'replay-crosshair-price num')) && Boolean(find(tree, n => n.props?.className === 'replay-hover-time'))
@@ -219,4 +226,49 @@ hover(100.5, 10)
 assert.equal(inspectedOrders, 0, '未命中时不格式化任何委托 mark')
 hover(100, 50)
 assert.ok(inspectedOrders > 0 && inspectedOrders < 10, '只格式化命中的委托，不扫描格式化远处的数千个 marks')
+const seekStart = { ...clickEvent, clientX: replayTimeX(props.projection.time_us, props.range, layout) }
+const seekCount = seeks.length
+chartCanvas = find(tree, n => n.type === 'canvas')
+chartCanvas.props.onPointerDown(seekStart)
+for (const time of [60, 70, 80]) chartCanvas.props.onPointerMove({ ...seekStart, clientX: replayTimeX(time, props.range, layout) })
+assert.equal(seeks.length, seekCount, 'seek 拖动同帧不立即投影')
+assert.equal(frames.size, 1, 'seek 拖动只预约一帧')
+chartCanvas.props.onPointerUp({ ...seekStart, clientX: replayTimeX(85, props.range, layout) })
+assert.equal(seeks.at(-1), 85, 'pointerup 提交最终位置，即使最后位置尚无 move')
+assert.equal(seeks.length, seekCount + 1)
+assert.equal(frames.size, 0)
+for (const end of ['onPointerCancel', 'onLostPointerCapture']) {
+  chartCanvas.props.onPointerDown(seekStart)
+  chartCanvas.props.onPointerMove({ ...seekStart, clientX: replayTimeX(80, props.range, layout) })
+  chartCanvas.props[end]()
+  assert.equal(seeks.at(-1), 80, `${end} 提交最后拖动位置`)
+  assert.equal(frames.size, 0)
+}
+const axis = () => find(tree, n => n.props?.className === 'replay-chart-axis')
+const slider = () => find(tree, n => n.props?.label === '录制定位')
+axis().props.onPointerDownCapture({ isPrimary: true, button: 0 })
+const beforeSlider = seeks.length
+slider().props.onChange(60); slider().props.onChange(70); slider().props.onChange(80)
+assert.equal(seeks.length, beforeSlider, 'slider pointer 同帧合并')
+slider().props.onChangeEnd(80)
+assert.equal(seeks.at(-1), 80)
+assert.equal(seeks.length, beforeSlider + 1)
+assert.equal(frames.size, 0)
+slider().props.onChange(81)
+assert.equal(seeks.at(-1), 81, '非拖动定位保持即时')
+for (const change of [() => { props.window = { ...props.window, window_id: 'next' } }, () => { props.symbol = 'Y' }]) {
+  axis().props.onPointerDownCapture({ isPrimary: true, button: 0 }); slider().props.onChange(90)
+  const count = seeks.length
+  chartCanvas = find(tree, n => n.type === 'canvas')
+  chartCanvas.props.onPointerDown(seekStart)
+  change(); draw()
+  find(tree, n => n.type === 'canvas').props.onPointerMove({ ...seekStart, clientX: replayTimeX(95, props.range, layout) })
+  assert.equal(frames.size, 0, '窗口或品种切换取消待执行 seek，旧手势不能重新预约')
+  assert.equal(seeks.length, count)
+}
+axis().props.onPointerDownCapture({ isPrimary: true, button: 0 }); slider().props.onChange(90)
+const beforeUnmount = seeks.length
+for (const cleanup of cleanups.values()) cleanup()
+assert.equal(frames.size, 0, '卸载取消待执行 seek')
+assert.equal(seeks.length, beforeUnmount)
 console.log(JSON.stringify({ noFloatingCard, axisLabels, hasReadout, hoverDoesNotPause, clearedOnLeave, clickSelectsWithoutSeek, overlappingRecords, futureLabeled, clearedOnDrag, marketIdentity, explicitSeek, noPin, anchoredBesideClick, fixedDuringHover, staysOnLeave, escapeCloses, depthClickCloses, emptyClickCloses, returnsToCursor, resetsView }))

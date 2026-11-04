@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useParams } from 'react-router'
+import { useLocation, useParams } from 'react-router'
 import { Circle, Crosshair, Info, Minus, Pause, Play, RefreshCw, RotateCcw, SkipBack, SkipForward } from 'lucide-react'
 import { AccountPageTitle } from '@/features/account/pageHead'
 import { useDomainStore } from '@/stores/domain'
@@ -30,6 +30,16 @@ type LoadedExecution = { key: string; value: LoadedPart[] | null; error: Error |
 
 export function ExecutionReplayPage() {
   const { id, executionId = '' } = useParams(), accountId = Number(id)
+  const location = useLocation()
+  const journalPath = `/accounts/${accountId}/executions`
+  const detailPath = `${journalPath}/${executionId}`
+  const requestedReturn = (location.state as { replayReturn?: { to?: string; state?: { journalReturn?: string; performanceReturn?: string } } } | null)?.replayReturn
+  const fromJournal = typeof requestedReturn?.to === 'string' && (requestedReturn.to === journalPath || requestedReturn.to.startsWith(`${journalPath}?`))
+  const detailState = requestedReturn?.to === detailPath ? requestedReturn.state : undefined
+  const journalReturn = typeof detailState?.journalReturn === 'string' && (detailState.journalReturn === journalPath || detailState.journalReturn.startsWith(`${journalPath}?`)) ? detailState.journalReturn : undefined
+  const performanceReturn = detailState?.performanceReturn === `/accounts/${accountId}/history` ? detailState.performanceReturn : undefined
+  const back = fromJournal ? { to: requestedReturn!.to!, label: '返回执行记录' }
+    : { to: detailPath, label: '返回执行详情', state: detailState ? { journalReturn, performanceReturn } : undefined }
   const item = useDomainStore(state => state.accounts?.find(account => account.account_id === accountId))
   const [manifestLoading, setManifestLoading] = useState(true), [revision, setRevision] = useState(0)
   const [manifestState, setManifest] = useState<{ revision: number; value: ReplayManifest } | null>(null), [manifestError, setManifestError] = useState<Error | null>(null)
@@ -172,7 +182,7 @@ export function ExecutionReplayPage() {
 
   return <section className="replay-workbench" aria-label="执行回放">
     <header className="replay-desk-header">
-      <div className="flex min-w-0 flex-wrap items-center gap-3"><AccountPageTitle accountId={accountId} page="执行回放" name={item?.name} channel={item?.trade_channel ?? context?.channel} market={item?.market} flip={false} back={{ to: '/accounts/' + accountId + '/executions/' + executionId, label: '返回执行详情' }} /></div>
+      <div className="flex min-w-0 flex-wrap items-center gap-3"><AccountPageTitle accountId={accountId} page="执行回放" name={item?.name} channel={item?.trade_channel ?? context?.channel} market={item?.market} flip={false} back={back} /></div>
       <div className="replay-header-actions"><button type="button" onClick={() => setRevision(value => value + 1)} className={buttonClass} aria-label="重新读取已封口记录" disabled={manifestLoading || loaded.loading}><RefreshCw size={14} aria-hidden /></button></div>
     </header>
     <div className="replay-read-errors" hidden={!manifestError && !loaded.error && !overview.error && !projectionResult.error}>

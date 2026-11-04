@@ -34,7 +34,14 @@ mock.module('react', () => ({ Fragment: 'fragment', memo: (fn: any) => fn, useSt
 const jsx = (type: any, props: any, key: any) => ({ type, props, key })
 mock.module('react/jsx-runtime', () => ({ jsx, jsxs: jsx, Fragment: 'fragment' }))
 mock.module('react/jsx-dev-runtime', () => ({ jsxDEV: jsx, Fragment: 'fragment' }))
-mock.module('react-router', () => ({ useParams: () => ({ id: '7', executionId: 'E2' }) }))
+const returnStates: Record<string, unknown> = {
+  'return-journal': { replayReturn: { to: '/accounts/7/executions?status=执行失败&range=7' } },
+  'return-detail': { replayReturn: { to: '/accounts/7/executions/E2', state: { journalReturn: '/accounts/7/executions?range=7' } } },
+  'return-performance': { replayReturn: { to: '/accounts/7/executions/E2', state: { performanceReturn: '/accounts/7/history' } } },
+  'return-external': { replayReturn: { to: 'https://example.com' } },
+  'return-other-account': { replayReturn: { to: '/accounts/8/executions' } },
+}
+mock.module('react-router', () => ({ useParams: () => ({ id: '7', executionId: 'E2' }), useLocation: () => ({ state: returnStates[scenario] ?? null }) }))
 mock.module('lucide-react', () => Object.fromEntries(['Circle', 'Crosshair', 'Minus', 'RotateCcw', 'Info', 'Pause', 'Play', 'RefreshCw', 'SkipBack', 'SkipForward'].map(name => [name, () => null])))
 for (const [path, name] of [['features/account/pageHead.tsx', 'AccountPageTitle'], ['components/ui/Select.tsx', 'Select'], ['components/ui/ErrorNotice.tsx', 'ErrorNotice'], ['components/ui/Segmented.tsx', 'Segmented'], ['components/ui/OverflowText.tsx', 'OverflowText'], ['components/ui/InkRewrite.tsx', 'InkRewrite'], ['features/replay/ReplayChart.tsx', 'ReplayChart']]) mock.module(ui + path, () => ({ [name]: () => null }))
 mock.module(ui + 'stores/domain.ts', () => ({ useDomainStore: (select: any) => select({ accounts: [{ account_id: 7, name: 'demo', trade_channel: 'binance', market: 'crypto' }] }) }))
@@ -122,7 +129,9 @@ function expand(node: any): any {
   return node
 }
 flush(); pendingManifest!(); await settle()
-if (scenario === 'controls') {
+if (scenario.startsWith('return-')) {
+  console.log(JSON.stringify(find(tree, node => node.props?.page === '执行回放').props.back))
+} else if (scenario === 'controls') {
   const title = find(tree, node => node.props?.page === '执行回放').props
   const picker = chart().props.symbolControl
   picker.props.onChange('Y'); await settle()

@@ -23,6 +23,51 @@ const fill = (id: string, quantity: number, rest: ReplayData = {}): ReplayData =
   identity_quality: 'stable', quantity, price: 99, direction: 'BUY', position_side: 'NET', execution_id: 'exec-1', ...rest })
 
 describe('增量投影', () => {
+  test('后退从稀疏检查点重放，随机往返与完整重建一致且不污染旧快照', () => {
+    let reads = 0
+    const events = Array.from({ length: 1800 }, (_, index) => {
+      const seq = index + 1
+      if (seq % 73 === 0) return message(seq, '/command', { command_id: 'C', operation: 'cancel_order', symbol: 'A', order_id: 'O', phase: seq % 2 ? 'request' : 'error' }, seq)
+      if (seq % 61 === 0) return message(seq, '/trade', fill('T' + seq % 7, 2, { order_id: 'O', related_capture_seq: seq - 1 }), seq)
+      if (seq % 61 === 60) return message(seq, '/trade', { symbol: 'A', price: 99, quantity: 2, order_id: 'O' }, seq)
+      if (seq % 47 === 0) return message(seq, '/order', order('O', { filled_quantity: seq % 5 }), seq)
+      if (seq % 31 === 0) return message(seq, '/account_observation', { scope: ['A'], positions: [{ symbol: 'A', position_side: 'NET', quantity: seq }] }, seq)
+      return message(seq, '/quote/A', { get symbol() { reads++; return 'A' }, bids: [], asks: [] }, seq)
+    })
+    const window = windowOf(events), project = createReplayProjector(window)
+    const first = project({ time_us: 1750 }), saved = JSON.stringify(first)
+    reads = 0
+    project({ time_us: 1749 })
+    expect(reads).toBeLessThan(256)
+    for (const time_us of [1500, 300, 1300, 1799, 1000, 500, 0, 1750, 280, 1748]) {
+      const cursor = { time_us }
+      expect(project(cursor)).toEqual(projectReplay(window, cursor))
+      expect(JSON.stringify(first)).toBe(saved)
+    }
+  })
+
+  test('检查点跨同微秒及重复观察仍精确定位，失败后丢弃缓存可重新恢复', () => {
+    const messages = Array.from({ length: 800 }, (_, index) => message(index + 1, '/quote/A', { symbol: 'A', bids: [], asks: [] }, 100))
+    messages.splice(256, 0, messages[255])
+    const window = windowOf(messages), project = createReplayProjector(window)
+    project({ time_us: 100 })
+    for (const capture_seq of [800, 256, 255, 512, 511, 1, 799, 257]) {
+      const cursor = { time_us: 100, capture_seq }
+      expect(project(cursor)).toEqual(projectReplay(window, cursor))
+    }
+    messages.push(message(801, '/quote/A', {}, 99))
+    expect(() => project({ time_us: 200 })).toThrow('当前录制段的观察时间回退')
+    messages.pop()
+    expect(project({ time_us: 100 })).toEqual(projectReplay(window, { time_us: 100 }))
+  })
+
+  test('纯盘口批次保留成交、命令与计量对象，不重复复制或排序', () => {
+    const window = windowOf([message(1, '/trade', fill('T', 1)), message(2, '/quote/A', { symbol: 'A', bids: [], asks: [] })])
+    const project = createReplayProjector(window), first = project({ time_us: 100 }), next = project({ time_us: 200 })
+    for (const key of ['ownTrades', 'marketTrades', 'commands', 'orderHistory', 'executionTotals', 'derivedPositions'] as const) expect(next[key]).toBe(first[key])
+    expect(first.quoteHistory).toHaveLength(0)
+    expect(next.quoteHistory).toHaveLength(1)
+  })
   test('前进只解析新增观察，无事件帧不重建历史；后退与完整重建一致', () => {
     let reads = 0
     const data = { get symbol() { reads++; return 'A' }, book_valid: true, available: true, valid_until_us: 1000, bids: [{ price: 98, quantity: 2 }], asks: [] }

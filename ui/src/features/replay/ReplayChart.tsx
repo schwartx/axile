@@ -5,7 +5,8 @@ import { Tooltip } from '@/components/ui/Tooltip'
 import { canvasLine, prepareCanvas, readCanvasTheme, type CanvasTheme } from '@/components/viz/chartCanvas'
 import { centerReplayPrice, currentReplayQuote, replayChartLayout, replayHeatCells, replayMarketPriceSegments, replayOnBookOrder, replayPriceTicks, replayPriceY, replayQuoteEnd, replayRemainingQuantity, replayTimeX, replayXTime, replayYPrice, zoomReplayPrice, type ReplayChartLayout, type ReplayPriceView } from '@/features/replay/chartGeometry'
 import { clampReplayView, replayOrderFocus, replayOrderTimeline, replayTradeKey, replayVisibleOrderMarks, replayVisibleOrders, zoomReplayPriceAt, zoomReplayTime } from '@/features/replay/chartInteraction'
-import { replayBubbleRadius, replayMarketBubbles } from '@/features/replay/marketBubbles'
+import { replayBubbleRadius, replayMarketBubbleGroups, replayMarketBubblesAt } from '@/features/replay/marketBubbles'
+import { replaySeekScheduler, replayTimeUpperBound } from '@/features/replay/chartLookup'
 import { recordedDepth, replayBestLevel, replayObservedPriceView } from '@/features/replay/depthGeometry'
 import { inspectReplayOrder, inspectReplayTrade, nearestReplayInspection, replayFutureRecord, type InspectionRecord } from '@/features/replay/inspection'
 import { ReplayInspector } from '@/features/replay/ReplayInspector'
@@ -77,8 +78,11 @@ function drawOrderHistory(ctx: CanvasRenderingContext2D, timeline: ReturnType<ty
 
 /** 同一画布中的历史深度、COB 与 ORD 只共享一份价位映射。 */
 export function ReplayChart({ window: replayWindow, range, projection, symbol, executionId, selectedOrder, onSelectOrder, onSeek, selectedTrade, onSelectTrade, onInspect, playControls, firstQuoteControl, symbolControl, children, scene = projection, slices, initialTimeUs = range.start_us }: Props) {
-  const holder = useRef<HTMLDivElement>(null), canvas = useRef<HTMLCanvasElement>(null)
+  const holder = useRef<HTMLDivElement>(null), canvas = useRef<HTMLCanvasElement>(null), hoverCanvas = useRef<HTMLCanvasElement>(null)
   const historyLayers = useRef<HTMLCanvasElement[]>([]), orderLayers = useRef<HTMLCanvasElement[]>([])
+  const seekCallback = useRef(onSeek), sliderDragging = useRef(false)
+  useLayoutEffect(() => { seekCallback.current = onSeek }, [onSeek])
+  const seekScheduler = useMemo(() => replaySeekScheduler(time => seekCallback.current(time), callback => window.requestAnimationFrame(callback), frame => window.cancelAnimationFrame(frame)), [])
   const [size, setSize] = useState({ width: 900, height: 300, revision: 0 })
   const [manualView, setManualView] = useState<ReplayPriceView | null>(null)
   const [timeView, setTimeView] = useState<ReplayRange | null>(null)
@@ -91,6 +95,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   const [hover, setHover] = useState<(InspectionRecord & { cursor: string; x: number; y: number; records: InspectionRecord[];  }) | null>(null)
   const [inspection, setInspection] = useState<{ record: InspectionRecord; records: InspectionRecord[]; x: number; y: number } | null>(null)
   const gesture = useRef<{ id: number; x: number; y: number; view: ReplayPriceView; range: ReplayRange; mode: 'chart' | 'price' | 'time' | 'seek'; moved: boolean } | null>(null)
+  useLayoutEffect(() => () => { seekScheduler.cancel(); sliderDragging.current = false; gesture.current = null }, [seekScheduler, replayWindow.recording_id, replayWindow.window_id, symbol, range.start_us, range.end_us])
   const instrument = replayInstrument(replayWindow.context, symbol)
   const orders = useMemo(() => Object.values(projection.orders).filter(order => order.symbol === symbol), [projection.orders, symbol])
   const selected = Object.values(scene.orders).find(order => order.key === selectedOrder)
@@ -126,11 +131,12 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   const priceLabelTop = (y: number) => Math.max(layout.top, Math.min(layout.bottom - 16, y - 8))
   const hoverPriceTop = activeHover ? priceLabelTop(activeHover.y) : null
   const priceLabelStyle = { left: layout.right + 2, width: priceAxisWidth - 4 }
-  const marketBubbles = useMemo(() => {
+  const marketBubbleGroups = useMemo(() => {
     if (!layers.market) return []
-    return slices ? slices.flatMap(slice => slice.window.context.streams?.[symbol]?.market_trade?.availability === 'unavailable' ? [] : replayMarketBubbles(slice.scene.marketTrades, symbol, visibleRange, layout, projection, slice.window.gaps))
-      : replayWindow.context.streams?.[symbol]?.market_trade?.availability === 'unavailable' ? [] : replayMarketBubbles(recorded.marketTrades, symbol, visibleRange, layout, projection, replayWindow.gaps)
-  }, [layers.market, slices, replayWindow, recorded.marketTrades, symbol, visibleRange, layout, projection])
+    return slices ? slices.map(slice => slice.window.context.streams?.[symbol]?.market_trade?.availability === 'unavailable' ? [] : replayMarketBubbleGroups(slice.scene.marketTrades, symbol, visibleRange, layout, slice.window.gaps))
+      : [replayWindow.context.streams?.[symbol]?.market_trade?.availability === 'unavailable' ? [] : replayMarketBubbleGroups(recorded.marketTrades, symbol, visibleRange, layout, replayWindow.gaps)]
+  }, [layers.market, slices, replayWindow, recorded.marketTrades, symbol, visibleRange, layout])
+  const marketBubbles = useMemo(() => marketBubbleGroups.flatMap(groups => replayMarketBubblesAt(groups, { time_us: projection.time_us, capture_seq: projection.capture_seq })), [marketBubbleGroups, projection.time_us, projection.capture_seq])
   const bubbles = useMemo(() => marketBubbles.filter(bubble => !view || bubble.price >= view.min && bubble.price <= view.max), [marketBubbles, view])
   const maxBubble = bubbles.reduce((max, bubble) => Math.max(max, bubble.quantity), 1)
   const ownOrders = useMemo(() => orders.filter(replayOnBookOrder), [orders])
@@ -316,21 +322,17 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
         ctx.fillStyle = ctx.strokeStyle = replayFutureRecord(bubble.time_us, bubble.trades[0].capture_seq, projection) ? theme.ink : bubble.direction === 'BUY' ? up : bubble.direction === 'SELL' ? down : theme.ink
         ctx.save(); ctx.shadowColor = theme.bg; ctx.shadowBlur = 3; ctx.shadowOffsetY = 2; ctx.globalAlpha = .85; ctx.beginPath()
         ctx.arc(replayTimeX(bubble.time_us, visibleRange, layout), replayPriceY(bubble.price, view, layout), replayBubbleRadius(bubble.quantity, maxBubble), 0, Math.PI * 2)
-        const stable = bubble.trades.every(trade => trade.identity_quality === 'stable' && !trade.conflict)
-        if (stable) ctx.fill()
+        if (bubble.stable) ctx.fill()
         ctx.shadowBlur = 0; ctx.globalAlpha = 1
-        const hovered = hoveredObject === `bubble:${bubble.trades[0].recording_id ? `${bubble.trades[0].recording_id}:` : ''}${bubble.trades[0].capture_seq}:${bubble.price}:${bubble.direction}`
-        if (hovered) ctx.strokeStyle = replayFutureRecord(bubble.time_us, bubble.trades[0].capture_seq, projection) ? theme.ink : paint.accent
-        else if (stable) ctx.strokeStyle = theme.surface
-        ctx.lineWidth = hovered ? 2 : 1.5; ctx.stroke(); ctx.restore()
+        if (bubble.stable) ctx.strokeStyle = theme.surface
+        ctx.lineWidth = 1.5; ctx.stroke(); ctx.restore()
       }
       ctx.globalAlpha = 1
       const orders = orderLayers.current[Number(future)]
       if (orders) ctx.drawImage(orders, 0, 0, size.width, height)
       // 时间裁剪无法区分同刻采集序号，只补画尚未到达的委托及命中标记。
-      const sameTime = projection.capture_seq == null ? undefined : orderHighlights.byTime.get(projection.time_us), hovered = hoveredObject && orderHighlights.byObject.get(hoveredObject)
+      const sameTime = projection.capture_seq == null ? undefined : orderHighlights.byTime.get(projection.time_us)
       if (!future && sameTime) drawOrderHistory(ctx, { segments: sameTime.segments.filter(segment => segment.order.capture_seq > projection.capture_seq!), marks: sameTime.marks.filter(mark => mark.order.capture_seq > projection.capture_seq!) }, visibleRange, view, layout, selectedOrder, executionId, paint, theme.ink, projection)
-      if (hovered) drawOrderHistory(ctx, hovered, visibleRange, view, layout, selectedOrder, executionId, paint, future ? theme.ink : css.getPropertyValue('--color-chart-2').trim(), projection, hoveredObject)
       ctx.restore()
     }
     if (selectedExecution) {
@@ -343,7 +345,29 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       canvasLine(ctx, layout.left, y, layout.right + 3, y, theme.line)
     }
     canvasLine(ctx, layout.right, layout.top, layout.right, layout.bottom, theme.line)
-  }, [axisPriceText, axisInteracting, instrument.price_decimals, instrument.price_tick, priceTick, priceAxisWidth, timeCharacterWidth, priceTicks, orderPrices, size, height, projection, replayWindow, visibleRange, symbol, executionId, selectedOrder, selectedExecution, view, layout, historyQuotes, timeline, orderHighlights, marketSegments, priceText, quantityText, heat, maxHeat, historyView, recorded, drawThrough, cursorX, bubbles, maxBubble, hoveredObject])
+  }, [axisPriceText, axisInteracting, instrument.price_decimals, instrument.price_tick, priceTick, priceAxisWidth, timeCharacterWidth, priceTicks, orderPrices, size, height, projection, replayWindow, visibleRange, symbol, executionId, selectedOrder, selectedExecution, view, layout, historyQuotes, timeline, orderHighlights, marketSegments, priceText, quantityText, heat, maxHeat, historyView, recorded, drawThrough, cursorX, bubbles, maxBubble])
+
+  useLayoutEffect(() => {
+    if (!hoverCanvas.current || !holder.current) return
+    const ctx = prepareCanvas(hoverCanvas.current, size.width, height)
+    if (!ctx || !view || !hoveredObject) return
+    const theme = readCanvasTheme(holder.current), css = getComputedStyle(holder.current)
+    const splitX = Math.max(layout.left, Math.min(layout.right, cursorX))
+    ctx.font = `12px ${theme.font}`
+    for (const future of [false, true]) {
+      ctx.save(); ctx.beginPath(); ctx.rect(future ? splitX : layout.left, layout.top, future ? layout.right - splitX : splitX - layout.left, layout.bottom - layout.top); ctx.clip()
+      for (const bubble of bubbles) {
+        if (hoveredObject !== `bubble:${bubble.trades[0].recording_id ? `${bubble.trades[0].recording_id}:` : ''}${bubble.trades[0].capture_seq}:${bubble.price}:${bubble.direction}`) continue
+        ctx.strokeStyle = future || replayFutureRecord(bubble.time_us, bubble.trades[0].capture_seq, projection) ? theme.ink : theme.accent
+        ctx.lineWidth = 2; ctx.beginPath()
+        ctx.arc(replayTimeX(bubble.time_us, visibleRange, layout), replayPriceY(bubble.price, view, layout), replayBubbleRadius(bubble.quantity, maxBubble), 0, Math.PI * 2); ctx.stroke()
+      }
+      const hovered = orderHighlights.byObject.get(hoveredObject)
+      if (hovered) drawOrderHistory(ctx, hovered, visibleRange, view, layout, selectedOrder, executionId,
+        future ? { ...theme, accent: theme.ink, warn: theme.ink } : theme, future ? theme.ink : css.getPropertyValue('--color-chart-2').trim(), projection, hoveredObject)
+      ctx.restore()
+    }
+  }, [size, height, view, hoveredObject, layout, cursorX, bubbles, maxBubble, projection, visibleRange, orderHighlights, selectedOrder, executionId])
 
   const resetView = () => { setManualView(null); setTimeView(null); setHover(null) }
   const zoom = (factor: number) => {
@@ -389,7 +413,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       records = ownOrders.filter(order => order.price != null && Math.abs(replayPriceY(order.price, view, layout) - y) <= 10).map(order => inspectReplayOrder(order, format, x, replayPriceY(order.price!, view, layout)))
       candidates = records
     }
-    const quote = x > layout.right ? currentQuote : currentReplayQuote(historyQuotes.findLast(item => item.time_us <= time), time, replayWindow.gaps)
+    const quote = x > layout.right ? currentQuote : currentReplayQuote(historyQuotes[replayTimeUpperBound(historyQuotes, time) - 1], time, replayWindow.gaps)
     const level = quote && recordedDepth(quote).find(item => Math.abs(replayPriceY(item.price, view, layout) - y) <= Math.max(3, (layout.bottom - layout.top) * view.tick / (view.max - view.min) / 2))
     const fallback: InspectionRecord = { id: level ? 'depth' : 'pointer', object: 'depth', kind: 'depth', title: level ? `${x > layout.right ? '游标盘口' : '历史盘口'} · ${level.side}${level.rank ?? '·0'}` : '指针价格',
       headline: priceText(level?.price ?? Math.round(price / (instrument.price_tick ?? 10 ** -decimals)) * (instrument.price_tick ?? 10 ** -decimals)), status: level ? `挂量 ${quantityText(level.quantity)} ${format.unit}` : '挂量未知／未覆盖', label: '盘口观察', raw: '仅表示该时刻已录到的档位；档位不代表排队顺序。',
@@ -404,7 +428,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
     return next
   }
   const pointerPosition = (event: PointerEvent<HTMLCanvasElement>) => { const bounds = event.currentTarget.getBoundingClientRect(); return { x: event.clientX - bounds.left, y: event.clientY - bounds.top } }
-  const endGesture = () => { gesture.current = null; if (wheelTimer.current == null) { setAxisInteracting(false); setPricePreview(null) } }
+  const endGesture = () => { seekScheduler.flush(); gesture.current = null; if (wheelTimer.current == null) { setAxisInteracting(false); setPricePreview(null) } }
   const pointerMove = (event: PointerEvent<HTMLCanvasElement>) => {
     const { x, y } = pointerPosition(event), drag = gesture.current
     event.currentTarget.style.cursor = view && y >= layout.top && x > layout.right && x <= layout.priceX + 8 ? 'ns-resize' : 'crosshair'
@@ -412,7 +436,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
     const dx = x - drag.x, dy = y - drag.y
     if (!drag.moved && Math.hypot(dx, dy) < 3) return
     drag.moved = true; setHover(null); setInspection(null)
-    if (drag.mode === 'seek') { onSeek(replayXTime(x, drag.range, layout)); return }
+    if (drag.mode === 'seek') { seekScheduler.schedule(replayXTime(x, drag.range, layout)); return }
     if (drag.mode === 'price') setManualView(zoomReplayPriceAt(drag.view, Math.exp(dy / 160), replayYPrice(drag.y, drag.view, layout)))
     else if (drag.mode === 'time') setTimeView(zoomReplayTime(drag.range, Math.exp(dx / 200), replayXTime(drag.x, drag.range, layout), range))
     else {
@@ -475,7 +499,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
         aria-label="历史盘口热力图与共享价格轴；拖动浏览，滚轮缩放，方向键平移，正负键缩放，Home 复位" role="group"
         onPointerDown={event => { if (!view || event.button !== 0) return; const { x, y } = pointerPosition(event); if (y < layout.top) return; if (x < layout.left || x > layout.priceX + 8) return; event.currentTarget.focus(); event.currentTarget.setPointerCapture(event.pointerId); setAxisInteracting(true); if (x > layout.right) setPricePreview(view); gesture.current = { id: event.pointerId, x, y, view, range: visibleRange, mode: x > layout.right ? 'price' : cursorInside && Math.abs(x - replayTimeX(projection.time_us, visibleRange, layout)) <= 8 ? 'seek' : y > layout.bottom ? 'time' : 'chart', moved: false } }}
         onPointerMove={pointerMove} onPointerLeave={() => { if (!gesture.current) setHover(null) }}
-        onPointerUp={event => { const drag = gesture.current; endGesture(); if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); if (drag && !drag.moved) { const { x, y } = pointerPosition(event); if (x >= layout.left && x <= layout.right) inspectAt(x, y, true) } }}
+        onPointerUp={event => { const drag = gesture.current; if (drag?.mode === 'seek' && drag.moved) seekScheduler.schedule(replayXTime(pointerPosition(event).x, drag.range, layout)); endGesture(); if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); if (drag && !drag.moved) { const { x, y } = pointerPosition(event); if (x >= layout.left && x <= layout.right) inspectAt(x, y, true) } }}
         onPointerCancel={() => { endGesture(); setHover(null) }} onLostPointerCapture={endGesture}
         onKeyDown={event => {
           if (event.key.startsWith('Arrow')) { event.preventDefault(); pan(event.key === 'ArrowLeft' ? -0.15 : event.key === 'ArrowRight' ? 0.15 : 0, event.key === 'ArrowUp' ? 0.15 : event.key === 'ArrowDown' ? -0.15 : 0) }
@@ -485,6 +509,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
           else if (event.key === 'Enter' && view) { event.preventDefault(); inspectAt(replayTimeX(projection.time_us, visibleRange, layout), replayPriceY(selected?.price ?? (view.min + view.max) / 2, view, layout), true) }
           else if (event.key === 'Escape') { setHover(null); setInspection(null) }
         }} />
+      <canvas ref={hoverCanvas} aria-hidden="true" className="pointer-events-none absolute left-0 top-0 w-full" style={{ height }} />
       {view && priceTicks.map(price => {
         if (orderPrices.includes(price)) return null
         const top = priceLabelTop(replayPriceY(price, view, layout))
@@ -500,9 +525,14 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       </div>
       {cursorInside && <div className="replay-cursor-line" aria-hidden="true" style={{ left: cursorX, top: layout.top, height: axisY - layout.top }} />}
       <time className="replay-cursor-time num" data-outside={!cursorInside || undefined} aria-label={`当前回放时间 ${replayTime(projection.time_us)}${cursorInside ? '' : '，游标在当前视野之外'}`} style={{ left: cursorLeft, width: cursorWidth, top: axisY + 8 }}>{!cursorInside && projection.time_us < visibleRange.start_us ? '← ' : ''}{replayTime(projection.time_us)}{!cursorInside && projection.time_us >= visibleRange.end_us ? ' →' : ''}</time>
-      <div className="replay-chart-axis" data-outside={!cursorInside || undefined} style={{ left: layout.left - 12, width: (layout.right - layout.left) * Math.max(0, visibleRange.end_us - visibleRange.start_us - 1) / (visibleRange.end_us - visibleRange.start_us) + 24, top: axisY - 22 }}>
+      <div className="replay-chart-axis" data-outside={!cursorInside || undefined}
+        onPointerDownCapture={event => { if (event.isPrimary && event.button === 0) sliderDragging.current = true }}
+        onPointerUp={() => { seekScheduler.flush(); sliderDragging.current = false }}
+        onPointerCancel={() => { seekScheduler.flush(); sliderDragging.current = false }}
+        onLostPointerCapture={() => { seekScheduler.flush(); sliderDragging.current = false }} style={{ left: layout.left - 12, width: (layout.right - layout.left) * Math.max(0, visibleRange.end_us - visibleRange.start_us - 1) / (visibleRange.end_us - visibleRange.start_us) + 24, top: axisY - 22 }}>
         <ValueSlider variant="axis" label="录制定位" min={0} max={visibleRange.end_us - visibleRange.start_us - 1} step={1} value={projection.time_us - visibleRange.start_us} disabled={visibleRange.end_us - visibleRange.start_us <= 1}
-          formatValue={offset => cursorInside ? replayTime(visibleRange.start_us + offset) : `游标在当前视野之外，${replayTime(projection.time_us)}`} onChange={offset => { setHover(null); setInspection(null); onSeek(Math.min(visibleRange.end_us - 1, visibleRange.start_us + offset)) }} />
+          formatValue={offset => cursorInside ? replayTime(visibleRange.start_us + offset) : `游标在当前视野之外，${replayTime(projection.time_us)}`} onChange={offset => { setHover(null); setInspection(null); const time = Math.min(visibleRange.end_us - 1, visibleRange.start_us + offset); if (sliderDragging.current) seekScheduler.schedule(time); else onSeek(time) }}
+          onChangeEnd={() => { seekScheduler.flush(); sliderDragging.current = false }} />
       </div>
       {view && layout.columns && <ReplayDepthLadder quote={displayQuote} future={futureDepth} orders={depthOrders} view={view} layout={layout} height={height} executionId={executionId} selected={selectedOrder} onSelect={key => { onInspect(); onSelectOrder(key) }} priceText={priceText} quantityText={quantityText} hoverPrice={hoverPrice ?? undefined} />}
       {inspection && <div className="replay-inspection-float" aria-label="图中记录浮卡" style={{
