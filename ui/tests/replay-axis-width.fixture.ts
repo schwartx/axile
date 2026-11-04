@@ -34,11 +34,11 @@ mock.module('react/jsx-dev-runtime', () => ({ jsxDEV: jsx, Fragment: 'fragment' 
 mock.module('lucide-react', () => Object.fromEntries(['ArrowLeft', 'ArrowRight', 'Check', 'Circle', 'Crosshair', 'Info', 'Minus', 'RotateCcw', 'X'].map(name => [name, () => null])))
 for (const name of ['Tooltip', 'ValueSlider', 'Segmented', 'Select']) mock.module(ui + `components/ui/${name}.tsx`, () => ({ [name]: () => null }))
 mock.module(ui + 'features/replay/ReplayDepthLadder.tsx', () => ({ ReplayDepthLadder: () => null }))
-const offscreen: any[] = [], composites: any[] = [], blits: any[] = [], rects: any[] = [], arcs: any[] = [], strokes: any[] = []
+const offscreen: any[] = [], composites: any[] = [], blits: any[] = [], rects: any[] = [], arcs: any[] = [], fills: any[] = [], strokes: any[] = []
 let historyPaints = 0, orderPaints = 0
 const context = new Proxy({ measureText: (text: string) => ({ width: [...text].reduce((sum, char) => sum + (char === '1' ? 5 : 7), 0) }),
   drawImage: (layer: any, ...bounds: number[]) => { composites.push(layer); blits.push(bounds) }, rect: (...args: any[]) => rects.push(args),
-  arc: (...args: any[]) => arcs.push(args), stroke: () => strokes.push(context.strokeStyle) } as any, { get: (object, key) => object[key] ?? (() => {}) })
+  arc: (...args: any[]) => arcs.push(args), fill: () => fills.push(context.fillStyle), stroke: () => strokes.push(context.strokeStyle) } as any, { get: (object, key) => object[key] ?? (() => {}) })
 mock.module(ui + 'components/viz/chartCanvas.ts', () => ({ prepareCanvas: (canvas: any) => canvas === target ? context : new Proxy({
   fillRect: () => historyPaints++, stroke: () => orderPaints++,
 } as any, { get: (object, key) => object[key] ?? (() => {}) }), canvasLine() {}, readCanvasTheme: () => ({ font: 'sans-serif', ink: 'gray' }) }))
@@ -189,4 +189,22 @@ assert.equal(savedWidths.get('axon.replay.depthWidth'), '450', '保存盘口宽�
 assert.equal(widthHandle().valueAt(0), widthHandle().max, '拖动超过边界时夹紧')
 widthHandle().onReset(); draw()
 assert.equal(axisLeft(), originalAxis, '双击恢复默认盘口宽度')
+props.window = data
+props.scene = { ...projectReplay(data, { time_us: 99 }), marketTrades: Array.from({ length: 80 }, (_, i) => ({
+  key: String(i), symbol: 'X', price: 99.25, quantity: i % 3 + 1, time_us: i, capture_seq: i + 10,
+  direction: i % 2 ? 'BUY' : 'SELL', identity_quality: 'stable', attributes: {},
+})) }
+props.projection = projectReplay(data, { time_us: 10 }); props.selectedOrder = null
+reset()
+const seekLayers = offscreen.length, seekHeatPaints = historyPaints
+for (const time of [20, 40, 60, 30, 10]) {
+  props.projection = projectReplay(data, { time_us: time }); draw()
+  assert.equal(offscreen.length, seekLayers, '时间轴正反向拖动均复用完整历史、成交和委托图层')
+  assert.equal(historyPaints, seekHeatPaints, '时间轴拖动不重新绘制热力图')
+}
+props.scene = { ...props.scene, marketTrades: props.scene.marketTrades.map((trade: any, i: number) => ({ ...trade, time_us: 50, quantity: 1, direction: 'BUY', capture_seq: i + 10 })) }
+props.projection = { ...projectReplay(data, { time_us: 50 }), capture_seq: 29 }
+arcs.length = 0; fills.length = 0; draw()
+assert.ok(arcs.some(arc => Math.abs(arc[2] - 14 * Math.sqrt(20 / 60)) < 1e-8), '同微秒游标按采集序号保留20笔已到达成交的真实面积')
+assert.ok(fills.includes('gray') && fills.includes('monospace'), '边界拆分气泡仍区分已到达与未到达颜色')
 console.log('ok')

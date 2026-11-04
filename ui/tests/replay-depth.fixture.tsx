@@ -6,7 +6,7 @@ import { ValueSlider } from '@/components/ui/ValueSlider'
 import { ReplayChart } from '@/features/replay/ReplayChart'
 import { recordedDepth } from '@/features/replay/depthGeometry'
 import { currentReplayQuote } from '@/features/replay/chartGeometry'
-import { projectReplay } from '@/features/replay/model'
+import { replayExecutionAt, replayExecutionScene } from '@/features/replay/executionScene'
 import type { ReplayData, ReplayWindow } from '@/features/replay/types'
 import '@/styles/theme.css'
 import '@/features/replay/replay.css'
@@ -54,8 +54,9 @@ export function Acceptance() {
   const [tab, setTab] = useState<ReplayDetailTab>('orders')
   const [scenario, setScenario] = useState('two'), [cursor, setCursor] = useState(800_000)
   const replayWindow = useMemo(() => fixture(scenario), [scenario])
-  const projection = useMemo(() => projectReplay(replayWindow, { time_us: cursor }), [replayWindow, cursor])
-  const scene = useMemo(() => projectReplay(replayWindow, { time_us: range.end_us - 1 }), [replayWindow])
+  const overview = useMemo(() => replayExecutionScene([{ range, window: replayWindow }], range, [])!, [replayWindow])
+  const projection = useMemo(() => replayExecutionAt(overview, { time_us: cursor }, 'SYNTHETIC'), [overview, cursor])
+  const scene = overview.scene
   const quote = currentReplayQuote(projection.quotes.SYNTHETIC, cursor, replayWindow.gaps)
   return <main className="replay-workbench" style={{ height: '100dvh' }}>
     <header className="replay-desk-header"><h1 className="text-lg font-semibold text-ink-1">动态盘口 · 合成验收数据</h1>
@@ -64,7 +65,7 @@ export function Acceptance() {
     </header>
     <OrdersAndTrades projection={projection} scene={scene} context={replayWindow.context} symbol="SYNTHETIC" selected={selected} selectedTradeKey={selectedTrade}
       onSelect={setSelected} onSelectTrade={setSelectedTrade} executionId="synthetic" tab={tab} onTabChange={setTab} onSeek={setCursor} coverage={[range]}>
-    <div className="replay-main-chart"><ReplayChart window={replayWindow} range={range} projection={projection} scene={scene} symbol="SYNTHETIC" executionId="synthetic" selectedOrder={selected} selectedTrade={selectedTrade}
+    <div className="replay-main-chart"><ReplayChart window={replayWindow} range={range} projection={projection} scene={scene} slices={overview.slices} symbol="SYNTHETIC" executionId="synthetic" selectedOrder={selected} selectedTrade={selectedTrade}
       onSelectOrder={setSelected} onSelectTrade={setSelectedTrade} onInspect={() => {}} onSeek={setCursor} firstQuoteControl={<button type="button" className="replay-first-quote cursor-pointer rounded-chip text-ink-2 hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent" onClick={() => setCursor(100_000)}>跳到首个盘口</button>} symbolControl={<strong className="text-sm">SYNTHETIC</strong>} /></div>
     </OrdersAndTrades>
     {scenario === 'motion' && <div className="flex gap-4">{[100_000, 400_000, 700_000].map((time, index) => <button key={time} type="button" onClick={() => setCursor(time)}>行情帧 {index + 1}</button>)}</div>}

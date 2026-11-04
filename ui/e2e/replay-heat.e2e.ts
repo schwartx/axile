@@ -1,4 +1,48 @@
 import { expect, test } from '@playwright/test'
+test('large-canvas timeline drag reuses history while seeking in both directions', async ({ browser }, testInfo) => {
+  const context = await browser.newContext({ viewport: { width: 2000, height: 1200 }, deviceScaleFactor: 2 })
+  const page = await context.newPage()
+  try {
+    await page.goto('/tests/replay-depth.fixture.html')
+    await page.getByRole('button', { name: '验收场景' }).click()
+    await page.getByRole('option', { name: '大数据拖动 · 一万盘口与五千成交' }).click()
+    await expect(page.locator('.replay-heat-scale')).toContainText('挂量峰值')
+    for (const [name, dx, dy] of [['录制定位', 800, 0]] as const) {
+      const bounds = (await page.getByRole('slider', { name }).boundingBox())!
+      const x = bounds.x + 80, y = bounds.y + bounds.height / 2
+      await page.mouse.move(x, y)
+      await page.evaluate(() => {
+        const state = window as Window & { resizeStats?: { frames: number[]; active: boolean; canvases: number } }
+        const stats = state.resizeStats = { frames: [], active: true, canvases: 0 }
+        const original = document.createElement.bind(document)
+        document.createElement = ((...args: Parameters<typeof document.createElement>) => {
+          if (args[0] === 'canvas' && stats.active) stats.canvases++
+          return original(...args)
+        }) as typeof document.createElement
+        let previous = performance.now()
+        const sample = (now: number) => { if (!stats.active) return; stats.frames.push(now - previous); previous = now; requestAnimationFrame(sample) }
+        requestAnimationFrame(sample)
+      })
+      await page.mouse.down()
+      await page.mouse.move(x + dx, y + dy, { steps: 20 })
+      await page.mouse.move(x + dx / 4, y, { steps: 20 })
+      const stats = await page.evaluate(() => {
+        const stats = (window as Window & { resizeStats: { frames: number[]; active: boolean; canvases: number } }).resizeStats
+        stats.active = false
+        return { frames: stats.frames.sort((a, b) => a - b), canvases: stats.canvases }
+      })
+      await page.mouse.up()
+      await expect(page.locator('.replay-heat-scale')).toContainText('挂量峰值')
+      console.log(JSON.stringify({ interaction: name, frames: stats.frames.length, p95FrameMs: stats.frames[Math.floor(stats.frames.length * .95)], newHistoryCanvases: stats.canvases }))
+      expect(stats.frames.length).toBeGreaterThan(3)
+      expect(stats.canvases).toBe(0)
+      const value = Number(await page.getByRole('slider', { name }).getAttribute('aria-valuenow'))
+      expect(value).toBeGreaterThan(0)
+      expect(value).toBeLessThan(500_000)
+      await page.screenshot({ path: testInfo.outputPath('timeline-after-seek.png') })
+    }
+  } finally { await context.close() }
+})
 test('real Worker and WASM settle after chart drag, wheel and data replacement', async ({ page }) => {
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))

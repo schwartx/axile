@@ -6,7 +6,7 @@ import { Tooltip } from '@/components/ui/Tooltip'
 import { canvasLine, prepareCanvas, readCanvasTheme, type CanvasTheme } from '@/components/viz/chartCanvas'
 import { centerReplayPrice, currentReplayQuote, replayChartLayout, replayMarketPriceSegments, replayOnBookOrder, replayPriceTicks, replayPriceY, replayQuoteEnd, replayRemainingQuantity, replayTimeX, replayXTime, replayYPrice, zoomReplayPrice, type ReplayChartLayout, type ReplayPriceView } from '@/features/replay/chartGeometry'
 import { clampReplayView, replayOrderFocus, replayOrderTimeline, replayTradeKey, replayVisibleOrderMarks, replayVisibleOrders, zoomReplayPriceAt, zoomReplayTime } from '@/features/replay/chartInteraction'
-import { replayBubbleRadius, replayMarketBubbleGroups, replayMarketBubblesAt } from '@/features/replay/marketBubbles'
+import { replayBubbleRadius, replayMarketBubbleGroups, replayMarketBubblesAt, type ReplayMarketBubble } from '@/features/replay/marketBubbles'
 import { useReplayHeat } from '@/features/replay/useReplayHeat'
 import { replaySeekScheduler, replayTimeUpperBound } from '@/features/replay/chartLookup'
 import { recordedDepth, replayBestLevel, replayObservedPriceView } from '@/features/replay/depthGeometry'
@@ -81,10 +81,20 @@ function drawOrderHistory(ctx: CanvasRenderingContext2D, timeline: ReturnType<ty
   ctx.lineWidth = 1
 }
 
+function drawMarketBubble(ctx: CanvasRenderingContext2D, bubble: ReplayMarketBubble, x: number, y: number, maximum: number, color: string, theme: CanvasTheme) {
+  ctx.fillStyle = ctx.strokeStyle = color
+  ctx.save(); ctx.shadowColor = theme.bg; ctx.shadowBlur = 3; ctx.shadowOffsetY = 2; ctx.globalAlpha = .85; ctx.beginPath()
+  ctx.arc(x, y, replayBubbleRadius(bubble.quantity, maximum), 0, Math.PI * 2)
+  if (bubble.stable) ctx.fill()
+  ctx.shadowBlur = 0; ctx.globalAlpha = 1
+  if (bubble.stable) ctx.strokeStyle = theme.surface
+  ctx.lineWidth = 1.5; ctx.stroke(); ctx.restore()
+}
+
 /** 同一画布中的历史深度、COB 与 ORD 只共享一份价位映射。 */
 export function ReplayChart({ window: replayWindow, range, projection, symbol, executionId, selectedOrder, onSelectOrder, onSeek, selectedTrade, onSelectTrade, onInspect, playControls, fullscreenControl, firstQuoteControl, symbolControl, children, scene = projection, slices, initialTimeUs = range.start_us }: Props) {
   const holder = useRef<HTMLDivElement>(null), canvas = useRef<HTMLCanvasElement>(null), hoverCanvas = useRef<HTMLCanvasElement>(null)
-  const historyLayers = useRef<HTMLCanvasElement[]>([]), orderLayers = useRef<HTMLCanvasElement[]>([])
+  const historyLayers = useRef<HTMLCanvasElement[]>([]), bubbleLayers = useRef<HTMLCanvasElement[]>([]), orderLayers = useRef<HTMLCanvasElement[]>([])
   const seekCallback = useRef(onSeek), sliderDragging = useRef(false)
   useLayoutEffect(() => { seekCallback.current = onSeek }, [onSeek])
   const seekScheduler = useMemo(() => replaySeekScheduler(time => seekCallback.current(time), callback => window.requestAnimationFrame(callback), frame => window.cancelAnimationFrame(frame)), [])
@@ -164,7 +174,8 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   }, [layers.market, slices, replayWindow, recorded.marketTrades, symbol, historyRange, layout])
   const marketBubbles = useMemo(() => marketBubbleGroups.every(groups => groups.length === 0) ? emptyBubbles : marketBubbleGroups.flatMap(groups => replayMarketBubblesAt(groups, { time_us: projection.time_us, capture_seq: projection.capture_seq })), [marketBubbleGroups, projection.time_us, projection.capture_seq])
   const bubbles = useMemo(() => marketBubbles.filter(bubble => !historyView || bubble.price >= historyView.min && bubble.price <= historyView.max), [marketBubbles, historyView])
-  const bubbleCursor = bubbles.length ? projection : null
+  const cachedBubbles = useMemo(() => marketBubbleGroups.flatMap(groups => replayMarketBubblesAt(groups, { time_us: Infinity }))
+    .filter(bubble => !historyView || bubble.price >= historyView.min && bubble.price <= historyView.max), [marketBubbleGroups, historyView])
   const maxBubble = bubbles.reduce((max, bubble) => Math.max(max, bubble.quantity), 1)
   const ownOrders = useMemo(() => orders.filter(replayOnBookOrder), [orders])
   const depthOrders = useMemo(() => futureDepth ? [] : ownOrders, [futureDepth, ownOrders])
@@ -302,20 +313,24 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   }, [size, height, heatView, heat, maxHeat, layout, drawThrough, heatRange, replayWindow.gaps, symbol, historyQuotes, marketSegments])
 
   useLayoutEffect(() => {
+    if (!holder.current || !historyView || !cachedBubbles.length) { bubbleLayers.current = []; return }
+    const theme = readCanvasTheme(holder.current), css = getComputedStyle(holder.current)
+    bubbleLayers.current = [false, true].map(future => {
+      const layer = document.createElement('canvas'), ctx = prepareCanvas(layer, size.width, height)
+      if (ctx) for (const bubble of cachedBubbles) {
+        const color = future ? theme.ink : bubble.direction === 'BUY' ? css.getPropertyValue('--color-up').trim() : bubble.direction === 'SELL' ? css.getPropertyValue('--color-down').trim() : theme.ink
+        drawMarketBubble(ctx, bubble, replayTimeX(bubble.time_us, historyRange, layout), replayPriceY(bubble.price, historyView, layout), maxBubble, color, theme)
+      }
+      return layer
+    })
+  }, [size, height, historyView, historyRange, layout, cachedBubbles, maxBubble])
+
+  useLayoutEffect(() => {
     if (!holder.current || !historyView) { orderLayers.current = []; return }
     const theme = readCanvasTheme(holder.current), css = getComputedStyle(holder.current)
     orderLayers.current = [false, true].map(future => {
       const layer = document.createElement('canvas'), ctx = prepareCanvas(layer, size.width, height)
       if (ctx) {
-        for (const bubble of bubbles) {
-          ctx.fillStyle = ctx.strokeStyle = future || replayFutureRecord(bubble.time_us, bubble.trades[0].capture_seq, bubbleCursor!) ? theme.ink : bubble.direction === 'BUY' ? css.getPropertyValue('--color-up').trim() : bubble.direction === 'SELL' ? css.getPropertyValue('--color-down').trim() : theme.ink
-          ctx.save(); ctx.shadowColor = theme.bg; ctx.shadowBlur = 3; ctx.shadowOffsetY = 2; ctx.globalAlpha = .85; ctx.beginPath()
-          ctx.arc(replayTimeX(bubble.time_us, historyRange, layout), replayPriceY(bubble.price, historyView, layout), replayBubbleRadius(bubble.quantity, maxBubble), 0, Math.PI * 2)
-          if (bubble.stable) ctx.fill()
-          ctx.shadowBlur = 0; ctx.globalAlpha = 1
-          if (bubble.stable) ctx.strokeStyle = theme.surface
-          ctx.lineWidth = 1.5; ctx.stroke(); ctx.restore()
-        }
         ctx.globalAlpha = 1
         ctx.font = `12px ${theme.font}`
         drawOrderHistory(ctx, visibleTimeline, historyRange, historyView, layout, selectedOrder, executionId,
@@ -323,7 +338,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       }
       return layer
     })
-  }, [size, height, historyView, visibleTimeline, historyRange, layout, selectedOrder, executionId, bubbles, maxBubble, bubbleCursor])
+  }, [size, height, historyView, visibleTimeline, historyRange, layout, selectedOrder, executionId])
 
   useLayoutEffect(() => {
     if (!canvas.current || !holder.current) return
@@ -363,8 +378,30 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       if (orders && historyView) {
         const scale = (historyView.max - historyView.min) / (view.max - view.min)
         const timeScale = (historyRange.end_us - historyRange.start_us) / (visibleRange.end_us - visibleRange.start_us)
-        ctx.drawImage(orders, replayTimeX(historyRange.start_us, visibleRange, layout) - layout.left * timeScale,
-          replayPriceY(historyView.max, view, layout) - layout.top * scale, size.width * timeScale, height * scale)
+        const imageX = replayTimeX(historyRange.start_us, visibleRange, layout) - layout.left * timeScale
+        const imageY = replayPriceY(historyView.max, view, layout) - layout.top * scale
+        const cached = bubbleLayers.current[Number(future)]
+        if (cached) {
+          // 只有游标附近的成交分组需要按实际采集序号拆分，其余沿用整段图层。
+          // 完整分组最多为拆分后气泡的 sqrt(2) 倍，32px 连同阴影一并覆盖。
+          const margin = 32 * Math.max(1, timeScale)
+          const bandLeft = splitX - margin, bandRight = splitX + margin
+          ctx.save(); ctx.beginPath()
+          ctx.rect(layout.left, layout.top, Math.max(0, bandLeft - layout.left), layout.bottom - layout.top)
+          ctx.rect(Math.min(layout.right, bandRight), layout.top, Math.max(0, layout.right - bandRight), layout.bottom - layout.top)
+          ctx.clip(); ctx.drawImage(cached, imageX, imageY, size.width * timeScale, height * scale); ctx.restore()
+          ctx.save(); ctx.beginPath(); ctx.rect(bandLeft, layout.top, margin * 2, layout.bottom - layout.top); ctx.clip()
+          for (const bubble of bubbles) {
+            const x = replayTimeX(bubble.time_us, visibleRange, layout)
+            if (x < bandLeft - 22 * timeScale || x > bandRight + 22 * timeScale) continue
+            const color = future || replayFutureRecord(bubble.time_us, bubble.trades[0].capture_seq, projection) ? theme.ink : bubble.direction === 'BUY' ? css.getPropertyValue('--color-up').trim() : bubble.direction === 'SELL' ? css.getPropertyValue('--color-down').trim() : theme.ink
+            ctx.save(); ctx.translate(imageX, imageY); ctx.scale(timeScale, scale)
+            drawMarketBubble(ctx, bubble, replayTimeX(bubble.time_us, historyRange, layout), replayPriceY(bubble.price, historyView, layout), maxBubble, color, theme)
+            ctx.restore()
+          }
+          ctx.restore()
+        }
+        ctx.drawImage(orders, imageX, imageY, size.width * timeScale, height * scale)
       }
       // 时间裁剪无法区分同刻采集序号，只补画尚未到达的委托及命中标记。
       const sameTime = projection.capture_seq == null ? undefined : orderHighlights.byTime.get(projection.time_us)
