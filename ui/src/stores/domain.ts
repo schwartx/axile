@@ -29,11 +29,11 @@ interface DomainState {
   accountsError: Error | null
   /** 组合列表最近一次加载错误；保留旧数据，冷拉失败时供页面重试。 */
   portfoliosError: Error | null
-  refreshAccounts: () => Promise<void>
+  refreshAccounts: (options?: { ifIdle?: boolean }) => Promise<void>
   refreshPortfolios: () => Promise<void>
 }
 
-// 在途请求：新的刷新到来时中止旧的，最后一次成功者为准。
+// 显式刷新替换旧请求；轮询跳过在途请求，避免慢请求被不断取消、重发。
 let accountsCtrl: AbortController | null = null
 let portfoliosCtrl: AbortController | null = null
 
@@ -44,7 +44,8 @@ export const useDomainStore = create<DomainState>((set) => ({
   accountsError: null,
   portfoliosError: null,
 
-  refreshAccounts: async () => {
+  refreshAccounts: async (options) => {
+    if (options?.ifIdle && accountsCtrl !== null) return
     accountsCtrl?.abort()
     const ctrl = new AbortController()
     accountsCtrl = ctrl
@@ -57,6 +58,8 @@ export const useDomainStore = create<DomainState>((set) => ({
       if (ctrl.signal.aborted) return
       // 保留上次的 accounts（SWR 降级），只标记错误。
       set({ accountsError: e instanceof Error ? e : new Error(String(e)) })
+    } finally {
+      if (accountsCtrl === ctrl) accountsCtrl = null
     }
   },
 
@@ -94,7 +97,7 @@ export function useDomainSync(accountIntervalMs = 5000) {
   useEffect(() => {
     void refreshAccounts()
     void refreshPortfolios()
-    const t = setInterval(() => void refreshAccounts(), accountIntervalMs)
+    const t = setInterval(() => void refreshAccounts({ ifIdle: true }), accountIntervalMs)
     return () => clearInterval(t)
   }, [refreshAccounts, refreshPortfolios, accountIntervalMs])
 }

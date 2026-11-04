@@ -189,3 +189,127 @@ def test_latest_asset_query_batches_many_accounts_without_duplicates() -> None:
             assert len(statements) == 2
 
     asyncio.run(scenario())
+
+
+def test_recent_executions_do_not_scan_old_history() -> None:
+    from axile.server.db.models import ExecuteRecord
+    from axile.server.repositories import get_recent_execute_records_for_accounts
+
+    async def scenario():
+        async with _session_scope() as session:
+            first, second = _account("first"), _account("second")
+            session.add_all([first, second])
+            await session.flush()
+            session.add_all(
+                ExecuteRecord(account_id=account.id, is_success=1, raw_input={"payload": "x" * 8192})
+                for account in (first, second)
+                for _ in range(300)
+            )
+            await session.commit()
+            connection = await session.connection()
+            steps = 0
+
+            def progress():
+                nonlocal steps
+                steps += 100
+                return int(steps > 2000)
+
+            raw = await connection.get_raw_connection()
+            await raw.driver_connection.set_progress_handler(progress, 100)
+            try:
+                result = await get_recent_execute_records_for_accounts(session, [second.id, first.id, first.id], 1)
+            finally:
+                await raw.driver_connection.set_progress_handler(None, 0)
+            assert {key: [row.id for row in rows] for key, rows in result.items()} == {
+                first.id: [300],
+                second.id: [600],
+            }
+            assert steps <= 2000
+            assert await get_recent_execute_records_for_accounts(session, [first.id], -1) == {}
+
+    asyncio.run(scenario())
+
+
+def test_recent_execution_query_batches_many_accounts_without_duplicates() -> None:
+    from axile.server.db.models import ExecuteRecord
+    from axile.server.repositories import get_recent_execute_records_for_accounts
+
+    async def scenario():
+        async with _session_scope() as session:
+            accounts = [_account(f"account-{i}") for i in range(101)]
+            session.add_all(accounts)
+            await session.flush()
+            session.add_all(ExecuteRecord(account_id=account.id, is_success=1) for account in accounts)
+            await session.commit()
+            ids = [account.id for account in accounts]
+            result = await get_recent_execute_records_for_accounts(session, ids + ids + [999], 1)
+            assert set(result) == set(ids)
+            assert all(len(rows) == 1 for rows in result.values())
+
+    asyncio.run(scenario())
+
+
+def test_latest_targets_match_exact_pairs_and_skip_null_history() -> None:
+    import sqlalchemy as sa
+
+    from axile.server.db.models import TargetWeightSnapshot
+    from axile.server.target_weight_snapshots import get_latest_account_target_snapshots_for_accounts
+
+    async def scenario():
+        async with _session_scope() as session:
+            first, second = _account("first"), _account("second")
+            session.add_all([first, second])
+            portfolios = [Portfolio(name=f"p{i}", market="demo-market", custom_calc_py_code=CODE) for i in range(2)]
+            session.add_all(portfolios)
+            await session.flush()
+            expected = {}
+            for account, portfolio in zip((first, second), portfolios, strict=True):
+                rows = [
+                    TargetWeightSnapshot(
+                        account_id=account.id,
+                        portfolio_id=portfolio.id,
+                        normalized_weights={"BTCUSDT": i / 300},
+                        source="manual",
+                    )
+                    for i in range(300)
+                ]
+                session.add_all(rows)
+                await session.flush()
+                expected[account.id] = rows[-1].id
+                session.add(
+                    TargetWeightSnapshot(
+                        account_id=account.id, portfolio_id=portfolio.id, normalized_weights=sa.null(), source="manual"
+                    )
+                )
+            # 较新的其他绑定与组合原始目标不能覆盖请求的精确账户组合对。
+            session.add_all(
+                [
+                    TargetWeightSnapshot(
+                        account_id=first.id, portfolio_id=portfolios[1].id, normalized_weights={}, source="manual"
+                    ),
+                    TargetWeightSnapshot(
+                        account_id=None, portfolio_id=portfolios[0].id, normalized_weights={}, source="manual"
+                    ),
+                ]
+            )
+            await session.commit()
+            connection = await session.connection()
+            steps = 0
+
+            def progress():
+                nonlocal steps
+                steps += 100
+                return int(steps > 2000)
+
+            raw = await connection.get_raw_connection()
+            await raw.driver_connection.set_progress_handler(progress, 100)
+            try:
+                pairs = [(first.id, portfolios[0].id), (second.id, portfolios[1].id)]
+                result = await get_latest_account_target_snapshots_for_accounts(session, pairs + pairs)
+            finally:
+                await raw.driver_connection.set_progress_handler(None, 0)
+            assert {key: row.id for key, row in result.items()} == expected
+            assert steps <= 2000
+            assert await get_latest_account_target_snapshots_for_accounts(session, []) == {}
+
+    asyncio.run(scenario())
