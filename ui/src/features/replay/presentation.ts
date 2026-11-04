@@ -15,6 +15,17 @@ export function replayNumber(value: number | null | undefined, decimals: number 
   return value == null || !Number.isFinite(value) ? '未知' : value.toLocaleString('zh-CN', { maximumFractionDigits: Math.max(0, Math.min(12, decimals ?? 6)) })
 }
 
+/** 价格尺按品种精度补齐尾零，元数据未知时不伪造精度。 */
+export function replayAxisPrice(value: number | null, instrument: ReplayInstrument): string {
+  if (value == null || !Number.isFinite(value)) return '未知'
+  const tick = instrument.price_tick
+  const decimals = instrument.price_decimals ?? (tick != null && Number.isFinite(tick) && tick > 0
+    ? (tick.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 12 }).split('.')[1]?.length ?? 0) : null)
+  if (decimals == null) return replayNumber(value)
+  const digits = Math.max(0, Math.min(12, decimals))
+  return value.toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits })
+}
+
 export function replayFieldText(value: unknown, field: ReplayDisplayField): string | null {
   if (value == null) return null
   if (field.kind === 'number') return typeof value === 'number' && Number.isFinite(value) ? `${replayNumber(value, field.decimals)}${field.unit ? ` ${field.unit}` : ''}` : null

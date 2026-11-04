@@ -12,7 +12,7 @@ export function replayRemainingQuantity(orders: Pick<ReplayOrder, 'remaining_vol
   return orders.some(order => order.remaining_volume == null) ? null : orders.reduce((sum, order) => sum + order.remaining_volume!, 0)
 }
 
-export function replayChartLayout(width: number, height: number, priceAxisWidth = 76): ReplayChartLayout {
+export function replayChartLayout(width: number, height: number, priceAxisWidth = 40): ReplayChartLayout {
   const columns = width >= 600
   const right = width - (columns ? 346 : 12) - priceAxisWidth
   return { left: 12, right, top: 0, bottom: height - 44,

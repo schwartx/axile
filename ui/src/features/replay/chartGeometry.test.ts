@@ -77,6 +77,10 @@ describe('回放共用价格与观测边界', () => {
 })
 
 it('价格轴容纳完整读数，刻度规整且不累加推算价差的浮点尾数', () => {
+  const compact = replayChartLayout(1100, 440)
+  expect(compact.priceX - compact.right + 8).toBe(40)
+  expect(compact.right).toBe(714)
+  expect(replayChartLayout(390, 380).right).toBe(338)
   const layout = replayChartLayout(1100, 440, 124)
   expect(layout.left).toBe(12)
   expect(layout.right).toBe(630)

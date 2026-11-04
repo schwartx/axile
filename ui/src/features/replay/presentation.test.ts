@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test'
-import { rememberReplaySymbols, replayCommandPresentation, replayFieldText, replayExecutionPlan, replayExecutionRange, replayExecutionTimeline, replayRange, replayStream, replaySymbols, replayTime, replayWindowDuration, smallerReplayRange } from '@/features/replay/presentation'
+import { replayAxisPrice, rememberReplaySymbols, replayCommandPresentation, replayFieldText, replayExecutionPlan, replayExecutionRange, replayExecutionTimeline, replayRange, replayStream, replaySymbols, replayTime, replayWindowDuration, smallerReplayRange } from '@/features/replay/presentation'
 import { projectReplay } from '@/features/replay/model'
 import type { ReplayData, ReplayRecording, ReplayWindow } from '@/features/replay/types'
 
@@ -25,6 +25,21 @@ it('跨录制段计划按执行时间截取，保留各段身份及覆盖空档'
 
 it('显示才转换毫秒，标签保留微秒并显示上海跨日', () => {
   expect(replayTime(Date.parse('2026-01-01T16:30:00Z') * 1000 + 123456, true)).toBe('2026-01-02 00:30:00.123456')
+})
+
+it('价格尺按声明精度补零，缺失时从最小价差推导，不扩展到默认六位', () => {
+  expect(replayAxisPrice(1.25, { price_tick: .001 })).toBe('1.250')
+  expect(replayAxisPrice(1.251, { price_tick: .001 })).toBe('1.251')
+  expect(replayAxisPrice(1.25, { price_tick: .0001 })).toBe('1.2500')
+  expect(replayAxisPrice(100, { price_tick: .01 })).toBe('100.00')
+  expect(replayAxisPrice(1.25, { price_tick: .001, price_decimals: 4 })).toBe('1.2500')
+  expect(replayAxisPrice(.00000001, { price_tick: 1e-8 })).toBe('0.00000001')
+  expect(replayAxisPrice(100, { price_tick: .25 })).toBe('100.00')
+  expect(replayAxisPrice(100, { price_tick: 1 })).toBe('100')
+  expect(replayAxisPrice(1.25, {})).toBe('1.25')
+  expect(replayAxisPrice(1.25, { price_tick: 0 })).toBe('1.25')
+  expect(replayAxisPrice(null, { price_tick: .001 })).toBe('未知')
+  expect(replayAxisPrice(NaN, {})).toBe('未知')
 })
 
 it('只渲染声明允许的标量，不把非法数值当零', () => {

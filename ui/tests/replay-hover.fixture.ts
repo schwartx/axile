@@ -51,11 +51,13 @@ const axisLabels = Boolean(find(tree, n => n.props?.className === 'replay-crossh
 const hasReadout = Boolean(readout())
 const hoverDoesNotPause = pauses === 0
 const priceLabel = () => find(tree, n => n.props?.className === 'replay-crosshair-price num')
-const tickAtHover = find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.children === '100')
+const tickAtHover = find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.children === '100.00')
 assert.equal(tickAtHover.props.style.opacity, 0, '悬停价格附近的刻度应完全让位')
+assert.equal(tickAtHover.props.style.width, 36, '价格轴收窄，保留完整读数与边距')
+assert.equal(priceLabel().props.children[1].type, 'span', '悬停底色只包住文字，不铺满价格轴')
 assert.equal(tickAtHover.props.style.left + tickAtHover.props.style.width, priceLabel().props.style.left + priceLabel().props.style.width, '悬停价格与普通刻度右对齐')
 assert.ok(find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.style.opacity === 1), '远处刻度仍然完整可见')
-const middleTick = () => find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.children === '100.4')
+const middleTick = () => find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.children === '100.40')
 const middleTop = middleTick().props.style.top
 function yieldAt(distance: number) {
   const y = middleTop + 8 + distance
@@ -71,7 +73,7 @@ for (const boundary of [20, 36]) {
   assert.ok(Math.abs(yieldAt(boundary - .01) - yieldAt(boundary + .01)) < .001, '反复跨过让位边界不硬切闪烁')
 }
 hover(100.123456)
-assert.equal(priceLabel().props.children[1], '100.12', '保留品种价格精度')
+assert.equal(priceLabel().props.children[1].props.children, '100.12', '保留品种价格精度')
 for (const price of [view.min, view.max]) {
   hover(price, 0)
   const label = priceLabel()
@@ -79,7 +81,7 @@ for (const price of [view.min, view.max]) {
   assert.ok(Math.abs(label.props.style.top + label.props.children[0].props.style.top - replayPriceY(price, view, layout)) < 1e-8, '短刻线保留真实价格位置')
 }
 hover(view.min)
-assert.equal(priceLabel().props.children[1], '100', '吸附到附近成交时保留对象价格')
+assert.equal(priceLabel().props.children[1].props.children, '100.00', '吸附到附近成交时保留对象价格')
 assert.equal(priceLabel().props.style.top + priceLabel().props.children[0].props.style.top, find(tree, n => n.props?.className === 'replay-crosshair-horizontal').props.style.top, '吸附后短刻线与十字线对齐')
 find(tree, n => n.type === 'canvas').props.onPointerLeave(); draw()
 assert.ok(!find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.style.opacity !== 1), '移出后恢复普通刻度')
@@ -169,7 +171,7 @@ assert.equal(nearbyLabel.props['data-collapsed'], true, '密集委托保留刻�
 assert.equal(nearbyLabel.props.children[1].props.style.opacity, 0)
 assert.equal(selectedLabel.props['data-pending'], true, '同价任一委托待撤即保留警示语义')
 assert.ok(!middleTick(), '委托价与普通刻度同价时只绘制委托标签')
-const otherTick = find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.children === '100.6')
+const otherTick = find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.children === '100.60')
 assert.equal(otherTick.props.style.left, selectedLabel.props.style.left, '委托与轴刻度共用左边界')
 assert.equal(otherTick.props.style.width, selectedLabel.props.style.width, '委托与轴刻度共用宽度和右边界')
 assert.ok(otherTick.props.style.opacity < 1, '相邻普通刻度向委托价让位')
@@ -178,7 +180,7 @@ for (const label of [selectedLabel, nearbyLabel]) {
 }
 hover(100.5, 0)
 const mergedLabel = find(tree, n => n.props?.className === 'replay-crosshair-price num replay-order-price')
-assert.equal(mergedLabel.props.children[1], '100.5', '悬停与委托同价时合并读数')
+assert.equal(mergedLabel.props.children[1].props.children, '100.50', '悬停与委托同价时合并读数')
 assert.equal(mergedLabel.props['data-pending'], true)
 assert.equal(orderLabel('100.5').props.children[1].props.style.opacity, 0, '合并后不重复显示委托价格')
 hover(100.55, 0)
