@@ -7,7 +7,7 @@ import type { ReplayWindow } from '@/features/replay/types'
 import { readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 
-it('价格轴融合委托与悬停读数并避让，点击打开浮卡，移出和拖动清理读数', () => {
+it('紧凑单价格轴只遮挡重叠文字，点击打开浮卡，移出和拖动清理读数', () => {
   const source = readFileSync(new URL('../../../tests/replay-hover.fixture.ts', import.meta.url), 'utf8')
   const script = `const ui=${JSON.stringify(new URL('../../', import.meta.url).pathname)};\n${source}`
   const result = spawnSync(process.execPath, ['-e', script], { cwd: new URL('../../../', import.meta.url), encoding: 'utf8', timeout: 10_000 })

@@ -186,6 +186,7 @@ button.replay-ladder-row:focus-visible { outline: 2px solid var(--color-accent);
 .replay-crosshair-price { z-index: 1; color: var(--color-ink-1); font-weight: 500; }
 .replay-order-price { color: var(--color-chart-2); }
 .replay-order-price > span, .replay-crosshair-price > span { display: inline-block; padding-inline: 4px; }
+.replay-crosshair-price > span { background: var(--color-ink-1); color: var(--color-surface); border-radius: 2px; }
 .replay-order-price[data-pending="true"] { color: var(--color-warn); }
 .replay-order-price > span { background: var(--color-chart-2); color: var(--color-surface); border-radius: 2px; }
 .replay-order-price[data-pending="true"] > span { background: var(--color-warn); }

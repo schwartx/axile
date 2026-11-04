@@ -29,7 +29,7 @@ function fixture(scenario: string): ReplayWindow {
     })))
   }
   if (scenario === 'unknown') frames[0].bids = [{ price: 100, quantity: null }, { price: 99, quantity: 0 }, { price: 98, quantity: 3 }]
-  return { recording_id: 'synthetic', window_id: scenario, context: { schema_version: 1, instruments: { SYNTHETIC: { price_tick: step, price_decimals: dense ? 4 : 2, quantity_decimals: 2 } } },
+  return { recording_id: 'synthetic', window_id: scenario, context: { schema_version: 1, instrument: { SYNTHETIC: { price_tick: step, price_decimals: dense ? 4 : 2, quantity_decimals: 2 } } },
     complete: true, coverage: [range], gaps: scenario === 'gap' ? [{ start_us: 500_000, end_us: 700_000, topic: 'depth', symbol: 'SYNTHETIC', reason: '合成缺口' }] : [],
     next_cursor: null, state_before_start: { time_us: 0, state_through_seq: 0 },
     messages: [...frames.map((data, index) => ({ schema_version: 1, recording_id: 'synthetic', time_us: 100_000 + index * 300_000, capture_seq: index + 1, topic: '/quote/SYNTHETIC', data })),

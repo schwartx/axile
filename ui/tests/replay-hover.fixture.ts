@@ -40,7 +40,7 @@ function find(node: any, predicate: (n: any) => boolean): any {
 }
 const panel = () => find(tree, n => n.props?.['aria-label'] === '图中记录浮卡')
 draw()
-const layout = replayChartLayout(900, 300), view = replayObservedPriceView(scene.quoteHistory, [], [], .01)!
+const layout = replayChartLayout(900, 300, 40), view = replayObservedPriceView(scene.quoteHistory, [], [], .01)!
 function hover(price = 100, time = 49) {
   find(tree, n => n.type === 'canvas').props.onPointerMove({ clientX: replayTimeX(time, props.range, layout), clientY: replayPriceY(price, view, layout), currentTarget: { style: {}, getBoundingClientRect: () => ({ left: 0, top: 0 }) } }); draw()
 }
@@ -50,27 +50,22 @@ const readout = () => find(tree, n => n.props?.['aria-label'] === '悬停读数'
 const axisLabels = Boolean(find(tree, n => n.props?.className === 'replay-crosshair-price num')) && Boolean(find(tree, n => n.props?.className === 'replay-crosshair-time num'))
 const hasReadout = Boolean(readout())
 const hoverDoesNotPause = pauses === 0
-const priceLabel = () => find(tree, n => n.props?.className === 'replay-crosshair-price num')
+const priceLabel = () => find(tree, n => n.props?.className?.startsWith('replay-crosshair-price num'))
 const tickAtHover = find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.children === '100.00')
-assert.equal(tickAtHover.props.style.opacity, 0, '悬停价格附近的刻度应完全让位')
-assert.equal(tickAtHover.props.style.width, 36, '价格轴收窄，保留完整读数与边距')
-assert.equal(priceLabel().props.children[1].type, 'span', '悬停底色只包住文字，不铺满价格轴')
-assert.equal(tickAtHover.props.style.left + tickAtHover.props.style.width, priceLabel().props.style.left + priceLabel().props.style.width, '悬停价格与普通刻度右对齐')
-assert.ok(find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.style.opacity === 1), '远处刻度仍然完整可见')
+assert.equal(tickAtHover.props.style.opacity, 0, '悬停与刻度同价时，仅隐藏重叠文字')
+assert.equal(tickAtHover.props.style.width, 36, '价格轴只保留一个紧凑槽位')
+assert.equal(priceLabel().props.style.left, tickAtHover.props.style.left, '游标读数与固定刻度共用同一价格轴')
+assert.equal(priceLabel().props.style.width, tickAtHover.props.style.width)
 const middleTick = () => find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.children === '100.40')
 const middleTop = middleTick().props.style.top
-function yieldAt(distance: number) {
+const fixedAxis = JSON.stringify(middleTick().props.style)
+for (const distance of [40, 36, 32, 28, 24, 20, 0, -28, 28, 0]) {
   const y = middleTop + 8 + distance
   hover(replayYPrice(y, view, layout), 0)
-  assert.equal(middleTick().props.style.top, middleTop, '让位不移动普通刻度')
-  assert.ok(Math.abs(priceLabel().props.style.top + priceLabel().props.children[0].props.style.top - y) < 1e-8, '读数与短刻线即时跟随，不添加追赶延迟')
-  return middleTick().props.style.opacity
-}
-for (const [distance, opacity] of [[40, 1], [36, 1], [32, .84375], [28, .5], [24, .15625], [20, 0], [0, 0], [-28, .5], [28, .5]]) {
-  assert.ok(Math.abs(yieldAt(distance) - opacity) < 1e-8, '刻度按距离平滑退墨，反向移动不积累动画')
-}
-for (const boundary of [20, 36]) {
-  assert.ok(Math.abs(yieldAt(boundary - .01) - yieldAt(boundary + .01)) < .001, '反复跨过让位边界不硬切闪烁')
+  assert.equal(middleTick().props.style.top, middleTop, '靠近、跨越和反向移动不移动固定刻度')
+  assert.equal(middleTick().props.style.opacity, Math.abs(middleTop - priceLabel().props.style.top) < 16 ? 0 : 1, '只隐藏实际相交的文字，没有邻近渐隐')
+  assert.equal(priceLabel().props.style.left, layout.right + 2, '单轴宽度与主图边界不随悬停变化')
+  assert.ok(Math.abs(priceLabel().props.style.top + priceLabel().props.children[0].props.style.top - y) < 1e-8, '读数短横即时跟随真实价格，不添加追赶延迟')
 }
 hover(100.123456)
 assert.equal(priceLabel().props.children[1].props.children, '100.12', '保留品种价格精度')
@@ -84,7 +79,8 @@ hover(view.min)
 assert.equal(priceLabel().props.children[1].props.children, '100.00', '吸附到附近成交时保留对象价格')
 assert.equal(priceLabel().props.style.top + priceLabel().props.children[0].props.style.top, find(tree, n => n.props?.className === 'replay-crosshair-horizontal').props.style.top, '吸附后短刻线与十字线对齐')
 find(tree, n => n.type === 'canvas').props.onPointerLeave(); draw()
-assert.ok(!find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.style.opacity !== 1), '移出后恢复普通刻度')
+assert.equal(JSON.stringify(middleTick().props.style), fixedAxis, '移出后固定刻度与轴宽保持不变')
+assert.ok(!find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.style.opacity !== 1), '移出后普通刻度持续可见')
 const clearedOnLeave = !readout() && !find(tree, n => n.props?.className === 'replay-crosshair-price num')
 const target = { style: {}, focus() {}, setPointerCapture() {}, hasPointerCapture: () => false, getBoundingClientRect: () => ({ left: 0, top: 0 }) }
 const clickEvent = { button: 0, pointerId: 1, clientX: replayTimeX(50, props.range, layout), clientY: replayPriceY(100, view, layout), currentTarget: target }
@@ -174,17 +170,20 @@ assert.ok(!middleTick(), '委托价与普通刻度同价时只绘制委托标签
 const otherTick = find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.children === '100.60')
 assert.equal(otherTick.props.style.left, selectedLabel.props.style.left, '委托与轴刻度共用左边界')
 assert.equal(otherTick.props.style.width, selectedLabel.props.style.width, '委托与轴刻度共用宽度和右边界')
-assert.ok(otherTick.props.style.opacity < 1, '相邻普通刻度向委托价让位')
+assert.equal(otherTick.props.style.opacity, 1, '邻近但不重叠的普通刻度保持完整可见')
 for (const label of [selectedLabel, nearbyLabel]) {
   assert.ok(Math.abs(label.props.style.top + label.props.children[0].props.style.top - replayPriceY(Number(label.props['aria-label'].split(' ')[1]), view, layout)) < 1e-8, '密集委托的刻线始终位于真实价格')
 }
 hover(100.5, 0)
-const mergedLabel = find(tree, n => n.props?.className === 'replay-crosshair-price num replay-order-price')
-assert.equal(mergedLabel.props.children[1].props.children, '100.50', '悬停与委托同价时合并读数')
-assert.equal(mergedLabel.props['data-pending'], true)
-assert.equal(orderLabel('100.5').props.children[1].props.style.opacity, 0, '合并后不重复显示委托价格')
-hover(100.55, 0)
-assert.equal(orderLabel('100.5').props.children[1].props.style.opacity, 0, '异价悬停靠近时委托文本让位，保留价位刻线')
+assert.equal(priceLabel().props.children[1].props.children, '100.50', '悬停与委托同价时仍保留独立读数')
+assert.equal(orderLabel('100.5').props['data-pending'], true)
+assert.equal(priceLabel().props['data-pending'], true, '同价读数保留待撤委托警示')
+assert.equal(orderLabel('100.5').props.children[1].props.style.opacity, 0, '同价委托文字由悬停读数接替，不重复绘制')
+assert.equal(priceLabel().props.style.left, orderLabel('100.5').props.style.left, '游标和委托共用一个槽位')
+const orderAxis = JSON.stringify(otherTick.props.style)
+hover(100.9, 0)
+assert.equal(orderLabel('100.5').props.children[1].props.style.opacity, 1, '不重叠的悬停不影响固定委托文本')
+assert.equal(JSON.stringify(find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.children === '100.60').props.style), orderAxis, '不重叠的刻度保持不变')
 assert.ok(priceLabel(), '异价悬停保持独立读数')
 find(tree, n => n.type === 'canvas').props.onPointerLeave(); draw()
 assert.equal(orderLabel('100.5').props.children[1].props.style.opacity, 1, '移出后恢复委托价格')
