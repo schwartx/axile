@@ -180,7 +180,7 @@ def test_gm_trade_and_order_share_native_offset_and_keep_distinct_times(effect, 
     }
     instance.account_orders.activity.observe_order(convert_gm_order_to_unified(row))
     instance.account_orders.activity.observe_trade(
-        convert_gm_trade_to_trade_record({**row, "created_at": filled, "exec_id": "fill-one"})
+        convert_gm_trade_to_trade_record({**row, "created_at": filled, "exec_id": "fill-one", "exec_type": 15})
     )
     result = run_activity_command(instance, {})
     assert result["orders"][0]["create_time"] == submitted
@@ -196,7 +196,9 @@ def test_gm_missing_native_times_do_not_become_local_sampling_time():
     instance = executor("gm")
     row = {"cl_ord_id": "gm-one", "symbol": "SZSE.159920", "side": 1, "volume": 1, "price": 1}
     instance.account_orders.activity.observe_order(convert_gm_order_to_unified(row))
-    instance.account_orders.activity.observe_trade(convert_gm_trade_to_trade_record({**row, "exec_id": "fill-one"}))
+    instance.account_orders.activity.observe_trade(
+        convert_gm_trade_to_trade_record({**row, "exec_id": "fill-one", "exec_type": 15})
+    )
     result = run_activity_command(instance, {})
     assert result["orders"][0]["create_time"] is None
     assert result["orders"][0]["update_time"] is None

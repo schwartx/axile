@@ -81,7 +81,7 @@ def buy_result():
     return result(symbol=BUY, start=0, observed=1400, target=1400, filled=1400, direction=OrderDirection.BUY)
 
 
-@pytest.mark.parametrize("channel", ["gm", "ctp", "tq", "binance"])
+@pytest.mark.parametrize("channel", ["gm", "ctp", "tq", "external-plugin"])
 @pytest.mark.parametrize("observed", [500, 900])
 def test_two_phase_snapshot_reuse_preserves_normal_query_order(monkeypatch, channel, observed):
     e = engine([assets(sell=900), assets(), assets(buy=1400), assets(sell=1)], channel)
