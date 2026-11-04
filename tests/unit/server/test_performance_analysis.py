@@ -193,7 +193,7 @@ def test_dashboard_summary_matches_full_90_day_snapshot_in_one_query(tmp_path, s
                 sa.event.remove(engine.sync_engine, "before_cursor_execute", capture)
             assert len(statements) == 1
             assert "executerecord" not in statements[0].lower()
-            assert "json_extract" in statements[0].lower()
+            assert statements[0].lower().count("json_extract") == 1
             summary = summaries[2]
             assert summary.snapshot_id == full["snapshot_id"]
             assert len(summary.points) == 91

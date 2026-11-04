@@ -160,7 +160,8 @@ async def read_performance_summaries(session, account_ids: list[int]) -> dict[in
                     snapshots.c.computed_at,
                     snapshots.c.logic_version.label("snapshot_logic_version"),
                     snapshots.c.engine_version.label("snapshot_engine_version"),
-                    snapshots.c.ranges["all"]["performance"]["points"].label("points"),
+                    # 单次定位收益点，避免逐层复制包含完整执行历史的大 JSON。
+                    snapshots.c.ranges[("all", "performance", "points")].label("points"),
                 )
                 .select_from(states.outerjoin(snapshots, states.c.current_snapshot == snapshots.c.id))
                 .where(states.c.account_id.in_(account_ids))
