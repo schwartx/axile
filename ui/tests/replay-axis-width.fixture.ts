@@ -75,7 +75,7 @@ function reset() { find(tree, n => n.props?.['aria-label'] === '恢复视图').p
 draw()
 const initial = axisLeft()
 const initialLabel = find(tree, n => n.props?.className === 'replay-price-tick num')
-assert.equal(900 - 346 - initial, initialLabel.props.style.width, '主图到盘口间只有一个价格槽，不预留第二列')
+assert.equal(900 - 300 - initial, initialLabel.props.style.width, '主图到盘口间只有一个价格槽，不预留第二列')
 canvas().props.onPointerDown(event(100, 100)); draw()
 canvas().props.onPointerMove(event(100, 700)); draw()
 assert.equal(axisLeft(), initial, '上下平移跨整数位期间锁住主图边界')
@@ -93,9 +93,9 @@ for (const [x, y] of [[120, 110], [140, 130], [160, 140]]) {
 }
 dragEnd(); reset()
 const labelBefore = tick(), beforePriceScale = historyPaints
-canvas().props.onPointerDown(event(550, 100)); draw()
+canvas().props.onPointerDown(event(axisLeft() + 10, 100)); draw()
 for (const y of [150, 200, 400, 700]) {
-  canvas().props.onPointerMove(event(550, y)); draw()
+  canvas().props.onPointerMove(event(axisLeft() + 10, y)); draw()
   assert.equal(historyPaints, beforePriceScale, '连续价格轴缩放不重建历史热力图')
 }
 assert.ok(JSON.stringify(find(tree, n => n.props?.className === 'replay-heat-scale')).includes('历史缩放预览'), '新增视野明确标识为预览，不能误认为没有挂量')
@@ -118,7 +118,7 @@ props.window = { ...data, recording_id: 'other-recording' }; draw()
 assert.equal(axisLeft(), initial, '切换录制重新适配紧凑轴宽')
 const beforeWheel = axisLeft(), beforeWheelPaints = historyPaints
 for (let i = 0; i < 3; i++) {
-  listeners.get('wheel')!({ clientX: 550, clientY: 100, deltaY: 400, deltaMode: 0, preventDefault() {} }); draw()
+  listeners.get('wheel')!({ clientX: axisLeft() + 10, clientY: 100, deltaY: 400, deltaMode: 0, preventDefault() {} }); draw()
   assert.equal(axisLeft(), beforeWheel, '连续滚轮期间锁宽')
   assert.equal(historyPaints, beforeWheelPaints, '连续价格轴滚轮不重建历史热力图')
 }
@@ -173,7 +173,7 @@ assert.ok(strokes.includes('gray'), '同刻采集序号尚未到达的委托保�
 const beforeOrderHover = offscreen.length
 const { replayChartLayout, replayTimeX, replayPriceY } = await import(ui + 'features/replay/chartGeometry.ts')
 const { replayObservedPriceView } = await import(ui + 'features/replay/depthGeometry.ts')
-const orderLayout = replayChartLayout(900, 300, 900 - 346 - axisLeft())
+const orderLayout = replayChartLayout(900, 300, 900 - 300 - axisLeft())
 const orderView = replayObservedPriceView(props.scene.quoteHistory, props.scene.orderHistory, [], null)!
 canvas().props.onPointerMove(event(replayTimeX(50, props.range, orderLayout), replayPriceY(1.25, orderView, orderLayout))); draw()
 assert.ok(arcs.some(arc => arc[2] === 5), '悬停仍放大命中的委托标记')
@@ -184,7 +184,7 @@ assert.equal(offscreen.length, beforeSelection + 2, '选中委托仅重建委托
 const widthHandle = () => find(tree, n => n.props?.['aria-label'] === '调整图表与盘口的宽度').props
 const originalAxis = axisLeft()
 widthHandle().onCommit(450); draw()
-assert.equal(originalAxis - axisLeft(), 104, '调宽盘口同时收窄图表')
+assert.equal(originalAxis - axisLeft(), 150, '调宽盘口同时收窄图表')
 assert.equal(savedWidths.get('axon.replay.depthWidth'), '450', '保存盘口宽度')
 assert.equal(widthHandle().valueAt(0), widthHandle().max, '拖动超过边界时夹紧')
 widthHandle().onReset(); draw()

@@ -4,12 +4,12 @@ import { ArrowLeft, ArrowRight, Check, Circle, Crosshair, Info, Minus, RotateCcw
 import { ValueSlider } from '@/components/ui/ValueSlider'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { canvasLine, prepareCanvas, readCanvasTheme, type CanvasTheme } from '@/components/viz/chartCanvas'
-import { centerReplayPrice, currentReplayQuote, replayChartLayout, replayMarketPriceSegments, replayOnBookOrder, replayPriceTicks, replayPriceY, replayQuoteEnd, replayRemainingQuantity, replayTimeX, replayXTime, replayYPrice, zoomReplayPrice, type ReplayChartLayout, type ReplayPriceView } from '@/features/replay/chartGeometry'
+import { centerReplayPrice, currentReplayQuote, replayChartLayout, replayDepthMinWidth, replayMarketPriceSegments, replayOnBookOrder, replayPriceTicks, replayPriceY, replayQuoteEnd, replayRemainingQuantity, replayTimeX, replayXTime, replayYPrice, zoomReplayPrice, type ReplayChartLayout, type ReplayPriceView } from '@/features/replay/chartGeometry'
 import { clampReplayView, replayOrderFocus, replayOrderTimeline, replayTradeKey, replayVisibleOrderMarks, replayVisibleOrders, zoomReplayPriceAt, zoomReplayTime } from '@/features/replay/chartInteraction'
 import { replayBubbleRadius, replayMarketBubbleGroups, replayMarketBubblesAt, type ReplayMarketBubble } from '@/features/replay/marketBubbles'
 import { useReplayHeat } from '@/features/replay/useReplayHeat'
 import { replaySeekScheduler, replayTimeUpperBound } from '@/features/replay/chartLookup'
-import { recordedDepth, replayBestLevel, replayObservedPriceView } from '@/features/replay/depthGeometry'
+import { recordedDepth, replayBestLevel, replayDepthOrderGroups, replayObservedPriceView } from '@/features/replay/depthGeometry'
 import { inspectReplayOrder, inspectReplayTrade, nearestReplayInspection, replayFutureRecord, type InspectionRecord } from '@/features/replay/inspection'
 import { ReplayInspector } from '@/features/replay/ReplayInspector'
 import { ReplayDepthLadder } from '@/features/replay/ReplayDepthLadder'
@@ -99,12 +99,12 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   useLayoutEffect(() => { seekCallback.current = onSeek }, [onSeek])
   const seekScheduler = useMemo(() => replaySeekScheduler(time => seekCallback.current(time), callback => window.requestAnimationFrame(callback), frame => window.cancelAnimationFrame(frame)), [])
   const [size, setSize] = useState({ width: 900, height: 300, revision: 0 })
-  const [depthWidth, setDepthWidth] = useState(346)
+  const [depthWidth, setDepthWidth] = useState(replayDepthMinWidth)
   const [resizingDepth, setResizingDepth] = useState(false)
   useLayoutEffect(() => {
     const stored = window.localStorage?.getItem('axon.replay.depthWidth')
     const value = Number(stored)
-    if (stored != null && Number.isFinite(value) && value >= 346) setDepthWidth(value)
+    if (stored != null && Number.isFinite(value) && value >= replayDepthMinWidth) setDepthWidth(value)
   }, [])
   const [manualView, setManualView] = useState<ReplayPriceView | null>(null)
   const [timePreview, setTimePreview] = useState<ReplayRange | null>(null)
@@ -150,8 +150,8 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   const wheelTimer = useRef<number | null>(null)
   const [timeCharacterWidth, setTimeCharacterWidth] = useState(6.6)
   const layout = useMemo(() => ({ ...replayChartLayout(size.width, height, priceAxisWidth, depthWidth), top: selectedExecution ? 28 : 0 }), [size.width, height, priceAxisWidth, depthWidth, selectedExecution])
-  const maxDepthWidth = Math.max(346, size.width - priceAxisWidth - 240)
-  const clampDepthWidth = (value: number) => Math.min(maxDepthWidth, Math.max(346, value))
+  const maxDepthWidth = Math.max(replayDepthMinWidth, size.width - priceAxisWidth - 240)
+  const clampDepthWidth = (value: number) => Math.min(maxDepthWidth, Math.max(replayDepthMinWidth, value))
   const saveDepthWidth = (value: number) => {
     const next = clampDepthWidth(value)
     setDepthWidth(next)
@@ -613,8 +613,8 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       {layout.columns && <ResizeHandle orientation="vertical" aria-label="调整图表与盘口的宽度"
         title="左右拖动调整盘口宽度 · 双击恢复默认" className="replay-depth-resize"
         style={{ left: layout.priceX + 13, height }} value={clampDepthWidth(depthWidth)}
-        min={346} max={maxDepthWidth} step={-24} onChange={setDepthWidth} onCommit={saveDepthWidth}
-        onReset={() => saveDepthWidth(346)} onResizeChange={setResizingDepth}
+        min={replayDepthMinWidth} max={maxDepthWidth} step={-24} onChange={setDepthWidth} onCommit={saveDepthWidth}
+        onReset={() => saveDepthWidth(replayDepthMinWidth)} onResizeChange={setResizingDepth}
         valueAt={x => clampDepthWidth(size.width - (x - (holder.current?.getBoundingClientRect().left ?? 0)) + 8)} />}
       {view && layout.columns && <ReplayDepthLadder quote={displayQuote} future={futureDepth} orders={depthOrders} view={view} layout={layout} height={height} executionId={executionId} selected={selectedOrder} onSelect={key => { onInspect(); onSelectOrder(key) }} priceText={priceText} quantityText={quantityText} hoverPrice={hoverPrice ?? undefined} />}
       {inspection && <div className="replay-inspection-float" aria-label="图中记录浮卡" style={{
@@ -637,7 +637,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
     <div className="replay-outside-orders flex flex-wrap gap-2" aria-label="价位范围之外的自有委托">{outside.map(order => <button key={order.key} className="min-h-8 cursor-pointer rounded-chip bg-fill px-2 text-xs text-ink-2 focus-visible:outline-2 focus-visible:outline-accent" onClick={() => { onSelectOrder(order.key); if (view && order.price != null) setManualView(centerReplayPrice(view, order.price)) }}>{order.price! > view!.max ? '上方' : '下方'} {order.order_id} · {replayOwnership(order, executionId).label} · {priceText(order.price)} · 定位</button>)}</div>
     <div className={'sr-only'}><table className="num w-full text-right text-xs"><caption className="mb-2 text-left text-ink-2">{futureDepth ? '未到达 · 首个已录盘口' : '当前游标'} · 价格 / COB / ORD{instrument?.quantity_label ? `（${instrument.quantity_label}）` : ''}</caption><thead><tr className="text-ink-2"><th className="py-2 text-left">方向</th><th>价格</th><th>市场量</th><th>账户挂单</th></tr></thead><tbody>{bookRows.map((level, index) => {
       const own = depthOrders.filter(order => order.price === level.price)
-      return <tr key={`${level.side}:${level.price}:${index}`} className="border-t border-line"><th className="py-2 text-left font-normal">{level.side}</th><td>{priceText(level.price)}</td><td>{quantityText(level.quantity)}</td><td>{own.length ? replayOrderOwnershipGroups(own, executionId).map(group => <span key={group.kind} className="block">{group.label} {quantityText(replayRemainingQuantity(group.orders))} · {group.orders.length}单</span>) : '—'}</td></tr>
+      return <tr key={`${level.side}:${level.price}:${index}`} className="border-t border-line"><th className="py-2 text-left font-normal">{level.side}</th><td>{priceText(level.price)}</td><td>{quantityText(level.quantity)}</td><td>{own.length ? replayOrderOwnershipGroups(own, executionId).map(group => <span key={group.kind} className="block">{group.label} {quantityText(replayRemainingQuantity(group.orders))} · {group.orders.length}单{replayDepthOrderGroups(group.orders).map(side => <span key={side.direction ?? 'unknown'} className="block">{side.label} {quantityText(replayRemainingQuantity(side.orders))}</span>)}</span>) : '—'}</td></tr>
     })}</tbody></table>{!displayQuote && <p className="py-3 text-xs text-ink-2">盘口未记录／已失效；自有委托仍可在订单表查看。</p>}</div>
     <div id="replay-chart-legend" popover="auto" className="replay-chart-help" aria-label="图层与图例说明">
       <header className="replay-help-header"><h2 className="text-sm font-medium">图层与图例</h2><button type="button" popoverTarget="replay-chart-legend" popoverTargetAction="hide" className={controlClass} aria-label="关闭图例"><X size={15} aria-hidden /></button></header>

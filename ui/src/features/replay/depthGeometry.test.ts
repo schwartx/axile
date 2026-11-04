@@ -69,8 +69,8 @@ describe('动态盘口及委托位置', () => {
     const view = { min: 90, max: 110, tick: 1 }, depth = quote()
     const props = { quote: depth, orders: [], view, layout, height: 68, executionId: 'E', selected: null, onSelect: () => {}, priceText: String, quantityText: String }
     const html = renderToStaticMarkup(createElement(ReplayDepthLadder, props))
-    expect(html).toContain(`M 0 ${replayPriceY(103, view, layout)} H 12 C 38 ${replayPriceY(103, view, layout)}, 42 38, 68 38 H 82`)
-    expect(html).not.toContain(`M 0 ${replayPriceY(100, view, layout)} H 12`)
+    expect(html).toContain(`M 0 ${replayPriceY(103, view, layout)} H 8 C 22 ${replayPriceY(103, view, layout)}, 26 38, 40 38 H 48`)
+    expect(html).not.toContain(`M 0 ${replayPriceY(100, view, layout)} H 8`)
   })
   it('零量保留但不是买一；未知量保留价位，聚合不冒充零', () => {
     const depth = quote(4)
@@ -108,11 +108,34 @@ describe('动态盘口及委托位置', () => {
     const visit = (node: any) => { if (Array.isArray(node)) node.forEach(visit); else if (node && typeof node === 'object' && node.props) { nodes.push(node); visit(node.props.children); visit(node.props.content) } }
     visit(tree)
     expect(nodes.find(node => node.type === 'button' && String(node.props['aria-label']).includes('展开 2 张同价挂单'))).toBeDefined()
-    expect(nodes.some(node => node.type === 'span' && node.props.children === '未知 (2)')).toBe(true)
+    expect(nodes.some(node => node.type === 'span' && String(node.props.className).includes('replay-ladder-order-tag') && node.props.children[2] === '未知')).toBe(true)
     const button = nodes.find(node => node.type === 'button' && Array.isArray(node.props.children) && node.props.children[0]?.props.children[0] === 'B')!
     button.props.onClick()
     expect(selected).toEqual(['B'])
     expect(orders[1].remaining_volume).toBeNull()
+  })
+  it('价格旁按委托方向分别合计剩余量，不沿用盘口方向，不相互抵消或合并未知方向', () => {
+    const orders = [order({ key: 'A', remaining_volume: 200 }), order({ key: 'B', remaining_volume: 50 }),
+      order({ key: 'C', direction: 'SELL', remaining_volume: 100, cancel_pending: true }),
+      order({ key: 'D', direction: null, remaining_volume: null })]
+    const before = JSON.stringify(orders)
+    const html = renderToStaticMarkup(createElement(ReplayDepthLadder, { quote: quote(), orders, view: { min: 95, max: 105, tick: 1 }, layout, height: 420,
+      executionId: 'E', selected: 'C', onSelect() {}, priceText: String, quantityText: value => value == null ? '未知' : String(value) }))
+    expect(html).toContain('replay-ladder-order-tag replay-depth-bid">买 250</span>')
+    expect(html).toContain('replay-ladder-order-tag replay-depth-ask" data-pending="true">卖 100 待撤</span>')
+    expect(html).toContain('replay-ladder-order-tag text-ink-2">方向未知 未知</span>')
+    expect(html).not.toContain('>账户挂单<')
+    expect(html).not.toContain('>—<')
+    expect(html).toContain('is-selected')
+    expect(JSON.stringify(orders)).toBe(before)
+  })
+  it('无盘口的档外委托保留方向和未知剩余量，单笔仍可直接选中', () => {
+    const html = renderToStaticMarkup(createElement(ReplayDepthLadder, { quote: null, orders: [order({ direction: 'SELL', remaining_volume: null })],
+      view: { min: 95, max: 105, tick: 1 }, layout, height: 420, executionId: 'E', selected: null, onSelect() {}, priceText: String,
+      quantityText: value => value == null ? '未知' : String(value) }))
+    expect(html).toContain('replay-ladder-order-tag replay-depth-ask">卖 未知</span>')
+    expect(html).toContain('盘口未记录／已失效')
+    expect(html).toContain('自有卖剩余 未知')
   })
   it('密集热力以价格像素区间保留峰值与未知标记，不累加数量', () => {
     const depth = quote(2)

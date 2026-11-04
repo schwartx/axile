@@ -12,7 +12,7 @@ import '@/styles/theme.css'
 import '@/features/replay/replay.css'
 
 const range = { start_us: 0, end_us: 1_000_000 }
-const scenarios = [{ value: 'history', label: '大数据拖动 · 一万盘口与五千成交' }, { value: 'records', label: '委托与成交定位' }, { value: 'two', label: '买2 / 卖2' }, { value: 'four', label: '买4 / 卖4' }, { value: 'asym', label: '买2 / 卖7' },
+const scenarios = [{ value: 'history', label: '大数据拖动 · 一万盘口与五千成交' }, { value: 'records', label: '委托与成交定位' }, { value: 'orders', label: '同价双向挂单' }, { value: 'two', label: '买2 / 卖2' }, { value: 'four', label: '买4 / 卖4' }, { value: 'asym', label: '买2 / 卖7' },
   { value: 'many', label: '买120 / 卖120 · 聚合' }, { value: 'motion', label: '盘口动效' }, { value: 'changing', label: '档数随时间变化' }, { value: 'unknown', label: '未知挂量与零量' }, { value: 'expiry', label: '盘口过期' }, { value: 'gap', label: '盘口缺口' }]
 
 function fixture(scenario: string): ReplayWindow {
@@ -43,7 +43,11 @@ function fixture(scenario: string): ReplayWindow {
   if (scenario === 'unknown') frames[0].bids = [{ price: 100, quantity: null }, { price: 99, quantity: 0 }, { price: 98, quantity: 3 }]
   return { recording_id: 'synthetic', window_id: scenario, context: { schema_version: 1, instrument: { SYNTHETIC: { price_tick: step, price_decimals: dense ? 4 : 2, quantity_decimals: 2 } } },
     complete: true, coverage: [range], gaps: scenario === 'gap' ? [{ start_us: 500_000, end_us: 700_000, topic: 'depth', symbol: 'SYNTHETIC', reason: '合成缺口' }] : [],
-    next_cursor: null, state_before_start: { time_us: 0, state_through_seq: 0 },
+    next_cursor: null, state_before_start: { time_us: 0, state_through_seq: 0, orders: scenario === 'orders' ? Object.fromEntries([
+      { order_id: 'BUY-A', direction: 'BUY', quantity: 300, filled_quantity: 100, remaining_quantity: 200 },
+      { order_id: 'BUY-B', direction: 'BUY', quantity: 50, filled_quantity: 0, remaining_quantity: 50 },
+      { order_id: 'SELL-A', direction: 'SELL', quantity: 100, filled_quantity: 0, remaining_quantity: 100 },
+    ].map(order => [JSON.stringify(['SYNTHETIC', order.order_id]), { symbol: 'SYNTHETIC', price: 100, status: 'working', confirmed_book: true, sync_generation: 1, ...order }])) : undefined },
     messages: [...frames.map((data, index) => ({ schema_version: 1, recording_id: 'synthetic', time_us: 100_000 + index * 300_000, capture_seq: index + 1, topic: '/quote/SYNTHETIC', data })),
       ...(scenario === 'records' ? ['/order', '/trade'].map((topic, index) => ({ schema_version: 1, recording_id: 'synthetic', capture_seq: frames.length + index + 1, time_us: 400_000 + index * 200_000, topic,
         data: { symbol: 'SYNTHETIC', order_id: 'DEMO-ORDER', trade_key: 'DEMO-TRADE', identity_quality: 'stable', execution_id: 'synthetic', direction: 'BUY', price: 100, quantity: 1, status: 'working' } })) : [])] }

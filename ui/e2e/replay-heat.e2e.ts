@@ -1,4 +1,30 @@
 import { expect, test } from '@playwright/test'
+
+test('own orders show separate buy and sell tags beside price in the compact ladder', async ({ page }, testInfo) => {
+  await page.goto('/tests/replay-depth.fixture.html')
+  await page.getByRole('button', { name: '验收场景' }).click()
+  await page.getByRole('option', { name: '同价双向挂单' }).click()
+  const ladder = page.getByLabel('当前盘口', { exact: true })
+  const row = ladder.locator('[data-price="100:100"]')
+  await expect(row.locator('.replay-ladder-order-tag')).toHaveText(['买 250', '卖 100'])
+  await expect(ladder.locator('.replay-ladder-head')).toHaveText('档位价格市场量')
+  await expect(ladder.locator('[data-price="99:99"] .replay-ladder-order-tag')).toHaveCount(0)
+  const geometry = await row.evaluate(element => {
+    const tags = [...element.querySelectorAll('.replay-ladder-order-tag')].map(tag => tag.getBoundingClientRect())
+    const amount = element.querySelector('.replay-ladder-amount')!.getBoundingClientRect()
+    const list = element.closest('.replay-ladder-list')!.getBoundingClientRect()
+    const prices = [...element.closest('.replay-ladder-list')!.querySelectorAll('.replay-ladder-price > span:first-child')].map(price => price.getBoundingClientRect().right)
+    return { separated: tags[0].right <= tags[1].left && tags[1].right <= amount.left,
+      fits: amount.right <= list.right, pricesAligned: prices.every(right => right === prices[0]), height: element.getBoundingClientRect().height }
+  })
+  expect(geometry).toEqual({ separated: true, fits: true, pricesAligned: true, height: 20 })
+  await row.getByRole('button').focus()
+  await expect(page.getByLabel(/^100(?:\.00)? 的账户挂单$/)).toBeVisible()
+  await page.getByRole('button', { name: /BUY-B.*买 · 剩余 50/ }).click()
+  await expect(row.locator('.is-selected')).toBeVisible()
+  await page.screenshot({ path: testInfo.outputPath('compact-own-orders.png') })
+})
+
 test('large-canvas timeline drag reuses history while seeking in both directions', async ({ browser }, testInfo) => {
   const context = await browser.newContext({ viewport: { width: 2000, height: 1200 }, deviceScaleFactor: 2 })
   const page = await context.newPage()

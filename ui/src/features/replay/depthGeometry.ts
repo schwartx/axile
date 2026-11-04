@@ -36,6 +36,13 @@ export interface ReplayDepthBucket {
   quantity: number | null; unknown: boolean
 }
 
+export function replayDepthOrderGroups(orders: ReplayOrder[]) {
+  return (['BUY', 'SELL', null] as const).map(direction => ({
+    direction, label: direction === 'BUY' ? '买' : direction === 'SELL' ? '卖' : '方向未知',
+    orders: orders.filter(order => (order.direction === 'BUY' || order.direction === 'SELL' ? order.direction : null) === direction),
+  })).filter(group => group.orders.length)
+}
+
 function depthPriceRows(levels: RecordedDepthLevel[], orders: ReplayOrder[], view: ReplayPriceView) {
   const prices = new Map<number, { levels: RecordedDepthLevel[]; orders: ReplayOrder[] }>()
   const atPrice = (price: number) => {
