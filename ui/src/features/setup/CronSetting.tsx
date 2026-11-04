@@ -2,6 +2,7 @@ import { useId, useRef, useState } from 'react'
 import { Clock3 } from 'lucide-react'
 import { CenteredModal } from '@/components/ui/CenteredModal'
 import { Select } from '@/components/ui/Select'
+import { Segmented } from '@/components/ui/Segmented'
 import { CronFieldEditor } from '@/features/setup/CronFieldEditor'
 import { CronSettingHelp } from '@/features/setup/CronSettingHelp'
 import { cronToExpr } from '@/features/setup/cron'
@@ -19,7 +20,6 @@ export function CronSetting({ value, onConfirm }: { value: string; onConfirm: (v
   const [fieldIndex, setFieldIndex] = useState(0)
   const [showHelp, setShowHelp] = useState(false)
   const tabsId = useId()
-  const tabRefs = useRef<(HTMLButtonElement | null)[]>([])
   const listRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<HTMLDivElement>(null)
   const selectedIndex = Math.max(0, rules.findIndex((rule) => rule.id === selectedId))
@@ -78,7 +78,7 @@ export function CronSetting({ value, onConfirm }: { value: string; onConfirm: (v
     </button>
     {rules.length > 0 && <CenteredModal open={open} title="定时任务设置"
       titleSuffix={<span className="ml-3 inline-block rounded-md bg-fill px-2 py-0.5 align-middle text-xs font-normal text-ink-2">北京时间</span>}
-      onClose={() => setOpen(false)} widthClassName="w-[1080px] h-[min(680px,86dvh)]" scrollBody={false}
+      onClose={() => setOpen(false)} widthClassName="w-[1080px] h-[min(760px,86dvh)]" scrollBody={false}
       footer={<div className="mx-[22px] flex justify-end gap-2 border-t border-line py-3">
         <button type="button" onClick={() => setOpen(false)} className="rounded-[9px] border border-line px-4 py-2 text-sm text-ink-2 hover:bg-fill">取消</button>
         <button type="button" onClick={confirm} disabled={!rules.length || errors.some(Boolean)}
@@ -114,29 +114,17 @@ export function CronSetting({ value, onConfirm }: { value: string; onConfirm: (v
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <span className="shrink-0 text-sm font-semibold">常用表达式</span>
-            <Select<string | null> value={null} options={CRON_SETTING_PRESETS} onChange={selectPreset} placeholder="选择常用表达式"
+            <Select<string | null> searchable value={null} options={CRON_SETTING_PRESETS} onChange={selectPreset} placeholder="选择常用表达式"
               ariaLabel="选择常用表达式" className="min-w-0 flex-1 justify-between px-3 py-1.5 text-sm" />
           </div>
           <div ref={editorRef} className="quiet-scrollbar lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-y-auto lg:overscroll-contain lg:pr-1 lg:[scrollbar-gutter:stable]">
             {showHelp && <CronSettingHelp />}
-            <div role="tablist" aria-label="时间字段" className="sticky top-0 z-10 flex shrink-0 justify-between gap-2 border-b border-line bg-surface lg:justify-start lg:gap-5">
-              {CRON_FIELDS.map((item, index) => <button key={item.id} ref={(node) => { tabRefs.current[index] = node }}
-                id={`${tabsId}-${item.id}`} type="button" role="tab" aria-selected={fieldIndex === index} aria-controls={`${tabsId}-panel`}
-                tabIndex={fieldIndex === index ? 0 : -1} onClick={() => setFieldIndex(index)}
-                onKeyDown={(event) => {
-                  let next: number
-                  if (event.key === 'ArrowRight') next = (index + 1) % CRON_FIELDS.length
-                  else if (event.key === 'ArrowLeft') next = (index + CRON_FIELDS.length - 1) % CRON_FIELDS.length
-                  else if (event.key === 'Home') next = 0
-                  else if (event.key === 'End') next = CRON_FIELDS.length - 1
-                  else return
-                  event.preventDefault()
-                  setFieldIndex(next)
-                  tabRefs.current[next]?.focus()
-                }}
-                className={`shrink-0 border-b-2 px-1 py-2.5 text-sm transition-colors ${fieldIndex === index ? 'border-accent font-semibold text-accent' : 'border-transparent text-ink-2 hover:text-accent'}`}>{item.label}</button>)}
+            <div className="sticky top-0 z-10 shrink-0 bg-surface py-1">
+              <Segmented value={field.id} options={CRON_FIELDS.map((item) => ({ value: item.id, label: item.label }))}
+                onChange={(next) => setFieldIndex(CRON_FIELDS.findIndex((item) => item.id === next))}
+                size="sm" ariaLabel="时间字段" panelId={`${tabsId}-panel`} className="w-full [&>button]:flex-1" />
             </div>
-            <div role="tabpanel" id={`${tabsId}-panel`} aria-labelledby={`${tabsId}-${field.id}`} className="lg:flex lg:flex-1 lg:flex-col">
+            <div role="tabpanel" id={`${tabsId}-panel`} aria-labelledby={`${tabsId}-panel-${field.id}`}>
               {selectedField ? <CronFieldEditor field={field} value={selectedField} onChange={changeField} />
                 : <p className="py-4 text-sm leading-relaxed text-ink-3">请先在下方将当前表达式调整为五段，或选择常用表达式。</p>}
             </div>
