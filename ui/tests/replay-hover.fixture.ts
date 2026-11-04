@@ -26,6 +26,8 @@ let inspectedOrders = 0
 const inspectionModule = await import(ui + 'features/replay/inspection.ts')
 const inspectOrder = inspectionModule.inspectReplayOrder
 mock.module(ui + 'features/replay/inspection.ts', () => ({ ...inspectionModule, inspectReplayOrder: (...args: Parameters<typeof inspectOrder>) => { inspectedOrders++; return inspectOrder(...args) } }))
+const heatMock = await import(ui + '../tests/replay-heat.mock.ts')
+mock.module(ui + 'features/replay/useReplayHeat.ts', () => heatMock)
 const { ReplayChart } = await import(ui + 'features/replay/ReplayChart.tsx')
 const { projectReplay } = await import(ui + 'features/replay/model.ts')
 const { replayChartLayout, replayTimeX, replayPriceY, replayYPrice } = await import(ui + 'features/replay/chartGeometry.ts')
@@ -41,7 +43,7 @@ const windowData: any = { recording_id: 'r', window_id: 'w', context: { schema_v
 const projection = projectReplay(windowData, { time_us: 49 }), scene = projectReplay(windowData, { time_us: 99 }), before = JSON.stringify(projection)
 const props: any = { window: windowData, range: windowData.coverage[0], projection, scene, symbol: 'X', executionId: 'E', selectedOrder: null, selectedTrade: null,
 onSelectOrder: (key: string) => selected.push(key), onSelectTrade: (key: string) => selected.push(key), onInspect: () => pauses++, onSeek: (time: number, seq?: number) => { seeks.push(time); if (seq != null) seeks.push(seq) } }
-function draw() { at = 0; tree = ReplayChart(props); const card = find(tree, n => n.type?.name === 'ReplayInspector'); if (card) inspection = card.props }
+function draw() {  at = 0; tree = ReplayChart(props); const card = find(tree, n => n.type?.name === 'ReplayInspector'); if (card) inspection = card.props }
 function find(node: any, predicate: (n: any) => boolean): any {
   if (Array.isArray(node)) { for (const child of node) { const found = find(child, predicate); if (found) return found } }
   else if (node && typeof node === 'object') return predicate(node) ? node : find(node.props?.children, predicate)

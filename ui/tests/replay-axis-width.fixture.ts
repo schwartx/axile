@@ -2,6 +2,7 @@
 import { mock } from 'bun:test'
 import assert from 'node:assert/strict'
 declare const ui: string
+const viewFrames = new Map<number, FrameRequestCallback>(); let viewFrameId = 0
 let at = 0, dirty = false, tree: any
 const slots: any[] = [], effects: (() => void)[] = [], timers = new Map<number, () => void>()
 let timerId = 0
@@ -45,8 +46,10 @@ const observer = class { constructor(callback: () => void) { observers.push(call
 Object.assign(globalThis, { ResizeObserver: observer, MutationObserver: observer,
   getComputedStyle: () => ({ getPropertyValue: () => 'monospace' }),
   document: { documentElement: {}, createElement: () => { const layer = {}; offscreen.push(layer); return layer }, fonts: { addEventListener() {}, removeEventListener() {} } },
-  window: { setTimeout: (fn: () => void) => { timers.set(++timerId, fn); return timerId }, clearTimeout: (id: number) => timers.delete(id) },
+  window: { requestAnimationFrame: (fn: FrameRequestCallback) => { viewFrames.set(++viewFrameId, fn); return viewFrameId }, cancelAnimationFrame: (id: number) => viewFrames.delete(id), setTimeout: (fn: () => void) => { timers.set(++timerId, fn); return timerId }, clearTimeout: (id: number) => timers.delete(id) },
 })
+const heatMock = await import(ui + '../tests/replay-heat.mock.ts')
+mock.module(ui + 'features/replay/useReplayHeat.ts', () => heatMock)
 const { ReplayChart } = await import(ui + 'features/replay/ReplayChart.tsx')
 const { projectReplay } = await import(ui + 'features/replay/model.ts')
 const data: any = { recording_id: 'r', window_id: 'w', context: { schema_version: 1, instrument: { X: { price_tick: .01 } } }, coverage: [{ start_us: 0, end_us: 100 }], gaps: [], state_before_start: { time_us: 0, state_through_seq: 0 }, messages: [
@@ -58,7 +61,7 @@ function find(node: any, predicate: (n: any) => boolean): any {
   if (Array.isArray(node)) { for (const child of node) { const found = find(child, predicate); if (found) return found } }
   else if (node && typeof node === 'object') return predicate(node) ? node : find(node.props?.children, predicate)
 }
-function draw() {
+function draw() { for (const [id, fn] of [...viewFrames]) { viewFrames.delete(id); fn(0) }
   let attempts = 0
   do { dirty = false; at = 0; tree = ReplayChart(props); for (const effect of effects.splice(0)) effect(); assert.ok(++attempts < 20, '布局应在有限次渲染内稳定') } while (dirty)
 }
@@ -80,6 +83,14 @@ const expanded = axisLeft()
 assert.ok(expanded < initial, '松手后才为多出的整数位扩宽')
 reset()
 assert.equal(axisLeft(), initial, '恢复视图收回历史长读数的多余宽度')
+const beforeMainDrag = historyPaints, beforeMainLayers = offscreen.length
+canvas().props.onPointerDown(event(100, 100)); draw()
+for (const [x, y] of [[120, 110], [140, 130], [160, 140]]) {
+  canvas().props.onPointerMove(event(x, y)); draw()
+  assert.equal(historyPaints, beforeMainDrag, '主图拖动不重新聚合或绘制历史热力图')
+  assert.equal(offscreen.length, beforeMainLayers, '主图拖动复用历史和委托缓存')
+}
+dragEnd(); reset()
 const labelBefore = tick(), beforePriceScale = historyPaints
 canvas().props.onPointerDown(event(550, 100)); draw()
 for (const y of [150, 200, 400, 700]) {

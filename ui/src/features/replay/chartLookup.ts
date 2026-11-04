@@ -10,8 +10,8 @@ export function replayTimeUpperBound(records: readonly { time_us: number }[], ti
 }
 
 /** 拖动只提交每帧最后位置，结束时同步提交；切换上下文时丢弃旧位置。 */
-export function replaySeekScheduler(seek: (timeUs: number) => void, request: (callback: FrameRequestCallback) => number, cancel: (frame: number) => void) {
-  let frame: number | null = null, pending: number | null = null
+export function replaySeekScheduler<T = number>(seek: (timeUs: T) => void, request: (callback: FrameRequestCallback) => number, cancel: (frame: number) => void) {
+  let frame: number | null = null, pending: T | null = null
   const clearFrame = () => { if (frame != null) cancel(frame); frame = null }
   const flush = () => {
     clearFrame()
@@ -20,7 +20,7 @@ export function replaySeekScheduler(seek: (timeUs: number) => void, request: (ca
     if (time != null) seek(time)
   }
   return {
-    schedule(timeUs: number) {
+    schedule(timeUs: T) {
       pending = timeUs
       frame ??= request(() => { frame = null; flush() })
     },

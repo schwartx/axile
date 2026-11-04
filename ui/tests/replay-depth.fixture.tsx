@@ -12,10 +12,22 @@ import '@/styles/theme.css'
 import '@/features/replay/replay.css'
 
 const range = { start_us: 0, end_us: 1_000_000 }
-const scenarios = [{ value: 'records', label: '委托与成交定位' }, { value: 'two', label: '买2 / 卖2' }, { value: 'four', label: '买4 / 卖4' }, { value: 'asym', label: '买2 / 卖7' },
+const scenarios = [{ value: 'history', label: '大数据拖动 · 一万盘口与五千成交' }, { value: 'records', label: '委托与成交定位' }, { value: 'two', label: '买2 / 卖2' }, { value: 'four', label: '买4 / 卖4' }, { value: 'asym', label: '买2 / 卖7' },
   { value: 'many', label: '买120 / 卖120 · 聚合' }, { value: 'motion', label: '盘口动效' }, { value: 'changing', label: '档数随时间变化' }, { value: 'unknown', label: '未知挂量与零量' }, { value: 'expiry', label: '盘口过期' }, { value: 'gap', label: '盘口缺口' }]
 
 function fixture(scenario: string): ReplayWindow {
+  if (scenario === 'history') {
+    const messages = [
+      ...Array.from({ length: 10000 }, (_, i) => ({ time_us: i * 90, topic: '/quote/SYNTHETIC', data: {
+        symbol: 'SYNTHETIC', book_valid: true, available: true, valid_until_us: (i + 1) * 90,
+        bids: Array.from({ length: 10 }, (_, j) => ({ price: 100 + i % 20 * .01 - j * .01, quantity: (i + j) % 100 })),
+        asks: Array.from({ length: 10 }, (_, j) => ({ price: 100.3 + i % 20 * .01 + j * .01, quantity: (i + j) % 100 })),
+      } })),
+      ...Array.from({ length: 5000 }, (_, i) => ({ time_us: i * 180, topic: '/market_trade/SYNTHETIC', data: { symbol: 'SYNTHETIC', price: 100.2 + i % 30 * .01, quantity: i % 10 + 1, direction: i % 2 ? 'BUY' : 'SELL', identity_quality: 'stable', trade_key: String(i) } })),
+    ].sort((a,b) => a.time_us - b.time_us).map((row, i) => ({ ...row, schema_version: 1, recording_id: 'synthetic', capture_seq: i + 1 }))
+    return { recording_id: 'synthetic', window_id: scenario, context: { schema_version: 1, instrument: { SYNTHETIC: { price_tick: .01, price_decimals: 2 } } },
+      messages, complete: true, next_cursor: null, coverage: [range], gaps: [], state_before_start: { time_us: 0, state_through_seq: 0 } }
+  }
   const dense = scenario === 'many', step = dense ? .0001 : 1
   const depth = (bids: number, asks: number): ReplayData => ({ symbol: 'SYNTHETIC', book_valid: true, available: true, available_depth: 5,
     valid_until_us: scenario === 'expiry' ? 600_000 : 2_000_000,

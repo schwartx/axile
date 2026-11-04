@@ -55,6 +55,10 @@
 .replay-chart-plot { position: relative; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
 .replay-chart-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-height: 24px; flex-shrink: 0; padding: 4px 12px; font-size: 11px; color: var(--color-ink-2); }
 .replay-heat-scale { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+/* Async status changes must not resize the plot and trigger another query. */
+.replay-heat-caption { display: inline-grid; }
+.replay-heat-caption::before { content: '历史缩放预览 · 结束后补绘'; visibility: hidden; grid-area: 1 / 1; }
+.replay-heat-caption > span { grid-area: 1 / 1; }
 .replay-heat-legend { display: inline-grid; min-width: 120px; gap: 2px; }
 .replay-heat-legend i { display: block; height: 5px; background: linear-gradient(to right, color-mix(in srgb, var(--color-accent) 2.5%, transparent), color-mix(in srgb, var(--color-accent) 85%, transparent)); }
 .replay-heat-legend > span { display: flex; justify-content: space-between; gap: 6px; font-size: 10px; }
