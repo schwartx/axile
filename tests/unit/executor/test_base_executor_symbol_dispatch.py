@@ -239,7 +239,9 @@ def test_execute_continues_other_symbols_and_marks_overall_failure(
     from axile.executor import execution_engine as execution_engine_module
     from axile.executor.algorithms.core import base as algorithm_base
 
-    executor = _TestExecutor()
+    executor = _TestExecutor(
+        account_assets_snapshots=[_assets(), _assets(positions=[("rb2610", 1, PositionDirection.LONG)])]
+    )
 
     class _Params:
         def __init__(self, timeout: int) -> None:
@@ -264,8 +266,9 @@ def test_execute_continues_other_symbols_and_marks_overall_failure(
                         direction=OrderDirection.BUY,
                         order_type=OrderType.LIMIT,
                         volume=1.0,
+                        filled_volume=1.0,
                         price=100.0,
-                        status="FILLED",
+                        status=OrderStatus.FILLED,
                     )
                 ],
                 account_assets=executor.get_account_assets(),
@@ -444,7 +447,9 @@ def test_execute_does_not_treat_memory_error_key_as_failure_when_status_succeeds
     from axile.executor import execution_engine as execution_engine_module
     from axile.executor.algorithms.core import base as algorithm_base
 
-    executor = _TestExecutor()
+    executor = _TestExecutor(
+        account_assets_snapshots=[_assets(), _assets(positions=[("rb2610", 1, PositionDirection.LONG)])]
+    )
     monkeypatch.setattr(_TestExecutor, "_supports_parallel_symbol_dispatch", lambda _self: False)
 
     class _Params:
@@ -512,7 +517,8 @@ def test_execute_runs_reduce_phase_before_open_phase(
     executor = _TestExecutor(
         account_assets_snapshots=[
             _assets(positions=[("rb2610", 5.0, PositionDirection.LONG)]),
-            _assets(positions=[]),
+            _assets(positions=[("rb2610", 2, PositionDirection.LONG)]),
+            _assets(positions=[("rb2610", 2, PositionDirection.LONG), ("ag2612", 3, PositionDirection.LONG)]),
         ]
     )
     calls: list[tuple[str, int | float]] = []
@@ -578,6 +584,7 @@ def test_execute_splits_reverse_symbol_into_two_phases_and_replans_open_phase(
         account_assets_snapshots=[
             _assets(positions=[("rb2610", 5.0, PositionDirection.LONG)]),
             _assets(total_asset=2000.0, positions=[]),
+            _assets(total_asset=2000.0, positions=[("rb2610", 6, PositionDirection.SHORT)]),
         ]
     )
     calls: list[int | float] = []
@@ -644,6 +651,7 @@ def test_execute_only_cancels_all_orders_once_across_two_phases(
         account_assets_snapshots=[
             _assets(positions=[("rb2610", 5.0, PositionDirection.LONG)]),
             _assets(total_asset=2000.0, positions=[]),
+            _assets(total_asset=2000.0, positions=[("rb2610", 6, PositionDirection.SHORT)]),
         ]
     )
     call_log: list[str] = []
@@ -1302,7 +1310,7 @@ def test_execute_empty_target_on_flat_account_is_noop(monkeypatch, last_target) 
 def test_execute_empty_target_dispatches_existing_position_to_zero(monkeypatch, direction) -> None:
     from axile.executor import execution_engine as execution_engine_module
 
-    executor = _TestExecutor(account_assets_snapshots=[_assets(positions=[("rb2610", 5.0, direction)])])
+    executor = _TestExecutor(account_assets_snapshots=[_assets(positions=[("rb2610", 5.0, direction)]), _assets()])
     calls = []
 
     def resolve_algorithm(name, session):

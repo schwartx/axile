@@ -19,10 +19,9 @@ from gm.csdk.c_sdk import TickLikeDict2  # type: ignore
 from gm.model import DictLikeAccountStatus, DictLikeExecRpt, DictLikeOrder  # type: ignore
 from gm.model.storage import Context  # type: ignore
 
-from axile.common.trade_channel import TradeChannel
 from axile.executor.gm.common import (
     AccConnectionState,
-    _build_gm_trade_id,
+    convert_gm_trade_to_trade_record,
     from_gm_price,
 )
 from axile.executor.gm.connection import (
@@ -143,36 +142,9 @@ def _convert_order_to_unified(order: DictLikeOrder) -> UnifiedOrder:
     return convert_gm_order_to_unified(raw)
 
 
-def _convert_execrpt_to_trade(execrpt: DictLikeExecRpt) -> TradeRecord:
-    """将GM执行回报转换为统一成交记录."""
-    trade_time = execrpt.created_at
-    if isinstance(trade_time, datetime):
-        trade_time = trade_time.isoformat()
-
-    return TradeRecord.create(
-        trade_id=_build_gm_trade_id(
-            exec_id=getattr(execrpt, "exec_id", None),
-            cl_ord_id=getattr(execrpt, "cl_ord_id", None),
-            exchange_order_id=getattr(execrpt, "order_id", None),
-            symbol=getattr(execrpt, "symbol", None),
-            trade_time=trade_time,
-            trade_volume=float(getattr(execrpt, "volume", 0) or 0),
-            trade_price=float(getattr(execrpt, "price", 0) or 0),
-        ),
-        symbol=str(getattr(execrpt, "symbol", "") or ""),
-        order_id=str(getattr(execrpt, "cl_ord_id", None) or getattr(execrpt, "order_id", None) or ""),
-        trade_time=str(trade_time) if trade_time else "",
-        trade_volume=float(getattr(execrpt, "volume", 0) or 0),
-        trade_price=float(getattr(execrpt, "price", 0) or 0),
-        extra={
-            "channel_type": TradeChannel.GM,
-            "account_id": getattr(execrpt, "account_id", None),
-            "symbol": str(getattr(execrpt, "symbol", "") or ""),
-            "cl_ord_id": getattr(execrpt, "cl_ord_id", None),
-            "exchange_order_id": getattr(execrpt, "order_id", None),
-            "raw_trade_data": (dict(execrpt) if hasattr(execrpt, "__iter__") else {}),  # pyright: ignore[reportUnknownArgumentType]
-        },
-    )
+def _convert_execrpt_to_trade(execrpt: DictLikeExecRpt) -> TradeRecord | None:
+    """回调和查询使用相同的回报类型校验、代码转换与成交标识。"""
+    return convert_gm_trade_to_trade_record(dict(execrpt))
 
 
 def _convert_tick_to_unified(tick: TickLikeDict2) -> UnifiedPriceData:
@@ -385,7 +357,8 @@ def on_execution_report(_context: Context, execrpt: DictLikeExecRpt) -> None:
 
         if dispatcher:
             trade_record = _convert_execrpt_to_trade(execrpt)
-            dispatcher.dispatch_trade_record(trade_record)
+            if trade_record is not None:
+                dispatcher.dispatch_trade_record(trade_record)
 
     except Exception as e:
         _emit_runtime_log("error", f"处理成交回报出错: {e}")

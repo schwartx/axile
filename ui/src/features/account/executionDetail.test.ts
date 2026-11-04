@@ -674,3 +674,21 @@ for (const observed of [false, true]) it(`正常休市跳过不标成异常，�
   expect(model.spine.find(node => node.key === 'phase')).toMatchObject({ detail: '1 只休市跳过', broken: false })
   expect(model.spine.some(node => node.key === 'phase1' || node.key === 'phase2')).toBe(false)
 })
+
+it.each(['PARTIAL', 'FAILED'])('算法观测 900、收尾观测 500 时，持仓到位与 %s 执行错误分别保留', (status) => {
+  const symbol = '300433.SZ'
+  const result = { status, final_volume: 900, target_volume: 500, error: '渠道报单失败' }
+  const model = buildExecutionDetail([], [art('execution_summary', {
+    status,
+    symbol_results: { [symbol]: result },
+    reconciliation: {
+      account: { source_before: 'real', source_after: 'real' },
+      symbols: [{ symbol, before: 900, after: 500, target: 500, filled: -400, reached: true, attained_ratio: 1 }],
+    },
+  })])
+  expect(model.symbols[0]).toMatchObject({
+    status, observedAfter: 500, after: 500, reached: true, attainedRatio: 1, reason: '渠道报单失败',
+  })
+  expect(model.header.reachedCount).toBe(1)
+  expect(result.final_volume).toBe(900)
+})

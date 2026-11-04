@@ -9,12 +9,14 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from math import isfinite
 from typing import TYPE_CHECKING
 
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.algorithms.core.base import AlgorithmInput, resolve_algorithm
 from axile.executor.algorithms.exceptions import execution_error_message
+from axile.executor.algorithms.utils.outcome import TARGET_NOT_REACHED, summarize_outcome
 from axile.executor.execution_runtime import ExecutionRuntime
 from axile.executor.execution_session import ExecutionSession
 from axile.executor.market_data_validation import MarketDataUnavailableError
@@ -259,6 +261,7 @@ class ExecutionEngine:
     def __init__(self, owner: AbstractExecutor, runtime: ExecutionRuntime | None = None) -> None:
         self._owner = owner
         self._runtime = runtime or owner.require_execution_runtime()
+        self._account_snapshot: tuple[UnifiedAccountAssets, str | None] | None = None
 
     def run(self, standard_input: UnifiedStandardInput) -> UnifiedStandardOutput:
         """执行通用编排流程."""
@@ -297,6 +300,7 @@ class ExecutionEngine:
 
     def _run_symbol_algorithms(self, standard_input: UnifiedStandardInput) -> list[AlgorithmResult]:
         """按品种规划执行，并按先减后增的顺序分阶段调度."""
+        self._account_snapshot = None
         self._owner.handle_termination_checkpoint()
         # planning 阶段只做“算清楚每个 symbol 应该做什么”，不真正触发算法执行。
         planning = self._build_symbol_algorithm_plans(standard_input)
@@ -344,6 +348,9 @@ class ExecutionEngine:
                 *phase_two_results,
             ]
         )
+        if self._account_snapshot is None:
+            self._account_snapshot = self._read_result_assets()
+        merged_results = self._reconcile_result_positions(merged_results, self._account_snapshot[0])
         self._emit_symbol_decision_events(standard_input, merged_results)
         return merged_results
 
@@ -801,18 +808,26 @@ class ExecutionEngine:
         """执行第二阶段的开仓/加仓任务。"""
         if not dispatch_phases.phase_two_plans:
             return []
-        if self._has_unsuccessful_results(phase_one_results):
+        assets = planning.account_assets
+        snapshot_error = None
+        if dispatch_phases.phase_one_tasks:
+            self._owner.handle_termination_checkpoint()
+            self._account_snapshot = self._read_result_assets()
+            assets, snapshot_error = self._account_snapshot
+            phase_one_results[:] = self._reconcile_result_positions(phase_one_results, assets)
+        if snapshot_error or self._has_unsuccessful_results(phase_one_results):
             return self._build_blocked_phase_two_results(
                 dispatch_phases.phase_two_plans,
-                account_assets=planning.account_assets,
+                account_assets=assets,
                 market_data=planning.market_data,
+                error=snapshot_error,
             )
 
         phase_two_results: list[AlgorithmResult] = []
         if dispatch_phases.phase_one_tasks:
-            self._owner.handle_termination_checkpoint()
-            # 第一阶段实际成交后，账户资产和剩余可用资金都可能变化，因此这里重算目标数量。
-            phase_two_replan = self._rebuild_phase_two_tasks(standard_input, dispatch_phases.phase_two_plans)
+            phase_two_replan = self._rebuild_phase_two_tasks(
+                standard_input, dispatch_phases.phase_two_plans, account_assets=assets
+            )
             phase_two_tasks = phase_two_replan.tasks
             phase_two_results.extend(phase_two_replan.planning_failures)
         else:
@@ -821,8 +836,47 @@ class ExecutionEngine:
                 for plan in dispatch_phases.phase_two_plans
             ]
         self._owner.handle_termination_checkpoint()
+        if phase_two_tasks:
+            # 新一阶段开始下单后，前一阶段快照不能再用于整轮收尾。
+            self._account_snapshot = None
         phase_two_results.extend(self._run_prepared_symbol_algorithms(phase_two_tasks))
         return phase_two_results
+
+    def _reconcile_result_positions(
+        self, results: list[AlgorithmResult], assets: UnifiedAccountAssets
+    ) -> list[AlgorithmResult]:
+        """用同一快照合并持仓与到位结论；实际执行错误保持原样。"""
+        if is_degraded_snapshot_source(assets.source):
+            return results
+        reconciled = []
+        for result in results:
+            final = self._owner.get_current_volume(result.symbol, assets)
+            if not isfinite(final) or normal_session_skip(result.model_dump()):
+                reconciled.append(result)
+                continue
+            values = {name: getattr(result, name) for name in AlgorithmResult.model_fields}
+            values.update(final_volume=final, account_assets=assets)
+            can_rejudge = (
+                result.reason_code == TARGET_NOT_REACHED
+                and result.status in {ExecutionStatus.FAILED, ExecutionStatus.PARTIAL}
+            ) or (is_success_status(result.status) and not result.error)
+            if (
+                can_rejudge
+                and result.target_volume is not None
+                and (result.reason_code == TARGET_NOT_REACHED or not self._is_same_volume(final, result.target_volume))
+            ):
+                start = result.sizing.current_quantity if result.sizing is not None else result.final_volume
+                values.update(
+                    summarize_outcome(
+                        start=final if start is None else start,
+                        final=final,
+                        target=result.target_volume,
+                        orders=result.orders,
+                        trades=result.trades,
+                    )
+                )
+            reconciled.append(AlgorithmResult(**values))
+        return reconciled
 
     def _build_prepared_symbol_algorithm(
         self,
@@ -873,9 +927,10 @@ class ExecutionEngine:
         *,
         account_assets: UnifiedAccountAssets,
         market_data: dict[str, UnifiedPriceData],
+        error: str | None = None,
     ) -> list[AlgorithmResult]:
         """第一阶段失败时，为第二阶段待执行品种构造阻断结果."""
-        blocked_error = "第一阶段存在未成功的 symbol，已跳过后续开仓阶段"
+        blocked_error = error or "第一阶段存在未成功的 symbol，已跳过后续开仓阶段"
         blocked_results: list[AlgorithmResult] = []
         for plan in plans:
             blocked_results.append(
@@ -896,6 +951,8 @@ class ExecutionEngine:
         self,
         standard_input: UnifiedStandardInput,
         plans: list[_PlannedSymbolAlgorithm],
+        *,
+        account_assets: UnifiedAccountAssets,
     ) -> _PhaseTwoReplanResult:
         """在第一阶段完成后，基于最新账户快照重算第二阶段目标."""
         if not plans:
@@ -903,7 +960,7 @@ class ExecutionEngine:
 
         phase_two_symbols = [plan.symbol for plan in plans]
         phase_two_plans = {plan.symbol: plan for plan in plans}
-        refreshed_account_assets = self._owner.get_account_assets()
+        refreshed_account_assets = account_assets
         effective_curr_target = self._build_effective_curr_target(standard_input, refreshed_account_assets)
         planning_market_data, sizing_decisions = self._plan_target_volumes_for_symbols(
             standard_input=standard_input,
@@ -1215,7 +1272,9 @@ class ExecutionEngine:
         symbol_results = self._build_symbol_results(results)
         status = _derive_dispatch_status(symbol_results)
         error = self._derive_dispatch_error(status, symbol_results)
-        account_assets, explicit_error = self._read_result_assets()
+        account_assets, explicit_error = (
+            self._account_snapshot if self._account_snapshot is not None else self._read_result_assets()
+        )
         only_normal_skips = bool(results) and all(normal_session_skip(result.model_dump()) for result in results)
         if (
             explicit_error
@@ -1265,6 +1324,8 @@ class ExecutionEngine:
         """收尾查询失败也保留已生成的品种与订单证据。"""
         try:
             assets = self._owner.get_account_assets()
+            if any(not isfinite(position.volume) for position in assets.positions):
+                return UnifiedAccountAssets.unavailable(), "最终持仓尚未确认"
             if is_degraded_snapshot_source(assets.source):
                 return assets, "最终持仓尚未确认"
             return assets, None

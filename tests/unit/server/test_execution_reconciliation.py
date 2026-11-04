@@ -432,3 +432,31 @@ def test_worker_before_capture_variants() -> None:
 def test_worker_before_capture_propagates_session_recovery() -> None:
     with pytest.raises(CtpSessionRecoveryRequired, match="return_code=-2"):
         capture_before_worker(_SessionRecoveryExecutor())
+
+
+@pytest.mark.parametrize("status", ["FAILED", "PARTIAL"])
+def test_later_account_snapshot_determines_reached_without_rewriting_algorithm_observation(status):
+    from copy import deepcopy
+
+    symbol = "300433.SZ"
+    result = {
+        "account_assets": {"total_asset": 230000, "positions": [_long(symbol, 500)], "source": "real"},
+        "symbol_results": {
+            symbol: {
+                "target_volume": 500,
+                "final_volume": 900,
+                "status": status,
+                "error": "渠道报单失败",
+                "orders": [_order("SELL", 400, 25)],
+            }
+        },
+    }
+    original = deepcopy(result)
+    before = {"total_asset": 230000, "positions": [_long(symbol, 900)], "source": "real"}
+    row = build_symbol_reconciliation(result, before)["symbols"][0]
+    assert row["before"] == row["final_volume"] == 900
+    assert row["after"] == row["target"] == 500
+    assert row["filled"] == -400
+    assert row["reached"] is True and row["attained_ratio"] == 1
+    assert row["status"] == status and row["error"] == "渠道报单失败"
+    assert result == original

@@ -10,10 +10,12 @@ from enum import IntEnum
 from typing import Any
 
 from gm.api import (  # type: ignore  # pyright: ignore[reportUnknownVariableType]
+    ExecType_Trade,
     OrderSide_Buy,
     OrderSide_Sell,
     OrderType_Limit,
 )
+from loguru import logger
 
 from axile.channels.gm_sessions import AUCTION_PHASES, SHANGHAI, gm_phase
 from axile.common.gm_symbols import GM_SYMBOL_RESOLVER
@@ -140,14 +142,25 @@ def _build_gm_trade_id(
     return f"gm-fallback:{digest}"
 
 
-def convert_gm_trade_to_trade_record(trade: dict[str, Any]) -> TradeRecord:
-    """将 GM 成交记录转换为统一成交记录."""
+def convert_gm_trade_to_trade_record(trade: dict[str, Any]) -> TradeRecord | None:
+    """仅将有效成交回报转换为成交；其他回报保留在渠道日志中。"""
+    if trade.get("exec_type") != ExecType_Trade:
+        logger.warning("GM 非成交执行回报: {}", trade)
+        return None
+    try:
+        trade_volume = float(trade.get("volume", 0))
+        trade_price = float(trade.get("price", 0))
+    except (TypeError, ValueError, OverflowError):
+        logger.error("GM 成交回报数量或价格非法: {}", trade)
+        return None
+    if any(isinstance(trade.get(key), bool) for key in ("volume", "price")) or not (
+        math.isfinite(trade_volume) and trade_volume > 0 and math.isfinite(trade_price) and trade_price > 0
+    ):
+        logger.error("GM 成交回报数量或价格非法: {}", trade)
+        return None
     trade_time = trade.get("created_at")
     if isinstance(trade_time, datetime):
         trade_time = trade_time.isoformat()
-
-    trade_volume = float(trade.get("volume", 0))
-    trade_price = float(trade.get("price", 0))
 
     gm_symbol = str(trade.get("symbol", ""))
     return TradeRecord.create(

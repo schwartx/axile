@@ -641,12 +641,13 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         if not query_account_id:
             return []
         return [
-            convert_gm_trade_to_trade_record(trade)
+            record
             for trade in cast(
                 "list[dict[str, Any]]",
                 self._call_bridge(GetExecutionReportsRequest(account_id=self.account_id), timeout=10.0),
             )
             if trade.get("account_id") == query_account_id
+            and (record := convert_gm_trade_to_trade_record(trade)) is not None
         ]
 
     def _query_order_records(self, account_id: str | None = None) -> list[UnifiedOrder]:
