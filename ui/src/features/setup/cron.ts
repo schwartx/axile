@@ -47,6 +47,12 @@ export const DEFAULT_PRESET: Record<ScheduleKind, string> = {
   cn_stock: 'open',
 }
 
+/** 期货账户未配置排程时的默认自定义节奏；已有账户仍按保存值回填。 */
+export const DEFAULT_FUTURES_CRON = [
+  '1,3,5,16,18,20,31,33,35,46,48,50 10,11,13,14,15,22,23,0,1,2 * * *',
+  '8,16,18,20,31,33,35,46,48,50 9,21 * * *',
+].join(' | ')
+
 /** 期货快捷节奏默认并入夜盘；A 股 / 连续交易没有夜盘开关。 */
 export function defaultNightOn(market: ScheduleKind): boolean {
   return market === 'cn_futures'
@@ -707,8 +713,8 @@ export function defaultTimerEditorState(market: ScheduleKind): TimerEditorState 
     nightOn: defaultNightOn(market),
     supN: 0,
     supM: 1,
-    rawCron: '',
-    timerTab: 'quick',
+    rawCron: market === 'cn_futures' ? DEFAULT_FUTURES_CRON : '',
+    timerTab: market === 'cn_futures' ? 'custom' : 'quick',
     scheduleRules: [rule],
     selectedRuleId: rule.id,
   }

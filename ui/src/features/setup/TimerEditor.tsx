@@ -18,13 +18,11 @@ import { ScheduleTimeRow } from '@/components/ui/ScheduleTimeRow'
 import { MOTION_LAYOUT, useRemountFade } from '@/lib/viewTransition'
 import { executionReasonText } from '@/features/account/executionReason'
 import {
-  DEFAULT_PRESET,
   PRESETS,
   timerEditorError,
   gmTimerSessions,
   cronToExpr,
-  defaultNightOn,
-  defaultScheduleRule,
+  defaultTimerEditorState,
   resolveCronList,
   type NightSchedule,
   type ScheduleKind,
@@ -161,15 +159,15 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
     const valid = PRESETS[scheduleKind].some((p) => v.presetIds.includes(p.id))
     if (previousScheduleKind.current !== scheduleKind || !valid) {
       previousScheduleKind.current = scheduleKind
-      const rule = defaultScheduleRule(scheduleKind)
+      const defaults = defaultTimerEditorState(scheduleKind)
       onChange({
         ...v,
-        presetIds: [DEFAULT_PRESET[scheduleKind]],
-        nightOn: defaultNightOn(scheduleKind),
-        rawCron: '',
-        scheduleRules: [rule],
-        selectedRuleId: rule.id,
-        timerTab: 'quick',
+        presetIds: defaults.presetIds,
+        nightOn: defaults.nightOn,
+        rawCron: defaults.rawCron,
+        scheduleRules: defaults.scheduleRules,
+        selectedRuleId: defaults.selectedRuleId,
+        timerTab: defaults.timerTab,
       })
     }
     // 仅响应调度类型；preset 合法性随调度类型校验
