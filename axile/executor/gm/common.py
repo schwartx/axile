@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from datetime import datetime
 from enum import IntEnum
 from typing import Any
@@ -14,6 +15,7 @@ from gm.api import (  # type: ignore  # pyright: ignore[reportUnknownVariableTyp
     OrderType_Limit,
 )
 
+from axile.channels.gm_sessions import AUCTION_PHASES, SHANGHAI, gm_phase
 from axile.common.gm_symbols import GM_SYMBOL_RESOLVER
 from axile.common.trade_channel import TradeChannel
 from axile.executor.constants.order_status import OrderStatus
@@ -31,19 +33,26 @@ def from_gm_price(
     channel_type: TradeChannel = TradeChannel.GM,
     include_raw_data: bool = True,  # noqa: FBT001, FBT002
 ) -> UnifiedPriceData:
-    """从 GM tick 数据创建统一价格数据."""
+    """转换 GM tick；竞价参考价使用买卖一一致的虚拟匹配价，原成交价保留在 extra。"""
     bid_prices: list[Any] = tick["bid_price"] if tick["bid_price"] else []
     ask_prices: list[Any] = tick["ask_price"] if tick["ask_price"] else []
     bid_volumes: list[Any] = tick["bid_volume"] if tick["bid_volume"] else []
     ask_volumes: list[Any] = tick["ask_volume"] if tick["ask_volume"] else []
     gm_symbol = str(tick["symbol"])
     extra: dict[str, object] = {"channel_type": channel_type, "gm_symbol": gm_symbol}
+    last_price = float(tick["price"])
+    if tick["timestamp"] > 0 and gm_phase(datetime.fromtimestamp(tick["timestamp"] / 1000, SHANGHAI)) in AUCTION_PHASES:
+        bid = float(bid_prices[0]) if bid_prices else 0.0
+        ask = float(ask_prices[0]) if ask_prices else 0.0
+        extra.update(gm_last_trade_price=last_price, price_basis="auction_indicative")
+        # 未成交时 price 无效；没有明确匹配价则留零，让定量校验阻断。
+        last_price = bid if math.isfinite(bid) and bid > 0 and bid == ask else 0.0
     if include_raw_data:
         extra["raw_data"] = tick
 
     return UnifiedPriceData.model_construct(
         symbol=GM_SYMBOL_RESOLVER.to_axile(gm_symbol),
-        last_price=float(tick["price"]),
+        last_price=last_price,
         bid_price=float(bid_prices[0]) if len(bid_prices) > 0 else 0.0,
         bid_price_2=float(bid_prices[1]) if len(bid_prices) > 1 else 0.0,
         bid_price_3=float(bid_prices[2]) if len(bid_prices) > 2 else 0.0,
