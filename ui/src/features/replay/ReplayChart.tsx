@@ -58,7 +58,7 @@ function drawOrderHistory(ctx: CanvasRenderingContext2D, timeline: ReturnType<ty
       ctx.beginPath(); ctx.moveTo(right, y); ctx.lineTo(right, replayPriceY(next.price, view, layout)); ctx.stroke()
     }
   }
-  for (const { order, kind, time, price } of replayVisibleOrderMarks(marks, range, view, layout)) {
+  for (const { order, kind, time, price } of marks) {
     const x = replayTimeX(time, range, layout), y = replayPriceY(price, view, layout), r = hovered === `order:${order.key}` ? 5 : 3.5
     ctx.globalAlpha = selected && order.key !== selected ? 0.45 : 1
     ctx.save(); ctx.shadowColor = theme.bg; ctx.shadowBlur = 3; ctx.shadowOffsetY = 2
@@ -78,6 +78,7 @@ function drawOrderHistory(ctx: CanvasRenderingContext2D, timeline: ReturnType<ty
 /** 同一画布中的历史深度、COB 与 ORD 只共享一份价位映射。 */
 export function ReplayChart({ window: replayWindow, range, projection, symbol, executionId, selectedOrder, onSelectOrder, onSeek, selectedTrade, onSelectTrade, onInspect, playControls, firstQuoteControl, symbolControl, children, scene = projection, slices, initialTimeUs = range.start_us }: Props) {
   const holder = useRef<HTMLDivElement>(null), canvas = useRef<HTMLCanvasElement>(null)
+  const historyLayers = useRef<HTMLCanvasElement[]>([]), orderLayers = useRef<HTMLCanvasElement[]>([])
   const [size, setSize] = useState({ width: 900, height: 300, revision: 0 })
   const [manualView, setManualView] = useState<ReplayPriceView | null>(null)
   const [timeView, setTimeView] = useState<ReplayRange | null>(null)
@@ -105,6 +106,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   const view = manualView ?? initialView
   const hoverCursor = `${replayWindow.window_id}:${symbol}:${projection.time_us}:${projection.capture_seq}:${visibleRange.start_us}:${visibleRange.end_us}:${view?.min}:${view?.max}`
   const activeHover = hover?.cursor === hoverCursor ? hover : null
+  const hoveredObject = activeHover?.object
   const selectedExecution = layers.execution && replayWindow.context.streams?.[symbol]?.own_trade?.availability !== 'unavailable' ? recorded.ownTrades.find(trade => replayTradeKey(trade) === selectedTrade && trade.symbol === symbol && trade.time_us >= visibleRange.start_us && trade.time_us < visibleRange.end_us && (!historyOrders.some(order => order.order_id === trade.order_id) || visibleOrders.some(order => order.order_id === trade.order_id))) : undefined
   const height = size.height
   const [priceAxisWidth, setPriceAxisWidth] = useState(40)
@@ -162,7 +164,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
     const values = slices.map(slice => replayHeatCells(slice.scene.quoteHistory.filter(quote => quote.symbol === symbol), visibleRange, Math.min(drawThrough, slice.range.end_us - 1), view, layout, slice.window.gaps))
     return { cells: values.flatMap(value => value.cells), columnWidth: values[0]?.columnWidth ?? 3, rowHeight: values[0]?.rowHeight ?? 2 }
   }, [slices, historyQuotes, visibleRange, drawThrough, view, layout, replayWindow.gaps, symbol])
-  const maxHeat = heat?.cells.reduce((maximum, cell) => Math.max(maximum, cell.quantity ?? 0), 0) ?? 0
+  const maxHeat = useMemo(() => heat?.cells.reduce((maximum, cell) => Math.max(maximum, cell.quantity ?? 0), 0) ?? 0, [heat])
   const timeline = useMemo(() => {
     if (!slices) return replayOrderTimeline(visibleOrders, symbol, visibleRange, recorded)
     const visible = new Set(visibleOrders)
@@ -172,6 +174,21 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
     })
     return { segments: timelines.flatMap(value => value.segments), marks: timelines.flatMap(value => value.marks) }
   }, [slices, visibleOrders, symbol, visibleRange, recorded])
+  const visibleTimeline = useMemo(() => view ? { ...timeline, marks: replayVisibleOrderMarks(timeline.marks, visibleRange, view, layout) } : timeline, [timeline, visibleRange, view, layout])
+  const orderHighlights = useMemo(() => {
+    const byObject = new Map<string, typeof visibleTimeline>(), byTime = new Map<number, typeof visibleTimeline>()
+    for (const mark of visibleTimeline.marks) {
+      const object = `order:${mark.order.key}`, row = byObject.get(object) ?? { segments: [], marks: [] }
+      row.marks.push(mark); byObject.set(object, row)
+      const atTime = byTime.get(mark.order.time_us) ?? { segments: [], marks: [] }
+      atTime.marks.push(mark); byTime.set(mark.order.time_us, atTime)
+    }
+    for (const segment of visibleTimeline.segments) {
+      const row = byTime.get(segment.order.time_us) ?? { segments: [], marks: [] }
+      row.segments.push(segment); byTime.set(segment.order.time_us, row)
+    }
+    return { byObject, byTime }
+  }, [visibleTimeline])
 
   useLayoutEffect(() => {
     setManualView(null); setTimeView(null); setHover(null); setInspection(null); gesture.current = null
@@ -193,6 +210,73 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
     document.fonts.addEventListener('loadingdone', repaint)
     return () => { resize.disconnect(); theme.disconnect(); document.fonts.removeEventListener('loadingdone', repaint) }
   }, [])
+
+  useLayoutEffect(() => {
+    if (!holder.current || !view || !heat) { historyLayers.current = []; return }
+    const theme = readCanvasTheme(holder.current), css = getComputedStyle(holder.current)
+    historyLayers.current = [false, true].map(future => {
+      const layer = document.createElement('canvas'), ctx = prepareCanvas(layer, size.width, height)
+      if (!ctx) return layer
+      const up = future ? theme.ink : css.getPropertyValue('--color-up').trim()
+      const down = future ? theme.ink : css.getPropertyValue('--color-down').trim()
+      ctx.save(); ctx.beginPath(); ctx.rect(layout.left, layout.top, layout.right - layout.left, layout.bottom - layout.top); ctx.clip()
+      const maxQuantity = Math.max(1, maxHeat)
+      ctx.save(); ctx.beginPath(); ctx.rect(layout.left, layout.top, Math.max(0, replayTimeX(drawThrough, visibleRange, layout) - layout.left), layout.bottom - layout.top); ctx.clip()
+      ctx.fillStyle = future ? theme.ink : theme.accent
+      for (const cell of heat.cells) {
+        ctx.globalAlpha = cell.quantity == null ? 0.12 : 0.025 + cell.quantity / maxQuantity * 0.825
+        ctx.fillRect(cell.x, cell.y - heat.rowHeight / 2, heat.columnWidth, heat.rowHeight)
+        if (cell.unknown) { ctx.globalAlpha = 0.5; ctx.fillRect(cell.x, cell.y - heat.rowHeight / 2, 1, heat.rowHeight) }
+      }
+      ctx.restore()
+      for (const gap of replayWindow.gaps) {
+        if ((gap.symbol && gap.symbol !== symbol) || gap.start_us > drawThrough || (gap.topic && gap.topic !== 'depth' && !gap.topic.startsWith('/quote'))) continue
+        const x = replayTimeX(Math.max(visibleRange.start_us, gap.start_us), visibleRange, layout), end = replayTimeX(Math.min(drawThrough, gap.end_us), visibleRange, layout)
+        ctx.fillStyle = theme.fill; ctx.fillRect(x, layout.top, Math.max(1, end - x), layout.bottom - layout.top)
+      }
+      for (const side of ['买', '卖'] as const) {
+        ctx.strokeStyle = side === '买' ? up : down; ctx.lineWidth = 1.3
+        historyQuotes.forEach((quote, index) => {
+          const best = replayBestLevel(quote, side), next = historyQuotes[index + 1]
+          if (!best || !currentReplayQuote(quote, quote.time_us, replayWindow.gaps)) return
+          const end = replayQuoteEnd(quote, next?.time_us ?? drawThrough, drawThrough, replayWindow.gaps)
+          if (end < visibleRange.start_us || quote.time_us >= visibleRange.end_us || (!quote.book_valid || !quote.available)) return
+          const x = replayTimeX(Math.max(visibleRange.start_us, quote.time_us), visibleRange, layout), right = replayTimeX(Math.min(visibleRange.end_us, end), visibleRange, layout)
+          const y = replayPriceY(best.price, view, layout)
+          ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(Math.max(x + 1, right), y)
+          const nextBest = next && currentReplayQuote(next, next.time_us, replayWindow.gaps) && replayBestLevel(next, side)
+          if (nextBest && end === next.time_us && quote.recording_id === next?.recording_id) ctx.lineTo(right, replayPriceY(nextBest.price, view, layout))
+          ctx.stroke()
+        })
+      }
+      ctx.strokeStyle = future ? theme.ink : css.getPropertyValue('--color-ink-1').trim(); ctx.lineWidth = 1.5
+      for (const segment of marketSegments) {
+        ctx.beginPath()
+        segment.forEach((trade, index) => {
+          const x = replayTimeX(trade.time_us, visibleRange, layout), y = replayPriceY(trade.price!, view, layout)
+          if (index === 0) ctx.moveTo(x, y)
+          else ctx.lineTo(x, y)
+        })
+        ctx.stroke()
+      }
+      ctx.restore()
+      return layer
+    })
+  }, [size, height, view, heat, maxHeat, layout, drawThrough, visibleRange, replayWindow.gaps, symbol, historyQuotes, marketSegments])
+
+  useLayoutEffect(() => {
+    if (!holder.current || !view) { orderLayers.current = []; return }
+    const theme = readCanvasTheme(holder.current), css = getComputedStyle(holder.current)
+    orderLayers.current = [false, true].map(future => {
+      const layer = document.createElement('canvas'), ctx = prepareCanvas(layer, size.width, height)
+      if (ctx) {
+        ctx.font = `12px ${theme.font}`
+        drawOrderHistory(ctx, visibleTimeline, visibleRange, view, layout, selectedOrder, executionId,
+          future ? { ...theme, warn: theme.ink } : theme, future ? theme.ink : css.getPropertyValue('--color-chart-2').trim(), { time_us: Infinity })
+      }
+      return layer
+    })
+  }, [size, height, view, visibleTimeline, visibleRange, layout, selectedOrder, executionId])
 
   useLayoutEffect(() => {
     if (!canvas.current || !holder.current) return
@@ -221,50 +305,8 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       const up = future ? theme.ink : css.getPropertyValue('--color-up').trim()
       const down = future ? theme.ink : css.getPropertyValue('--color-down').trim()
       ctx.save(); ctx.beginPath(); ctx.rect(future ? splitX : layout.left, layout.top, future ? layout.right - splitX : splitX - layout.left, layout.bottom - layout.top); ctx.clip()
-      const maxQuantity = Math.max(1, maxHeat)
-      ctx.save(); ctx.beginPath(); ctx.rect(layout.left, layout.top, Math.max(0, replayTimeX(drawThrough, visibleRange, layout) - layout.left), layout.bottom - layout.top); ctx.clip()
-      ctx.fillStyle = paint.accent
-      for (const cell of heat.cells) {
-        ctx.globalAlpha = cell.quantity == null ? 0.12 : 0.025 + cell.quantity / maxQuantity * 0.825
-        ctx.fillRect(cell.x, cell.y - heat.rowHeight / 2, heat.columnWidth, heat.rowHeight)
-        if (cell.unknown) { ctx.globalAlpha = 0.5; ctx.fillRect(cell.x, cell.y - heat.rowHeight / 2, 1, heat.rowHeight) }
-      }
-      ctx.globalAlpha = 1
-      ctx.restore()
-      for (const gap of replayWindow.gaps) {
-        if ((gap.symbol && gap.symbol !== symbol) || gap.start_us > drawThrough || (gap.topic && gap.topic !== 'depth' && !gap.topic.startsWith('/quote'))) continue
-        const x = replayTimeX(Math.max(visibleRange.start_us, gap.start_us), visibleRange, layout), end = replayTimeX(Math.min(drawThrough, gap.end_us), visibleRange, layout)
-        ctx.fillStyle = theme.fill; ctx.fillRect(x, layout.top, Math.max(1, end - x), layout.bottom - layout.top)
-      }
-      for (const side of ['买', '卖'] as const) {
-        ctx.strokeStyle = side === '买' ? up : down; ctx.lineWidth = 1.3
-        historyQuotes.forEach((quote, index) => {
-          const best = replayBestLevel(quote, side), next = historyQuotes[index + 1]
-          if (!best || !currentReplayQuote(quote, quote.time_us, replayWindow.gaps)) return
-          const end = replayQuoteEnd(quote, next?.time_us ?? drawThrough, drawThrough, replayWindow.gaps)
-          if (end < visibleRange.start_us || quote.time_us >= visibleRange.end_us || (!quote.book_valid || !quote.available)) return
-          const x = replayTimeX(Math.max(visibleRange.start_us, quote.time_us), visibleRange, layout), right = replayTimeX(Math.min(visibleRange.end_us, end), visibleRange, layout)
-          const y = replayPriceY(best.price, view, layout)
-          ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(Math.max(x + 1, right), y)
-          const nextBest = next && currentReplayQuote(next, next.time_us, replayWindow.gaps) && replayBestLevel(next, side)
-          if (nextBest && end === next.time_us && quote.recording_id === next?.recording_id) ctx.lineTo(right, replayPriceY(nextBest.price, view, layout))
-          ctx.stroke()
-        })
-        ctx.lineWidth = 1
-      }
-      if (marketSegments.length) {
-        ctx.strokeStyle = future ? theme.ink : css.getPropertyValue('--color-ink-1').trim(); ctx.lineWidth = 1.5
-        for (const segment of marketSegments) {
-          ctx.beginPath()
-          segment.forEach((trade, index) => {
-            const x = replayTimeX(trade.time_us, visibleRange, layout), y = replayPriceY(trade.price!, view, layout)
-            if (index === 0) ctx.moveTo(x, y)
-            else ctx.lineTo(x, y)
-          })
-          ctx.stroke()
-        }
-        ctx.lineWidth = 1
-      }
+      const history = historyLayers.current[Number(future)]
+      if (history) ctx.drawImage(history, 0, 0, size.width, height)
       for (const bubble of bubbles) {
         ctx.fillStyle = ctx.strokeStyle = replayFutureRecord(bubble.time_us, bubble.trades[0].capture_seq, projection) ? theme.ink : bubble.direction === 'BUY' ? up : bubble.direction === 'SELL' ? down : theme.ink
         ctx.save(); ctx.shadowColor = theme.bg; ctx.shadowBlur = 3; ctx.shadowOffsetY = 2; ctx.globalAlpha = .85; ctx.beginPath()
@@ -272,13 +314,18 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
         const stable = bubble.trades.every(trade => trade.identity_quality === 'stable' && !trade.conflict)
         if (stable) ctx.fill()
         ctx.shadowBlur = 0; ctx.globalAlpha = 1
-        const hovered = activeHover?.object === `bubble:${bubble.trades[0].recording_id ? `${bubble.trades[0].recording_id}:` : ''}${bubble.trades[0].capture_seq}:${bubble.price}:${bubble.direction}`
+        const hovered = hoveredObject === `bubble:${bubble.trades[0].recording_id ? `${bubble.trades[0].recording_id}:` : ''}${bubble.trades[0].capture_seq}:${bubble.price}:${bubble.direction}`
         if (hovered) ctx.strokeStyle = replayFutureRecord(bubble.time_us, bubble.trades[0].capture_seq, projection) ? theme.ink : paint.accent
         else if (stable) ctx.strokeStyle = theme.surface
         ctx.lineWidth = hovered ? 2 : 1.5; ctx.stroke(); ctx.restore()
       }
       ctx.globalAlpha = 1
-      drawOrderHistory(ctx, timeline, visibleRange, view, layout, selectedOrder, executionId, paint, future ? theme.ink : css.getPropertyValue('--color-chart-2').trim(), projection, activeHover?.object)
+      const orders = orderLayers.current[Number(future)]
+      if (orders) ctx.drawImage(orders, 0, 0, size.width, height)
+      // 时间裁剪无法区分同刻采集序号，只补画尚未到达的委托及命中标记。
+      const sameTime = projection.capture_seq == null ? undefined : orderHighlights.byTime.get(projection.time_us), hovered = hoveredObject && orderHighlights.byObject.get(hoveredObject)
+      if (!future && sameTime) drawOrderHistory(ctx, { segments: sameTime.segments.filter(segment => segment.order.capture_seq > projection.capture_seq!), marks: sameTime.marks.filter(mark => mark.order.capture_seq > projection.capture_seq!) }, visibleRange, view, layout, selectedOrder, executionId, paint, theme.ink, projection)
+      if (hovered) drawOrderHistory(ctx, hovered, visibleRange, view, layout, selectedOrder, executionId, paint, future ? theme.ink : css.getPropertyValue('--color-chart-2').trim(), projection, hoveredObject)
       ctx.restore()
     }
     if (selectedExecution) {
@@ -291,7 +338,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       canvasLine(ctx, layout.left, y, layout.right + 3, y, theme.line)
     }
     canvasLine(ctx, layout.right, layout.top, layout.right, layout.bottom, theme.line)
-  }, [axisPriceText, axisInteracting, instrument.price_decimals, instrument.price_tick, priceTick, priceAxisWidth, timeCharacterWidth, priceTicks, orderPrices, size, height, projection, replayWindow, visibleRange, symbol, executionId, selectedOrder, selectedExecution, view, layout, historyQuotes, timeline, marketSegments, priceText, quantityText, heat, maxHeat, recorded, drawThrough, cursorX, bubbles, maxBubble, activeHover?.object])
+  }, [axisPriceText, axisInteracting, instrument.price_decimals, instrument.price_tick, priceTick, priceAxisWidth, timeCharacterWidth, priceTicks, orderPrices, size, height, projection, replayWindow, visibleRange, symbol, executionId, selectedOrder, selectedExecution, view, layout, historyQuotes, timeline, orderHighlights, marketSegments, priceText, quantityText, heat, maxHeat, recorded, drawThrough, cursorX, bubbles, maxBubble, hoveredObject])
 
   const resetView = () => { setManualView(null); setTimeView(null); setHover(null) }
   const zoom = (factor: number) => {
@@ -311,9 +358,8 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
     const format = { executionId, cursor: projection, unit: instrument.quantity_label ?? '', price: priceText, quantity: quantityText }
     let records: InspectionRecord[] = [], candidates: InspectionRecord[] = []
     if (x <= layout.right) {
-      const visibleMarks = replayVisibleOrderMarks(timeline.marks, visibleRange, view, layout)
-      candidates = visibleMarks.map(mark => inspectReplayOrder(mark.order, format, replayTimeX(mark.time, visibleRange, layout), replayPriceY(mark.price, view, layout)))
-        .filter(record => Math.hypot(record.x - x, record.y - y) <= 18)
+      candidates = visibleTimeline.marks.filter(mark => Math.hypot(replayTimeX(mark.time, visibleRange, layout) - x, replayPriceY(mark.price, view, layout) - y) <= 18)
+        .map(mark => inspectReplayOrder(mark.order, format, replayTimeX(mark.time, visibleRange, layout), replayPriceY(mark.price, view, layout)))
       if (!candidates.length) candidates = timeline.segments.filter(segment => time >= segment.start && time <= segment.end && segment.order.price != null && Math.abs(replayPriceY(segment.order.price, view, layout) - y) <= 6)
         .map(segment => inspectReplayOrder(segment.order, format, x, replayPriceY(segment.order.price!, view, layout)))
       const hitKeys = new Set(candidates.map(record => record.order))

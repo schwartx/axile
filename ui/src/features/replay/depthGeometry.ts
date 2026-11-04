@@ -14,7 +14,12 @@ export function recordedDepth(quote: ReplayQuote | null): RecordedDepthLevel[] {
 }
 
 export function replayBestLevel(quote: ReplayQuote, side: '买' | '卖'): RecordedDepthLevel | undefined {
-  return recordedDepth(quote).find(level => level.side === side && level.rank === 1)
+  let best: ReplayLevel | undefined
+  for (const level of side === '买' ? quote.bids : quote.asks) {
+    if (level.quantity === 0) continue
+    if (!best || (side === '买' ? level.price > best.price : level.price < best.price)) best = level
+  }
+  return best ? { ...best, side, rank: 1 } : undefined
 }
 
 export function replayObservedPriceView(quotes: ReplayQuote[], orders: ReplayOrder[], trades: ReplayTrade[], tick?: number | null): ReplayPriceView | null {

@@ -84,6 +84,18 @@ describe('动态盘口及委托位置', () => {
     expect(heat.cells.some(cell => cell.quantity === null && cell.unknown)).toBe(true)
     expect(heat.cells.some(cell => cell.quantity === 0 && !cell.unknown)).toBe(true)
   })
+  it('最优档只扫描所需一侧，乱序、同价、零量与未知量保持编号语义', () => {
+    const depth = quote(0)
+    depth.bids = [{ price: 98, quantity: 2 }, { price: 101, quantity: 0 }, { price: 100, quantity: null }, { price: 100, quantity: 9 }]
+    depth.asks = [{ price: 104, quantity: 3 }, { price: 101, quantity: 0 }, { price: 102, quantity: null }, { price: 102, quantity: 7 }]
+    const before = JSON.stringify(depth)
+    for (const side of ['买', '卖'] as const) expect(replayBestLevel(depth, side)).toEqual(recordedDepth(depth).find(level => level.side === side && level.rank === 1))
+    expect(JSON.stringify(depth)).toBe(before)
+    expect(replayBestLevel({ ...depth, bids: [{ price: 100, quantity: 0 }] }, '买')).toBeUndefined()
+    expect(replayBestLevel(quote(0), '卖')).toBeUndefined()
+    Object.defineProperty(depth, 'asks', { get: () => { throw Error('买一不应读取卖盘') } })
+    expect(replayBestLevel(depth, '买')).toEqual({ price: 100, quantity: null, side: '买', rank: 1 })
+  })
   it('同价多单显示数量与笔数，可选第二张；未知剩余量不被合计为零', () => {
     const selected: string[] = [], orders = [order({ key: 'A', order_id: 'A', execution_id: 'E' }), order({ key: 'B', order_id: 'B', remaining_volume: null })]
     let tree!: ReactElement

@@ -117,6 +117,7 @@ type ProjectionState = {
   commandFacts: Record<string, ReplayData>
   commandOwners: Map<string, string | null>
   cancelOrders: Set<string>
+  orderAmounts: Map<string, { quantity: number; complete: boolean; lastFact: number }> | null
 }
 function scopeSymbols(scope: unknown, state: ProjectionState): Set<string> {
   if (Array.isArray(scope)) {
@@ -159,7 +160,7 @@ function seed(window: ReplayWindow): ProjectionState {
   }
   const state: ProjectionState = {
     view, ownSeen, marketSeen, ownFacts: new Map(), marketFacts: new Map(), orderChanges: {}, setRevisions: {}, setObservations: {}, generations: {}, knownScopes: new Set(), basis: {}, executions: {}, pending: new Map(),
-    orderFacts: {}, positionFacts: {}, ownLastFactSeq: new Map(), commandFacts: {}, commandOwners: new Map(), cancelOrders: new Set(),
+    orderFacts: {}, positionFacts: {}, ownLastFactSeq: new Map(), commandFacts: {}, commandOwners: new Map(), cancelOrders: new Set(), orderAmounts: null,
   }
   for (const item of rows(base.quotes)) {
     const row = replayObject(item), value = quote(row, view.time_us, integer(row.observed_seq) ?? seq)
@@ -283,7 +284,7 @@ function updateOrder(state: ProjectionState, data: ReplayData, message: ReplayMe
   state.orderFacts[key].cancel_pending = value.cancel_pending
   state.view.orders[key] = { ...value, carry_in: previous?.carry_in ?? false }
   if (snapshotStart == null || snapshotIsChange) state.orderChanges[key] = message.capture_seq
-  rebuildOrderAmounts(state)
+  rebuildOrderAmounts(state, undefined, key)
   state.view.orderHistory.push(state.view.orders[key])
 }
 function acceptGeneration(state: ProjectionState, symbol: string, generation: number | null, message: ReplayMessage): boolean {
@@ -426,7 +427,7 @@ function applyTrade(state: ProjectionState, data: ReplayData, message: ReplayMes
     warn(state, market ? '部分市场成交身份或价量未知' : '部分自有成交身份或价量未知，累计待确认')
     visible.push(value)
     state.pending.set(`${market ? 'market' : 'own'}:observation:${message.capture_seq}`, { market, observation: data })
-    if (!market) rebuildOrderAmounts(state, message)
+    if (!market) { state.orderAmounts = null; rebuildOrderAmounts(state, message) }
     return
   }
   const seen = market ? state.marketSeen : state.ownSeen
@@ -448,30 +449,42 @@ function applyTrade(state: ProjectionState, data: ReplayData, message: ReplayMes
   if (!validTrade(merged) || (!market && (!merged.order_id || (!merged.execution_id && !['manual', 'external'].includes(merged.origin ?? ''))))) {
     state.pending.set(`${prefix}:trade:${value.key}`, { market, observation: { ...mergedData, execution_id: merged.execution_id } })
   } else state.pending.delete(`${prefix}:trade:${value.key}`)
-  if (!market) rebuildOrderAmounts(state, message)
+  if (!market) {
+    const order = merged.order_id ? orderKey(merged.symbol, merged.order_id) : null
+    if (!previous && !Object.keys(pending).length && validTrade(merged) && order && state.orderAmounts && data.related_capture_seq == null) {
+      const amount = state.orderAmounts.get(order) ?? { quantity: 0, complete: true, lastFact: 0 }
+      const quantity = amount.quantity + merged.quantity!
+      state.orderAmounts.set(order, { quantity, complete: amount.complete && Number.isFinite(quantity), lastFact: message.capture_seq })
+      rebuildOrderAmounts(state, message, order)
+    } else { state.orderAmounts = null; rebuildOrderAmounts(state, message) }
+  }
 }
-function rebuildOrderAmounts(state: ProjectionState, message?: ReplayMessage) {
-  const amounts = new Map<string, { quantity: number; complete: boolean; lastFact: number }>()
+function rebuildOrderAmounts(state: ProjectionState, message?: ReplayMessage, affected?: string) {
+  const amounts = state.orderAmounts ?? new Map<string, { quantity: number; complete: boolean; lastFact: number }>()
   const amountFor = (key: string) => {
     let amount = amounts.get(key)
     if (!amount) { amount = { quantity: 0, complete: true, lastFact: 0 }; amounts.set(key, amount) }
     return amount
   }
-  for (const [key, value] of state.ownFacts) {
-    if (!value.order_id) continue
-    const amount = amountFor(orderKey(value.symbol, value.order_id))
-    amount.lastFact = Math.max(amount.lastFact, state.ownLastFactSeq.get(key) ?? 0)
-    if (validTrade(value)) amount.quantity += value.quantity!
-    else amount.complete = false
-    if (!Number.isFinite(amount.quantity)) amount.complete = false
+  if (!state.orderAmounts) {
+    for (const [key, value] of state.ownFacts) {
+      if (!value.order_id) continue
+      const amount = amountFor(orderKey(value.symbol, value.order_id))
+      amount.lastFact = Math.max(amount.lastFact, state.ownLastFactSeq.get(key) ?? 0)
+      if (validTrade(value)) amount.quantity += value.quantity!
+      else amount.complete = false
+      if (!Number.isFinite(amount.quantity)) amount.complete = false
+    }
+    for (const pending of state.pending.values()) {
+      if (pending.market === true) continue
+      const observation = replayObject(pending.observation), data = Object.hasOwn(observation, 'data') ? replayObject(observation.data) : observation
+      const symbol = symbolOf(data), id = text(data.order_id)
+      if (symbol && id && !text(data.trade_key)) amountFor(orderKey(symbol, id)).complete = false
+    }
+    state.orderAmounts = amounts
   }
-  for (const pending of state.pending.values()) {
-    if (pending.market === true) continue
-    const observation = replayObject(pending.observation), data = Object.hasOwn(observation, 'data') ? replayObject(observation.data) : observation
-    const symbol = symbolOf(data), id = text(data.order_id)
-    if (symbol && id && !text(data.trade_key)) amountFor(orderKey(symbol, id)).complete = false
-  }
-  for (const [key, previous] of Object.entries(state.view.orders)) {
+  const orders = affected ? state.view.orders[affected] ? [[affected, state.view.orders[affected]] as const] : [] : Object.entries(state.view.orders)
+  for (const [key, previous] of orders) {
     const raw = state.orderFacts[key] ?? {}, amount = amounts.get(key) ?? { quantity: 0, complete: true, lastFact: 0 }
     const observed = number(known(raw, 'observed_filled_quantity')) ?? number(known(raw, 'filled_quantity'))
     const filled = observed == null ? amount.quantity > 0 ? amount.quantity : null : Math.max(observed, amount.quantity)
@@ -683,16 +696,47 @@ function derivePositions(state: ProjectionState) {
   }
 }
 
-/** 从完整窗口基线重建到游标；反向 seek 不尝试倒减交易事实。 */
+type ReplayProgress = { state: ProjectionState; next: number; seen: Set<number>; previousTime: number | null; ready?: boolean }
+
+function detachView(view: ReplayProjection): ReplayProjection {
+  return { ...view, quotes: { ...view.quotes }, orders: { ...view.orders }, targets: { ...view.targets },
+    targetsByExecution: Object.fromEntries(Object.entries(view.targetsByExecution).map(([key, values]) => [key, { ...values }])),
+    observedPositions: { ...view.observedPositions }, derivedPositions: { ...view.derivedPositions },
+    ownTrades: [...view.ownTrades], marketTrades: [...view.marketTrades], commands: [...view.commands],
+    quoteHistory: [...view.quoteHistory], orderHistory: [...view.orderHistory], warnings: [...view.warnings] }
+}
+
+/** 每个读取窗口只保留一个前进状态；反向定位仍走完整重建。 */
+export function createReplayProjector(window: ReplayWindow) {
+  let progress: ReplayProgress | undefined, previous: ReplayCursor | undefined
+  return (cursor: ReplayCursor): ReplayProjection => {
+    if (!previous || cursor.time_us < previous.time_us || cursor.time_us === previous.time_us
+      && (cursor.capture_seq ?? Infinity) < (previous.capture_seq ?? Infinity)) progress = undefined
+    progress ??= { state: seed(window), next: 0, seen: new Set(), previousTime: integer(window.state_before_start?.time_us) }
+    try {
+      const result = project(window, cursor, progress)
+      previous = { ...cursor }
+      return result
+    } catch (cause) { progress = undefined; previous = undefined; throw cause }
+  }
+}
+
+/** 从完整窗口基线重建到游标，作为增量投影的独立对照。 */
 export function projectReplay(window: ReplayWindow, cursor: ReplayCursor, _symbol?: string): ReplayProjection {
-  const state = seed(window), seenSequences = new Set<number>()
+  return project(window, cursor, { state: seed(window), next: 0, seen: new Set(), previousTime: integer(window.state_before_start?.time_us) })
+}
+
+function project(window: ReplayWindow, cursor: ReplayCursor, progress: ReplayProgress): ReplayProjection {
+  const { state, seen: seenSequences } = progress
   const baseline = replayObject(window.state_before_start)
   if (text(baseline.recording_id) && baseline.recording_id !== window.recording_id) throw new Error('回放基线不属于当前录制段')
   if (baseline.schema_version != null && baseline.schema_version !== 1) throw new Error('不支持此回放基线版本')
-  if (state.view.time_us > cursor.time_us || (cursor.capture_seq != null && cursor.capture_seq < state.view.capture_seq)) throw new Error('游标早于窗口基线，请重新加载时间窗口')
+  if ((integer(baseline.time_us) ?? 0) > cursor.time_us || (cursor.capture_seq != null && cursor.capture_seq < (integer(baseline.state_through_seq) ?? 0))) throw new Error('游标早于窗口基线，请重新加载时间窗口')
   let last = state.view.capture_seq
-  let previousTime = integer(baseline.time_us)
-  for (const message of window.messages) {
+  let previousTime = progress.previousTime
+  let changed = false
+  for (; progress.next < window.messages.length; progress.next++) {
+    const message = window.messages[progress.next]
     if (message.recording_id !== window.recording_id) throw new Error('回放窗口混入其他录制段')
     if (message.schema_version !== 1 || !Number.isSafeInteger(message.time_us) || message.time_us < 0
       || !Number.isSafeInteger(message.capture_seq) || message.capture_seq <= 0) throw new Error('回放事件版本或时间无效')
@@ -700,6 +744,8 @@ export function projectReplay(window: ReplayWindow, cursor: ReplayCursor, _symbo
     if (message.capture_seq < last) throw new Error('回放观察顺序回退')
     if (previousTime != null && message.time_us < previousTime) throw new Error('当前录制段的观察时间回退')
     if (message.time_us > cursor.time_us || (message.time_us === cursor.time_us && cursor.capture_seq != null && message.capture_seq > cursor.capture_seq)) break
+    if (!changed) state.view = detachView(state.view)
+    changed = true
     seenSequences.add(message.capture_seq); last = message.capture_seq; previousTime = message.time_us
     const topic = message.topic.replace(/^\//, ''), data = replayObject(message.data)
     if (topic.startsWith('quote/')) { const value = quote(data, message.time_us, message.capture_seq, topic); if (value) { state.view.quotes[value.symbol] = value; state.view.quoteHistory.push(value) } }
@@ -736,21 +782,27 @@ export function projectReplay(window: ReplayWindow, cursor: ReplayCursor, _symbo
     }
     state.view.capture_seq = message.capture_seq
   }
-  state.view.time_us = cursor.time_us
-  for (const [symbol, value] of Object.entries(state.view.quotes)) {
-    if (value.valid_until_us == null ? cursor.time_us > value.time_us : cursor.time_us >= value.valid_until_us) state.view.quotes[symbol] = { ...value, available: false }
+  progress.previousTime = previousTime
+  if (changed || !progress.ready) {
+    rebuildTotals(state)
+    derivePositions(state)
+    state.view.ownTrades.sort((left, right) => left.capture_seq - right.capture_seq)
+    state.view.marketTrades.sort((left, right) => left.capture_seq - right.capture_seq)
+    progress.ready = true
+  }
+  // 游标过期和缺口只影响输出，不能污染下一帧继续使用的事件状态。
+  const view = { ...state.view, time_us: cursor.time_us, quotes: { ...state.view.quotes }, warnings: [...state.view.warnings] }
+  for (const [symbol, value] of Object.entries(view.quotes)) {
+    if (value.valid_until_us == null ? cursor.time_us > value.time_us : cursor.time_us >= value.valid_until_us) view.quotes[symbol] = { ...value, available: false }
   }
   for (const gap of window.gaps) {
     if (cursor.time_us >= gap.start_us && cursor.time_us < gap.end_us) {
-      warn(state, gap.reason ?? '当前处于录制缺口')
+      const warning = gap.reason ?? '当前处于录制缺口'
+      if (!view.warnings.includes(warning)) view.warnings.push(warning)
       if (!gap.topic || gap.topic.includes('quote') || gap.topic === 'depth') {
-        for (const [symbol, value] of Object.entries(state.view.quotes)) if (!gap.symbol || gap.symbol === symbol) state.view.quotes[symbol] = { ...value, available: false }
+        for (const [symbol, value] of Object.entries(view.quotes)) if (!gap.symbol || gap.symbol === symbol) view.quotes[symbol] = { ...value, available: false }
       }
     }
   }
-  rebuildTotals(state)
-  derivePositions(state)
-  state.view.ownTrades.sort((left, right) => left.capture_seq - right.capture_seq)
-  state.view.marketTrades.sort((left, right) => left.capture_seq - right.capture_seq)
-  return state.view
+  return view
 }

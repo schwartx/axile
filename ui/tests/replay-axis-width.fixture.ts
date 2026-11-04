@@ -11,7 +11,11 @@ mock.module('react', () => ({
     const i = at++; slots[i] ??= { value: initial }
     return [slots[i].value, (next: any) => { const value = typeof next === 'function' ? next(slots[i].value) : next; if (!Object.is(value, slots[i].value)) { slots[i].value = value; dirty = true } }]
   },
-  useMemo: (fn: any) => fn(), useCallback: (fn: any) => fn,
+  useMemo: (fn: any, deps: any[]) => {
+    const i = at++, previous = slots[i]
+    if (!previous || deps.some((value, index) => !Object.is(value, previous.deps[index]))) slots[i] = { deps, value: fn() }
+    return slots[i].value
+  }, useCallback: (fn: any) => fn,
   useLayoutEffect: (fn: any, deps: any[]) => {
     const i = at++, previous = slots[i]
     if (!previous || deps.some((value, index) => !Object.is(value, previous.deps[index]))) {
@@ -28,12 +32,19 @@ mock.module('react/jsx-dev-runtime', () => ({ jsxDEV: jsx, Fragment: 'fragment' 
 mock.module('lucide-react', () => Object.fromEntries(['ArrowLeft', 'ArrowRight', 'Check', 'Circle', 'Crosshair', 'Info', 'Minus', 'RotateCcw', 'X'].map(name => [name, () => null])))
 for (const name of ['Tooltip', 'ValueSlider', 'Segmented', 'Select']) mock.module(ui + `components/ui/${name}.tsx`, () => ({ [name]: () => null }))
 mock.module(ui + 'features/replay/ReplayDepthLadder.tsx', () => ({ ReplayDepthLadder: () => null }))
-const context = new Proxy({ measureText: (text: string) => ({ width: [...text].reduce((sum, char) => sum + (char === '1' ? 5 : 7), 0) }) } as any, { get: (object, key) => object[key] ?? (() => {}) })
-mock.module(ui + 'components/viz/chartCanvas.ts', () => ({ prepareCanvas: () => context, canvasLine() {}, readCanvasTheme: () => ({ font: 'sans-serif' }) }))
-const observer = class { observe() {} disconnect() {} }
+const offscreen: any[] = [], composites: any[] = [], rects: any[] = [], arcs: any[] = [], strokes: any[] = []
+let historyPaints = 0, orderPaints = 0
+const context = new Proxy({ measureText: (text: string) => ({ width: [...text].reduce((sum, char) => sum + (char === '1' ? 5 : 7), 0) }),
+  drawImage: (layer: any) => composites.push(layer), rect: (...args: any[]) => rects.push(args),
+  arc: (...args: any[]) => arcs.push(args), stroke: () => strokes.push(context.strokeStyle) } as any, { get: (object, key) => object[key] ?? (() => {}) })
+mock.module(ui + 'components/viz/chartCanvas.ts', () => ({ prepareCanvas: (canvas: any) => canvas === target ? context : new Proxy({
+  fillRect: () => historyPaints++, stroke: () => orderPaints++,
+} as any, { get: (object, key) => object[key] ?? (() => {}) }), canvasLine() {}, readCanvasTheme: () => ({ font: 'sans-serif', ink: 'gray' }) }))
+const observers: (() => void)[] = []
+const observer = class { constructor(callback: () => void) { observers.push(callback) } observe() {} disconnect() {} }
 Object.assign(globalThis, { ResizeObserver: observer, MutationObserver: observer,
   getComputedStyle: () => ({ getPropertyValue: () => 'monospace' }),
-  document: { documentElement: {}, fonts: { addEventListener() {}, removeEventListener() {} } },
+  document: { documentElement: {}, createElement: () => { const layer = {}; offscreen.push(layer); return layer }, fonts: { addEventListener() {}, removeEventListener() {} } },
   window: { setTimeout: (fn: () => void) => { timers.set(++timerId, fn); return timerId }, clearTimeout: (id: number) => timers.delete(id) },
 })
 const { ReplayChart } = await import(ui + 'features/replay/ReplayChart.tsx')
@@ -105,4 +116,47 @@ canvas().props.onPointerMove(event(100, 100)); draw()
 const hoverLabel = find(tree, n => n.props?.className === 'replay-crosshair-price num')
 assert.match(hoverLabel.props.children[1].props.children, /^1\.\d{4}$/, '悬停与刻度使用同一精度')
 assert.equal(hoverLabel.props.style.width, legacyWidth, '悬停不会另撑一列')
+props.scene = props.projection
+props.selectedOrder = null
+draw()
+const cachedLayers = offscreen.length, cachedPaints = historyPaints, cachedOrders = orderPaints
+assert.ok(cachedPaints > 0, '首次生成彩色和灰色历史层')
+props.projection = { ...props.projection, time_us: 60 }
+rects.length = 0; composites.length = 0; draw()
+assert.equal(offscreen.length, cachedLayers, '不可变游标快照不重新生成历史层')
+assert.equal(historyPaints, cachedPaints)
+assert.equal(orderPaints, cachedOrders)
+assert.equal(composites.length, 4, '游标合成两色历史与委托层')
+const left = rects[0][0], split = rects[0][2] + left
+assert.ok(split > left && rects.some(rect => rect[0] === split), '两色层在当前游标位置动态裁剪')
+canvas().props.onPointerMove(event(100, 100)); draw()
+assert.equal(offscreen.length, cachedLayers, '悬停不重新生成历史层')
+assert.equal(historyPaints, cachedPaints)
+assert.equal(orderPaints, cachedOrders)
+observers[1](); draw()
+assert.ok(offscreen.length > cachedLayers, '主题变化重新生成历史层')
+const themed = offscreen.length
+props.scene = { ...props.scene, quoteHistory: [...props.scene.quoteHistory] }; draw()
+assert.ok(offscreen.length > themed, '新历史快照重新生成历史层')
+const updated = offscreen.length
+canvas().props.onKeyDown({ key: '+', preventDefault() {} }); draw()
+assert.ok(offscreen.length > updated, '视图缩放重新生成历史层')
+reset()
+const sampleOrder: any = { key: 'A', order_id: 'A', symbol: 'X', price: 1.25, time_us: 50, capture_seq: 10,
+  direction: 'BUY', confirmed: true, terminal: false, remaining_volume: 1, volume: 1, status: 'working' }
+props.scene = { ...props.scene, time_us: 99, capture_seq: 1000, orderHistory: [sampleOrder] }
+props.projection = { ...props.projection, time_us: 50, capture_seq: 9 }
+arcs.length = 0; strokes.length = 0; draw()
+assert.ok(strokes.includes('gray'), '同刻采集序号尚未到达的委托保持灰色')
+const beforeOrderHover = offscreen.length
+const { replayChartLayout, replayTimeX, replayPriceY } = await import(ui + 'features/replay/chartGeometry.ts')
+const { replayObservedPriceView } = await import(ui + 'features/replay/depthGeometry.ts')
+const orderLayout = replayChartLayout(900, 300, 900 - 346 - (axisLeft() - 2))
+const orderView = replayObservedPriceView(props.scene.quoteHistory, props.scene.orderHistory, [], null)!
+canvas().props.onPointerMove(event(replayTimeX(50, props.range, orderLayout), replayPriceY(1.25, orderView, orderLayout))); draw()
+assert.ok(arcs.some(arc => arc[2] === 5), '悬停仍放大命中的委托标记')
+assert.equal(offscreen.length, beforeOrderHover, '委托高亮只重画命中标记，不重新生成全量历史')
+const beforeSelection = offscreen.length
+props.selectedOrder = 'A'; draw()
+assert.equal(offscreen.length, beforeSelection + 2, '选中委托仅重建委托两色层，不重绘盘口历史')
 console.log('ok')

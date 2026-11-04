@@ -18,6 +18,10 @@ for (const name of ['Tooltip', 'ValueSlider', 'Segmented', 'Select']) mock.modul
 mock.module(ui + 'features/replay/ReplayDepthLadder.tsx', () => ({ ReplayDepthLadder: () => null }))
 mock.module(ui + 'lib/viewTransition.ts', () => ({ withViewTransition: (fn: any) => fn() }))
 Object.assign(globalThis, { window: { setTimeout: (fn: () => void) => { timers.set(++nextTimer, fn); return nextTimer }, clearTimeout: (id: number) => timers.delete(id) } })
+let inspectedOrders = 0
+const inspectionModule = await import(ui + 'features/replay/inspection.ts')
+const inspectOrder = inspectionModule.inspectReplayOrder
+mock.module(ui + 'features/replay/inspection.ts', () => ({ ...inspectionModule, inspectReplayOrder: (...args: Parameters<typeof inspectOrder>) => { inspectedOrders++; return inspectOrder(...args) } }))
 const { ReplayChart } = await import(ui + 'features/replay/ReplayChart.tsx')
 const { projectReplay } = await import(ui + 'features/replay/model.ts')
 const { replayChartLayout, replayTimeX, replayPriceY, replayYPrice } = await import(ui + 'features/replay/chartGeometry.ts')
@@ -190,4 +194,11 @@ assert.equal(orderLabel('100.5').props.children[1].props.style.opacity, 1, '移�
 props.selectedOrder = 'B'; draw()
 assert.equal(orderLabel('100.51').props['data-collapsed'], undefined, '切换选中委托后优先级随之切换')
 assert.equal(orderLabel('100.5').props['data-collapsed'], true)
+props.scene = { ...scene, orderHistory: [...scene.orderHistory, ...Array.from({ length: 2000 }, (_, index) => ({ ...working, key: `distant-${index}`, order_id: `distant-${index}`, terminal: true, confirmed: false, status: 'filled', time_us: 90, capture_seq: 100 + index }))] }
+props.selectedOrder = null; draw()
+inspectedOrders = 0
+hover(100.5, 10)
+assert.equal(inspectedOrders, 0, '未命中时不格式化任何委托 mark')
+hover(100, 50)
+assert.ok(inspectedOrders > 0 && inspectedOrders < 10, '只格式化命中的委托，不扫描格式化远处的数千个 marks')
 console.log(JSON.stringify({ noFloatingCard, axisLabels, hasReadout, hoverDoesNotPause, clearedOnLeave, clickSelectsWithoutSeek, overlappingRecords, futureLabeled, clearedOnDrag, marketIdentity, explicitSeek, noPin, anchoredBesideClick, fixedDuringHover, staysOnLeave, escapeCloses, depthClickCloses, emptyClickCloses, returnsToCursor, resetsView }))

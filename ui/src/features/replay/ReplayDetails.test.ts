@@ -24,7 +24,7 @@ test('委托补充信息在选中行下方展开，移除常驻详情栏并保�
     expect(html).toContain('排队未知')
     expect(html).toContain('完整记录')
     const fields = [...html.matchAll(/id="(replay-order-fields-[^"]+)"/g)].map(match => match[1])
-    expect(new Set(fields).size).toBe(2)
+    expect(new Set(fields).size).toBe(1)
     for (const field of fields) expect(html).toContain(`popoverTarget="${field}"`)
   }
 })
@@ -48,7 +48,7 @@ test('成交默认详情与列表选中项一致，覆盖外时间明确禁用�
   expect(html).toContain(`id="replay-trade-extra-${encodeURIComponent('2:T2')}" class="replay-row-expansion" data-open="true"`)
   expect(html).toContain(`id="replay-trade-extra-${encodeURIComponent('1:T1')}" class="replay-row-expansion" data-open="false" inert=""`)
   const ids = [...html.matchAll(/id="(replay-trade-fields-[^"]+)"/g)].map(match => match[1])
-  expect(new Set(ids).size).toBe(2)
+  expect(new Set(ids).size).toBe(1)
   expect(html).not.toContain('定位此成交')
   expect(render(false)).toContain('此记录时刻未被录制覆盖，无法定位')
   const future = render(true, '3:T3')
@@ -67,11 +67,12 @@ test('未来委托展示首条观察，经过游标后按当时状态恢复，�
   const scene = projectReplay(window, { time_us: 299 })
   const render = (time_us: number, capture_seq?: number) => {
     const projection = projectReplay(window, { time_us, capture_seq }), before = JSON.stringify(projection)
-    const html = renderToStaticMarkup(createElement(OrdersAndTrades, { projection, scene, context: window.context, symbol: 'X',
-      selected: JSON.stringify(['X', 'O']), selectedTradeKey: '2:T', onSelect() {}, onSelectTrade() {}, executionId: 'E',
-      tab: 'orders', onTabChange() {}, onSeek() {}, coverage: window.coverage }))
+    const props = { projection, scene, context: window.context, symbol: 'X', selected: JSON.stringify(['X', 'O']),
+      selectedTradeKey: '2:T', onSelect() {}, onSelectTrade() {}, executionId: 'E', onTabChange() {}, onSeek() {}, coverage: window.coverage }
+    const html = renderToStaticMarkup(createElement(OrdersAndTrades, { ...props, tab: 'orders' }))
+    const trades = renderToStaticMarkup(createElement(OrdersAndTrades, { ...props, tab: 'trades' }))
     expect(JSON.stringify(projection)).toBe(before)
-    return { html, projection, row: html.match(/<tr data-future="(?:true|false)"[\s\S]*?<\/tr>/)![0] }
+    return { html, trades, projection, row: html.match(/<tr data-future="(?:true|false)"[\s\S]*?<\/tr>/)![0] }
   }
   const early = render(50)
   expect(early.row).toContain('data-future="true"')
@@ -87,10 +88,10 @@ test('未来委托展示首条观察，经过游标后按当时状态恢复，�
   const sameTime = render(100, 1)
   expect(sameTime.row).toContain('data-future="false"')
   expect(sameTime.row).toContain('已受理')
-  expect(sameTime.html).toContain('<button data-future="true"')
+  expect(sameTime.trades).toContain('<button data-future="true"')
   expect(sameTime.projection.ownTrades).toHaveLength(0)
   const reached = render(100, 2)
-  expect(reached.html).toContain('<button data-future="false"')
+  expect(reached.trades).toContain('<button data-future="false"')
   expect(reached.projection.executionTotals.E.X).toBe(2)
   const final = render(200)
   expect(final.row).toContain('已成交')
@@ -137,10 +138,10 @@ test('委托和成交单击选中并定位；未来记录可定位，覆盖边�
   const scene = projectReplay(window, { time_us: 200 })
   for (const cursor of [50, 200]) for (const end of [100, 300]) {
     const selected: string[] = [], sought: number[] = []
-    const tree = OrdersAndTrades({ projection: projectReplay(window, { time_us: cursor }), scene, context: window.context,
-      symbol: 'X', selected: null, selectedTradeKey: null, onSelect: key => selected.push(key), onSelectTrade: key => selected.push(key),
-      executionId: 'E', tab: 'orders', onTabChange() {}, onSeek: time => sought.push(time), coverage: [{ start_us: 100, end_us: end }] })
     for (const type of ['tr', 'button']) {
+      const tree = OrdersAndTrades({ projection: projectReplay(window, { time_us: cursor }), scene, context: window.context,
+        symbol: 'X', selected: null, selectedTradeKey: null, onSelect: key => selected.push(key), onSelectTrade: key => selected.push(key),
+        executionId: 'E', tab: type === 'tr' ? 'orders' : 'trades', onTabChange() {}, onSeek: time => sought.push(time), coverage: [{ start_us: 100, end_us: end }] })
       const row = findElement(tree, element => element.type === type && element.props['data-future'] !== undefined)!
       expect(row.props['data-future']).toBe(cursor < 100)
       const count = selected.length

@@ -1,5 +1,5 @@
 import { ReplayStage } from '@/features/replay/ReplayStage'
-import { Fragment, type ReactNode } from 'react'
+import { Fragment, memo, type ReactNode } from 'react'
 import { ContentSwap } from '@/components/ui/ContentSwap'
 import { Segmented } from '@/components/ui/Segmented'
 import { OverflowText } from '@/components/ui/OverflowText'
@@ -14,7 +14,10 @@ export type ReplayDetailTab = 'orders' | 'trades' | 'commands' | 'positions'
 const directionText = (value: string | null) => value === 'BUY' ? '买' : value === 'SELL' ? '卖' : '方向未知'
 const offsetText = (value: string | null) => ({ OPEN: '开', CLOSE: '平', CLOSETODAY: '平今', CLOSEYESTERDAY: '平昨' } as Record<string, string>)[value ?? ''] ?? ''
 
-function RecordedFields({ value, context, kind, executionId, position, future = false }: { value: ReplayOrder | ReplayTrade; context: ReplayContext; kind: 'order' | 'trade'; executionId: string; future?: boolean; position?: { label: string; time: number | null } }) {
+// 收起时冻结已展开内容，保留高度过渡；未展开的记录不计算完整字段。
+const RecordedFields = memo(function RecordedFields({ value, context, kind, executionId, active, projection, gaps = [], future = false }: { value: ReplayOrder | ReplayTrade; context: ReplayContext; kind: 'order' | 'trade'; executionId: string; active: boolean; projection?: ReplayProjection; gaps?: ReplayGap[]; future?: boolean }) {
+  if (!active) return null
+  const position = !future && projection && 'status' in value ? replayOrderPositionContext(value, projection, gaps) : undefined
   const ownership = replayOwnership(value, executionId)
   const fields = context.display?.[kind] ?? []
   const rows = fields.flatMap(field => { const text = replayFieldText(value.attributes[field.key], field); return text == null ? [] : [{ ...field, text }] })
@@ -51,15 +54,15 @@ function RecordedFields({ value, context, kind, executionId, position, future = 
     {identities.length > 0 && <details className="mt-3 text-[12px] text-ink-2"><summary className="w-fit cursor-pointer focus-visible:outline-2 focus-visible:outline-accent">原生身份</summary><dl className="mt-2 grid gap-2 sm:grid-cols-2">{identities.map(([key, raw]) => <div key={key}><dt>{key}</dt><dd className="num select-text break-all text-ink-2">{String(raw)}</dd></div>)}</dl></details>}
     </div>
   </div>
-}
+}, (_previous, next) => !next.active)
 
 export function OrdersAndTrades({ projection, scene = projection, context, symbol, selected, onSelect, selectedTradeKey, onSelectTrade, executionId, tab, onTabChange, onSeek, coverage, gaps = [], children }: { selectedTradeKey: string | null; onSelectTrade: (key: string) => void; children?: ReactNode; onTabChange: (tab: ReplayDetailTab) => void; tab: ReplayDetailTab; onSeek: (time: number) => void; coverage: ReplayRange[]; gaps?: ReplayGap[]; scene?: ReplayProjection; projection: ReplayProjection; context: ReplayContext; symbol: string; selected: string | null; onSelect: (key: string) => void; executionId: string }) {
   const instrument = replayInstrument(context, symbol), decimals = instrument.quantity_decimals ?? 6
   const firstOrders = new Map<string, ReplayOrder>()
-  for (const order of scene.orderHistory) if (order.symbol === symbol && !firstOrders.has(order.key)) firstOrders.set(order.key, order)
+  if (tab === 'orders') for (const order of scene.orderHistory) if (order.symbol === symbol && !firstOrders.has(order.key)) firstOrders.set(order.key, order)
   const orders = [...firstOrders.values()].map(order => projection.orders[order.key] ?? order)
-  const currentTrades = new Map(projection.ownTrades.map(trade => [replayTradeKey(trade), trade]))
-  const trades = scene.ownTrades.filter(trade => trade.symbol === symbol).map(trade => currentTrades.get(replayTradeKey(trade)) ?? trade)
+  const currentTrades = new Map(tab === 'trades' ? projection.ownTrades.map(trade => [replayTradeKey(trade), trade]) : [])
+  const trades = tab === 'trades' ? scene.ownTrades.filter(trade => trade.symbol === symbol).map(trade => currentTrades.get(replayTradeKey(trade)) ?? trade) : []
   const selectedTrade = selectedTradeKey == null ? trades.findLast(trade => currentTrades.has(replayTradeKey(trade))) : trades.find(trade => replayTradeKey(trade) === selectedTradeKey)
   const canSeek = (time: number) => coverage.some(range => time >= range.start_us && time < range.end_us)
   const seek = (time: number) => { if (canSeek(time)) onSeek(time) }
@@ -73,7 +76,7 @@ export function OrdersAndTrades({ projection, scene = projection, context, symbo
           <Segmented value={tab} options={[{ value: 'orders', label: '委托' }, { value: 'trades', label: '成交' }, { value: 'commands', label: '报撤观察' }, { value: 'positions', label: '持仓' }]} onChange={onTabChange} size="sm" />
         </div>
         <ContentSwap identity={tab} animateHeight={false}><div className="replay-detail-panels" data-tab={tab}>
-    <section className="replay-order-section" aria-label="已录自有委托，未来记录标记未到达">
+    {tab === 'orders' && <section className="replay-order-section" aria-label="已录自有委托，未来记录标记未到达">
       <div className="sr-only"><h2 className="font-semibold text-ink-1">自己的委托</h2><span className="text-[12px] text-ink-2">选择一张单查看轨迹</span></div>
       <div className="replay-detail-list"><table className="num w-full text-left text-[12px]"><thead className="text-ink-2"><tr><th className="pb-2 font-medium">委托</th><th className="pb-2 font-medium">归属</th><th className="pb-2 font-medium">买卖 / 开平</th><th className="pb-2 text-right font-medium">价格</th><th className="pb-2 text-right font-medium">已成 / 委托</th><th className="pb-2 pl-3 font-medium">当时状态</th></tr></thead><tbody>
         {orders.map(order => {
@@ -87,7 +90,7 @@ export function OrdersAndTrades({ projection, scene = projection, context, symbo
           <td className="whitespace-nowrap">{directionText(order.direction)} {offsetText(order.offset)}</td><td className="pl-3 text-right">{replayNumber(order.price, instrument?.price_decimals)}</td><td className="whitespace-nowrap pl-3 text-right">{missing ? '—' : replayNumber(order.filled_volume, decimals)} / {replayNumber(order.volume, decimals)}</td><td className="pl-3"><span className={unknown || !future && (order.cancel_pending || !order.confirmed && !order.terminal) ? 'text-warn' : ''}>{future ? '未到达' : unknown ? '状态未知' : order.cancel_pending ? '撤单待确认' : statusLabels[order.status ?? 'unknown'] ?? '状态未知'}</span>{order.carry_in && <small className="block text-ink-2">窗口前已存在</small>}</td>
         </tr><tr className="replay-expanded-row"><td colSpan={6}>
           <div id={`replay-order-extra-${encodeURIComponent(order.key)}`} className="replay-row-expansion" data-open={order.key === selected} inert={order.key !== selected}>
-            <div><RecordedFields value={order} context={context} kind="order" executionId={executionId} future={future} position={future ? undefined : replayOrderPositionContext(order, projection, gaps)} />
+            <div><RecordedFields value={order} context={context} kind="order" executionId={executionId} future={future} active={order.key === selected} projection={projection} gaps={gaps} />
               {!canSeek(order.time_us) && <p className="text-xs text-ink-2">此记录时刻未被录制覆盖，无法定位</p>}
             </div>
           </div>
@@ -96,14 +99,14 @@ export function OrdersAndTrades({ projection, scene = projection, context, symbo
       {!orders.length && <p className="py-4 text-[13px] text-ink-2">这段记录没有委托。</p>}
 
 
-    </section>
-    <section className="replay-trade-section" aria-label="已录自有成交，未来记录标记未到达">
+    </section>}
+    {tab === 'trades' && <section className="replay-trade-section" aria-label="已录自有成交，未来记录标记未到达">
       <div className="sr-only"><h2 className="font-semibold text-ink-1">自己的成交</h2><span className="text-[12px] text-ink-2">独立于市场成交圆点</span></div>
       <div className="replay-detail-list">{trades.map(trade => {
         const future = !currentTrades.has(replayTradeKey(trade))
         return <div key={replayTradeKey(trade)}><button data-future={future} type="button" onClick={() => { onSelectTrade(replayTradeKey(trade)); seek(trade.time_us) }} title={seekTitle(trade.time_us)} aria-pressed={trade === selectedTrade} aria-expanded={trade === selectedTrade} aria-controls={`replay-trade-extra-${encodeURIComponent(replayTradeKey(trade))}`} className={`grid min-h-11 w-full grid-cols-[minmax(0,1fr)_auto] gap-x-3 border-t border-line py-2 text-left text-[12px] focus-visible:outline-2 focus-visible:outline-accent ${trade === selectedTrade ? 'bg-accent-soft' : 'hover:bg-fill'}`}><span className="num text-ink-2">{replayTime(trade.time_us)}<span className="block text-ink-2">{trade.order_id ?? '委托待关联'} · {directionText(trade.direction)} · {replayOwnership(trade, executionId).label}</span></span><span className="num text-right text-ink-1">{future && <span className="block">未到达</span>}{replayNumber(trade.quantity, decimals)} {instrument?.quantity_label} @ {replayNumber(trade.price, instrument?.price_decimals)}{trade.identity_quality !== 'stable' && <span className="block text-warn">身份未确认，不作为确定累计</span>}</span></button>
         <div id={`replay-trade-extra-${encodeURIComponent(replayTradeKey(trade))}`} className="replay-row-expansion" data-open={trade === selectedTrade} inert={trade !== selectedTrade}><div>
-          <RecordedFields value={trade} context={context} kind="trade" executionId={executionId} future={future} />
+          <RecordedFields value={trade} context={context} kind="trade" executionId={executionId} future={future} active={trade === selectedTrade} />
           <p className="text-xs text-ink-2">{replayTradeLiquidity(trade)}</p>
           {!canSeek(trade.time_us) && <p className="text-xs text-ink-2">此记录时刻未被录制覆盖，无法定位</p>}
         </div></div>
@@ -111,16 +114,16 @@ export function OrdersAndTrades({ projection, scene = projection, context, symbo
       {selectedTradeKey && !selectedTrade && <p className="px-3 py-2 text-xs text-ink-2">所选成交不在这段记录中。</p>}
       {!trades.length && <p className="py-4 text-[13px] text-ink-2">这段记录没有自有成交。</p>}
 
-    </section>
-      <section className="replay-command-section replay-detail-list" aria-label="最近报撤请求"><h2 className="sr-only">最近报撤请求 · {commands.length} 条观察</h2><ul className="mt-2 space-y-1.5">{commands.map(command => {
+    </section>}
+      {tab === 'commands' && <section className="replay-command-section replay-detail-list" aria-label="最近报撤请求"><h2 className="sr-only">最近报撤请求 · {commands.length} 条观察</h2><ul className="mt-2 space-y-1.5">{commands.map(command => {
         const observation = replayCommandPresentation(command.data)
         return <li key={`${command.capture_seq}:${command.command_id}`} className="flex flex-wrap gap-x-3"><time className="num">{replayTime(command.time_us)}</time><span>{command.operation === 'cancel_order' ? '撤单' : command.operation === 'place_order' ? '报单' : '操作'} {command.order_id ?? command.symbol ?? ''} · {replayOwnership(command.data, executionId).label}</span><span className={observation.failed ? 'text-warn' : ''}>{observation.text}</span></li>
-      })}</ul>{!commands.length && <p className="text-ink-2">游标前尚无报撤请求。</p>}</section>
-    <section className="replay-position-section replay-detail-list" aria-label="游标处持仓观察">
+      })}</ul>{!commands.length && <p className="text-ink-2">游标前尚无报撤请求。</p>}</section>}
+    {tab === 'positions' && <section className="replay-position-section replay-detail-list" aria-label="游标处持仓观察">
       <p className="mb-2 text-xs text-ink-2">推导需要业务对齐证据；可卖与冻结只采用原生观察。</p>
       <table className="num w-full text-right text-xs"><thead className="text-ink-2"><tr><th className="text-left font-normal">方向</th>{['原生持仓', '今仓', '昨仓', '可卖 / 可平', '冻结', '有证据的推导'].map(label => <th key={label} className="whitespace-nowrap px-2 font-normal">{label}</th>)}</tr></thead><tbody>{Object.values(projection.observedPositions).filter(row => row.symbol === symbol).map(position => <tr key={position.direction ?? 'unknown'} className="border-t border-line"><th className="py-2 text-left font-normal">{({ LONG: '多头', SHORT: '空头', NET: '净持仓' } as Record<string, string>)[position.direction ?? ''] ?? '方向未知'}</th>{[position.volume, position.today_volume, position.yesterday_volume, position.available_volume, position.frozen_volume, Object.values(projection.derivedPositions).find(value => value.symbol === symbol && value.direction === position.direction)?.volume].map((value, index) => <td key={index} className="whitespace-nowrap px-2">{replayNumber(value, instrument.quantity_decimals)}</td>)}</tr>)}</tbody></table>
       {!Object.values(projection.observedPositions).some(row => row.symbol === symbol) && <p className="py-3 text-xs text-ink-2">当前持仓尚未观察到，或该层不可用。</p>}
-    </section>
+    </section>}
         </div></ContentSwap>
       </section>
     </div>

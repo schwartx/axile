@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { projectReplay } from '@/features/replay/model'
+import { createReplayProjector, projectReplay } from '@/features/replay/model'
 import type { ReplayData, ReplayMessage, ReplayWindow } from '@/features/replay/types'
 import quoteQuality from '../../../../tests/fixtures/execution_replay/quote-quality.json'
 import positionMerges from '../../../../tests/fixtures/execution_replay/position-field-merge.json'
@@ -21,6 +21,54 @@ const order = (id: string, rest: ReplayData = {}): ReplayData => ({ symbol: 'A',
   quantity: 10, filled_quantity: 0, remaining_quantity: 10, price: 98, status: 'working', confirmed_book: true, sync_generation: 1, ...rest })
 const fill = (id: string, quantity: number, rest: ReplayData = {}): ReplayData => ({ symbol: 'A', trade_key: id,
   identity_quality: 'stable', quantity, price: 99, direction: 'BUY', position_side: 'NET', execution_id: 'exec-1', ...rest })
+
+describe('增量投影', () => {
+  test('前进只解析新增观察，无事件帧不重建历史；后退与完整重建一致', () => {
+    let reads = 0
+    const data = { get symbol() { reads++; return 'A' }, book_valid: true, available: true, valid_until_us: 1000, bids: [{ price: 98, quantity: 2 }], asks: [] }
+    const window = windowOf([message(1, '/quote/A', data), message(2, '/quote/A', data, 300)])
+    window.gaps = [{ start_us: 150, end_us: 200, topic: 'depth', reason: 'test gap' }]
+    const project = createReplayProjector(window)
+    const first = project({ time_us: 100 }), saved = JSON.stringify(first)
+    reads = 0
+    const idle = project({ time_us: 120 })
+    expect(reads).toBe(0)
+    expect(idle.quoteHistory).toBe(first.quoteHistory)
+    for (const time_us of [160, 210, 300, 1100, 100, 300]) expect(project({ time_us })).toEqual(projectReplay(window, { time_us }))
+    expect(JSON.stringify(first)).toBe(saved)
+  })
+
+  test('新增稳定成交只更新关联委托，保留其他委托和旧快照', () => {
+    const window = windowOf([message(1, '/order', order('O')), message(2, '/order', order('OTHER')),
+      message(3, '/trade', fill('T1', 2, { order_id: 'O' })), message(4, '/trade', fill('T2', 3, { order_id: 'O' }))])
+    const project = createReplayProjector(window), before = project({ time_us: 300 }), after = project({ time_us: 400 })
+    expect(after.orders[key('A', 'O')].filled_volume).toBe(5)
+    expect(after.orders[key('A', 'OTHER')]).toBe(before.orders[key('A', 'OTHER')])
+    expect(before.orders[key('A', 'O')].filled_volume).toBe(2)
+  })
+
+  test('同微秒逐事件、成交补全冲突、命令归属、重复事件和持仓保持完整重建语义', () => {
+    const messages = [message(1, '/execution', { execution_id: 'exec-1', phase: 'start', symbols: ['A'] }),
+      message(2, '/order', order('O')),
+      message(3, '/trade', fill('T1', 2, { order_id: 'O', execution_id: null })),
+      message(4, '/command', { command_id: 'C', operation: 'place_order', symbol: 'A', order_id: 'O', execution_id: 'exec-1' }),
+      message(5, '/trade', fill('T1', 2, { order_id: 'O' })),
+      message(6, '/trade', fill('T2', 3, { order_id: 'O' })),
+      message(7, '/trade', fill('T2', 4, { order_id: 'O' })),
+      message(8, '/account_observation', { scope: ['A'], positions: [{ symbol: 'A', position_side: 'NET', quantity: 5 }] }),
+      message(9, '/trade', { symbol: 'A', quantity: 1, price: 99, order_id: 'O' }),
+      message(10, '/trade', fill('T3', 1, { order_id: 'O', related_capture_seq: 9 }))].map(row => ({ ...row, time_us: 100 }))
+    messages.splice(6, 0, messages[5])
+    const window = windowOf(messages), project = createReplayProjector(window)
+    const snapshots: { value: ReturnType<typeof project>; saved: string }[] = []
+    for (const capture_seq of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 3, 10]) {
+      const cursor = { time_us: 100, capture_seq }, value = project(cursor)
+      expect(value).toEqual(projectReplay(window, cursor))
+      for (const snapshot of snapshots) expect(JSON.stringify(snapshot.value)).toBe(snapshot.saved)
+      snapshots.push({ value, saved: JSON.stringify(value) })
+    }
+  })
+})
 
 describe('回放按本地已观察前缀恢复', () => {
   test('窗口内超过两万条盘口观察仍可回放', () => {

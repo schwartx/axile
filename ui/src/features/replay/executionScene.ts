@@ -1,9 +1,9 @@
 import { currentReplayQuote } from '@/features/replay/chartGeometry'
 import { replayTradeKey } from '@/features/replay/chartInteraction'
-import { projectReplay } from '@/features/replay/model'
+import { createReplayProjector, projectReplay } from '@/features/replay/model'
 import type { ReplayCursor, ReplayGap, ReplayProjection, ReplayRange, ReplayWindow } from '@/features/replay/types'
 
-export interface ReplayExecutionSlice { range: ReplayRange; window: ReplayWindow; scene: ReplayProjection }
+export interface ReplayExecutionSlice { range: ReplayRange; window: ReplayWindow; scene: ReplayProjection; project: (cursor: ReplayCursor) => ReplayProjection }
 
 function tagTrades(projection: ReplayProjection, recordingId: string): ReplayProjection {
   return { ...projection,
@@ -23,7 +23,7 @@ export function replayExecutionScene(parts: readonly { range: ReplayRange; windo
         valid_until_us: quote.valid_until_us == null ? null : Math.min(quote.valid_until_us, part.end_us) }]
     })
     const inRange = (time: number) => time >= part.start_us && time < part.end_us
-    return { range: part, window, scene: { ...projection, quoteHistory,
+    return { range: part, window, project: createReplayProjector(window), scene: { ...projection, quoteHistory,
       ownTrades: projection.ownTrades.filter(trade => inRange(trade.time_us)),
       marketTrades: projection.marketTrades.filter(trade => inRange(trade.time_us)) } }
   })
@@ -41,12 +41,12 @@ export function replayExecutionScene(parts: readonly { range: ReplayRange; windo
 }
 
 /** 缺口和身份不明的重叠段不延用任一段的即时状态。 */
-export function replayExecutionAt(overview: NonNullable<ReturnType<typeof replayExecutionScene>>, cursor: ReplayCursor, symbol: string): ReplayProjection {
+export function replayExecutionAt(overview: NonNullable<ReturnType<typeof replayExecutionScene>>, cursor: ReplayCursor, _symbol: string): ReplayProjection {
   const active = overview.slices.filter(slice => cursor.time_us >= slice.range.start_us && cursor.time_us < slice.range.end_us)
   const selected = active.length === 1 ? active[0] : null
   const baselineSeq = Number(selected?.window.state_before_start?.state_through_seq ?? 0)
   const localCursor = cursor.capture_seq != null && cursor.capture_seq < baselineSeq ? { time_us: cursor.time_us } : cursor
-  const projection = selected ? tagTrades(projectReplay(selected.window, localCursor, symbol), selected.window.recording_id) : {
+  const projection = selected ? tagTrades(selected.project(localCursor), selected.window.recording_id) : {
     ...overview.scene, recording_id: '', time_us: cursor.time_us, capture_seq: 0, quotes: {}, orders: {},
     orderHistory: [], quoteHistory: [], ownTrades: [], marketTrades: [], commands: [], targets: {}, targetsByExecution: {},
     observedPositions: {}, derivedPositions: {}, executionTotals: {}, executionComplete: {}, executionSymbolComplete: {},

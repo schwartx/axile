@@ -30,7 +30,7 @@ function useEffect(fn: any, deps: any[]) {
     slots[index] = { deps, cleanup }; effects.push({ index, fn, cleanup })
   }
 }
-mock.module('react', () => ({ Fragment: 'fragment', useState, useRef, useMemo: memoValue, useEffect, useLayoutEffect: useEffect, useCallback: (fn: any, deps: any[]) => memoValue(() => fn, deps) }))
+mock.module('react', () => ({ Fragment: 'fragment', memo: (fn: any) => fn, useState, useRef, useMemo: memoValue, useEffect, useLayoutEffect: useEffect, useCallback: (fn: any, deps: any[]) => memoValue(() => fn, deps) }))
 const jsx = (type: any, props: any, key: any) => ({ type, props, key })
 mock.module('react/jsx-runtime', () => ({ jsx, jsxs: jsx, Fragment: 'fragment' }))
 mock.module('react/jsx-dev-runtime', () => ({ jsxDEV: jsx, Fragment: 'fragment' }))
