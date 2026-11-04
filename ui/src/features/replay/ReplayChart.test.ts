@@ -68,6 +68,21 @@ it('同一时间轴包含未来成交并标记未到达，不修改游标状态'
   expect(JSON.stringify(projection)).toBe(before)
 })
 
+it('无价位时仍显示统一时间尺、当前精确读数和可访问定位器', () => {
+  const { window } = chart()
+  window.state_before_start = { time_us: 100, state_through_seq: 5 }
+  const projection = projectReplay(window, { time_us: 123 })
+  const html = renderToStaticMarkup(createElement(ReplayChart, { window, projection, symbol: 'X', executionId: 'E',
+    range: window.coverage[0], selectedOrder: null, selectedTrade: null, onSelectTrade() {}, onInspect() {}, onSelectOrder() {}, onSeek() {} }))
+  expect(html).toContain('class="replay-time-ruler"')
+  expect(html).toContain('class="replay-time-tick"')
+  expect(html).toContain('class="replay-cursor-line"')
+  expect(html).toMatch(/<time class="replay-cursor-time num"[^>]*>08:00:00\.000123<\/time>/)
+  expect(html).toContain('aria-label="当前回放时间 08:00:00.000123"')
+  expect(html).toContain('aria-valuetext="08:00:00.000123"')
+  expect(html).not.toContain('NaN')
+})
+
 it('首个盘口到达前灰显预览，同刻按采集序号生效，过期或缺口不借用未来盘口', () => {
   const window: ReplayWindow = { recording_id: 'r', window_id: 'w', context: { schema_version: 1 },
     complete: true, next_cursor: null, state_before_start: { time_us: 0, state_through_seq: 0 }, coverage: [{ start_us: 0, end_us: 300 }], gaps: [],

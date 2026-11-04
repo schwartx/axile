@@ -22,7 +22,7 @@ export function ValueSlider({ value, min, max, step, onChange, onChangeEnd, form
   const pending = useRef<number | null>(null)
   const [dragging, setDragging] = useState(false)
   const bounded = Math.max(min, Math.min(max, Number.isFinite(value) ? value : min))
-  const fraction = (bounded - min) / (max - min)
+  const fraction = max > min ? (bounded - min) / (max - min) : 0
   const format = formatValue ?? ((next: number) => `${next}${unit}`)
   // 用易读的参考数值标刻度，位置仍按真实值计算，不改变参数精度。
   const marks = [...new Set([0.25, 0.5, 0.75].map((ratio) => Number((min + ratio * (max - min)).toPrecision(2))))]
@@ -48,7 +48,7 @@ export function ValueSlider({ value, min, max, step, onChange, onChangeEnd, form
       aria-valuemin={min} aria-valuemax={max} aria-valuenow={bounded}
       aria-valuetext={Number.isFinite(value) ? format(value) : '请输入数值'}
       aria-disabled={disabled || undefined} aria-invalid={invalid || undefined} tabIndex={disabled ? -1 : 0}
-      className={`group relative flex ${variant === 'axis' ? 'h-6 rounded' : 'h-11 rounded-lg focus-visible:ring-2 focus-visible:ring-accent/40'} touch-pan-y select-none items-center px-3 outline-none ${disabled ? 'cursor-default' : dragging ? 'cursor-grabbing' : 'cursor-pointer'}`}
+      className={`group relative flex h-11 ${variant === 'axis' ? 'touch-none rounded' : 'touch-pan-y rounded-lg focus-visible:ring-2 focus-visible:ring-accent/40'} select-none items-center px-3 outline-none ${disabled ? 'cursor-default' : dragging ? 'cursor-grabbing' : 'cursor-pointer'}`}
       onPointerDown={(event) => {
         if (disabled || !event.isPrimary || event.button !== 0) return
         event.currentTarget.focus()
@@ -85,12 +85,12 @@ export function ValueSlider({ value, min, max, step, onChange, onChangeEnd, form
       onKeyUp={(event) => {
         if (['Home', 'End', 'ArrowLeft', 'ArrowDown', 'ArrowRight', 'ArrowUp', 'PageUp', 'PageDown'].includes(event.key)) commit()
       }}>
-      <div ref={track} className={`relative w-full ${variant === 'axis' ? 'h-px bg-transparent' : 'h-1.5 rounded-full bg-ink-3/15'}`}>
+      <div ref={track} className={`relative w-full ${variant === 'axis' ? 'h-0 bg-transparent' : 'h-1.5 rounded-full bg-ink-3/15'}`}>
         {variant !== 'axis' && <div className={`absolute inset-y-0 left-0 rounded-full ${invalid ? 'bg-warn' : 'bg-accent'}`} style={{ width: `${fraction * 100}%` }} />}
         {variant !== 'axis' && marks.map((mark) => <span key={mark} aria-hidden="true"
           className={`absolute top-1/2 h-1 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full ${mark <= bounded ? 'bg-surface/70' : 'bg-ink-3/40'}`}
           style={{ left: `${(mark - min) / (max - min) * 100}%` }} />)}
-        {variant === 'axis' ? <span data-slider-thumb aria-hidden="true" style={{ left: `${fraction * 100}%` }} className={`absolute top-1/2 h-0 w-0 -translate-x-1/2 -translate-y-1/2 border-x-4 border-b-[6px] border-x-transparent ${invalid ? 'border-b-warn' : 'border-b-accent'}`} /> : <span data-slider-thumb aria-hidden="true" style={{ left: `${fraction * 100}%` }}
+        {variant === 'axis' ? <span data-slider-thumb aria-hidden="true" style={{ left: `${fraction * 100}%` }} className={`absolute top-0 h-0 w-0 -translate-x-1/2 border-x-4 border-b-[6px] border-x-transparent ${invalid ? 'border-b-warn' : 'border-b-accent'}`} /> : <span data-slider-thumb aria-hidden="true" style={{ left: `${fraction * 100}%` }}
           className={`absolute top-1/2 flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center gap-0.5 rounded-full border-2 bg-surface shadow-sm transition-shadow duration-150 motion-reduce:transition-none ${invalid ? 'border-warn' : 'border-accent'} ${dragging ? 'ring-4 ring-accent/15' : disabled ? '' : 'group-hover:ring-4 group-hover:ring-accent/10'}`}>
           <span className="h-2 w-px rounded-full bg-ink-3/60" /><span className="h-2 w-px rounded-full bg-ink-3/60" />
         </span>}

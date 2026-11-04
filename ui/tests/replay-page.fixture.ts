@@ -1,3 +1,4 @@
+/// <reference types="bun" />
 import { mock } from 'bun:test'
 
 declare const ui: string
@@ -107,7 +108,8 @@ function text(node: any): string {
 function chart() { return find(tree, node => node.props?.symbolControl && node.props?.projection) }
 function details() { return find(tree, node => typeof node.type === 'function' && node.type.name === 'OrdersAndTrades') }
 function button(label: string) { const node = find(tree, node => node.props?.['aria-label'] === label); if (!node) throw Error('missing button: ' + label); return node }
-function seekText() { return text(find(tree, node => node.props?.className?.includes('replay-cursor-time'))) }
+const { replayTime } = await import(ui + 'features/replay/presentation.ts')
+function seekText() { return replayTime(chart().props.projection.time_us) }
 function playing() { return Boolean(find(tree, node => node.props?.['aria-label'] === '暂停回放')) }
 function hide(hidden: boolean) { pageDocument.hidden = hidden; for (const listener of [...listeners]) listener(); flush() }
 function frame(now: number) { wall = now; const entry = frames.entries().next().value; if (entry) { frames.delete(entry[0]); entry[1](now); flush() } }

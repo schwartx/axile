@@ -55,7 +55,7 @@ const tickAtHover = find(tree, n => n.props?.className === 'replay-price-tick nu
 assert.equal(tickAtHover.props.style.opacity, 0, '悬停价格附近的刻度应完全让位')
 assert.equal(tickAtHover.props.style.left + tickAtHover.props.style.width, priceLabel().props.style.left + priceLabel().props.style.width, '悬停价格与普通刻度右对齐')
 assert.ok(find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.style.opacity === 1), '远处刻度仍然完整可见')
-const middleTick = () => find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.children === '100.5')
+const middleTick = () => find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.children === '100.4')
 const middleTop = middleTick().props.style.top
 function yieldAt(distance: number) {
   const y = middleTop + 8 + distance
@@ -141,6 +141,9 @@ find(tree, n => n.type === 'canvas').props.onKeyDown({ key: '+', preventDefault(
 const seeksBeforeReturn = seeks.length
 const returnButton = button('回到游标')
 if (!returnButton) throw Error('缩放后应能返回视野外的游标')
+assert.ok(!find(tree, n => n.props?.className === 'replay-cursor-line'), '视野外不把游标伪装为边缘竖线')
+assert.equal(find(tree, n => n.props?.className === 'replay-chart-axis').props['data-outside'], true, '视野外隐藏三角播放头')
+assert.ok(find(tree, n => n.props?.className === 'replay-cursor-time num').props['aria-label'].includes('视野之外'), '当前读数说明视野外状态')
 returnButton.props.onClick(); draw()
 const returnsToCursor = !button('回到游标') && seeks.length === seeksBeforeReturn
 button('恢复视图').props.onClick(); draw()
@@ -152,6 +155,7 @@ const activeOrders = Object.fromEntries([
   { ...working, key: 'A', price: 100.5, cancel_pending: true },
   { ...working, key: 'B', price: 100.51 },
   { ...working, key: 'C', price: 100.5 },
+  { ...working, key: 'D', price: 100.4 },
 ].map(order => [order.key, order]))
 props.projection = { ...projection, orders: activeOrders }
 props.scene = { ...scene, orders: activeOrders }
@@ -165,7 +169,7 @@ assert.equal(nearbyLabel.props['data-collapsed'], true, '密集委托保留刻�
 assert.equal(nearbyLabel.props.children[1].props.style.opacity, 0)
 assert.equal(selectedLabel.props['data-pending'], true, '同价任一委托待撤即保留警示语义')
 assert.ok(!middleTick(), '委托价与普通刻度同价时只绘制委托标签')
-const otherTick = find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.children === '100.4')
+const otherTick = find(tree, n => n.props?.className === 'replay-price-tick num' && n.props.children === '100.6')
 assert.equal(otherTick.props.style.left, selectedLabel.props.style.left, '委托与轴刻度共用左边界')
 assert.equal(otherTick.props.style.width, selectedLabel.props.style.width, '委托与轴刻度共用宽度和右边界')
 assert.ok(otherTick.props.style.opacity < 1, '相邻普通刻度向委托价让位')

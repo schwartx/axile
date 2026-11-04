@@ -12,6 +12,7 @@ import { ReplayInspector } from '@/features/replay/ReplayInspector'
 import { ReplayDepthLadder } from '@/features/replay/ReplayDepthLadder'
 import { replayOrderOwnershipGroups, replayOwnership } from '@/features/replay/ownership'
 import { replayInstrument, replayNumber, replayTime } from '@/features/replay/presentation'
+import { replayTimeLabelLeft, replayTimeTickOpacity, replayTimeTicks } from '@/features/replay/timeAxis'
 import type { ReplayExecutionSlice } from '@/features/replay/executionScene'
 import type { ReplayCursor, ReplayOrder, ReplayProjection, ReplayRange, ReplayWindow } from '@/features/replay/types'
 
@@ -42,21 +43,6 @@ function priceLabelOpacity(top: number, occupied: number[]) {
   // 20px 内留净读数，外侧 16px 按距离退墨，不叠加时间缓动造成拖尾。
   const fade = Math.max(0, Math.min(1, (Math.min(...occupied.map(other => Math.abs(top - other))) - 20) / 16))
   return fade * fade * (3 - 2 * fade)
-}
-
-function drawTimeAxis(ctx: CanvasRenderingContext2D, height: number, range: ReplayRange, layout: ReplayChartLayout, theme: CanvasTheme) {
-  canvasLine(ctx, layout.left, height - 18, layout.right, height - 18, theme.line)
-  ctx.fillStyle = theme.ink
-  const duration = range.end_us - range.start_us
-  const label = (time: number) => duration < 100_000 ? replayTime(time) : duration < 5_000_000 ? replayTime(time).slice(0, -3) : replayTime(time, false, false)
-  const spacing = Math.max(145, ctx.measureText(label(range.start_us)).width * 1.5 + 12)
-  const labels = Math.max(2, Math.floor((layout.right - layout.left) / spacing))
-  for (let index = 0; index <= labels; index++) {
-    const time = Math.min(range.end_us - 1, Math.round(range.start_us + (range.end_us - range.start_us) * index / labels))
-    ctx.textAlign = index === 0 ? 'left' : index === labels ? 'right' : 'center'
-    ctx.fillText(label(time), replayTimeX(time, range, layout), height - 3)
-  }
-  ctx.textAlign = 'left'
 }
 
 function drawOrderHistory(ctx: CanvasRenderingContext2D, timeline: ReturnType<typeof replayOrderTimeline>, range: ReplayRange, view: ReplayPriceView, layout: ReplayChartLayout, selected: string | null, executionId: string, theme: CanvasTheme, orderColor: string, cursor: ReplayCursor, hovered: string | undefined = undefined) {
@@ -123,7 +109,15 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   const selectedExecution = layers.execution && replayWindow.context.streams?.[symbol]?.own_trade?.availability !== 'unavailable' ? recorded.ownTrades.find(trade => replayTradeKey(trade) === selectedTrade && trade.symbol === symbol && trade.time_us >= visibleRange.start_us && trade.time_us < visibleRange.end_us && (!historyOrders.some(order => order.order_id === trade.order_id) || visibleOrders.some(order => order.order_id === trade.order_id))) : undefined
   const height = size.height
   const [priceAxisWidth, setPriceAxisWidth] = useState(76)
+  const [timeCharacterWidth, setTimeCharacterWidth] = useState(6.6)
   const layout = useMemo(() => ({ ...replayChartLayout(size.width, height, priceAxisWidth), top: selectedExecution ? 28 : 0 }), [size.width, height, priceAxisWidth, selectedExecution])
+  const axisY = layout.bottom + 12
+  const cursorX = replayTimeX(projection.time_us, visibleRange, layout)
+  const cursorWidth = replayTime(projection.time_us).length * timeCharacterWidth + (cursorInside ? 8 : 24)
+  const cursorLeft = replayTimeLabelLeft(cursorX, cursorWidth, layout)
+  const timeTicks = useMemo(() => replayTimeTicks(visibleRange, layout, timeCharacterWidth), [visibleRange, layout, timeCharacterWidth])
+  const hoverTimeWidth = activeHover ? replayTime(activeHover.time).length * timeCharacterWidth + 8 : 0
+  const hoverTimeLeft = activeHover ? replayTimeLabelLeft(activeHover.x, hoverTimeWidth, layout) : 0
   const inspectionWidth = Math.min(320, layout.right - 16)
   const priceTicks = useMemo(() => view ? replayPriceTicks(view, layout.bottom - layout.top) : [], [view, layout.bottom, layout.top])
   const priceLabelTop = (y: number) => Math.max(layout.top, Math.min(layout.bottom - 16, y - 8))
@@ -196,8 +190,11 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
     ctx.fillStyle = theme.ink
     const measuredAxisWidth = Math.max(76, Math.ceil(Math.max(0, ...[...priceTicks, ...orderPrices].map(price => ctx.measureText(priceText(price)).width))) + 16)
     if (measuredAxisWidth !== priceAxisWidth) { setPriceAxisWidth(measuredAxisWidth); return }
-    if (!view || !heat) { ctx.fillText('这段记录尚无有效价位。', layout.left, height / 2); drawTimeAxis(ctx, height, visibleRange, layout, theme); return }
-    const cursorX = replayTimeX(projection.time_us, visibleRange, layout)
+    ctx.font = `11px ${css.getPropertyValue('--font-mono')}`
+    const measuredCharacterWidth = ctx.measureText('00:00:00.000000').width / 15
+    if (measuredCharacterWidth !== timeCharacterWidth) setTimeCharacterWidth(measuredCharacterWidth)
+    ctx.font = `12px ${theme.font}`
+    if (!view || !heat) { ctx.fillText('这段记录尚无有效价位。', layout.left, height / 2); return }
     const splitX = Math.max(layout.left, Math.min(layout.right, cursorX))
     for (const future of [false, true]) {
       const paint = future ? { ...theme, accent: theme.ink, warn: theme.ink } : theme
@@ -264,7 +261,6 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       drawOrderHistory(ctx, timeline, visibleRange, view, layout, selectedOrder, executionId, paint, future ? theme.ink : css.getPropertyValue('--color-chart-2').trim(), projection, activeHover?.object)
       ctx.restore()
     }
-    if (cursorInside) canvasLine(ctx, cursorX, layout.top, cursorX, height - 18, theme.accent)
     if (selectedExecution) {
       const future = replayFutureRecord(selectedExecution.time_us, selectedExecution.capture_seq, projection)
       ctx.fillStyle = future ? theme.ink : theme.accent
@@ -274,8 +270,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       const y = replayPriceY(price, view, layout)
       canvasLine(ctx, layout.left, y, layout.right, y, theme.line)
     }
-    drawTimeAxis(ctx, height, visibleRange, layout, theme)
-  }, [priceAxisWidth, priceTicks, orderPrices, size, height, projection, replayWindow, visibleRange, symbol, executionId, selectedOrder, selectedExecution, view, layout, historyQuotes, timeline, marketSegments, priceText, quantityText, heat, maxHeat, recorded, drawThrough, cursorInside, bubbles, maxBubble, activeHover?.object])
+  }, [priceAxisWidth, timeCharacterWidth, priceTicks, orderPrices, size, height, projection, replayWindow, visibleRange, symbol, executionId, selectedOrder, selectedExecution, view, layout, historyQuotes, timeline, marketSegments, priceText, quantityText, heat, maxHeat, recorded, drawThrough, cursorX, bubbles, maxBubble, activeHover?.object])
 
   const resetView = () => { setManualView(null); setTimeView(null); setHover(null) }
   const zoom = (factor: number) => {
@@ -424,9 +419,14 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
         <i aria-hidden="true" style={{ top: label.y - label.top }} />
         <span style={{ opacity: label.collapsed || label === hoverOrder ? 0 : priceLabelOpacity(label.top, hoverOccupied) }}>{priceText(label.price)}</span>
       </span>)}
-      <div className="replay-chart-axis" data-outside={!cursorInside || undefined} style={{ left: layout.left - 12, right: size.width - layout.right - 12, top: height - 30 }}>
-        <ValueSlider variant="axis" label="录制定位" min={0} max={Math.max(1, visibleRange.end_us - visibleRange.start_us - 1)} step={1} value={projection.time_us - visibleRange.start_us}
-          formatValue={offset => cursorInside ? replayTime(visibleRange.start_us + offset) : `游标在当前视野之外，${replayTime(projection.time_us)}`} onChange={offset => { setHover(null); onSeek(visibleRange.start_us + offset) }} />
+      <div className="replay-time-ruler" aria-hidden="true" style={{ left: layout.left, width: layout.right - layout.left, top: axisY }}>
+        {timeTicks.map(tick => <span key={tick.time} className="replay-time-tick" style={{ left: tick.x - layout.left }}><i /><time className="num" style={{ left: tick.left - tick.x, width: tick.width, opacity: replayTimeTickOpacity(tick.left, tick.width, cursorLeft, cursorWidth) }}>{tick.label}</time></span>)}
+      </div>
+      {cursorInside && <div className="replay-cursor-line" aria-hidden="true" style={{ left: cursorX, top: layout.top, height: axisY - layout.top }} />}
+      <time className="replay-cursor-time num" data-outside={!cursorInside || undefined} aria-label={`当前回放时间 ${replayTime(projection.time_us)}${cursorInside ? '' : '，游标在当前视野之外'}`} style={{ left: cursorLeft, width: cursorWidth, top: axisY + 8 }}>{!cursorInside && projection.time_us < visibleRange.start_us ? '← ' : ''}{replayTime(projection.time_us)}{!cursorInside && projection.time_us >= visibleRange.end_us ? ' →' : ''}</time>
+      <div className="replay-chart-axis" data-outside={!cursorInside || undefined} style={{ left: layout.left - 12, width: (layout.right - layout.left) * Math.max(0, visibleRange.end_us - visibleRange.start_us - 1) / (visibleRange.end_us - visibleRange.start_us) + 24, top: axisY - 22 }}>
+        <ValueSlider variant="axis" label="录制定位" min={0} max={visibleRange.end_us - visibleRange.start_us - 1} step={1} value={projection.time_us - visibleRange.start_us} disabled={visibleRange.end_us - visibleRange.start_us <= 1}
+          formatValue={offset => cursorInside ? replayTime(visibleRange.start_us + offset) : `游标在当前视野之外，${replayTime(projection.time_us)}`} onChange={offset => { setHover(null); setInspection(null); onSeek(Math.min(visibleRange.end_us - 1, visibleRange.start_us + offset)) }} />
       </div>
       {view && layout.columns && <ReplayDepthLadder quote={displayQuote} future={futureDepth} orders={depthOrders} view={view} layout={layout} height={height} executionId={executionId} selected={selectedOrder} onSelect={key => { onInspect(); onSelectOrder(key) }} priceText={priceText} quantityText={quantityText} hoverPrice={hoverPrice ?? undefined} />}
       {inspection && <div className="replay-inspection-float" aria-label="图中记录浮卡" style={{
@@ -441,10 +441,10 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
           onSeek={() => { onSeek(inspection.record.time, inspection.record.seq); setInspection(null) }} />
       </div>}
       {activeHover && <>
-        {activeHover.x <= layout.right && <div className="replay-crosshair" aria-hidden style={{ left: activeHover.x, top: layout.top, height: layout.bottom - layout.top }} />}
+        {activeHover.x <= layout.right && <div className="replay-crosshair" aria-hidden style={{ left: activeHover.x, top: layout.top, height: axisY - layout.top }} />}
         <div className="replay-crosshair-horizontal" aria-hidden style={{ left: layout.left, right: size.width - layout.right, top: activeHover.y }} />
         <span className={`replay-crosshair-price num${hoverOrder ? ' replay-order-price' : ''}`} data-pending={hoverOrder?.pending || undefined} aria-label={hoverOrder ? `账户挂单价格 ${priceText(hoverPrice)}` : undefined} style={{ ...priceLabelStyle, top: hoverPriceTop ?? undefined }}><i aria-hidden="true" style={{ top: activeHover.y - (hoverPriceTop ?? 0) }} />{view && priceText(hoverPrice)}</span>
-        <time className="replay-crosshair-time num" style={{ left: Math.max(layout.left, Math.min(layout.right - 140, activeHover.x - 70)), top: height - 24 }}>{replayTime(activeHover.time)}</time>
+        <time className="replay-crosshair-time num" aria-label={`悬停时间 ${replayTime(activeHover.time)}`} style={{ left: hoverTimeLeft, width: hoverTimeWidth, top: axisY - 24 }}>{replayTime(activeHover.time)}</time>
       </>}
     </div>
     <div className="replay-outside-orders flex flex-wrap gap-2" aria-label="价位范围之外的自有委托">{outside.map(order => <button key={order.key} className="min-h-8 cursor-pointer rounded-chip bg-fill px-2 text-xs text-ink-2 focus-visible:outline-2 focus-visible:outline-accent" onClick={() => { onSelectOrder(order.key); if (view && order.price != null) setManualView(centerReplayPrice(view, order.price)) }}>{order.price! > view!.max ? '上方' : '下方'} {order.order_id} · {replayOwnership(order, executionId).label} · {priceText(order.price)} · 定位</button>)}</div>

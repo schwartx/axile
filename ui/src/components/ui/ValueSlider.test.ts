@@ -23,6 +23,12 @@ test('重复键盘操作读取最新草稿，keyup或失焦仅提交一次', () 
   expect(result.blurred).toEqual([100])
 })
 
+test('时间尺保留拖动与键盘定位，单微秒时段不产生无效播放头', () => {
+  const result = sliderCases()
+  expect(result.axis).toEqual({ aria: 'time:10', changes: [25, 75, 100, 0, 100], commits: [100, 0, 100], touchNone: true, marks: 'false' })
+  expect(result.fixed).toEqual({ changes: [], tabIndex: -1, thumbLeft: '0%' })
+})
+
 test('格式化共享可访问读数和标刻，既有数值输入保持单位与即时更新', () => {
   const result = sliderCases()
   expect(result.formatted).toEqual({ aria: 'time:10', marks: 'time:0 time:50 time:100' })

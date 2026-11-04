@@ -165,7 +165,7 @@ export function ExecutionReplayPage() {
   </div>
   const transport = range && <div className="replay-chart-transport">
     <div role="group" aria-label="播放速度" className="replay-speed-picker"><Segmented size="sm" className="num" value={speed} onChange={setSpeed} options={['0.1', '0.25', '0.5', '1', '2'].map(value => ({ value, label: value + '×' }))} /></div>
-    <time className="replay-cursor-time num text-xs text-ink-1">{replayTime(cursor.time_us)} <span className="text-ink-2">{playing ? '播放中' : '已暂停'}</span></time>
+    <span className="text-xs text-ink-2">{playing ? '播放中' : '已暂停'}</span>
     {stateLabel && <span className="text-xs text-warn" role="status">{stateLabel}</span>}
     <span className="replay-target num text-xs text-ink-2">目标 {replayNumber(target, unit?.quantity_decimals)} / 本次成交 {replayNumber(ownQuantity, unit?.quantity_decimals)} {unit?.quantity_label}</span>
   </div>
@@ -190,7 +190,7 @@ export function ExecutionReplayPage() {
     </OrdersAndTrades> : plan && loaded.loading && <ReplayStage><div className="replay-chart-column"><div className="replay-chart-area"><div className="replay-main-chart">
       <div className="replay-chart-playback"><span className="text-[13px] font-semibold text-ink-1">{symbol || '品种未知'}</span>{transport}</div>
       <div className="replay-chart-meta"><div className="replay-chart-legend"><span className="replay-depth-bid"><Minus size={14} aria-hidden />买一</span><span className="replay-depth-ask"><Minus size={14} aria-hidden />卖一</span><span><Minus size={14} aria-hidden />成交价</span><span><Circle size={10} aria-hidden />市场成交</span><span className="replay-order-color"><Minus size={14} aria-hidden />账户委托</span><span><Minus size={14} aria-hidden />未到达</span></div><div className="replay-chart-view-controls replay-chart-navigation"><div className="replay-chart-return-slot" /><div className="replay-playback-group">{playControls}<button type="button" className="min-h-7 min-w-7 text-ink-2 opacity-40" aria-label="恢复视图" disabled><RotateCcw size={15} aria-hidden /></button><button type="button" className="min-h-7 min-w-7 text-ink-2 opacity-40" aria-label="聚焦委托过程" disabled><Crosshair size={14} aria-hidden /></button><button type="button" className="min-h-7 min-w-7 text-ink-2 opacity-40" aria-label="图层与图例说明" disabled><Info size={15} aria-hidden /></button></div><button type="button" className={buttonClass + ' replay-first-quote'} disabled>跳到首个盘口</button></div></div>
-      <div className="replay-empty" role="status">正在读取整个执行的录制…</div>
+      <div className="replay-chart-plot"><div className="replay-empty h-full" role="status">正在读取整个执行的录制…</div><div className="replay-loading-axis" aria-hidden="true"><time className="replay-cursor-time num">{replayTime(cursor.time_us)}</time></div></div>
     </div></div><section className="replay-dock" aria-label="回放明细"><div className="replay-dock-header"><Segmented value={detailTab} options={[{ value: 'orders', label: '委托' }, { value: 'trades', label: '成交' }, { value: 'commands', label: '报撤观察' }, { value: 'positions', label: '持仓' }]} onChange={setDetailTab} size="sm" /></div></section></div></ReplayStage>}
   </section>
 }

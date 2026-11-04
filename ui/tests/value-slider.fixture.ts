@@ -1,3 +1,4 @@
+/// <reference types="bun" />
 import { mock } from 'bun:test'
 
 declare const ui: string
@@ -52,6 +53,12 @@ blurred.slider.onKeyDown(blurred.key('End')); blurred.slider.onBlur(); blurred.s
 const formatted = setup({ formatValue: (value: number) => `time:${value}` })
 const original = setup({ unit: 'ms', onChangeEnd: undefined })
 original.slider.onKeyDown(original.key('End'))
+const axis = setup({ variant: 'axis', formatValue: (value: number) => `time:${value}` })
+axis.slider.onPointerDown(axis.pointer(35)); axis.slider.onPointerMove(axis.pointer(85)); axis.slider.onPointerUp(axis.pointer(110))
+axis.slider.onKeyDown(axis.key('Home')); axis.slider.onKeyUp(axis.key('Home'))
+axis.slider.onKeyDown(axis.key('End')); axis.slider.onKeyUp(axis.key('End'))
+const fixed = setup({ variant: 'axis', min: 0, max: 0, value: 0, disabled: true })
+fixed.slider.onPointerDown(fixed.pointer(70)); fixed.slider.onKeyDown(fixed.key('End'))
 console.log(JSON.stringify({
   drag: { beforeRelease, changes: drag.changes, commits: drag.commits },
   canceled: { changes: canceled.changes, commits: canceled.commits },
@@ -60,4 +67,6 @@ console.log(JSON.stringify({
   blurred: blurred.commits,
   formatted: { aria: formatted.slider['aria-valuetext'], marks: text(formatted.tree.props.children[1]) },
   original: { aria: original.slider['aria-valuetext'], changes: original.changes },
+  axis: { aria: axis.slider['aria-valuetext'], changes: axis.changes, commits: axis.commits, touchNone: axis.slider.className.includes('touch-none'), marks: text(axis.tree.props.children[1]) },
+  fixed: { changes: fixed.changes, tabIndex: fixed.slider.tabIndex, thumbLeft: fixed.slider.children.props.children[2].props.style.left },
 }))
