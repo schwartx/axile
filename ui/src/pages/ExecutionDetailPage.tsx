@@ -594,10 +594,12 @@ export function ExecutionDetailPage() {
             back={{ to: fromPerformance ? performancePath : journalReturn, label: fromPerformance ? '返回实盘绩效' : '返回执行记录' }}
           />
         </div>
-        {executionId && <Link to={`/accounts/${accountId}/executions/${executionId}/replay`} className="inline-flex min-h-10 items-center rounded-chip border border-line px-3 text-[13px] text-accent hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent">执行回放</Link>}
-        {executionId && <EvidenceExportButton target={{ kind: 'execution', accountId, executionId }} accountName={item?.name}
-          isRunning={isLive || ['QUEUED', 'RUNNING', 'TERMINATING'].includes(status.data?.status ?? '')}
-          disabled={status.data != null && status.data.account_id !== accountId} />}
+        {executionId && <div className="ml-auto flex shrink-0 items-center gap-2 whitespace-nowrap">
+          <Link to={`/accounts/${accountId}/executions/${executionId}/replay`} className="inline-flex min-h-9 items-center justify-center rounded-lg border border-line px-3 py-1.5 text-[13px] text-accent hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent">查看回放</Link>
+          <EvidenceExportButton target={{ kind: 'execution', accountId, executionId }} accountName={item?.name}
+            isRunning={isLive || ['QUEUED', 'RUNNING', 'TERMINATING'].includes(status.data?.status ?? '')}
+            disabled={status.data != null && status.data.account_id !== accountId} />
+        </div>}
       </div>
       <div className="num mt-2 text-[16px] font-mono text-ink-2">{executionId}</div>
       <div>
