@@ -54,7 +54,7 @@ for (const channel of ['ctp', 'tq', 'gm', 'external']) test(`position table uses
     await expect(cells.nth(7).locator('.overflow-text-static')).toHaveText('—')
   }
   if (channel === 'gm') await expect(cells.nth(3).locator('.overflow-text-static')).toHaveText('0 手')
-  await expect(cells.nth(4).locator('.overflow-text-static')).toHaveText(channel === 'external' ? '105,000.00 美元' : '105,000.00 元')
+  await expect(cells.nth(4).locator('.overflow-text-static')).toHaveText(channel === 'external' ? '105,000.00 美元' : '105,000.00 ￥')
   expect(reconciles).toBe(0)
   await table.getByRole('button', { name: /^展开持仓/ }).click()
   await expect(table.getByRole('columnheader', { name: channel === 'external' ? '初始保证金' : channel === 'gm' ? '持仓成本' : '占用保证金', exact: true })).toBeVisible()
@@ -150,12 +150,13 @@ test('position tab remembers its own filter and scroll and preserves data after 
   await dialog.getByRole('button', { name: '核对持仓', exact: true }).click()
   await expect(notice).toHaveCount(0)
   await expect(dialog.locator('[data-swap-current] [data-activity-row]')).toHaveCount(30)
-  await expect.poll(() => scroll.evaluate(node => node.scrollTop)).toBe(retainedScroll)
+  // 提示圆点让行框增高不足 1px；移除时允许浏览器滚动锚定的 1px 取整。
+  await expect.poll(async () => Math.abs(await scroll.evaluate(node => node.scrollTop) - retainedScroll)).toBeLessThanOrEqual(1)
   await dialog.getByRole('button', { name: '关闭', exact: true }).first().click()
   await page.getByRole('button', { name: '重新挂载弹窗', exact: true }).click()
   await page.getByRole('button', { name: '持仓、委托与成交 · 在途 1', exact: true }).click()
   await expect(dialog.getByRole('button', { name: '持仓', exact: true })).toHaveAttribute('aria-pressed', 'true')
-  await expect.poll(() => scroll.evaluate(node => node.scrollTop)).toBe(retainedScroll)
+  await expect.poll(async () => Math.abs(await scroll.evaluate(node => node.scrollTop) - retainedScroll)).toBeLessThanOrEqual(1)
 })
 
 test('snapshot failures show a delayed quiet dot and clear after recovery', async ({ page }) => {
