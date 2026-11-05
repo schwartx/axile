@@ -60,29 +60,31 @@ def report_gm_failure(
     )
 
 
-def report_account_status(monitor: ConnectionMonitor, error: BaseException, account_id: str, status: dict) -> None:
+def report_account_status(
+    monitor: ConnectionMonitor, error: BaseException, account_id: str, status: dict, *, can_connect: bool = False
+) -> None:
     """账户原生状态只解释目标账户，不推断终端进程状态。"""
     state = status.get("state")
     labels: dict[int, str] = {
         AccConnectionState.DISCONNECTING: "账户正在断开",
-        AccConnectionState.DISCONNECTED: "账户已断开",
+        AccConnectionState.DISCONNECTED: "GM 交易账户未连接",
         AccConnectionState.ERROR: "账户状态异常",
     }
     label = labels.get(state, "账户状态异常") if isinstance(state, int) else "账户状态异常"
-    report_gm_failure(
-        monitor,
-        error,
+    summary = "已连接掘金服务，但交易账户未登录。请先连接交易账户，再恢复会话。"
+    presentation = connection_problem(
         label,
-        "已收到目标交易账户的状态信息，当前账户未处于已登录状态。",
+        summary,
         facts={
             "目标账户": account_id,
             "账户状态": state,
             "状态说明": status.get("error") or status.get("error_msg") or status.get("message"),
         },
-        facts_title="账户状态",
-        steps_title="账户登录检查",
-        steps=("检查该交易账户在当前 GM 服务中的登录情况。", "核对账户 ID 和该账户的访问权限。"),
+        steps=("可在掘金终端中连接该交易账户。",),
     )
+    if can_connect and state == AccConnectionState.DISCONNECTED:
+        presentation["actions"].insert(0, {"label": "连接账户", "intent": "connect_account"})
+    monitor.failed(error, label=label, presentation=presentation)
 
 
 def report_runtime_failure(monitor: ConnectionMonitor, error: BaseException, *, authentication: bool = False) -> None:

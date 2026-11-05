@@ -3,7 +3,7 @@ import { create } from 'zustand'
 import { operateAccountConnection } from '@/lib/api/accounts'
 import { useLiveConnection } from '@/stores/liveConnection'
 
-type Action = 'reconnect' | 'disconnect'
+type Action = 'reconnect' | 'disconnect' | 'connect-account'
 interface Operation { pending: Action | null; error: unknown; action?: Action; failedFrame?: AccountConnectionDetail | null }
 interface State {
   operations: Record<number, Operation>

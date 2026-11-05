@@ -15,7 +15,7 @@ import loguru
 
 from axile.common.config import settings
 from axile.common.feishu import push_feishu_card
-from axile.common.notification_context import ACCOUNT_CONTROL_WARNING_EVENT
+from axile.common.notification_context import ACCOUNT_CONTROL_WARNING_EVENT, CONNECTION_FAILURE_EVENT
 from axile.common.notification_function import NotificationFunctionResult, run_notification_function
 from axile.common.quota_warning_card import build_quota_warning_card
 from axile.executor.algorithms.utils.clock import clock_now
@@ -194,11 +194,11 @@ async def send_feishu_error(
 
 
 async def send_system_notification(context: dict[str, object]) -> NotificationFunctionResult:
-    """复用系统告警配置发送额度预警；默认缺少凭据时如实记录失败。"""
+    """复用系统告警配置派发持久化事件；默认缺少凭据时如实记录失败。"""
     mode = settings.system_execution_notification_mode
     key = settings.exe_err_feishu_key or ""
     result = (
-        NotificationFunctionResult(False, "未配置系统飞书 Webhook，额度预警未发送")
+        NotificationFunctionResult(False, "未配置系统飞书 Webhook，系统告警未发送")
         if mode == "default" and not key
         else await _send_system_notification(mode, context, None, None, key)
     )
@@ -271,8 +271,15 @@ async def _send_system_notification(
             return result
         if context["event_type"] == ACCOUNT_CONTROL_WARNING_EVENT:
             card = build_quota_warning_card(context)
+        elif error is None:
+            details = context.get("error")
+            identity = context.get("account")
+            message = details.get("message") if isinstance(details, dict) else None
+            name = identity.get("name") if isinstance(identity, dict) else None
+            card = build_error_card(str(message or "账户连接不可用"), name)
+            if context["event_type"] == CONNECTION_FAILURE_EVENT:
+                card["header"] = {"title": {"tag": "plain_text", "content": "账户连接告警"}, "template": "orange"}
         else:
-            assert error is not None
             error_msg = f"{error}\n\n堆栈跟踪:\n{''.join(traceback.format_exception(error))}"
             external_ip = await get_external_ip()
             card = build_error_card(error_msg, account.name if account else None, external_ip)

@@ -74,6 +74,44 @@ def test_old_instance_and_out_of_order_snapshots_cannot_overwrite(database):
         assert session.get(AccountConnectionState, 1).sequence == 2
 
 
+def test_connection_alert_is_durable_deduplicated_and_rearmed_after_recovery(database):
+    from axile.common.notification_context import CONNECTION_FAILURE_EVENT
+    from axile.server.db.models.supplement import NotificationEvent
+
+    engine, account = database
+    binding = service.begin_connection_instance(account)
+    failure = ConnectionObservation(
+        "error", "2026-11-05T10:00:00", "交易账户未连接", {}, presentation={"summary": "请连接交易账户"}
+    )
+    service.record_connection_observation(binding, 1, failure)
+    service.record_connection_observation(binding, 2, failure)
+    with Session(engine) as session:
+        events = session.exec(select(NotificationEvent)).all()
+        assert len(events) == 1
+        assert events[0].event_type == CONNECTION_FAILURE_EVENT
+        assert events[0].context["error"]["message"] == "请连接交易账户"
+        row = session.get(AccountConnectionState, 1)
+        assert row.error["connection_event_id"] == events[0].id
+        assert row.last_failure["error"]["connection_event_id"] == events[0].id
+    # 重试同一故障不会刷告警；成功访问后再次断开属于新故障。
+    newer = service.begin_connection_instance(account)
+    service.record_connection_observation(newer, 1, failure)
+    service.record_connection_observation(newer, 2, ConnectionObservation("ok", "2026-11-05T10:01:00", kind="access"))
+    service.record_connection_observation(newer, 3, failure)
+    with Session(engine) as session:
+        assert len(session.exec(select(NotificationEvent)).all()) == 2
+
+
+def test_manual_disconnect_is_not_a_system_alert(database):
+    from axile.server.db.models.supplement import NotificationEvent
+
+    engine, account = database
+    binding = service.begin_connection_instance(account)
+    service.record_connection_observation(binding, 1, ConnectionObservation("disconnected", "now", kind="session"))
+    with Session(engine) as session:
+        assert session.exec(select(NotificationEvent)).all() == []
+
+
 def test_changed_config_rejects_old_runtime_and_clears_error(database):
     engine, account = database
     binding = service.begin_connection_instance(account)

@@ -4,6 +4,7 @@ import asyncio
 
 from fastapi import APIRouter, HTTPException, Response
 
+from axile.channels import get_channel
 from axile.executor.connection_progress import ConnectionTable
 from axile.server.api.deps import SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
@@ -16,7 +17,7 @@ from axile.server.execution.runtime_locks import account_runtime_lock
 from axile.server.execution.worker_backend.manager import get_worker_backend_manager
 
 router = APIRouter()
-_reconnect_tasks: dict[int, asyncio.Task[AccountConnectionDetail]] = {}
+_reconnect_tasks: dict[tuple[int, bool], asyncio.Task[AccountConnectionDetail]] = {}
 
 
 def _check_idle(account_id: int) -> None:
@@ -32,13 +33,23 @@ async def _operate_connection(account: AccountContext, *, reconnect: bool) -> No
         await manager.disconnect_account(account)
 
 
-async def _connection_operation(session: SessionDep, account_id: int, *, reconnect: bool) -> AccountConnectionDetail:
+async def _connection_operation(
+    session: SessionDep, account_id: int, *, reconnect: bool, connect_account: bool = False
+) -> AccountConnectionDetail:
     async with account_runtime_lock(account_id):
         _check_idle(account_id)
         account = (await _get_account_or_404(session, account_id)).snapshot()
         await session.close()
         try:
+            if connect_account:
+                plugin = get_channel(account.trade_channel)
+                if plugin.connect_account is None:
+                    raise HTTPException(400, "当前渠道不支持连接交易账户，请按连接说明处理")
+                config = plugin.account_config_model.model_validate(account.account_config)
+                await asyncio.to_thread(plugin.connect_account, config)
             await _operate_connection(account, reconnect=reconnect)
+        except HTTPException:
+            raise
         except Exception as exc:
             # 原始连接证据仍由渠道/宿主保存；HTTP 摘要不推断凭证失效。
             message = str(getattr(exc, "execution_error", None) or "账户连接操作失败，请查看连接详情")
@@ -50,16 +61,30 @@ async def _connection_operation(session: SessionDep, account_id: int, *, reconne
 @router.post("/{account_id}/connection/reconnect", response_model=AccountConnectionDetail)
 async def reconnect_account(session: SessionDep, account_id: int) -> AccountConnectionDetail:
     """显式恢复连接，可绕过冷却；健康会话仍复用，不重放下单或撤单。"""
+    return await _start_connection(session, account_id)
+
+
+@router.post("/{account_id}/connection/connect-account", response_model=AccountConnectionDetail)
+async def connect_trading_account(session: SessionDep, account_id: int) -> AccountConnectionDetail:
+    """用户显式调用渠道登录能力，随后核对并恢复公共会话。"""
+    return await _start_connection(session, account_id, connect_account=True)
+
+
+async def _start_connection(
+    session: SessionDep, account_id: int, *, connect_account: bool = False
+) -> AccountConnectionDetail:
+    """合并同一入口的在途操作；不同入口仍由账户运行锁串行化。"""
     await _get_account_or_404(session, account_id)
     await session.close()
-    task = _reconnect_tasks.get(account_id)
+    key = (account_id, connect_account)
+    task = _reconnect_tasks.get(key)
     if task is None or task.done():
-        task = asyncio.create_task(_reconnect_in_owned_session(account_id))
-        _reconnect_tasks[account_id] = task
+        task = asyncio.create_task(_reconnect_in_owned_session(account_id, connect_account=connect_account))
+        _reconnect_tasks[key] = task
 
         def completed(done):
-            if _reconnect_tasks.get(account_id) is done:
-                _reconnect_tasks.pop(account_id, None)
+            if _reconnect_tasks.get(key) is done:
+                _reconnect_tasks.pop(key, None)
             if not done.cancelled():
                 done.exception()
 
@@ -68,10 +93,10 @@ async def reconnect_account(session: SessionDep, account_id: int) -> AccountConn
     return await asyncio.shield(task)
 
 
-async def _reconnect_in_owned_session(account_id: int) -> AccountConnectionDetail:
+async def _reconnect_in_owned_session(account_id: int, *, connect_account: bool = False) -> AccountConnectionDetail:
     """合并同时到达的重连请求；后台工作不持有调用方的数据库会话。"""
     async with SessionLocal() as session:
-        return await _connection_operation(session, account_id, reconnect=True)
+        return await _connection_operation(session, account_id, reconnect=True, connect_account=connect_account)
 
 
 @router.post("/{account_id}/connection/disconnect", response_model=AccountConnectionDetail)

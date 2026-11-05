@@ -69,6 +69,65 @@ def test_missing_account_status_reports_account_not_found(runtime):
     assert _normalize_startup_error(failures[0]).execution_error == "账户不存在"
 
 
+def test_confirmed_disconnect_fails_early_with_channel_action(runtime, monkeypatch):
+    context, observations, failures, query, _, stop_runtime = runtime
+    context.can_connect_account = lambda: True
+    now = [10.0]
+    monkeypatch.setattr(gm_strategy, "clock_monotonic", lambda: now[0])
+    assert not gm_strategy._check_account_startup(context)
+    now[0] = 11.0
+    assert not gm_strategy._check_account_startup(context)
+    assert query.call_count == 1
+    now[0] = 12.0
+    assert not gm_strategy._check_account_startup(context)
+    assert query.call_count == 2
+    assert context.startup_failed
+    assert len(failures) == 1
+    assert observations[-1].label == "GM 交易账户未连接"
+    assert {"label": "连接账户", "intent": "connect_account"} in observations[-1].presentation["actions"]
+    assert "超时" not in observations[-1].message
+    stop_runtime.assert_called_once()
+
+
+def test_recheck_can_observe_login_without_callback(runtime, monkeypatch):
+    context, _, failures, query, _, _ = runtime
+    now = [0.0]
+    monkeypatch.setattr(gm_strategy, "clock_monotonic", lambda: now[0])
+    assert not gm_strategy._check_account_startup(context)
+    now[0] = 2.0
+    query.return_value = {"state": AccConnectionState.LOGGEDIN}
+    assert gm_strategy._check_account_startup(context)
+    assert failures == []
+
+
+def test_disconnected_snapshot_followed_by_connecting_keeps_waiting(runtime, monkeypatch):
+    context, _, failures, query, _, _ = runtime
+    now = [0.0]
+    monkeypatch.setattr(gm_strategy, "clock_monotonic", lambda: now[0])
+    gm_strategy._check_account_startup(context)
+    now[0] = 2.0
+    query.return_value = {"state": AccConnectionState.CONNECTING}
+    gm_strategy._check_account_startup(context)
+    now[0] = 20.0
+    gm_strategy._check_account_startup(context)
+    assert query.call_count == 2
+    assert not context.startup_failed
+    assert failures == []
+
+
+def test_running_account_disconnect_preserves_actionable_failure(runtime):
+    context, observations, _, _, _, _ = runtime
+    context.account_was_ready = True
+    context.ready_event.set()
+    context.can_connect_account = lambda: True
+    gm_strategy.on_account_status(None, {"account_id": "test-account", "status": {"state": 5}})
+    assert not context.ready_event.is_set()
+    assert observations[-1].status == "error"
+    assert observations[-1].presentation["actions"][0]["intent"] == "connect_account"
+    gm_strategy.on_account_status(None, {"account_id": "test-account", "status": {"state": 3}})
+    assert context.ready_event.is_set()
+
+
 @pytest.mark.parametrize(("code", "label"), [("1000", "Token 无效"), ("1026", "令牌更新失败")])
 def test_sdk_callback_supplies_real_failure_after_disconnected_snapshot(runtime, code, label):
     context, observations, failures, _, stop_timer, stop_runtime = runtime

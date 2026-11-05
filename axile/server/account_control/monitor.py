@@ -24,11 +24,12 @@ from axile.server.account_control import providers
 from axile.server.account_control.ipc import sample
 from axile.server.account_control.schema import AccountControlMonitorPublic
 from axile.server.account_control.store import AccountControlStore
-from axile.server.account_control.warnings import enqueue_quota_warnings, wake_pending_quota_warnings
+from axile.server.account_control.warnings import enqueue_quota_warnings
 from axile.server.core.db import SessionLocal
 from axile.server.db.models.account import Account
 from axile.server.db.models.account_control import AccountControlEvent
 from axile.server.db.models.account_control_session import AccountControlSession
+from axile.server.execution.notification_outbox import wake_pending_system_notifications
 from axile.server.order_submissions import query_order_submission_summary
 from axile.server.submission_monitor import query_submission_monitor
 
@@ -154,7 +155,7 @@ class AccountControlMonitor:
             removed = [key for key in self.frames if key not in present]
             for key in removed:
                 self._history.pop(key, None)
-            await wake_pending_quota_warnings(db)
+            await wake_pending_system_notifications(db)
         # 整轮采样完成后同步提交，快照不会读到跨版本的半轮账户数据。
         self.frames = frames
         self._publish(changed, removed)

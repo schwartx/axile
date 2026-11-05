@@ -104,7 +104,7 @@ class SystemNotificationQuota(TypedDict):
 
 
 class SystemNotificationContext(TypedDict):
-    """系统执行错误或额度预警交给 ``notify`` 的上下文。"""
+    """系统执行错误、连接故障或额度预警交给 ``notify`` 的上下文。"""
 
     event_id: str
     event_type: str
@@ -114,3 +114,7 @@ class SystemNotificationContext(TypedDict):
     error: SystemNotificationError | None
     quota: NotRequired[SystemNotificationQuota]
     is_test: bool
+
+
+CONNECTION_FAILURE_EVENT = "account_connection_failure"
+SYSTEM_NOTIFICATION_EVENTS = frozenset({ACCOUNT_CONTROL_WARNING_EVENT, CONNECTION_FAILURE_EVENT})

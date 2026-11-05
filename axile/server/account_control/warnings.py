@@ -7,7 +7,6 @@ from zoneinfo import ZoneInfo
 from loguru import logger
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
 
 from axile.common.notification_context import ACCOUNT_CONTROL_WARNING_EVENT
 from axile.executor.account_control.warnings import AccountControlQuotaWarning
@@ -72,16 +71,3 @@ async def enqueue_recorded_warnings(session: AsyncSession, events: list) -> None
     except Exception:
         await session.rollback()
         logger.exception("额度预警入队失败，已保存的控制计数不受影响")
-
-
-async def wake_pending_quota_warnings(session: AsyncSession) -> None:
-    """由服务进程唤醒派发，worker 的临时事件循环只负责入队。"""
-    from axile.server.execution.notification_outbox import wake_notifications
-
-    accounts = await session.scalars(
-        select(NotificationEvent.account_id)
-        .where(NotificationEvent.event_type == ACCOUNT_CONTROL_WARNING_EVENT, NotificationEvent.status == "pending")
-        .distinct()
-    )
-    for account_id in accounts:
-        wake_notifications(account_id)

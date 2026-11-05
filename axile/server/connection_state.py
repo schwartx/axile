@@ -141,7 +141,7 @@ def record_connection_observation(
             # 条件 UPDATE 同时防止监控响应与业务响应竞争，把旧序号写回。
             from sqlalchemy import update
 
-            session.execute(
+            result = session.execute(
                 update(AccountConnectionState)
                 .where(
                     col(AccountConnectionState.account_id) == binding.account_id,
@@ -150,7 +150,26 @@ def record_connection_observation(
                     col(AccountConnectionState.sequence) < sequence,
                 )
                 .values(sequence=sequence, **values)
+                .returning(col(AccountConnectionState.account_id))
             )
+            if result.scalar_one_or_none() is None:
+                session.rollback()
+                return
+            if observation.status in {"error", "cooldown"} and not binding.manually_disconnected:
+                from axile.server.connection_notifications import enqueue_connection_failure
+
+                event_id = enqueue_connection_failure(session, binding, state, values)
+                # 同一故障标识用于前端弹窗去重；渠道不负责通知生命周期。
+                error = {**(values.get("error") or {}), "connection_event_id": event_id}
+                session.execute(
+                    update(AccountConnectionState)
+                    .where(
+                        col(AccountConnectionState.account_id) == binding.account_id,
+                        col(AccountConnectionState.instance_id) == binding.instance_id,
+                        col(AccountConnectionState.sequence) == sequence,
+                    )
+                    .values(error=error, last_failure={**values["last_failure"], "error": error})
+                )
             session.commit()
             from axile.server.connection_events import connection_hub
 
