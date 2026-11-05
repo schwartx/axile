@@ -4,6 +4,7 @@ import { InkRewrite } from '@/components/ui/InkRewrite'
 import { AccountConnectButton } from '@/features/account/AccountConnectButton'
 import { useConnectionOperation, useConnectionOperations } from '@/stores/connectionOperations'
 import { useLiveConnection } from '@/stores/liveConnection'
+import { connectionPresentation } from '@/features/account/connectionProblem'
 import type { AccountConnectionDetail } from '@/types/api'
 
 /** 弹窗与外部入口共享连接操作，结果状态只消费 SSE。 */
@@ -13,11 +14,16 @@ export function AccountConnectionActions({ accountId, detail, children }: {
   const { pending } = useConnectionOperation(accountId)
   const synced = useLiveConnection(state => state.connected)
   const busy = !synced || pending !== null || detail.status === 'connecting' || detail.status === 'recovering'
+  const channelAction = detail.status === 'unavailable' ? connectionPresentation(detail.presentation).actions?.find(action => action.intent === 'connect_account') : undefined
   const needsConnection = detail.status === 'disconnected' || detail.status === 'uninitialized'
   return <section className="space-y-2 border-t border-line px-[22px] py-3 text-[13px]">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <div className="flex flex-wrap gap-2">
-        <AccountConnectButton accountId={accountId} prominent={needsConnection} />
+        {channelAction ? <button type="button" disabled={busy}
+          onClick={() => void useConnectionOperations.getState().run(accountId, 'connect-account')}
+          className="cursor-pointer rounded-lg bg-ink-1 px-3 py-2 text-surface disabled:cursor-default disabled:opacity-50">
+          <InkRewrite text={pending === 'connect-account' ? '正在连接…' : channelAction.label} tone="label" />
+        </button> : <AccountConnectButton accountId={accountId} prominent={needsConnection} />}
         {!needsConnection && <button type="button" disabled={busy} onClick={() => void useConnectionOperations.getState().run(accountId, 'disconnect')}
           className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-line px-3 py-2 text-ink-2 disabled:cursor-default disabled:text-ink-3">
           <Unlink size={14} className="shrink-0" aria-hidden />

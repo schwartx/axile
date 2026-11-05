@@ -81,6 +81,41 @@ async def rows(factory):
         return list((await session.scalars(select(NotificationEvent))).all())
 
 
+def test_connection_failure_is_dispatched_by_system_outbox_without_frontend(monkeypatch):
+    from axile.common.notification_context import CONNECTION_FAILURE_EVENT
+
+    async def scenario():
+        async with database(monkeypatch) as (factory, account, wakes, results, cards):
+            async with factory() as session:
+                session.add(
+                    NotificationEvent(
+                        id="connection-test",
+                        account_id=1,
+                        event_type=CONNECTION_FAILURE_EVENT,
+                        context={
+                            "event_id": "connection-test",
+                            "event_type": CONNECTION_FAILURE_EVENT,
+                            "execution_id": None,
+                            "occurred_at": "now",
+                            "is_test": False,
+                            "account": {"id": 1, "name": "测试账户"},
+                            "error": {"type": "AccountConnectionFailure", "message": "请连接交易账户", "traceback": ""},
+                        },
+                    )
+                )
+                await session.commit()
+                await notification_outbox.wake_pending_system_notifications(session)
+            assert wakes == [1]
+            await notification_outbox._dispatch(1)
+            await notification_outbox._dispatch(1)
+            assert len(cards) == len(results) == 1
+            assert results[0].event_type == CONNECTION_FAILURE_EVENT
+            assert "请连接交易账户" in str(cards[0])
+            assert (await rows(factory))[0].status == "succeeded"
+
+    asyncio.run(scenario())
+
+
 def test_running_warning_is_sent_once_and_deduplicated_across_execution_and_monitor_restart(monkeypatch):
     async def scenario():
         async with database(monkeypatch) as (factory, account, wakes, results, cards):

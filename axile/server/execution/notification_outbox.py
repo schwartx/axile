@@ -3,10 +3,11 @@
 import asyncio
 
 import loguru
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
-from axile.common.notification_context import ACCOUNT_CONTROL_WARNING_EVENT
+from axile.common.notification_context import SYSTEM_NOTIFICATION_EVENTS
 from axile.common.notification_function import NotificationFunctionResult, run_notification_function
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.server.core.db import SessionLocal
@@ -53,7 +54,7 @@ async def _dispatch(account_id: int) -> None:
                     "account": event.context.get("account", {"id": account.id, "name": account.name}),
                 }
             result = None
-            if event.event_type == ACCOUNT_CONTROL_WARNING_EVENT:
+            if event.event_type in SYSTEM_NOTIFICATION_EVENTS:
                 from axile.server.error_notifications import send_system_notification
 
                 result = await send_system_notification(context)
@@ -72,7 +73,7 @@ async def _dispatch(account_id: int) -> None:
                 current.error = None if result is None else result.error
                 session.add(current)
                 await session.commit()
-            if result is not None and event.event_type != ACCOUNT_CONTROL_WARNING_EVENT:
+            if result is not None and event.event_type not in SYSTEM_NOTIFICATION_EVENTS:
                 execution = context.get("execution") or {}
                 await asyncio.to_thread(
                     record_notification_result,
@@ -111,7 +112,7 @@ async def recover_notifications() -> None:
                 event.error = "服务重启，通知调用结果未知"
                 event.finished_at = clock_now().isoformat()
                 session.add(event)
-                if event.event_type == ACCOUNT_CONTROL_WARNING_EVENT:
+                if event.event_type in SYSTEM_NOTIFICATION_EVENTS:
                     system_results.append(
                         SystemNotificationStatePublic(
                             finished_at=event.finished_at,
@@ -146,5 +147,16 @@ async def recover_notifications() -> None:
                 await asyncio.to_thread(record_system_notification_result, result)
             except Exception:
                 loguru.logger.exception("恢复系统告警摘要失败，通知事件已保留为未知")
+    for account_id in accounts:
+        wake_notifications(account_id)
+
+
+async def wake_pending_system_notifications(session: AsyncSession) -> None:
+    """由服务进程唤醒系统告警，worker 的临时事件循环只负责入队。"""
+    accounts = await session.scalars(
+        select(NotificationEvent.account_id)
+        .where(col(NotificationEvent.event_type).in_(SYSTEM_NOTIFICATION_EVENTS), NotificationEvent.status == "pending")
+        .distinct()
+    )
     for account_id in accounts:
         wake_notifications(account_id)
