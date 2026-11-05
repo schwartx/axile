@@ -18,6 +18,7 @@ from axile.executor.models.unified_input_accounts import GMAccountConfig
 
 @pytest.fixture
 def accounts(monkeypatch):
+    monkeypatch.setattr("gm.api._errors.gmi_get_ext_errormsg", lambda: b"synthetic query failure")
     context = SimpleNamespace(accounts={name: SimpleNamespace(id=name) for name in ("target", "other")})
     monkeypatch.setattr(storage, "context", context)
     monkeypatch.setattr(trade, "context", context)

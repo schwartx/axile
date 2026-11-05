@@ -69,13 +69,14 @@ def test_only_completed_proofs_are_evicted_to_preserve_pending_queries(running, 
     assert proofs[2:] == [token["query_basis"] for _, token in pending]
 
 
-def test_real_pending_query_limit_still_stops_recording(running, monkeypatch):
+def test_pending_queries_outgrow_completed_cache_budget_without_stopping(running, monkeypatch):
     recorder, _, _, _ = running
     monkeypatch.setattr(module, "MAX_IDENTITIES", 3)
     for _ in range(3):
         assert recorder.begin_query(["A"]) is not None
-    assert recorder.begin_query(["A"]) is None
-    assert recorder.status()["error"] == "replay_query_budget"
+    assert recorder.begin_query(["A"]) is not None
+    assert recorder.status()["state"] == "recording"
+    assert len(recorder._session.queries) == 4
 
 
 @pytest.mark.parametrize("field", ["recording_id", "request_revision", "start_seq", "sync_generation"])

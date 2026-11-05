@@ -70,6 +70,8 @@ def test_facade_reentrant_fill_keeps_native_order_and_execution_ownership(record
     broker, executor = recording.broker, recording.executor
     delivered = []
     executor.register_trade_callback(delivered.append)
+    executor.initialize_websocket(["ag2612"])
+    broker.quote()
     before_queries = {name: getattr(broker.trader, name).call_count for name in broker.rows}
 
     def accept(request, _rid):

@@ -11,7 +11,6 @@ from tests.unit.server._business_facts_test_support import (
     persist_result,
     read_result,
     rows,
-    seed_account,
     sql,
 )
 
@@ -74,7 +73,10 @@ def test_historical_non_object_root_does_not_become_empty_object(native_database
 def test_historical_scalar_nonfinite_root_is_json_safe(tmp_path):
     path = tmp_path / "legacy-scalar.db"
     initialize_native_database(path, revision="0033")
-    seed_account(path)
+    sql(
+        path,
+        "INSERT INTO account(id,name,market,trade_channel,brokerage,created_at,updated_at) VALUES (1,'legacy','期货','ctp','','2026-10-20','2026-10-20')",
+    )
     sql(
         path,
         "INSERT INTO executerecord (account_id,is_success,created_at,raw_input,raw_result) VALUES (1,0,'2026-10-20','null','NaN')",

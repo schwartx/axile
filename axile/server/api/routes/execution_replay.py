@@ -80,7 +80,7 @@ async def replay_manifest(execution_id: str) -> dict[str, object]:
     if intent is not None and intent.started_at is not None:
         delta = datetime.fromisoformat(intent.started_at) - datetime(1970, 1, 1, tzinfo=UTC)
         start_us = (delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds
-    if intent is not None and getattr(intent, "finished_at", None) is not None:
+    if intent is not None and intent.finished_at is not None:
         delta = datetime.fromisoformat(intent.finished_at) - datetime(1970, 1, 1, tzinfo=UTC)
         end_us = (delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds
     return {**result, "execution_start_us": start_us, "execution_end_us": end_us}

@@ -1,7 +1,7 @@
 """真实原生迁移和业务阶段驱动的分析测试夹具。"""
 
 from contextlib import asynccontextmanager, closing
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from graphlib import TopologicalSorter
 from pathlib import Path
 from shutil import copyfile
@@ -220,7 +220,9 @@ def record(index=1, **kwargs):
         id=index,
         execution_id=f"exec-{index}",
         is_success=1,
-        created_at=(datetime(2026, 1, 1, 9) + timedelta(days=index - 1)).isoformat(),
+        created_at=(
+            datetime(2026, 1, 1, 9, tzinfo=timezone(timedelta(hours=8))) + timedelta(days=index - 1)
+        ).isoformat(),
         input={"curr_target": {"A": 1}},
         result={
             "outcome": None,

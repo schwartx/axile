@@ -44,7 +44,7 @@ const returnStates: Record<string, unknown> = {
 mock.module('react-router', () => ({ useParams: () => ({ id: '7', executionId: 'E2' }), useLocation: () => ({ state: returnStates[scenario] ?? null }) }))
 mock.module('lucide-react', () => Object.fromEntries(['Circle', 'Crosshair', 'Maximize', 'Minimize', 'Minus', 'RotateCcw', 'Info', 'Pause', 'Play', 'RefreshCw', 'SkipBack', 'SkipForward'].map(name => [name, () => null])))
 for (const [path, name] of [['features/account/pageHead.tsx', 'AccountPageTitle'], ['components/ui/Select.tsx', 'Select'], ['components/ui/ErrorNotice.tsx', 'ErrorNotice'], ['components/ui/Segmented.tsx', 'Segmented'], ['components/ui/OverflowText.tsx', 'OverflowText'], ['components/ui/InkRewrite.tsx', 'InkRewrite'], ['features/replay/ReplayChart.tsx', 'ReplayChart']]) mock.module(ui + path, () => ({ [name]: () => null }))
-mock.module(ui + 'stores/domain.ts', () => ({ useDomainStore: (select: any) => select({ accounts: [{ account_id: 7, name: 'demo', trade_channel: 'binance', market: 'crypto' }] }) }))
+mock.module(ui + 'stores/domain.ts', () => ({ useDomainStore: (select: any) => select({ accounts: [{ account_id: 7, name: 'demo', trade_channel: 'ctp', market: 'futures' }] }) }))
 mock.module(ui + 'lib/viewTransition.ts', () => ({ withViewTransition: (update: () => void) => update() }))
 mock.module(ui + 'components/ui/Tooltip.tsx', () => ({ Tooltip: () => null }))
 

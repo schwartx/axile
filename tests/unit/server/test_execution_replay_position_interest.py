@@ -202,13 +202,14 @@ def test_new_owner_discards_old_position_parts_and_seeds_its_own_interest(make_r
     assert [row["topic"] for row in messages if row["topic"].startswith("/quote/")] == ["/quote/Y"]
 
 
-def test_position_parts_share_the_existing_identity_budget(make_recording, monkeypatch):
+def test_position_parts_outgrow_the_cache_budget_without_stopping(make_recording, monkeypatch):
     recorder, _, _, _ = make_recording()
     monkeypatch.setattr(module, "MAX_IDENTITIES", 2)
     observe_positions(recorder, [position(2, "LONG"), position(3, "SHORT")])
     assert recorder.status()["state"] == "recording"
     observe_positions(recorder, [position(4, symbol="Y")])
-    assert recorder.status()["error"] == "replay_identity_budget"
+    assert recorder.status()["state"] == "recording"
+    assert {symbol for symbol, _ in recorder._position_parts} == {"X", "Y"}
 
 
 @contextmanager
@@ -310,16 +311,16 @@ def test_seed_failure_releases_its_temporary_scope_tracking(make_recording):
     assert session.seed_interest_scopes == {}
 
 
-def test_seed_scope_tracking_is_bounded_and_cleared_after_failure(make_recording, monkeypatch):
+def test_seed_scope_tracking_outgrows_cache_budget_and_clears_on_close(make_recording, monkeypatch):
     recorder, _, _, _ = make_recording()
     recorder.begin_execution("E", [])
     with blocked_seed(recorder, {"positions": ["X"]}) as (_, release):
         session = recorder._session
         monkeypatch.setattr(module, "MAX_IDENTITIES", 2)
         observe_positions(recorder, [], complete=True, symbols=["X", "Y", "Z"])
-        assert recorder.status()["error"] == "replay_identity_budget"
+        assert recorder.status()["state"] == "recording"
         release.set()
-        wait_for(lambda: recorder._session is None)
+        recorder.close()
     assert session.seed_interest_scopes == {}
 
 
