@@ -638,9 +638,7 @@ class WorkerBackendManager:
         end_connection_instance(getattr(handle, "connection_binding", None), "账户执行器已回收，会话已结束")
         with self._lock:
             handle.retired = True
-            if self._workers.get(account_id) is handle:
-                self._workers.pop(account_id, None)
-            self._track_worker_retirement_locked(account_id, handle)
+            self._retire_worker_locked(account_id, handle)
         try:
             self._terminate_process(handle)
         finally:
@@ -648,14 +646,20 @@ class WorkerBackendManager:
 
     def _drop_account_blocking(self, account_id: int) -> None:
         with self._lock:
-            handle = self._workers.pop(account_id, None)
+            handle = self._workers.get(account_id)
             if handle is not None:
-                self._track_worker_retirement_locked(account_id, handle)
+                self._retire_worker_locked(account_id, handle)
         if handle is not None:
             try:
                 self._dispose_handle(handle)
             finally:
                 self._finish_worker_retirement(account_id, handle)
+
+    def _retire_worker_locked(self, account_id: int, handle: _WorkerBackendHandle) -> None:
+        """将指定实例移出业务注册表，保留退出前的录制控制，不移除替换后的新实例。"""
+        if self._workers.get(account_id) is handle:
+            self._workers.pop(account_id, None)
+        self._track_worker_retirement_locked(account_id, handle)
 
     def _finish_worker_retirement(self, account_id: int, handle: _WorkerBackendHandle) -> None:
         """关闭结束后才解除录制控制跟踪，不把移出业务注册表当作已停录。"""
@@ -680,22 +684,50 @@ class WorkerBackendManager:
     def _is_handle_healthy(handle: _WorkerBackendHandle) -> bool:
         return not handle.retired and handle.process.is_alive() and not handle.connection.closed
 
-    def _get_or_create_worker(self, account_id: int) -> _WorkerBackendHandle:
+    def _get_or_create_worker(
+        self, account_id: int, request: WorkerBackendRequest | None = None
+    ) -> _WorkerBackendHandle:
         with self._lock:
             handle = self._workers.get(account_id)
             if handle is not None and self._is_handle_healthy(handle):
                 return handle
 
             if handle is not None:
-                self._track_worker_retirement_locked(account_id, handle)
+                self._retire_worker_locked(account_id, handle)
                 try:
                     self._dispose_handle(handle)
                 finally:
                     self._finish_worker_retirement_locked(account_id, handle)
 
+            if request is not None:
+                self._check_worker_creation(request)
             handle = self._spawn_worker(account_id)
             self._workers[account_id] = handle
             return handle
+
+    def _check_worker_creation(self, request: WorkerBackendRequest) -> None:
+        """创建进程前检查主动断开意愿，后台准备和迟到的查询不能重新占用进程。"""
+        if not request.account_payload or (request.command == "prepare" and request.payload.get("force_reconnect")):
+            return
+        from axile.server.execution.resident_connection import AccountConnectionUnavailable
+
+        account = AccountSnapshot.model_validate(request.account_payload)
+        if self._is_manually_disconnected(account):
+            raise AccountConnectionUnavailable("账户连接已主动断开，请显式重新连接")
+
+    @staticmethod
+    def _is_manually_disconnected(account: AccountContext) -> bool:
+        """读取当前配置的主动断开意愿，不用已退出 worker 的状态代替持久化结果。"""
+        from axile.server.connection_state import connection_config_key
+        from axile.server.native_store import native_operation_sync
+
+        current = native_operation_sync("account_get", {"account_id": _require_account_id(account)})
+        state = current.get("connection_state") if current is not None else None
+        return bool(
+            state is not None
+            and state["config_key"] == connection_config_key(account.trade_channel, account.account_config)
+            and state["manually_disconnected"]
+        )
 
     @staticmethod
     def _bind_connection_request(handle: _WorkerBackendHandle, request: WorkerBackendRequest) -> AccountSnapshot:
@@ -731,6 +763,32 @@ class WorkerBackendManager:
         )
         return account
 
+    def _accept_worker_response(
+        self,
+        account_id: int,
+        handle: _WorkerBackendHandle,
+        request: WorkerBackendRequest,
+        response: object,
+    ) -> bool:
+        """校验并消费业务响应；断开意愿保存成功后才停用该实例。"""
+        if not isinstance(response, WorkerBackendResponse):
+            raise WorkerBackendExecutionError("worker backend 返回了未知响应类型")
+        if response.request_id != request.request_id:
+            raise WorkerBackendExecutionError("worker backend 返回了不匹配的 request_id")
+        from axile.server.connection_state import consume_connection_snapshot
+
+        consume_connection_snapshot(getattr(response, "connection_snapshot", None))
+        if self._requires_ctp_session_recovery(response):
+            self._force_drop_worker(account_id, handle)
+        elif request.command == "disconnect" and response.kind == "result":
+            account = AccountSnapshot.model_validate(request.account_payload)
+            if not self._is_manually_disconnected(account):
+                raise WorkerBackendExecutionError("主动断开状态未保存，账户进程暂未回收，请重试断开")
+            with self._lock:
+                self._retire_worker_locked(account_id, handle)
+            return True
+        return False
+
     def _request_blocking(
         self,
         account_id: int,
@@ -761,13 +819,21 @@ class WorkerBackendManager:
         WorkerBackendExecutionError
             通信失败或响应类型/标识不合法。
         """
+        from axile.server.execution.resident_connection import AccountConnectionUnavailable
+
+        disconnecting = False
         while True:
-            handle = self._get_or_create_worker(account_id)
+            try:
+                handle = self._get_or_create_worker(account_id, request)
+            except AccountConnectionUnavailable:
+                if request.command != "disconnect":
+                    raise
+                return WorkerBackendResponse(request.request_id, "result", {"disconnected": True})
             response: object = None
             failure: Exception | None = None
             force_termination = False
             with handle.request_lock:
-                if handle.retired:
+                if handle.retired or self._workers.get(account_id) is not handle:
                     continue
                 if request.account_payload:
                     account_snapshot = self._bind_connection_request(handle, request)
@@ -787,15 +853,7 @@ class WorkerBackendManager:
                     failure = exc
 
                 if failure is None and not force_termination:
-                    if not isinstance(response, WorkerBackendResponse):
-                        raise WorkerBackendExecutionError("worker backend 返回了未知响应类型")
-                    if response.request_id != request.request_id:
-                        raise WorkerBackendExecutionError("worker backend 返回了不匹配的 request_id")
-                    from axile.server.connection_state import consume_connection_snapshot
-
-                    consume_connection_snapshot(getattr(response, "connection_snapshot", None))
-                    if self._requires_ctp_session_recovery(response):
-                        self._force_drop_worker(account_id, handle)
+                    disconnecting = self._accept_worker_response(account_id, handle, request, response)
             break
 
         if force_termination:
@@ -836,6 +894,11 @@ class WorkerBackendManager:
                 f"request_id={request.request_id}; worker_exitcode={exitcode}"
             ) from failure
 
+        if disconnecting:
+            try:
+                self._dispose_handle(handle)
+            finally:
+                self._finish_worker_retirement(account_id, handle)
         return cast("WorkerBackendResponse", response)
 
     @staticmethod
@@ -970,7 +1033,7 @@ class WorkerBackendManager:
         await asyncio.to_thread(self._drop_account_blocking, account_id)
 
     async def disconnect_account(self, account: AccountContext) -> None:
-        """断开 SDK 会话并保留主动断开标记，阻止页面轮询再次登录。"""
+        """断开 SDK 会话并回收账户进程，保留主动断开标记以阻止后台重建。"""
         request = WorkerBackendRequest(
             request_id=uuid4().hex,
             command="disconnect",
@@ -992,9 +1055,6 @@ class WorkerBackendManager:
         """委托通路只复用当前配置下已经就绪的会话。"""
         self._check_read_session(account)
         timeout = self._query_timeout(account)
-        handle = self._get_or_create_worker(_require_account_id(account))
-        if handle.orders is None:
-            raise WorkerBackendExecutionError("当前委托通路不可用")
         request = WorkerBackendRequest(
             request_id=uuid4().hex,
             command="prepare",
@@ -1002,6 +1062,9 @@ class WorkerBackendManager:
             execution_id=None,
             payload={},
         )
+        handle = self._get_or_create_worker(_require_account_id(account), request)
+        if handle.orders is None:
+            raise WorkerBackendExecutionError("当前委托通路不可用")
         self._bind_connection_request(handle, request)
         try:
             result = handle.orders.request(
