@@ -7,15 +7,18 @@
 from __future__ import annotations
 
 import threading
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, cast
 
 from axile.common.logging import LogComponent, bind_log_context
 from axile.common.order_param_model import OrderParamModel
+from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
+from axile.executor.market_data_validation import MarketDataPurpose, MarketDataUnavailableError
 from axile.executor.models.order_channel_health import OrderChannelHealth
 from axile.executor.models.unified_account_assets import PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_callback import OrderUpdateCallback, PriceDataCallback, TradeRecordCallback
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
-from axile.executor.models.unified_price import UnifiedPriceData
+from axile.executor.models.unified_price import UnifiedPriceData, clone_price_data
 from axile.executor.order_cancellation import CancelRequestStatus, cancel_orders
 from axile.executor.order_submission_context import order_submission_context
 from axile.executor.termination import ExecutionTerminated, wait_or_terminate
@@ -63,6 +66,8 @@ class ExecutionSession:
         self.logger = bind_log_context(owner.logger, component=LogComponent.ALGORITHM, symbol=symbol)
         self.memory: ObjectDict = {}
         self.audit_context: AuditContext = {}
+        self._market_data: ContextVar[UnifiedPriceData | None] = ContextVar("session_market_data", default=None)
+        self._price_callbacks: dict[PriceDataCallback, PriceDataCallback] = {}
         self._audit_seq = 0
         self._audit_seq_lock = threading.Lock()
 
@@ -125,12 +130,25 @@ class ExecutionSession:
         order_type: OrderType,
         volume: float,
         price: float = 0,
+        *,
+        market_data: UnifiedPriceData | None = None,
+        market_data_purpose: MarketDataPurpose | None = None,
         **kwargs: object,
     ) -> UnifiedOrder:
-        """对当前 symbol 下单."""
+        """按消费时的行情快照下单，并在账户限流等待后重新校验同一证据。"""
         self.handle_termination_checkpoint()
-        with order_submission_context(self.audit_context):
-            return self._owner.place_order(self.symbol, direction, order_type, volume, price, **kwargs)
+        quote = clone_price_data(market_data if market_data is not None else self._market_data.get())
+        purpose: MarketDataPurpose = (
+            "order" if order_type != OrderType.MARKET or market_data_purpose == "order" else "sizing"
+        )
+
+        def validate() -> None:
+            self._require_market_data(quote, purpose=purpose)
+
+        validate()
+        with order_submission_context(self.audit_context, validate=validate):
+            order = self._owner.place_order(self.symbol, direction, order_type, volume, price, **kwargs)
+        return order
 
     def get_pending_orders(self) -> list[UnifiedOrder]:
         """获取当前 symbol 的未完成订单."""
@@ -220,7 +238,37 @@ class ExecutionSession:
 
     def get_market_data(self) -> UnifiedPriceData | None:
         """获取当前 symbol 的行情快照."""
-        return self._owner.get_market_data([self.symbol]).get(self.symbol)
+        quote = self._owner.get_market_data([self.symbol]).get(self.symbol)
+        self._require_market_data(quote, purpose="sizing")
+        self._market_data.set(clone_price_data(quote))
+        return quote
+
+    def _require_market_data(self, quote: UnifiedPriceData | None, *, purpose: MarketDataPurpose) -> None:
+        error = self.market_data_error(quote, purpose=purpose)
+        if error is None:
+            return
+        self.emit_audit_event(
+            event_type=ExecutionEventType.SYMBOL_SKIPPED,
+            status=ExecutionEventStatus.WARNING,
+            reason_family=ExecutionReasonFamily.MARKET_RULE,
+            reason_code=MarketDataUnavailableError.reason_code,
+            details={
+                "reason": error,
+                "quote_timestamp": None if quote is None else quote.timestamp,
+                "checked_at": self._owner.market_data_now(),
+                "source": None if quote is None else quote.extra.get("source"),
+                "time_basis": None if quote is None else quote.extra.get("time_basis", "exchange"),
+            },
+        )
+        raise MarketDataUnavailableError(self.symbol, error)
+
+    def market_data_error(
+        self, quote: UnifiedPriceData | None, *, purpose: MarketDataPurpose = "order", now: float | None = None
+    ) -> str | None:
+        """转发渠道规则，并拒绝其他品种的行情证据。"""
+        if quote is not None and quote.symbol != self.symbol:
+            return "行情品种不匹配"
+        return self._owner.market_data_error(quote, purpose=purpose, now=now)
 
     def get_tick_size(self) -> float | None:
         """获取当前 symbol 的最小价格变动单位."""
@@ -254,7 +302,19 @@ class ExecutionSession:
 
     def register_price_callback(self, callback: PriceDataCallback) -> None:
         """注册当前 symbol 的价格回调."""
-        self._owner.register_price_callback_for_symbol(callback, self.symbol)
+        if callback in self._price_callbacks:
+            return
+
+        def on_price(price_data: UnifiedPriceData) -> None:
+            # 回调只能为自身的同步下单提供证据，不能替换另一个调用正在使用的报价。
+            token = self._market_data.set(clone_price_data(price_data))
+            try:
+                callback(price_data)
+            finally:
+                self._market_data.reset(token)
+
+        self._price_callbacks[callback] = on_price
+        self._owner.register_price_callback_for_symbol(on_price, self.symbol)
 
     def register_trade_callback(self, callback: TradeRecordCallback) -> None:
         """注册当前 symbol 的成交回调."""
@@ -266,7 +326,9 @@ class ExecutionSession:
 
     def unregister_price_callback(self, callback: PriceDataCallback) -> None:
         """注销当前 symbol 的价格回调."""
-        self._owner.unregister_price_callback_for_symbol(callback, self.symbol)
+        wrapped = self._price_callbacks.pop(callback, None)
+        if wrapped is not None:
+            self._owner.unregister_price_callback_for_symbol(wrapped, self.symbol)
 
     def unregister_trade_callback(self, callback: TradeRecordCallback) -> None:
         """注销当前 symbol 的成交回调."""

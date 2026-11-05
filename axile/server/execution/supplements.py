@@ -6,12 +6,12 @@ import json
 from datetime import datetime
 from typing import Any
 
+from axile.channels.gm_sessions import GMSessionSettings
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.server.core.scheduler import scheduler
 from axile.server.cron import SCHEDULER_TIMEZONE, combine_cron_triggers, effective_triggers, is_blank_cron_expr
 from axile.server.db.models import AccountSnapshot
-from axile.server.db.models.account_settings import GMSessionSettings
 from axile.server.db.models.base import new_execution_id
 from axile.server.native_store import native_operation
 from axile.server.repositories import get_account_snapshot

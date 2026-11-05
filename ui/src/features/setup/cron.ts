@@ -880,6 +880,10 @@ export function timerEditorError(state: TimerEditorState): string | null {
   const fixed = defaultGMSessions()
   for (const [key, value] of Object.entries(state.gm_sessions ?? {})) {
     const time = fixed[key as keyof GMSessions].time
+    if (key === 'opening_locked') {
+      if (!/^09:2[0-4]$/.test(value.time)) return '早盘不可撤单阶段触发时间须在 09:20–09:24。'
+      continue
+    }
     if (value.time !== time) return `特殊阶段触发时间固定为 ${time}。`
     if (key === 'after_hours' && value.enabled) return '当前渠道尚未验证盘后定价交易能力，暂不能启用。'
   }

@@ -480,6 +480,9 @@ def test_public_place_order_controls_ctp_submit_once(
     )
     executor.set_account_control_guard(guard)
     executor._send_trader_request = Mock(side_effect=AssertionError("不应进入 insert_order guard"))
+    monkeypatch.setattr(
+        executor, "get_market_data", lambda symbols: {symbol: executor._quotes[symbol] for symbol in symbols}
+    )
     _at_clock(monkeypatch, datetime(2026, 8, 24, 21, 29, tzinfo=_SHANGHAI))
 
     order = executor.place_order("ag2612", OrderDirection.BUY, OrderType.LIMIT, 1, 9000, offset_flag="open")

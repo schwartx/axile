@@ -692,7 +692,8 @@
             "status": "PARTIAL",
             "error": "目标未完成: 当前持仓=1.0，目标持仓=2",
             "outcome": "not_reached",
-            "outcome_reason": "目标未完成: 当前持仓=1.0，目标持仓=2"
+            "outcome_reason": "目标未完成: 当前持仓=1.0，目标持仓=2",
+            "reason_code": "COMMON.TARGET.NOT_REACHED"
           }
         }
       },

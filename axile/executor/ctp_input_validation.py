@@ -39,10 +39,10 @@ def validate_instrument(value: object, *, allow_all: bool = False) -> str:
 
 
 def validate_cancel_id(value: object) -> str:
-    """校验本渠道生成的稳定订单编号；不更改合法冒号分隔符。"""
+    """校验稳定订单编号；会话号保留 CTP 原生整数的可选负号。"""
     if (
         not isinstance(value, str)
-        or re.fullmatch(r"[0-9]{8}:[0-9]+:[0-9]+:[0-9]{1,12}", value) is None
+        or re.fullmatch(r"[0-9]{8}:[0-9]+:-?[0-9]+:[0-9]{1,12}", value) is None
         or len(value) > 200
     ):
         raise CTPInputValidationError("订单编号格式不正确")

@@ -2,8 +2,14 @@
 
 from typing import Annotated, Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, computed_field, field_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, computed_field, field_validator, model_validator
 
+from axile.channels.gm_sessions import GMSessionSettings
+from axile.channels.schedule_settings import (
+    legacy_schedule_values,
+    normalize_schedule_options,
+    validate_schedule_options,
+)
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.trade_channel import TradeChannel
 from axile.executor.futures_close_policy import FuturesClosePolicy
@@ -12,7 +18,7 @@ from axile.server._native import _core
 from axile.server.db.models.account_connection import AccountConnectionPublic, AccountConnectionState
 from axile.server.db.models.account_notification import AccountNotificationState, AccountNotificationStatePublic
 from axile.server.db.models.account_runtime_sync import AccountRuntimeSyncPublic
-from axile.server.db.models.account_settings import GMSessionSettings, SupplementSettings
+from axile.server.db.models.account_settings import SupplementSettings
 from axile.server.db.models.account_validation import (
     _MAX_EXECUTION_TIMEOUT,
     _validate_algorithm_config,
@@ -112,6 +118,18 @@ class AccountCreate(AccountBase):
 
 class AccountSnapshot(AccountBase):
     """执行时使用的普通 Python 数据快照，不携带 session 或 ORM 关系。"""
+
+    channel_options: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    _options = field_validator("channel_options")(validate_schedule_options)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_channel_options(cls, value: Any) -> Any:
+        """进程快照兼容旧字段，并通过插件恢复对应配置模型。"""
+        if not isinstance(value, dict):
+            return value
+        normalized = normalize_schedule_options(value)
+        return normalized | legacy_schedule_values(normalized["channel_options"])
 
     id: int | None = None
     copied_from_account_id: int | None = None

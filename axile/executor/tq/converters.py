@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.clock import clock_now
@@ -42,15 +43,17 @@ def _quote_time(value: object) -> tuple[str, int]:
     if isinstance(value, str) and value:
         try:
             parsed = datetime.fromisoformat(value)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
             return parsed.isoformat(), int(parsed.timestamp() * 1000)
-        except ValueError:
+        except (ValueError, OverflowError, OSError):
             pass
-    update_time = _iso_from_nano(value)
     try:
-        timestamp = int(int(value) / 1_000_000)
-    except (TypeError, ValueError):
-        timestamp = int(datetime.fromisoformat(update_time).timestamp() * 1000)
-    return update_time, timestamp
+        nanos = int(value)
+        update_time = datetime.fromtimestamp(nanos / 1_000_000_000).isoformat()
+        return update_time, nanos // 1_000_000
+    except (TypeError, ValueError, OSError, OverflowError):
+        return "", 0
 
 
 def quote_to_unified(row: object, resolver: TQSymbolResolver) -> UnifiedPriceData:

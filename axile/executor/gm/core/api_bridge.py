@@ -75,6 +75,7 @@ class GMApiBridge:
     def execute_request(operation: GMSdkOperation, **kwargs: Any) -> Any:
         """按白名单执行 GM SDK 请求，省略未指定的账户参数。"""
         context = kwargs.pop("session", None)
+        submission_validator = kwargs.pop("submission_validator", None)
         if operation == "order_cancel":
             check_gm_operation(clock_now(tz=SHANGHAI), cancel=True)
         elif operation == "order_volume":
@@ -100,4 +101,8 @@ class GMApiBridge:
             rows = method()
             account_id = kwargs.get("account_id")
             return rows if account_id is None else [row for row in rows if row.get("account_id") == account_id]
+        if operation == "order_volume" and submission_validator is not None:
+            submission_validator()
+        if operation == "current":
+            kwargs["include_call_auction"] = True
         return method(**kwargs)

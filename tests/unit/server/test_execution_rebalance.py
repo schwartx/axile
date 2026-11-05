@@ -8,16 +8,17 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from axile.channels.gm_sessions import SHANGHAI, gm_session_context
+from axile.channels.gm_sessions import SHANGHAI, GMSessionSettings, gm_session_context
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionArtifactType, ExecutionEventStatus, ExecutionEventType
 from axile.executor.abstract_executor.base import AbstractExecutor
+from axile.executor.abstract_executor.capability import AbstractExecutorCapabilityMixin
+from axile.executor.algorithms.utils.clock import clock_now_ms
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import ExecutionStatus, UnifiedStandardOutput
 from axile.executor.models.unified_price import UnifiedPriceData
 from axile.server.db.models import Account
-from axile.server.db.models.account_settings import GMSessionSettings
 from axile.server.execution import intents as execution_intents
 from axile.server.execution import rebalance as rebalance_execution
 from axile.server.execution.worker_backend import worker_audit, worker_state
@@ -33,7 +34,7 @@ from tests.unit.server._execution_test_support import (
 )
 
 
-class _VolumeCalcStub:
+class _VolumeCalcStub(AbstractExecutorCapabilityMixin):
     logger: WarningLogger
 
     def __init__(self, logger: WarningLogger) -> None:
@@ -87,6 +88,7 @@ def _stub_intent_promotion(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, i
         calls.append((execution_id, account_id))
 
     monkeypatch.setattr(execution_intents, "promote_intent_to_running", fake_promote)
+    monkeypatch.setattr(rebalance_execution, "get_execution_target_snapshot", AsyncMock(return_value=None))
 
     async def read(name: str, request: dict[str, object]) -> dict[str, object]:
         assert name == "execution_read" and request["op"] == "last_target"
@@ -144,7 +146,7 @@ def test_calculate_target_volume_does_not_restore_forbidden_symbols_from_last_ta
             ask_volume=1.0,
             volume=1.0,
             turnover=1.0,
-            timestamp=1,
+            timestamp=clock_now_ms(),
             update_time="2026-03-13T00:00:00",
         )
     }
@@ -258,6 +260,9 @@ def test_trade_defaults_gm_ashare_short_leverage_to_zero_when_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """GM+A股 且未显式配置 short_leverage 时，应默认按 long-only 处理负目标。"""
+    monkeypatch.setattr(
+        rebalance_execution, "clock_now", lambda **kwargs: datetime(2026, 11, 3, 10, 0, tzinfo=SHANGHAI)
+    )
     monkeypatch.setattr(rebalance_execution, "clock_now", lambda **_: datetime(2026, 9, 1, 9, 30, tzinfo=SHANGHAI))
     account = build_account(
         name="gm-ashare-account",
@@ -1066,3 +1071,34 @@ def test_portfolio_exception_contract_preserves_rebalance_audit(monkeypatch, mod
         assert fields["raw_result"]["traceback"] == "remote traceback"
         assert fields["raw_result"]["error_scope"] == "account_connection"
     calculate.assert_awaited_once_with(account, "code", execution_id="e")
+
+
+@pytest.mark.parametrize("invalid", [None, "account_id", "raw_weights", "normalized_weights"])
+def test_rebalance_retry_reuses_only_complete_owned_target(monkeypatch, invalid):
+    account = build_account()
+    saved = {"account_id": 1, "raw_weights": {"rb2610": 0.5}, "normalized_weights": {"rb2610": 0.25}}
+    if invalid is not None:
+        saved[invalid] = 2 if invalid == "account_id" else None
+    trade = AsyncMock(return_value={"is_success": 1})
+    resolve = AsyncMock(side_effect=AssertionError("冻结目标不应重算"))
+    append = AsyncMock(side_effect=AssertionError("冻结目标不应重复追加"))
+    monkeypatch.setattr(rebalance_execution, "_load_rebalance_account", AsyncMock(return_value=account))
+    monkeypatch.setattr(rebalance_execution, "trade_channel_check", AsyncMock())
+    monkeypatch.setattr(rebalance_execution, "get_execution_target_snapshot", AsyncMock(return_value=saved))
+    monkeypatch.setattr(rebalance_execution, "_resolve_rebalance_request", resolve)
+    monkeypatch.setattr(rebalance_execution, "append_target_weight_snapshot", append)
+    monkeypatch.setattr(rebalance_execution, "trade", trade)
+
+    if invalid is not None:
+        with pytest.raises(ValueError, match="目标快照"):
+            asyncio.run(rebalance_execution._run_account_rebalance(1, execution_id="retry"))
+        trade.assert_not_awaited()
+    else:
+        for _ in range(2):
+            assert asyncio.run(rebalance_execution._run_account_rebalance(1, execution_id="retry"))["is_success"] == 1
+        assert trade.await_count == 2
+        assert trade.await_args.args[1] == saved["raw_weights"]
+        assert trade.await_args.kwargs["normalized_target"] == saved["normalized_weights"]
+        assert trade.await_args.kwargs["portfolio_id"] is None
+    resolve.assert_not_awaited()
+    append.assert_not_awaited()

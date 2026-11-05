@@ -1,16 +1,29 @@
 """GM 单队列 envelope 保留 SDK 参数、账户过滤与取消/过期约束。"""
 
 from concurrent.futures import Future
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import Mock, sentinel
 
 import pytest
 
+pytest.importorskip("gm.api")
+
+from axile.channels.gm_sessions import SHANGHAI
+from axile.executor.algorithms.utils import clock as clock_module
 from axile.executor.gm.core import api_bridge, gm_strategy
 from axile.executor.gm.core.strategy_bridge import GMBridgeRequest, GMStrategyBridge
 from axile.executor.gm.gm_execute import GMExecutor
 from axile.executor.models.unified_input import GMAccountConfig
 from axile.executor.models.unified_order import OrderDirection, OrderType
+from tests.fixtures.algorithm_fakes import ClockStub
+
+
+@pytest.fixture(autouse=True)
+def trading_clock(monkeypatch):
+    clock = ClockStub()
+    clock.current = datetime(2026, 11, 4, 10, 0, tzinfo=SHANGHAI).timestamp()
+    monkeypatch.setattr(clock_module, "_default_clock", clock)
 
 
 @pytest.fixture
@@ -43,7 +56,11 @@ def draining_runtime(runtime, monkeypatch):
     [
         ("get_cash", {"account_id": None}, {}),
         ("get_position", {"account_id": ""}, {"account_id": ""}),
-        ("current", {"symbols": ["SZSE.000001", "SHSE.600000"]}, {"symbols": ["SZSE.000001", "SHSE.600000"]}),
+        (
+            "current",
+            {"symbols": ["SZSE.000001", "SHSE.600000"]},
+            {"symbols": ["SZSE.000001", "SHSE.600000"], "include_call_auction": True},
+        ),
         ("get_orders", {"account_id": "target"}, {}),
         ("get_unfinished_orders", {"account_id": "target"}, {}),
         ("get_execution_reports", {"account_id": "target"}, {}),

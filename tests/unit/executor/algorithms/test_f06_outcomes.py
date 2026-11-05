@@ -12,6 +12,7 @@ from axile.executor.algorithms.defaults.single_maker import impl as maker
 from axile.executor.algorithms.defaults.twap import impl as twap
 from axile.executor.algorithms.utils import clock as clock_module
 from axile.executor.algorithms.utils import order_helper
+from axile.executor.algorithms.utils.order_tracker import OrderTracker
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.models.execution_result import ExecutionStatus, outcome_from_status
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
@@ -62,14 +63,13 @@ def test_algorithm_outcome(monkeypatch, module, case, expected, termination_at=N
         timestamp=1,
         update_time="",
     )
-    tracker = MagicMock()
-    tracker.waiting_on_restriction.return_value = False
-    tracker.get_pending_count.return_value = 0
-    tracker.pending_reason = None
-    tracker.record_cancellation_result.side_effect = lambda result: result.unconfirmed
+    tracker = OrderTracker(executor)
+    tracker.wait_for_completion = MagicMock()
+    tracker.waiting_on_restriction = MagicMock(return_value=False)
+    tracker.get_pending_count = MagicMock(return_value=0)
     orders = []
-    tracker.get_all_orders.side_effect = lambda: orders
-    tracker.get_all_trades.return_value = []
+    tracker.get_all_orders = MagicMock(side_effect=lambda: orders)
+    tracker.get_all_trades = MagicMock(return_value=[])
     monkeypatch.setattr(module, "setup_order_tracker", lambda *args: tracker)
     monkeypatch.setattr(module, "teardown_order_tracker", lambda *args: None)
     now = [0.0]
@@ -236,14 +236,13 @@ def test_algorithm_keeps_tracker_cancel_error(monkeypatch, module):
         timestamp=1,
         update_time="",
     )
-    tracker = MagicMock()
-    tracker.waiting_on_restriction.return_value = False
-    tracker.get_pending_count.return_value = 0
-    tracker.pending_reason = None
-    tracker.record_cancellation_result.side_effect = lambda result: result.unconfirmed
+    tracker = OrderTracker(executor)
+    tracker.wait_for_completion = MagicMock()
+    tracker.waiting_on_restriction = MagicMock(return_value=False)
+    tracker.get_pending_count = MagicMock(return_value=0)
     orders = []
-    tracker.get_all_orders.side_effect = lambda: orders
-    tracker.get_all_trades.return_value = []
+    tracker.get_all_orders = MagicMock(side_effect=lambda: orders)
+    tracker.get_all_trades = MagicMock(return_value=[])
     tracker.explicit_error = None
     tracker.explicit_blocked_error = None
 

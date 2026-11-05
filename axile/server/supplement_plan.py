@@ -2,10 +2,11 @@
 
 from datetime import datetime, timedelta
 
+from axile.channels.gm_sessions import GMSessionSettings
 from axile.channels.schedule_clock import parse_hhmm, window_contains
 from axile.common.trade_channel import TradeChannel
 from axile.server.cron import SCHEDULER_TIMEZONE, combine_cron_triggers, effective_triggers
-from axile.server.db.models.account_settings import GMSessionSettings, SupplementSettings
+from axile.server.db.models.account_settings import SupplementSettings
 from axile.server.trading_calendar import CalendarDecisionStatus, evaluate_channel_calendar_moment, schedule_windows
 
 

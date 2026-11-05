@@ -16,6 +16,7 @@ from typing import Literal, TypeVar, cast
 from axile.executor.algorithms.utils.clock import clock_monotonic, get_default_clock
 from axile.executor.connection_state import ConnectionMonitor
 from axile.executor.instrument_catalog_records import EXCHANGES, Instrument, normalize_catalog_symbol
+from axile.executor.market_data_validation import MarketDataUnavailableError
 from axile.executor.tq.connection import report_tq_failure
 from axile.executor.tq.symbols import TQInstrument, TQSymbolResolver
 
@@ -179,6 +180,8 @@ class TQRuntime:
                 raise TimeoutError("TqSdk 命令排队超时")
             command.done.wait()
         if command.error is not None:
+            if isinstance(command.error, MarketDataUnavailableError):
+                raise command.error
             raise RuntimeError(f"TqSdk 命令失败: {command.error}") from command.error
         return cast(T, command.result)
 

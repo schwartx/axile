@@ -397,3 +397,13 @@ describe('GM 独立交易阶段', () => {
     expect(resolveCronList('cn_stock', intent({ timerTab: 'custom', rawCron: '20 9 * * *', gm_sessions: sessions }))).toEqual(['20 9 * * *'])
   })
 })
+
+ it('早盘不可撤单支持 09:24，拒绝阶段外时间', () => {
+  const state = { ...defaultTimerEditorState('cn_stock'), gm_sessions: defaultGMSessions() }
+  state.autoOn = true
+  state.gm_sessions = defaultGMSessions()
+  state.gm_sessions.opening_locked = { enabled: true, time: '09:24' }
+  expect(timerEditorError(state)).toBeNull()
+  state.gm_sessions.opening_locked.time = '09:25'
+  expect(timerEditorError(state)).toContain('09:20–09:24')
+})

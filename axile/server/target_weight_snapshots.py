@@ -9,6 +9,11 @@ from axile.server.db.models.base import now_str
 from axile.server.native_store import native_operation
 
 
+async def get_execution_target_snapshot(execution_id: str) -> dict[str, Any] | None:
+    """读取 execution 已冻结的目标，供重试复用同一组权重。"""
+    return await native_operation("target_operation", {"op": "execution", "execution_id": execution_id})
+
+
 async def append_target_weight_snapshot(
     *,
     portfolio_id: int,

@@ -252,6 +252,46 @@ def test_executor_converts_queries_and_order_primitives(
     assert instance._query_trades_impl("rb2610", "o1")[0].symbol == "rb2610"
 
 
+@pytest.mark.parametrize("symbol", ["rb2610", "SHFE.rb2610"])
+def test_public_order_matches_qualified_and_local_quote(executor, monkeypatch, symbol):
+    instance, api = executor
+    api.quote["datetime"] = int(instance.market_data_now() * 1_000_000_000)
+    monkeypatch.setattr(
+        instance, "_check_tq_symbol_trading_time", lambda *_: TQTradingTimeCheck(TQTradingTimeStatus.OPEN)
+    )
+    order = instance.place_order(symbol, OrderDirection.BUY, OrderType.LIMIT, 1, 3199)
+    assert order.symbol == "rb2610"
+    assert api.insert_args["symbol"] == "SHFE.rb2610"
+
+
+@pytest.mark.parametrize("symbol", ["CF2701", "CZCE.CF2701", "CF701", "CZCE.CF701"])
+def test_public_order_resolves_czce_alias(executor, monkeypatch, symbol):
+    instance, api = executor
+    api.futures = ["CZCE.CF701"]
+    api.quote.update(
+        exchange_id="CZCE", instrument_id="CF701", datetime=int(instance.market_data_now() * 1_000_000_000)
+    )
+    api.order.update(exchange_id="CZCE", instrument_id="CF701")
+    monkeypatch.setattr(
+        instance, "_check_tq_symbol_trading_time", lambda *_: TQTradingTimeCheck(TQTradingTimeStatus.OPEN)
+    )
+    instance.place_order(symbol, OrderDirection.BUY, OrderType.LIMIT, 1, 3199)
+    assert api.insert_args["symbol"] == "CZCE.CF701"
+
+
+def test_public_order_rejects_quote_from_wrong_exchange(executor, monkeypatch):
+    from axile.executor.market_data_validation import MarketDataUnavailableError
+
+    instance, api = executor
+    api.quote.update(exchange_id="DCE", datetime=int(instance.market_data_now() * 1_000_000_000))
+    monkeypatch.setattr(
+        instance, "_check_tq_symbol_trading_time", lambda *_: TQTradingTimeCheck(TQTradingTimeStatus.OPEN)
+    )
+    with pytest.raises(MarketDataUnavailableError):
+        instance.place_order("SHFE.rb2610", OrderDirection.BUY, OrderType.LIMIT, 1, 3199)
+    assert not api.insert_args
+
+
 def test_executor_uses_contract_multiplier_and_rejects_fractional_lots(
     executor: tuple[TQExecutor, FakeApi],
 ) -> None:

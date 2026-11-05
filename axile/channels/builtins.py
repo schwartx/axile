@@ -33,6 +33,7 @@ from axile.channels.contracts import (
     ConnectionProgress,
     ConnectionStepDefinition,
 )
+from axile.channels.gm_sessions import GMSessionSettings
 from axile.channels.schedule_clock import (
     CN_FUTURES_WINDOWS,
     CN_STOCK_WINDOWS,
@@ -275,6 +276,8 @@ def _ctp_plugin() -> ChannelPlugin:
 def _gm_plugin() -> ChannelPlugin:
     """构造掘金内置渠道插件."""
     return ChannelPlugin(
+        schedule_settings_model=GMSessionSettings,
+        legacy_schedule_field="gm_sessions",
         validate_connection=_validate_gm_connection,
         descriptor=ChannelDescriptor(
             connection_steps=_GM_STEPS,

@@ -290,7 +290,7 @@ struct Schedule {
     #[serde(default)]
     cron_expr: String,
     #[serde(default)]
-    gm_sessions: Option<Value>,
+    channel_options: Value,
     #[serde(default)]
     supplement: Option<Value>,
 }
@@ -311,11 +311,18 @@ pub fn scheduler_account(path: &str, value: &Value) -> Result<Value, AnalysisErr
     let Some((channel, schedule, portfolio_id)) = row else {
         return Ok(Value::Null);
     };
-    let schedule: Schedule = serde_json::from_str(&schedule)
+    let mut values = serde_json::from_str::<Value>(&schedule)
+        .map_err(|error| AnalysisError::new("INVALID_DATA", error.to_string()))?;
+    crate::accounts::normalize_schedule(
+        values
+            .as_object_mut()
+            .ok_or_else(|| AnalysisError::new("INVALID_DATA", "排程配置必须是对象"))?,
+    )?;
+    let schedule: Schedule = serde_json::from_value(values)
         .map_err(|error| AnalysisError::new("INVALID_DATA", error.to_string()))?;
     Ok(
         json!({"trade_channel":channel,"is_started":schedule.is_started,
-        "cron_expr":schedule.cron_expr,"gm_sessions":schedule.gm_sessions,"supplement":schedule.supplement,"portfolio_id":portfolio_id}),
+        "cron_expr":schedule.cron_expr,"gm_sessions":schedule.channel_options["gm"],"channel_options":schedule.channel_options,"supplement":schedule.supplement,"portfolio_id":portfolio_id}),
     )
 }
 

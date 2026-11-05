@@ -70,3 +70,11 @@ def test_latest_snapshot_preserves_absent_normalized_weights(monkeypatch):
     value = asyncio.run(snapshots.get_latest_account_target_snapshot(2, 7))
     assert value is not None and value["raw_weights"] == {} and value.get("normalized_weights") is None
     assert snapshots.target_snapshot_public(value, weight_kind="raw").weights == {}
+
+
+def test_execution_snapshot_reads_frozen_weights_by_identity(monkeypatch):
+    frozen = {"execution_id": "retry", "account_id": 2, "raw_weights": {}, "normalized_weights": {}}
+    native = AsyncMock(return_value=frozen)
+    monkeypatch.setattr(snapshots, "native_operation", native)
+    assert asyncio.run(snapshots.get_execution_target_snapshot("retry")) is frozen
+    native.assert_awaited_once_with("target_operation", {"op": "execution", "execution_id": "retry"})
