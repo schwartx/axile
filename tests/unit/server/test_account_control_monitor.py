@@ -121,7 +121,7 @@ async def database(monkeypatch):
         native_operation_sync("migration_upgrade", {}, database=str(path))
         monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(path))
         monkeypatch.setattr(monitor_module, "sample", lambda _: None)
-        monkeypatch.setattr(monitor_module, "wake_pending_quota_warnings", _ignore_warnings)
+        monkeypatch.setattr(monitor_module, "wake_pending_system_notifications", _ignore_warnings)
         for name in ("_guards", "_final", "_updates"):
             monkeypatch.setattr(providers, name, {})
         account = build_account(
@@ -139,7 +139,7 @@ async def database(monkeypatch):
         yield path, account, monitor_module.AccountControlMonitor()
 
 
-async def _ignore_warnings(_account_ids):
+async def _ignore_warnings():
     pass
 
 

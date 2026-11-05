@@ -307,6 +307,67 @@ pub fn connection_begin(database: &str, request: &Value) -> Result<Value, Analys
     })
 }
 
+/// 在状态更新的同一事务内入队；主动断开意愿取当前行，不使用实例创建时的快照。
+fn enqueue_connection_failure_on(
+    connection: &Connection,
+    account_id: i64,
+    key: &str,
+) -> Result<Option<Value>, AnalysisError> {
+    let (last_success, disconnected, raw_failure, name): (Option<i64>, bool, String, String) =
+        connection
+            .query_row(
+                "SELECT s.last_success_at_us,s.manually_disconnected,s.last_failure,a.name
+                 FROM account_connection_state s JOIN account a ON a.id=s.account_id
+                 WHERE s.account_id=?1",
+                [account_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .map_err(database_error)?;
+    if disconnected {
+        return Ok(None);
+    }
+    let epoch = format!(
+        "{account_id}:{key}:{}",
+        last_success.map_or_else(|| "initial".to_owned(), |value| value.to_string())
+    );
+    let event_id = format!("connection:{:x}", Sha256::digest(epoch.as_bytes()));
+    let mut failure: Value =
+        serde_json::from_str(&raw_failure).map_err(|error| invalid(error.to_string()))?;
+    let message = failure
+        .pointer("/presentation/summary")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            failure["message"]
+                .as_str()
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or("账户连接不可用");
+    let event_type = crate::notifications::CONNECTION_FAILURE;
+    crate::notifications::enqueue_in_connection(
+        connection,
+        &json!({
+            "id": event_id, "account_id": account_id, "event_type": event_type,
+            "created_at": failure["observed_at"],
+            "context": {
+                "event_id": event_id, "event_type": event_type, "execution_id": null,
+                "occurred_at": failure["observed_at"],
+                "account": {"id": account_id, "name": name},
+                "error": {"type": "AccountConnectionFailure", "message": message, "traceback": ""},
+                "is_test": false,
+            },
+        }),
+    )?;
+    if failure["error"].is_null() {
+        failure["error"] = json!({});
+    }
+    failure["error"]
+        .as_object_mut()
+        .ok_or_else(|| invalid("last_failure.error must be an object or null"))?
+        .insert("connection_event_id".to_owned(), json!(event_id));
+    Ok(Some(failure))
+}
+
 fn observe_on(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {
     let binding = request
         .get("binding")
@@ -386,6 +447,16 @@ fn observe_on(connection: &Connection, request: &Value) -> Result<Value, Analysi
             ],
         )
         .map_err(database_error)?;
+    if changed != 0 && matches!(status, "error" | "cooldown") {
+        if let Some(failure) = enqueue_connection_failure_on(connection, account_id, key)? {
+            connection
+                .execute(
+                    "UPDATE account_connection_state SET error=?2,last_failure=?3 WHERE account_id=?1",
+                    params![account_id, failure["error"].to_string(), failure.to_string()],
+                )
+                .map_err(database_error)?;
+        }
+    }
     Ok(json!({"applied": changed != 0}))
 }
 
@@ -414,6 +485,16 @@ pub fn connection_end(database: &str, request: &Value) -> Result<Value, Analysis
                 params![account_id, key, instance, failure],
             )
             .map_err(database_error)?;
+        if changed != 0 && failure.is_some() {
+            if let Some(failure) = enqueue_connection_failure_on(&connection, account_id, key)? {
+                connection
+                    .execute(
+                        "UPDATE account_connection_state SET last_failure=?2 WHERE account_id=?1",
+                        params![account_id, failure.to_string()],
+                    )
+                    .map_err(database_error)?;
+            }
+        }
         Ok(json!({"applied": changed != 0}))
     })
 }
@@ -478,7 +559,7 @@ mod tests {
         connection
             .execute_batch(
                 "PRAGMA foreign_keys=ON;
-                 CREATE TABLE account(id INTEGER PRIMARY KEY,trade_channel TEXT NOT NULL);
+                 CREATE TABLE account(id INTEGER PRIMARY KEY,trade_channel TEXT NOT NULL,name TEXT NOT NULL);
                  CREATE TABLE account_settings(account_id INTEGER PRIMARY KEY REFERENCES account(id) ON DELETE CASCADE,
                     connection JSON NOT NULL);
                  CREATE TABLE account_connection_state(
@@ -486,7 +567,11 @@ mod tests {
                     config_key TEXT NOT NULL,instance_id TEXT NOT NULL,sequence INTEGER NOT NULL,
                     status TEXT NOT NULL,observed_at_us INTEGER,message TEXT,error JSON,label TEXT,presentation JSON,
                     last_success_at_us INTEGER,last_failure JSON,manually_disconnected BOOLEAN NOT NULL);
-                 INSERT INTO account VALUES(1,'ctp');
+                 CREATE TABLE notification_event(sequence INTEGER PRIMARY KEY,id TEXT NOT NULL UNIQUE,
+                    account_id INTEGER NOT NULL REFERENCES account(id) ON DELETE CASCADE,
+                    created_at_us INTEGER NOT NULL,event_type TEXT NOT NULL,context JSON NOT NULL,
+                    status TEXT NOT NULL,finished_at_us INTEGER,error TEXT);
+                 INSERT INTO account VALUES(1,'ctp','test');
                  INSERT INTO account_settings VALUES(1,'{}');",
             )
             .unwrap();
@@ -513,6 +598,29 @@ mod tests {
             &json!({"binding":binding,"sequence":sequence,"observation":observation}),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn alert_enqueue_failure_rolls_back_observation_and_instance_end() {
+        database(|connection, path, key| {
+            let binding = begin(path, key, "current");
+            connection.execute_batch("CREATE TRIGGER fail_alert BEFORE INSERT ON notification_event BEGIN SELECT RAISE(ABORT,'queue unavailable'); END;").unwrap();
+            let failure = json!({"observed_at":"2026-11-05T10:00:00.000000Z","message":"断线"});
+            assert!(connection_observe(
+                path,
+                &json!({
+                    "binding":binding,"sequence":1,
+                    "observation":{"status":"error","observed_at":failure["observed_at"]}
+                })
+            )
+            .is_err());
+            assert_eq!(history(connection).1, 0);
+            assert!(
+                connection_end(path, &json!({"binding":binding,"last_failure":failure})).is_err()
+            );
+            assert_eq!(history(connection).0, "current");
+            assert!(history(connection).3.is_none());
+        });
     }
 
     fn history(connection: &Connection) -> (String, i64, Option<String>, Option<String>, bool) {
@@ -766,13 +874,15 @@ mod tests {
                 )["applied"],
                 true
             );
+            let first: Value = serde_json::from_str(&history(connection).3.unwrap()).unwrap();
+            let event_id = first["error"]["connection_event_id"].clone();
+            assert!(event_id.as_str().unwrap().starts_with("connection:"));
             assert_eq!(
-                history(connection).3.as_deref(),
-                Some(
-                    r#"{"observed_at":"2026-10-23T10:00:09.000000Z","message":null,"label":null,"error":null,"presentation":null}"#
-                )
+                first,
+                json!({"observed_at":"2026-10-23T10:00:09.000000Z","message":null,"label":null,
+                "error":{"connection_event_id":event_id},"presentation":null})
             );
-            let evidence = json!({"code":9007199254740993_u64,"detail":{"native":true}});
+            let mut evidence = json!({"code":9007199254740993_u64,"detail":{"native":true}});
             let presentation = json!({"summary":"原始说明","sections":[]});
             observe(
                 path,
@@ -781,6 +891,7 @@ mod tests {
                 json!({"status":"cooldown","observed_at":"2026-10-23T10:00:10.000000Z",
                 "message":"重试","label":"连接","error":evidence,"presentation":presentation,"extra":true}),
             );
+            evidence["connection_event_id"] = event_id;
             assert_eq!(
                 serde_json::from_str::<Value>(&history(connection).3.unwrap()).unwrap(),
                 json!({"observed_at":"2026-10-23T10:00:10.000000Z","message":"重试","label":"连接",

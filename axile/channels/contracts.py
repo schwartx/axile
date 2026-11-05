@@ -456,6 +456,8 @@ class ChannelPlugin:
     quantize_target_quantity : QuantizeTargetQuantity | None
         把目标权重量化成可下单数量 ``(weight, equity, notional_per_unit) -> qty``；
         缺省表示该渠道尚未提供量化，在位性回退权重阈值。
+    connect_account : Callable[[BaseAccountConfig], None] | None
+        用户显式触发的交易账户登录能力；为空表示不支持，健康检查不会调用。
     schedule_settings_model : type[BaseModel] | None
         渠道专属调度配置的校验模型；为空表示不接受专属配置。
     legacy_schedule_field : str | None
@@ -474,6 +476,7 @@ class ChannelPlugin:
     canonicalize_symbol: CanonicalizeSymbol = _identity_symbol
     quantize_target_quantity: QuantizeTargetQuantity | None = None
     requires_pre_connect_guard: bool = False
+    connect_account: Callable[[BaseAccountConfig], None] | None = None
     validate_connection: ConnectionValidator | None = None
     schedule_settings_model: type[BaseModel] | None = None
     legacy_schedule_field: str | None = None

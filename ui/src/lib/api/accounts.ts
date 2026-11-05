@@ -26,7 +26,7 @@ export function getAccountConnection(id: number, signal?: AbortSignal): Promise<
 }
 
 /** 明确操作账户连接；写请求不自动重试。 */
-export function operateAccountConnection(id: number, action: 'reconnect' | 'disconnect'): Promise<AccountConnectionDetail> {
+export function operateAccountConnection(id: number, action: 'reconnect' | 'disconnect' | 'connect-account'): Promise<AccountConnectionDetail> {
   return apiSend('POST', `/account/${id}/connection/${action}`)
 }
 

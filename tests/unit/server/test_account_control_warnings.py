@@ -15,7 +15,7 @@ from axile.executor.account_control.models import AccountControlOverride
 from axile.executor.algorithms.utils.clock import clock_now_ms
 from axile.server import error_notifications
 from axile.server.account_control import monitor as monitor_module
-from axile.server.account_control import providers, warnings
+from axile.server.account_control import providers
 from axile.server.execution import execution_account_control as persistence
 from axile.server.execution import notification_outbox
 from tests.sqlite_oracle import connect as oracle_connect
@@ -32,7 +32,9 @@ async def database(monkeypatch):
         monkeypatch.setattr(notification_outbox, "wake_notifications", wakes.append)
         monkeypatch.setattr(error_notifications, "record_system_notification_result", results.append)
         monkeypatch.setattr(error_notifications, "push_feishu_card", lambda card, key: cards.append((card, key)))
-        monkeypatch.setattr(monitor_module, "wake_pending_quota_warnings", warnings.wake_pending_quota_warnings)
+        monkeypatch.setattr(
+            monitor_module, "wake_pending_system_notifications", notification_outbox.wake_pending_system_notifications
+        )
         monkeypatch.setattr(settings, "system_execution_notification_mode", "default")
         monkeypatch.setattr(settings, "exe_err_feishu_key", "system-test-hook")
         account.account_control_override = AccountControlOverride.model_validate(
@@ -65,6 +67,29 @@ async def rows(path):
             SimpleNamespace(**{**dict(row), "context": json.loads(row["context"])})
             for row in connection.execute("SELECT * FROM notification_event ORDER BY sequence")
         ]
+
+
+def test_connection_failure_is_dispatched_by_system_outbox_without_frontend(monkeypatch):
+    from axile.common.notification_context import CONNECTION_FAILURE_EVENT
+    from axile.executor.connection_state import ConnectionObservation
+    from axile.server import connection_state
+
+    async def scenario():
+        async with database(monkeypatch) as (path, account, wakes, results, cards):
+            binding = connection_state.begin_connection_instance(account)
+            connection_state.record_connection_observation(
+                binding, 1, ConnectionObservation("error", "2026-11-05T10:00:00.000000Z", "请连接交易账户")
+            )
+            await notification_outbox.wake_pending_system_notifications()
+            assert wakes == [1]
+            await notification_outbox._dispatch(1)
+            await notification_outbox._dispatch(1)
+            assert len(cards) == len(results) == 1
+            assert results[0].event_type == CONNECTION_FAILURE_EVENT
+            assert "请连接交易账户" in str(cards[0])
+            assert (await rows(path))[0].status == "succeeded"
+
+    asyncio.run(scenario())
 
 
 def test_running_warning_is_sent_once_and_deduplicated_across_execution_and_monitor_restart(monkeypatch):
@@ -270,15 +295,23 @@ def test_unregistered_retired_source_cannot_enqueue_warning_for_a_reused_account
 
 
 @pytest.mark.parametrize("fail_summary", [False, True])
-def test_calling_warning_recovers_as_unknown_without_updating_account_notification(monkeypatch, fail_summary):
+@pytest.mark.parametrize("connection_failure", [False, True])
+def test_calling_warning_recovers_as_unknown_without_updating_account_notification(
+    monkeypatch, fail_summary, connection_failure
+):
     async def scenario():
         async with database(monkeypatch) as (path, account, _, _, cards):
             current = await persistence.build_account_control_guard(account, "interrupted")
             for _ in range(4):
                 current.begin_operation("place_order")
             await persistence.flush_account_control_records(executor(current))
+            event_type = ACCOUNT_CONTROL_WARNING_EVENT
+            if connection_failure:
+                from axile.common.notification_context import CONNECTION_FAILURE_EVENT
+
+                event_type = CONNECTION_FAILURE_EVENT
             with closing(oracle_connect(path)) as connection, connection:
-                connection.execute("UPDATE notification_event SET status='calling'")
+                connection.execute("UPDATE notification_event SET status='calling',event_type=?", (event_type,))
                 if fail_summary:
                     connection.executescript(
                         "CREATE TRIGGER fail_system_summary BEFORE INSERT ON system_notification_state "
@@ -299,7 +332,7 @@ def test_calling_warning_recovers_as_unknown_without_updating_account_notificati
                 else:
                     assert summary == (
                         event.finished_at_us,
-                        ACCOUNT_CONTROL_WARNING_EVENT,
+                        event_type,
                         "interrupted",
                         account.id,
                         None,

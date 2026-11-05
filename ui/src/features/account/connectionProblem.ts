@@ -27,7 +27,7 @@ export function connectionPresentation(value: unknown): ConnectionPresentation {
   })
   const actions = array(input.actions).flatMap(value => {
     const action = record(value)
-    return action.intent === 'open_connection_settings' && text(action.label) ? [{ label: text(action.label), intent: 'open_connection_settings' }] : []
+    return ['open_connection_settings', 'connect_account'].includes(String(action.intent)) && text(action.label) ? [{ label: text(action.label), intent: String(action.intent) }] : []
   })
   return { title: text(input.title), summary: text(input.summary), sections, actions }
 }

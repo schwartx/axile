@@ -5,7 +5,7 @@ import asyncio
 import loguru
 
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
-from axile.common.notification_context import ACCOUNT_CONTROL_WARNING_EVENT
+from axile.common.notification_context import SYSTEM_NOTIFICATION_EVENTS
 from axile.common.notification_function import NotificationFunctionResult, run_notification_function
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.server.native_store import native_operation
@@ -33,7 +33,7 @@ async def _dispatch(account_id: int) -> None:
             context = event["context"]
             code, key = event["code"], event["feishu_key"]
             result = None
-            if event["event_type"] == ACCOUNT_CONTROL_WARNING_EVENT:
+            if event["event_type"] in SYSTEM_NOTIFICATION_EVENTS:
                 from axile.server.error_notifications import send_system_notification
 
                 result = await send_system_notification(context)
@@ -50,7 +50,7 @@ async def _dispatch(account_id: int) -> None:
                     "finished_at": clock_now().isoformat(),
                     "ok": result is None or result.ok,
                     "error": None if result is None else result.error,
-                    "record_summary": result is not None and event["event_type"] != ACCOUNT_CONTROL_WARNING_EVENT,
+                    "record_summary": result is not None and event["event_type"] not in SYSTEM_NOTIFICATION_EVENTS,
                 },
             )
             if receipt.get("summary_error"):
@@ -71,4 +71,11 @@ async def recover_notifications() -> None:
     for error in result["summary_errors"]:
         loguru.logger.warning("通知事件已保留为未知，恢复摘要失败: {}", error)
     for account_id in result["account_ids"]:
+        wake_notifications(account_id)
+
+
+async def wake_pending_system_notifications() -> None:
+    """主服务唤醒已持久化的连接故障与额度预警，worker 只负责入队。"""
+    pending = await native_operation("notifications_pending", {})
+    for account_id in pending["account_ids"]:
         wake_notifications(account_id)

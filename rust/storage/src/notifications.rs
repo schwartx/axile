@@ -9,6 +9,7 @@ use crate::error::AnalysisError;
 use crate::writer_scope::{immediate, open_writer};
 
 const CONTROL_WARNING: &str = "account_control.warning";
+pub(crate) const CONNECTION_FAILURE: &str = "account_connection_failure";
 const UNKNOWN: &str = "服务重启，通知调用结果未知";
 const EVENT_COLUMNS: &str =
     "sequence,id,account_id,created_at_us,event_type,context,status,finished_at_us,error";
@@ -171,6 +172,25 @@ pub fn claim(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     })
 }
 
+pub fn pending(path: &str, _request: &Value) -> Result<Value, AnalysisError> {
+    crate::with_read_snapshot(Path::new(path), |connection| {
+        let mut statement = connection
+            .prepare(
+                "SELECT DISTINCT account_id FROM notification_event
+                 WHERE status='pending' AND event_type IN (?1,?2) ORDER BY account_id",
+            )
+            .map_err(database)?;
+        let accounts = statement
+            .query_map(params![CONTROL_WARNING, CONNECTION_FAILURE], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(database)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(database)?;
+        Ok(json!({"account_ids": accounts}))
+    })
+}
+
 pub(crate) fn record_account_in_connection(
     connection: &Connection,
     request: &Value,
@@ -275,7 +295,7 @@ fn result_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
 
 fn execution_id(connection: &Connection, event: &Value) -> Result<Option<String>, AnalysisError> {
     connection.query_row(
-        "SELECT CASE WHEN event_type='account_control.warning' THEN json_extract(context,'$.execution_id') \
+        "SELECT CASE WHEN event_type IN ('account_control.warning','account_connection_failure') THEN json_extract(context,'$.execution_id') \
          ELSE json_extract(context,'$.execution.id') END FROM notification_event WHERE sequence=?1",
         [event["sequence"].as_i64().unwrap()], |row|row.get::<_,Option<String>>(0),
     ).optional().map_err(database).map(Option::flatten)
@@ -298,7 +318,12 @@ pub fn finish(path: &str, request: &Value) -> Result<Value, AnalysisError> {
         return Ok(json!({"updated":false}));
     }
     let mut result = json!({"updated":true,"status":event["status"],"finished_at":event["finished_at"],"summary_error":null});
-    if record_summary && event["event_type"] != CONTROL_WARNING {
+    if record_summary
+        && !matches!(
+            event["event_type"].as_str(),
+            Some(CONTROL_WARNING | CONNECTION_FAILURE)
+        )
+    {
         if let Err(error) = immediate(&connection, || {
             let execution_id = execution_id(&connection, &event)?;
             record_account_in_connection(
@@ -342,7 +367,10 @@ pub fn recover(path: &str, request: &Value) -> Result<Value, AnalysisError> {
         event["error"] = json!(UNKNOWN);
         let result = immediate(&connection, || {
             let execution_id = execution_id(&connection, &event)?;
-            if event["event_type"] == CONTROL_WARNING {
+            if matches!(
+                event["event_type"].as_str(),
+                Some(CONTROL_WARNING | CONNECTION_FAILURE)
+            ) {
                 record_system_in_connection(
                     &connection,
                     &json!({"finished_at":finished,"event_type":event["event_type"],"execution_id":execution_id,"account_id":event["account_id"],"ok":null,"error":UNKNOWN}),
@@ -739,6 +767,38 @@ mod tests {
         )
         .unwrap();
         assert_eq!(get_system(&db.0, &json!({})).unwrap(), system);
+    }
+
+    #[test]
+    fn connection_alerts_use_system_pending_and_recovery_without_account_summary() {
+        let db = Database::new();
+        db.add("ordinary", "execution.finished");
+        assert_eq!(
+            pending(&db.0, &json!({})).unwrap()["account_ids"],
+            json!([])
+        );
+        let alert = db.add("connection", CONNECTION_FAILURE);
+        assert_eq!(
+            pending(&db.0, &json!({})).unwrap()["account_ids"],
+            json!([1])
+        );
+        claim(&db.0, &json!({"account_id":1})).unwrap();
+        finish(
+            &db.0,
+            &json!({"sequence":1,"finished_at":"2026-11-05T10:01:00.000000Z","ok":true}),
+        )
+        .unwrap();
+        let before = db.state();
+        claim(&db.0, &json!({"account_id":1})).unwrap();
+        finish(&db.0, &json!({"sequence":alert["sequence"],"finished_at":"2026-11-05T10:02:00.000000Z","ok":true})).unwrap();
+        assert_eq!(db.state(), before);
+        db.add("interrupted-connection", CONNECTION_FAILURE);
+        claim(&db.0, &json!({"account_id":1})).unwrap();
+        recover(&db.0, &json!({"finished_at":"2026-11-05T10:03:00.000000Z"})).unwrap();
+        let system = get_system(&db.0, &json!({})).unwrap();
+        assert_eq!(system["event_type"], CONNECTION_FAILURE);
+        assert!(system["ok"].is_null());
+        assert_eq!(db.state(), before);
     }
 
     #[test]

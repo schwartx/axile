@@ -306,6 +306,7 @@ business_operations! { register_business_operations, business_operation, PyAny;
     connection_recover => crate::connection_state::connection_recover,
     connection_accounts => crate::connection_state::connection_accounts,
     notifications_claim => crate::notifications::claim,
+    notifications_pending => crate::notifications::pending,
     notifications_finish => crate::notifications::finish,
     notifications_recover => crate::notifications::recover,
     notifications_record_account => crate::notifications::record_account,
