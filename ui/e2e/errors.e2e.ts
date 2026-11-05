@@ -1088,6 +1088,8 @@ test('failed resident reconnect is not replayed by read recovery', async ({ page
   await page.goto('/e2e/errors.html?mode=connection')
   await page.getByRole('button', { name: /账户连通状态/ }).click()
   await page.getByRole('dialog').getByRole('button', { name: '重新连接', exact: true }).click()
+  await expect(page.getByRole('dialog').getByRole('button', { name: '连接操作结果', exact: true })).toHaveAttribute('aria-expanded', 'false')
+  await page.getByRole('dialog').getByRole('button', { name: '连接操作结果', exact: true }).click()
   await expect(page.getByRole('dialog').getByRole('region', { name: '连接操作结果' })).toContainText('获取令牌超时')
   await page.evaluate(async () => {
     const modulePath = '/src/lib/readRecovery.ts'
@@ -1316,6 +1318,8 @@ test('failed GM start belongs to connection entry and details, with no card erro
   await expect(page.getByRole('alert')).toHaveCount(0)
   await page.getByRole('button', { name: /连接详情，账户连通状态/ }).click()
   const dialog = page.getByRole('dialog', { name: /账户连接(详情|告警)/, exact: true })
+  await expect(dialog.getByRole('button', { name: '连接操作结果', exact: true })).toHaveAttribute('aria-expanded', 'false')
+  await dialog.getByRole('button', { name: '连接操作结果', exact: true }).click()
   await expect(dialog.getByRole('region', { name: '连接操作结果' })).toContainText('GM 启动失败')
   await expect(dialog).toContainText('native-gm-start-traceback')
   await dialog.getByRole('button', { name: '复制连接详情' }).click()
