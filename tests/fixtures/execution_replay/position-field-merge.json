@@ -1,0 +1,10 @@
+[
+  {"name":"omitted","initial":{"today_quantity":2},"update":{},"merged":{"today_quantity":2},"visible":2},
+  {"name":"null","initial":{"today_quantity":2},"update":{"today_quantity":null},"merged":{"today_quantity":2},"visible":2},
+  {"name":"zero","initial":{"today_quantity":2},"update":{"today_quantity":0},"merged":{"today_quantity":0},"visible":0},
+  {"name":"missing","initial":{"today_quantity":2},"update":{"today_quantity":null,"field_quality":{"today_quantity":"missing"}},"merged":{"today_quantity":2,"field_quality":{"today_quantity":"missing"}},"visible":null},
+  {"name":"invalid","initial":{"today_quantity":2},"update":{"today_quantity":999,"field_quality":{"today_quantity":"invalid"}},"merged":{"today_quantity":999,"field_quality":{"today_quantity":"invalid"}},"visible":null},
+  {"name":"quality_only_missing","initial":{"today_quantity":2},"update":{"field_quality":{"today_quantity":"missing"}},"merged":{"today_quantity":2,"field_quality":{"today_quantity":"missing"}},"visible":null},
+  {"name":"quality_only_known","initial":{"today_quantity":2,"field_quality":{"today_quantity":"missing"}},"update":{"field_quality":{"today_quantity":"known"}},"merged":{"today_quantity":2,"field_quality":{"today_quantity":"known"}},"visible":2},
+  {"name":"inherited_quality","initial":{"today_quantity":2,"field_quality":{"today_quantity":"missing"}},"update":{"today_quantity":3},"merged":{"today_quantity":3,"field_quality":{"today_quantity":"missing"}},"visible":null}
+]

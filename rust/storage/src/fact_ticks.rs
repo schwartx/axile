@@ -22,7 +22,7 @@ impl<'a> TickReader<'a> {
     pub(crate) fn new(connection: &'a Connection) -> rusqlite::Result<Self> {
         Ok(Self {
             statement: connection.prepare(
-                "SELECT s.map_key,t.bid_price,t.ask_price,t.last_price,t.book_valid,t.path
+                "SELECT s.map_key,CASE WHEN json_type(t.bids,'$[0][0]') IN ('integer','real') THEN json_extract(t.bids,'$[0][0]') END,CASE WHEN json_type(t.asks,'$[0][0]') IN ('integer','real') THEN json_extract(t.asks,'$[0][0]') END,t.last_price,t.book_valid,t.path
                  FROM execution_symbol_result s
                  LEFT JOIN execution_symbol_tick t ON t.record_id=s.record_id
                      AND t.path=s.path || '/first_tick'
@@ -30,7 +30,7 @@ impl<'a> TickReader<'a> {
                  ORDER BY s.ordinal",
             )?,
             root_statement: connection.prepare(
-                "SELECT map_key,bid_price,ask_price,last_price,book_valid
+                "SELECT map_key,CASE WHEN json_type(bids,'$[0][0]') IN ('integer','real') THEN json_extract(bids,'$[0][0]') END,CASE WHEN json_type(asks,'$[0][0]') IN ('integer','real') THEN json_extract(asks,'$[0][0]') END,last_price,book_valid
                  FROM execution_symbol_tick WHERE record_id=?1 AND path LIKE '/first_ticks/%'
                  ORDER BY ordinal",
             )?,
@@ -93,9 +93,9 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch(
             "CREATE TABLE execution_symbol_result(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER);
-             CREATE TABLE execution_symbol_tick(record_id INTEGER,path TEXT,bid_price REAL,ask_price REAL,last_price REAL,book_valid INTEGER,map_key TEXT,ordinal INTEGER);
+             CREATE TABLE execution_symbol_tick(record_id INTEGER,path TEXT,bids JSON,asks JSON,last_price REAL,book_valid INTEGER,map_key TEXT,ordinal INTEGER);
              INSERT INTO execution_symbol_result VALUES (1,'/symbol_results/A','A',0),(2,'/symbol_results/A','A',0);
-             INSERT INTO execution_symbol_tick VALUES (1,'/symbol_results/A/first_tick',99,101,103,1,'A',0),(2,'/symbol_results/A/first_tick',10,12,15,0,'A',0);"
+             INSERT INTO execution_symbol_tick VALUES (1,'/symbol_results/A/first_tick','[[99,1]]','[[101,1]]',103,1,'A',0),(2,'/symbol_results/A/first_tick','[[10,1]]','[[12,1]]',15,0,'A',0);"
         ).unwrap();
         let mut reader = TickReader::new(&connection).unwrap();
         assert_eq!(

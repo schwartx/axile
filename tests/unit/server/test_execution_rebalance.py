@@ -140,10 +140,8 @@ def test_calculate_target_volume_does_not_restore_forbidden_symbols_from_last_ta
         "MA609": UnifiedPriceData(
             symbol="MA609",
             last_price=1.0,
-            bid_price=1.0,
-            ask_price=1.0,
-            bid_volume=1.0,
-            ask_volume=1.0,
+            asks=[(1.0, 1.0)],
+            bids=[(1.0, 1.0)],
             volume=1.0,
             turnover=1.0,
             timestamp=clock_now_ms(),

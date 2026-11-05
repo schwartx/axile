@@ -20,6 +20,21 @@ class _DictLikeReport(dict):
     __getattr__ = dict.__getitem__
 
 
+@pytest.mark.parametrize("depth", [0, 1, 5])
+def test_quote_uses_only_observed_array_levels(depth):
+    quote = gm_strategy._convert_tick_to_unified(
+        SimpleNamespace(
+            symbol="SHSE.600000",
+            price=100,
+            last_volume=1,
+            created_at=datetime.fromisoformat("2026-11-02T10:00:00+08:00"),
+            quotes=[SimpleNamespace(bid_p=99 - i, bid_v=i + 1, ask_p=101 + i, ask_v=i + 2) for i in range(depth)],
+        )
+    )
+    assert quote.bids == [(99 - i, i + 1) for i in range(depth)]
+    assert quote.asks == [(101 + i, i + 2) for i in range(depth)]
+
+
 @pytest.fixture
 def native_trade():
     return {

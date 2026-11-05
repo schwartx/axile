@@ -182,7 +182,7 @@ def test_uncaught_market_data_error_keeps_blocked_reason_and_market_family(
     def uncaught_failure(real_session, algorithm_input):
         quote = real_session.get_market_data()
         clock.now += 6
-        real_session.place_order(OrderDirection.BUY, OrderType.LIMIT, 1, quote.bid_price)
+        real_session.place_order(OrderDirection.BUY, OrderType.LIMIT, 1, quote.bids[0][0])
         pytest.fail("过期行情不得提交")
 
     monkeypatch.setattr(engine_module, "resolve_algorithm", lambda name, executor: uncaught_failure)
@@ -368,9 +368,8 @@ def test_single_maker_missing_book_market_fallback_keeps_freshness_and_limit_gua
 ) -> None:
     owner, engine, session = execution
     # 保留有效参考价，明确标识为非真实盘口。
-    owner.quote.book_valid = False
-    if on_missing_book == "market":
-        owner.quote.bid_price = owner.quote.ask_price = 0
+    owner.quote.bids = []
+    owner.quote.asks = []
     attempted_types = _expire_before_submit(monkeypatch, session, clock) if stale else None
     params = SingleMakerParams(max_wait_seconds=30, chase_enabled=False, on_missing_book=on_missing_book)
     result = engine._run_algorithm_with_session(session, "SINGLE-MAKER", AlgorithmInput(SYMBOL, 1, {}, params=params))
@@ -393,14 +392,14 @@ def test_single_maker_missing_book_market_fallback_keeps_freshness_and_limit_gua
 
 
 @pytest.mark.parametrize("on_missing_book", ["skip", "active", "market"])
-@pytest.mark.parametrize("book_valid,bid,ask", [(False, 0, 0), (False, 99, 101), (True, 0, 0)])
+@pytest.mark.parametrize("bids,asks", [([], []), ([(99, 0)], [(101, 0)]), ([(0, 1)], [(0, 1)])])
 @pytest.mark.parametrize("target_volume", [1, -1])
 def test_single_maker_missing_book_requires_explicit_market(
-    execution, clock, on_missing_book, book_valid, bid, ask, target_volume
+    execution, clock, on_missing_book, bids, asks, target_volume
 ):
     owner, engine, session = execution
-    owner.quote.book_valid = book_valid
-    owner.quote.bid_price, owner.quote.ask_price = bid, ask
+    owner.quote.bids = bids
+    owner.quote.asks = asks
     # 卖出从一手多仓减至零，避免测试替身把负持仓错误映射为多头。
     owner.position = 1 if target_volume < 0 else 0
     target_volume = 0 if target_volume < 0 else target_volume

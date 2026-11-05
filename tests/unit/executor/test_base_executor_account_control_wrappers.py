@@ -114,10 +114,8 @@ class _WrapperExecutor(AbstractExecutor):
             symbol: UnifiedPriceData(
                 symbol=symbol,
                 last_price=12.3,
-                bid_price=12.29,
-                ask_price=12.31,
-                bid_volume=100,
-                ask_volume=100,
+                bids=[(12.29, 100)],
+                asks=[(12.31, 100)],
                 volume=100,
                 timestamp=int(now.timestamp() * 1000),
                 update_time=now.isoformat(),

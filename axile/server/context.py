@@ -118,10 +118,8 @@ class SamplePortfolioExecutor:
             symbol: UnifiedPriceData(
                 symbol=symbol,
                 last_price=100.0,
-                bid_price=99.9,
-                ask_price=100.1,
-                bid_volume=100.0,
-                ask_volume=100.0,
+                bids=[(99.9, 100.0)],
+                asks=[(100.1, 100.0)],
                 volume=1_000.0,
                 turnover=100_000.0,
                 timestamp=1_700_000_000_000,

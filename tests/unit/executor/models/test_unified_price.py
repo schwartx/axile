@@ -1,64 +1,39 @@
-"""行情快照复制和盘口档位的行为契约。"""
+"""盘口数组、序列化与复制契约。"""
+
+import pytest
+from pydantic import ValidationError
 
 from axile.executor.models.unified_price import UnifiedPriceData, clone_price_data
 
 
-class TestUnifiedPriceDataPriceLevels:
-    """测试价格级别获取方法."""
-
-    def test_get_price_levels(self) -> None:
-        """测试获取指定深度的价格."""
-        price = UnifiedPriceData(
-            symbol="rb2610",
-            last_price=30000.0,
-            bid_price=29999.0,
-            bid_price_2=29998.0,
-            bid_price_3=29997.0,
-            bid_price_4=29996.0,
-            bid_price_5=29995.0,
-            ask_price=30001.0,
-            ask_price_2=30002.0,
-            ask_price_3=30003.0,
-            ask_price_4=30004.0,
-            ask_price_5=30005.0,
-            bid_volume=1.5,
-            bid_volume_2=2.0,
-            bid_volume_3=1.8,
-            bid_volume_4=2.2,
-            bid_volume_5=1.9,
-            ask_volume=1.2,
-            ask_volume_2=1.6,
-            ask_volume_3=2.1,
-            ask_volume_4=1.7,
-            ask_volume_5=2.3,
-            volume=1000.0,
-            timestamp=1703123456789,
-            update_time="2023-12-21T10:30:00.000Z",
-        )
-
-        # 测试获取3档
-        levels_3 = price.get_price_levels(3)
-        assert levels_3["bid_prices"] == [29999.0, 29998.0, 29997.0]
-        assert levels_3["ask_prices"] == [30001.0, 30002.0, 30003.0]
-        assert levels_3["bid_volumes"] == [1.5, 2.0, 1.8]
-        assert levels_3["ask_volumes"] == [1.2, 1.6, 2.1]
-
-
-def test_book_valid_defaults_true_and_survives_clone() -> None:
-    """book_valid 默认 True，且经 clone_price_data 深拷贝后保留."""
-    price = UnifiedPriceData(
-        symbol="rb2610",
-        last_price=30000.0,
-        bid_price=29999.0,
-        ask_price=30001.0,
-        bid_volume=1.5,
-        ask_volume=1.2,
-        volume=1000.0,
-        timestamp=1,
-        update_time="2023-12-21T10:30:00.000Z",
+@pytest.mark.parametrize("bid_depth,ask_depth", [(0, 0), (0, 1), (1, 5), (5, 1), (20, 20), (30, 21)])
+def test_depth_roundtrip_and_clone(bid_depth, ask_depth):
+    bids = [(100 - i, i + 1) for i in range(bid_depth)]
+    asks = [(101 + i, i + 2) for i in range(ask_depth)]
+    price = UnifiedPriceData(symbol="A", last_price=100, bids=bids, asks=asks, volume=0, timestamp=1, update_time="")
+    restored = UnifiedPriceData.model_validate_json(price.model_dump_json())
+    assert restored.bids == bids and restored.asks == asks
+    assert not {"bid_price", "ask_price", "bid_volume", "ask_volume"} & price.model_dump().keys()
+    assert all(
+        not hasattr(price, name) for name in ("bid_price", "ask_price", "get_price_levels", "get_all_bid_prices")
     )
-    assert price.book_valid is True
+    cloned = clone_price_data(restored)
+    assert cloned is not None
+    cloned.bids.append((1, 1))
+    assert restored.bids == bids
+    if not bids or not asks:
+        assert price.get_spread() is None and price.get_mid_price() is None
+        assert not price.is_valid()
+    else:
+        assert price.get_spread() == 1 and price.get_mid_price() == 100.5
 
-    invalid = price.model_copy(update={"book_valid": False})
-    assert invalid.book_valid is False
-    assert clone_price_data(invalid).book_valid is False
+
+@pytest.mark.parametrize("levels", [[[1]], [[1, 2, 3]], [[float("nan"), 1]], [[1, float("inf")]]])
+def test_invalid_levels(levels):
+    with pytest.raises(ValidationError):
+        UnifiedPriceData(symbol="A", last_price=1, bids=levels, asks=[], volume=0, timestamp=1, update_time="")
+
+
+def test_legacy_only_input_is_rejected():
+    with pytest.raises(ValidationError):
+        UnifiedPriceData(symbol="A", last_price=1, bid_price=1, ask_price=2, volume=0, timestamp=1, update_time="")

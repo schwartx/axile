@@ -27,6 +27,7 @@ from axile.executor.order_submission_context import (
     order_submission_context,
     validate_order_submission,
 )
+from axile.executor.replay_actions import replay_operation
 
 if TYPE_CHECKING:
     from axile.executor.abstract_executor.base import AbstractExecutor
@@ -54,6 +55,11 @@ def _executor(owner: object) -> AbstractExecutor:
 class AbstractExecutorFacadeMixin:
     """承载 AbstractExecutor 的公开 facade 默认实现."""
 
+    def replay_interest_symbols(self) -> dict[str, list[str]]:
+        """只返回缓存关联品种，不生成回放事实或查询交易柜台。"""
+        return {"orders": _executor(self).account_orders.known_symbols(), "positions": []}
+
+    @replay_operation("place_order")
     @controlled_operation(
         "place_order",
         symbol_arg="symbol",
@@ -418,6 +424,7 @@ class AbstractExecutorFacadeMixin:
         _ = symbol
         return None
 
+    @replay_operation("cancel_order")
     @controlled_operation(
         "cancel_order",
         symbol_arg="symbol",

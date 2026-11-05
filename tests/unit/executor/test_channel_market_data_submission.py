@@ -72,7 +72,7 @@ def test_tq_queue_revalidates_before_audit_registration_and_sdk(executor, monkey
     )
     audit_register = Mock(wraps=instance._terminal_audit.register)
     monkeypatch.setattr(instance._terminal_audit, "register", audit_register)
-    consumed = quote(clock.time(), symbol="rb2610", last_price=3200, bid_price=3199, ask_price=3201)
+    consumed = quote(clock.time(), symbol="rb2610", last_price=3200, bids=[(3199, 100)], asks=[(3201, 100)])
     session, events, publish = bind_session(monkeypatch, instance, consumed)
     runtime = instance._require_runtime()
     blocked, release, queued = threading.Event(), threading.Event(), threading.Event()
@@ -93,7 +93,7 @@ def test_tq_queue_revalidates_before_audit_registration_and_sdk(executor, monkey
 
             monkeypatch.setattr(runtime._commands, "put", enqueue)
             order = pool.submit(
-                session.place_order, OrderDirection.BUY, OrderType.LIMIT, 1, consumed.bid_price, market_data=consumed
+                session.place_order, OrderDirection.BUY, OrderType.LIMIT, 1, consumed.bids[0][0], market_data=consumed
             )
             assert queued.wait(2)
             clock.sleep(6)
@@ -137,7 +137,7 @@ def test_gm_queue_preserves_validator_error_and_excludes_callback_from_sdk(monke
     session, events, publish = bind_session(monkeypatch, instance, consumed)
     with ThreadPoolExecutor(max_workers=1) as pool:
         order = pool.submit(
-            session.place_order, OrderDirection.BUY, OrderType.LIMIT, 100, consumed.bid_price, market_data=consumed
+            session.place_order, OrderDirection.BUY, OrderType.LIMIT, 100, consumed.bids[0][0], market_data=consumed
         )
         request = bridge._request_queue.get(timeout=2)
         try:
@@ -209,7 +209,7 @@ def test_ctp_revalidates_frozen_quote_after_final_send_lock_wait(config, monkeyp
     monkeypatch.setattr(instance, "_next_id", before_final_lock)
     with ThreadPoolExecutor(max_workers=1) as pool:
         order = pool.submit(
-            session.place_order, OrderDirection.BUY, OrderType.LIMIT, 1, consumed.bid_price, market_data=consumed
+            session.place_order, OrderDirection.BUY, OrderType.LIMIT, 1, consumed.bids[0][0], market_data=consumed
         )
         try:
             assert ready.wait(2)

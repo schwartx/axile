@@ -53,7 +53,7 @@ def append(path, index, *, hour=9, target=True, price=None, positions=()):
                 "symbol_results": {
                     "A": {
                         "status": "SUCCEEDED",
-                        "first_tick": {"bid_price": price - 1, "ask_price": price + 1, "last_price": price},
+                        "first_tick": {"bids": [[price - 1, 1]], "asks": [[price + 1, 1]], "last_price": price},
                         "sizing": {
                             "sizing_mode": "weight",
                             "status": "SIZED",
@@ -396,7 +396,7 @@ def test_reused_trade_id_in_another_day_or_exchange_is_new_cash_flow(account, in
                     "symbol_results": {
                         "A": {
                             "status": "SUCCEEDED",
-                            "first_tick": {"bid_price": price, "ask_price": price},
+                            "first_tick": {"bids": [[price, 1]], "asks": [[price, 1]]},
                             "sizing": {
                                 "sizing_mode": "weight",
                                 "status": "SIZED",

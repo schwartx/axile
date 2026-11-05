@@ -57,6 +57,11 @@ jobs:
           exit 1
         fi
 
+    - name: Set up replay WASM tools
+      run: |
+        rustup target add wasm32-unknown-unknown
+        cargo install wasm-bindgen-cli --version 0.2.128 --locked
+
     - name: Build Web UI
       working-directory: ui
       run: |

@@ -44,7 +44,7 @@ def test_chase_reprices_with_post_cancel_quote_and_remaining_volume(monkeypatch,
     def submit(direction, order_type, volume, price=0, **kwargs):
         captured.append((price, volume, kwargs["market_data"]))
         fresh.timestamp = 1
-        fresh.bid_price = 1
+        fresh.bids[0] = (1, fresh.bids[0][1])
         return place(direction, order_type, volume, price, **kwargs)
 
     monkeypatch.setattr(executor, "cancel_order", cancel)
@@ -59,7 +59,7 @@ def test_chase_reprices_with_post_cancel_quote_and_remaining_volume(monkeypatch,
     assert volume == 60
     assert evidence is not fresh
     assert evidence.timestamp == 1_006_000
-    assert evidence.bid_price == fresh_bid
+    assert evidence.bids[0][0] == fresh_bid
     assert tracker._chasing_order_id is None
     chase = next(event for event in executor.emitted if event.get("reason_code") == "COMMON.ORDER_CHASE")
     assert chase["details"]["chase"]["to_price"] == expected
@@ -124,7 +124,7 @@ def test_fallback_uses_one_frozen_snapshot_for_protection_and_each_child(monkeyp
     def bounds(*_args):
         # 价格保护之后原始缓存可被更新，但不能改变本批提交的证据。
         snapshot.timestamp = 1
-        snapshot.ask_price = 100
+        snapshot.asks[0] = (100, snapshot.asks[0][1])
         return (1, 1)
 
     def submit(*args, **kwargs):
@@ -151,7 +151,7 @@ def test_fallback_uses_one_frozen_snapshot_for_protection_and_each_child(monkeyp
     assert all(item is evidence[0] for item in evidence)
     assert evidence[0] is not snapshot
     assert evidence[0].timestamp == 1_006_000
-    assert evidence[0].ask_price == 10.01
+    assert evidence[0].asks[0][0] == 10.01
     if expire_after_first:
         assert "已过期" in tracker.explicit_error
         assert tracker.outcome_inputs()["error_reason_code"] == "COMMON.MARKET_DATA.UNAVAILABLE"
@@ -176,7 +176,8 @@ def test_fallback_order_validation_reaches_final_submission_boundary(monkeypatch
     info = dict(tracker._chase_info[order.order_id])
     tracker.on_order_update(order)
     snapshot = _price(session.symbol, 9.99, 10.01, 1_000_000)
-    snapshot.book_valid = not invalid_book
+    if invalid_book:
+        snapshot.bids[0] = (snapshot.bids[0][0], 0)
     tracker.on_price_update(snapshot)
     submitted = []
     monkeypatch.setattr(owner, "_place_order_impl", lambda *args, **kwargs: submitted.append(args))
@@ -231,7 +232,7 @@ def test_fallback_final_validation_uses_order_purpose_and_frozen_quote(monkeypat
     validator = owner.market_data_error
 
     def validate(quote, *, purpose, now=None):
-        checks.append((purpose, quote.timestamp, quote.ask_price))
+        checks.append((purpose, quote.timestamp, quote.asks[0][0]))
         if purpose == "order" and clock.time() > 1000:
             return "盘口状态已变化"
         return validator(quote, purpose=purpose, now=now)
@@ -259,7 +260,7 @@ def test_fallback_final_validation_uses_order_purpose_and_frozen_quote(monkeypat
     def sleep(seconds):
         clock.sleep(seconds)
         tracker.on_price_update(_price(session.symbol, 9.98, 10.02, 1_001_000))
-        snapshot.ask_price = 100
+        snapshot.asks[0] = (100, snapshot.asks[0][1])
 
     guard._sleep = sleep
     tracker._submit_market_fallback_order(order, info)

@@ -132,6 +132,93 @@ fn load_input(connection: &Connection, id: &str) -> Result<Value> {
         })
     })
 }
+fn convert_tick(tick: &mut Value, downgrade: bool) -> Result<()> {
+    let Some(map) = tick.as_object_mut() else {
+        return Ok(());
+    };
+    for side in ["bid", "ask"] {
+        let key = format!("{side}s");
+        if downgrade {
+            if let Some(value) = map.get(&key) {
+                let levels = value
+                    .as_array()
+                    .ok_or_else(|| error("Cannot downgrade 0034: malformed market depth"))?
+                    .clone();
+                map.remove(&key);
+                if levels.len() > 5 {
+                    return Err(error(
+                        "Cannot downgrade 0034: market depth exceeds five levels",
+                    ));
+                }
+                for (i, level) in levels.iter().enumerate() {
+                    let suffix = if i == 0 {
+                        String::new()
+                    } else {
+                        format!("_{}", i + 1)
+                    };
+                    if level.as_array().is_none_or(|v| v.len() != 2) {
+                        return Err(error("Cannot downgrade 0034: malformed market depth"));
+                    }
+                    if map.contains_key(&format!("{side}_price{suffix}"))
+                        || map.contains_key(&format!("{side}_volume{suffix}"))
+                    {
+                        return Err(error(
+                            "Cannot downgrade 0034: legacy market depth conflicts",
+                        ));
+                    }
+                    map.insert(format!("{side}_price{suffix}"), level[0].clone());
+                    map.insert(format!("{side}_volume{suffix}"), level[1].clone());
+                }
+            }
+        } else if !map.contains_key(&key) {
+            let mut levels = Vec::new();
+            for i in 1..=5 {
+                let suffix = if i == 1 {
+                    String::new()
+                } else {
+                    format!("_{i}")
+                };
+                let price_key = format!("{side}_price{suffix}");
+                let volume_key = format!("{side}_volume{suffix}");
+                if let (Some(price), Some(quantity)) = (
+                    map.get(&price_key).and_then(Value::as_f64),
+                    map.get(&volume_key).and_then(Value::as_f64),
+                ) {
+                    if price > 0.0 && quantity >= 0.0 {
+                        levels.push(serde_json::json!([price, quantity]));
+                        map.remove(&price_key);
+                        map.remove(&volume_key);
+                    }
+                }
+            }
+            if !levels.is_empty() {
+                map.insert(key, Value::Array(levels));
+            }
+        }
+    }
+    Ok(())
+}
+fn convert_result_ticks(payload: &mut Value, downgrade: bool) -> Result<()> {
+    if let Some(ticks) = payload
+        .get_mut("first_ticks")
+        .and_then(Value::as_object_mut)
+    {
+        for tick in ticks.values_mut() {
+            convert_tick(tick, downgrade)?;
+        }
+    }
+    if let Some(symbols) = payload
+        .get_mut("symbol_results")
+        .and_then(Value::as_object_mut)
+    {
+        for symbol in symbols.values_mut() {
+            if let Some(tick) = symbol.get_mut("first_tick") {
+                convert_tick(tick, downgrade)?;
+            }
+        }
+    }
+    Ok(())
+}
 fn result_children(record_id: i64, payload: &Value) -> Result<Vec<(&'static str, encode::Rows)>> {
     let mut result = Vec::new();
     if let Some(map) = payload.as_object() {
@@ -196,7 +283,8 @@ fn backfill_records(connection: &Connection) -> Result<()> {
     each_parent(connection, "executerecord", |row| {
         let record_id = integer(&row, "id")?;
         let raw_input = parse(&row, "raw_input", "executerecord", "/raw_input")?;
-        let raw_result = parse(&row, "raw_result", "executerecord", "/raw_result")?;
+        let mut raw_result = parse(&row, "raw_result", "executerecord", "/raw_result")?;
+        convert_result_ticks(&mut raw_result, false)?;
         if raw_result
             .get("reconciliation")
             .is_some_and(|value| !value.is_null())
@@ -808,7 +896,8 @@ fn verify_conversion(connection: &Connection) -> Result<()> {
                 "Conversion mismatch executerecord id={id} path=/raw_input"
             )));
         }
-        let expected = parse(&record, "raw_result", "executerecord", "/raw_result")?;
+        let mut expected = parse(&record, "raw_result", "executerecord", "/raw_result")?;
+        convert_result_ticks(&mut expected, false)?;
         if let Some(input) = expected.get("inputs").filter(|input| input.is_object()) {
             if !encode::py_eq(
                 &encode::canonical_input(input).map_err(error)?,
@@ -914,6 +1003,10 @@ pub(super) fn upgrade(connection: &Connection) -> Result<()> {
     guards::install_business(connection)
 }
 pub(super) fn preflight_downgrade(connection: &Connection) -> Result<()> {
+    if !rows(connection, "SELECT record_id FROM execution_symbol_tick WHERE json_array_length(bids)>5 OR json_array_length(asks)>5 LIMIT 1", [])?.is_empty() {
+        return Err(error("Cannot downgrade 0034: market depth exceeds five levels"));
+    }
+
     if !rows(
         connection,
         "SELECT id FROM executerecord WHERE result_staged=1 LIMIT 1",
@@ -938,7 +1031,8 @@ fn restore_records(connection: &Connection) -> Result<()> {
             .map(|id| load_input(connection, id))
             .transpose()?
             .unwrap_or(Value::Null);
-        let result = reconstruct_result(connection, &record)?;
+        let mut result = reconstruct_result(connection, &record)?;
+        convert_result_ticks(&mut result, true)?;
         update_json(
             connection,
             "executerecord",

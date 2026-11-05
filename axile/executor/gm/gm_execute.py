@@ -42,10 +42,12 @@ from loguru import logger
 from axile.channels.gm_sessions import SHANGHAI, check_gm_operation, gm_phase
 from axile.common.gm_symbols import GM_SYMBOL_RESOLVER, normalize_gm_standard_input
 from axile.common.trade_channel import TradeChannel
+from axile.executor import replay as recording
 from axile.executor.abstract_executor.base import AbstractExecutor
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.connection_state import connection_monitor, preserve_connection_failure
 from axile.executor.constants.order_status import OrderStatus
+from axile.executor.gm import replay
 from axile.executor.gm.common import (
     convert_gm_order_to_unified,
     convert_gm_trade_to_trade_record,
@@ -54,7 +56,7 @@ from axile.executor.gm.common import (
 from axile.executor.gm.connection import report_gm_failure
 from axile.executor.gm.core.api_bridge import GMSdkOperation
 from axile.executor.gm.core.callback_dispatcher import GMCallbackDispatcher
-from axile.executor.gm.core.strategy_bridge import GMStrategyBridge
+from axile.executor.gm.core.strategy_bridge import GMStrategyBridge, replay_bridge_call
 from axile.executor.models.execution_result import TargetSizingDecision, TargetSizingStatus
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_callback import (
@@ -152,6 +154,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
 
         # 回调组件
         self._callback_dispatcher = GMCallbackDispatcher()
+        self._callback_dispatcher._replay_owner = self
         self._strategy_bridge: GMStrategyBridge | None = None
         self._callback_monitoring = False
         self._connection_lock = threading.RLock()
@@ -260,8 +263,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
 
         Notes
         -----
-        由于 GM SDK 的限制，后台线程中的 ``subscribe tick`` 无法稳定工作。
-        订单状态和成交回报回调可以正常使用；如需实时行情，请改用 ``get_market_data()`` 获取快照。
+        行情订阅的实际推送覆盖以收到的数据为准；``get_market_data()`` 仍可主动查询快照。
         """
         try:
             self._ensure_strategy_bridge(timeout=timeout, subscribe_symbols=subscribe_symbols)
@@ -302,6 +304,11 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
 
     def stop_callback_monitoring(self) -> None:
         """停止回调监控."""
+        recording.observe_receipt(
+            recording.capture_receipt(self),
+            "/connection",
+            {"source": "gm.stop", "connected": False, "available": False, "synchronized": False},
+        )
         if self._strategy_bridge:
             self._strategy_bridge.stop()
             self._strategy_bridge = None
@@ -369,6 +376,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             subscribe_symbols=gm_symbols,
         )
         bridge.connection_monitor = connection_monitor(self)
+        bridge._replay_owner = self
         self._strategy_bridge = bridge
         if not bridge.start(timeout=timeout):
             error = RuntimeError("GM bridge 启动失败")
@@ -382,6 +390,108 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         return self._strategy_bridge
 
     def _call_bridge(self, operation: GMSdkOperation, *, timeout: float = 30.0, **kwargs: Any) -> Any:
+        """固定原录制身份，观察正常 SDK 请求；不增发查询。"""
+        if operation in {"get_orders", "get_unfinished_orders"} and kwargs.get("account_id") is None:
+            kwargs["account_id"] = self.account_id
+        action = operation in {"order_volume", "order_cancel"}
+        receipt = recording.capture_command_receipt(self) if action else recording.capture_receipt(self)
+        command_id = recording.current_command_id()
+        token = self._begin_replay_query(operation, kwargs)
+        try:
+            with replay_bridge_call(self, receipt, command_id):
+                result = self._call_bridge_impl(operation, timeout=timeout, **kwargs)
+            try:
+                self._observe_bridge_result(operation, result, receipt, token)
+            except Exception:  # noqa: BLE001 - 旁路观察失败不得覆盖 SDK 返回值
+                recording.observe_receipt(
+                    receipt,
+                    "/connection",
+                    {"source": "gm.replay", "available": False, "reason": "normalization_failed"},
+                )
+            return result
+        finally:
+            recording.finish_query(self, token)
+
+    def _begin_replay_query(self, operation: str, kwargs: dict[str, Any]) -> dict[str, object] | None:
+        """单笔响应只证明该品种，集合查询才覆盖账户全范围。"""
+        if operation in {"get_orders", "get_unfinished_orders"}:
+            return recording.begin_query(self, [])
+        if operation != "order_volume" or not recording.replay_enabled(self):
+            return None
+        try:
+            symbol = GM_SYMBOL_RESOLVER.to_axile(kwargs["symbol"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return recording.begin_query(self, [symbol])
+
+    def _observe_bridge_result(
+        self, operation: str, result: Any, receipt: recording.ReplayReceipt | None, token: dict[str, object] | None
+    ) -> None:
+        """在业务转换前交付源观察，查询凭据只证明真实请求起点。"""
+        if receipt is None:
+            return
+        source = f"gm.{operation}"
+        if operation in {"get_orders", "get_unfinished_orders"} and isinstance(result, list):
+            replay.capture(
+                self,
+                "/order_set",
+                lambda: replay.order_set(result, token=token, synchronized=self._verify_connection()),
+                receipt=receipt,
+            )
+        elif operation == "get_position" and isinstance(result, list):
+            replay.capture(
+                self,
+                "/account_observation",
+                lambda: replay.account_observation(None, result, source=source),
+                receipt=receipt,
+            )
+        elif operation == "get_cash":
+            replay.capture(
+                self,
+                "/account_observation",
+                lambda: replay.account_observation(result, None, source=source),
+                receipt=receipt,
+            )
+        elif operation in {"current", "get_execution_reports", "order_volume"} and isinstance(result, list):
+            self._observe_bridge_rows(operation, result, source, receipt, token)
+
+    def _observe_bridge_rows(
+        self,
+        operation: str,
+        rows: list[Any],
+        source: str,
+        receipt: recording.ReplayReceipt,
+        token: dict[str, object] | None,
+    ) -> None:
+        """同一响应的各行沿用入口身份，不重新取样当前观察者。"""
+        for row in rows:
+            if operation == "current":
+                symbol = row.get("symbol") if isinstance(row, dict) else getattr(row, "symbol", None)
+                if symbol:
+                    replay.capture(
+                        self,
+                        f"/quote/{GM_SYMBOL_RESOLVER.to_axile(symbol)}",
+                        lambda: replay.quote(row, source=source),
+                        receipt=receipt,
+                    )
+            elif operation == "get_execution_reports":
+                replay.capture(self, "/trade", lambda: replay.trade(self, row, source=source), receipt=receipt)
+            else:
+                replay.capture(
+                    self,
+                    "/order",
+                    lambda: {
+                        **replay.order(row, source=source),
+                        "query_basis": token.get("query_basis") if token else None,
+                    },
+                    receipt=receipt,
+                )
+
+    def replay_context_metadata(self) -> dict[str, str]:
+        """连接方式不证明实盘或模拟，历史环境保留未知。"""
+        return {"environment": "unknown"}
+
+    def _call_bridge_impl(self, operation: GMSdkOperation, *, timeout: float = 30.0, **kwargs: Any) -> Any:
         """统一通过当前执行器持有的 bridge 调用 GM SDK."""
         if getattr(self, "_gm_config", None) is None:
             raise RuntimeError("GMExecutor 尚未初始化连接配置，无法调用 GM bridge")

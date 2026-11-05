@@ -323,7 +323,10 @@ impl Registry {
         let identity = match file_identity(&database) {
             Ok(identity) => identity,
             Err(error) => {
-                registry.lock()?.idle.retain(|session| session.database != database);
+                registry
+                    .lock()?
+                    .idle
+                    .retain(|session| session.database != database);
                 return Err(AnalysisError::caused_by("DATABASE_OPEN", error));
             }
         };

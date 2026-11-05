@@ -2,7 +2,16 @@
 
 from typing import Annotated, Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, computed_field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StrictBool,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
 from axile.channels.gm_sessions import GMSessionSettings
 from axile.channels.schedule_settings import (
@@ -77,6 +86,7 @@ class AccountBase(BaseModel):
     write_empty_record: Optional[int] = Field(
         default=None, description="是否写入空订单的执行记录, 0/1 或 null 表示不写入,只有设置1才写入, 默认不写入"
     )
+    replay_recording_enabled: StrictBool = Field(default=False, description="是否录制已有连接上的执行回放")
     execution_timeout: int = Field(
         default=DEFAULT_EXECUTION_TIMEOUT_SECONDS,
         ge=1,
@@ -136,6 +146,17 @@ class AccountSnapshot(AccountBase):
     copied_from_account_name: str | None = None
     updated_at: str = Field(default_factory=now_str)
     created_at: str = Field(default_factory=now_str)
+    replay_config_version: int = Field(default=0, ge=0, strict=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _replay_configuration_version(cls, value: Any) -> Any:
+        """从同步状态提取录制配置版本，供 worker 拒绝旧更新。"""
+        if isinstance(value, dict) and "replay_config_version" not in value:
+            sync = value.get("runtime_sync")
+            revision = sync.get("revision", 0) if isinstance(sync, dict) else getattr(sync, "revision", 0)
+            return {**value, "replay_config_version": revision}
+        return value
 
 
 class Account(AccountSnapshot):
@@ -207,6 +228,7 @@ class AccountPublic(Model):
     execution_notification_code: str | None = None
     portfolio_id: Optional[int] = None
     write_empty_record: Optional[int] = None
+    replay_recording_enabled: StrictBool = False
     execution_timeout: int
     updated_at: str
     created_at: str
@@ -408,6 +430,7 @@ class AccountUpdate(Model):
     execution_notification_code: str | None = None
     portfolio_id: Optional[int] = None
     write_empty_record: Optional[int] = None
+    replay_recording_enabled: StrictBool = False
     execution_timeout: Optional[int] = Field(default=None, ge=1, le=_MAX_EXECUTION_TIMEOUT)
 
     _check_weight_precision = field_validator("weight_precision")(_validate_weight_precision)

@@ -380,7 +380,7 @@ pub(crate) fn decode(row: &Row<'_>, table: &str) -> Result<Object, String> {
                     "execution_symbol_conversion" | "business_trade_conversion",
                     "reference"
                 )
-                | ("execution_symbol_tick", "extra")
+                | ("execution_symbol_tick", "extra" | "bids" | "asks")
                 | (
                     "business_asset_snapshot",
                     "payload_value" | "positions_value" | "extra"
@@ -911,6 +911,7 @@ fn find<'a>(rows: &'a Rows, key: &str, value: &str) -> Result<Option<&'a Object>
     }
     Ok(found)
 }
+
 fn symbols(conn: &Connection, id: &Value, result: &mut Object) -> Result<(), String> {
     let collections = load(conn, "execution_symbol_collection", "record_id", id)?;
     let results = load(conn, "execution_symbol_result", "record_id", id)?;
@@ -933,14 +934,12 @@ fn symbols(conn: &Connection, id: &Value, result: &mut Object) -> Result<(), Str
             }
         }
     }
-    let mut tick_names = vec!["symbol".to_string(), "last_price".into()];
-    for side in ["bid", "ask"] {
-        for field in ["price", "volume"] {
-            for suffix in ["", "_2", "_3", "_4", "_5"] {
-                tick_names.push(format!("{side}_{field}{suffix}"));
-            }
-        }
-    }
+    let mut tick_names = vec![
+        "symbol".to_string(),
+        "last_price".into(),
+        "bids".into(),
+        "asks".into(),
+    ];
     tick_names.extend(
         [
             "volume",
@@ -987,16 +986,18 @@ fn symbols(conn: &Connection, id: &Value, result: &mut Object) -> Result<(), Str
                 if child != pointer(&path, key) {
                     return Err(invalid("invalid symbol occurrence"));
                 }
-                let mut item = node(
-                    &row,
-                    if name == "symbol_results" {
-                        SYMBOL
-                    } else if name == "first_ticks" {
-                        &tick_refs
-                    } else {
-                        &["value"]
-                    },
-                )?;
+                let mut item = if name == "first_ticks" {
+                    node(&row, &tick_refs)?
+                } else {
+                    node(
+                        &row,
+                        if name == "symbol_results" {
+                            SYMBOL
+                        } else {
+                            &["value"]
+                        },
+                    )?
+                };
                 if name == "symbol_results" {
                     if let Some(view) = item.as_object_mut() {
                         availability(view, &row, &["target_volume", "final_volume"])?;

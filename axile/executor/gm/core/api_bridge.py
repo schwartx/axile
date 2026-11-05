@@ -9,9 +9,7 @@ from gm.api import (
     current,
     get_cash,  # pyright: ignore[reportUnknownVariableType, reportAttributeAccessIssue]
     get_execution_reports,
-    get_orders,
     get_position,  # pyright: ignore[reportUnknownVariableType, reportAttributeAccessIssue]
-    get_unfinished_orders,
     order_cancel,
     order_volume,
 )
@@ -31,6 +29,50 @@ GMSdkOperation: TypeAlias = Literal[
 ]
 
 GMBridgeOperation: TypeAlias = GMSdkOperation | Literal["subscribe_symbols"]
+
+
+def _query_orders(*, unfinished: bool, account_id: str | None) -> list[dict[str, Any]]:
+    """保留 SDK 查询结果结构，但不把原生失败吞成空集合或部分集合。"""
+    from gm.api._errors import check_gm_status  # type: ignore
+    from gm.csdk.c_sdk import py_gmi_get_orders, py_gmi_get_unfinished_orders  # type: ignore
+    from gm.model import DictLikeOrder  # type: ignore
+    from gm.model.storage import context  # type: ignore
+    from gm.pb.account_pb2 import Orders  # type: ignore
+    from gm.pb.trade_pb2 import GetOrdersReq, GetUnfinishedOrdersReq  # type: ignore
+    from gm.pb_to_dict import protobuf_to_dict  # type: ignore
+
+    method = py_gmi_get_unfinished_orders if unfinished else py_gmi_get_orders
+    request_type = GetUnfinishedOrdersReq if unfinished else GetOrdersReq
+    accounts = tuple(context.accounts.values())
+    if not accounts or account_id is not None and not any(account.id == account_id for account in accounts):
+        raise RuntimeError("GM 账户查询范围无法确认，未生成完整委托集合")
+    rows = []
+    for account in accounts:
+        if account_id is not None and account.id != account_id:
+            continue
+        request = request_type()
+        request.account_id = account.id
+        status, payload = method(request.SerializeToString())
+        check_gm_status(status)
+        orders = Orders()
+        if payload:
+            orders.ParseFromString(payload)
+        for order in orders.data:
+            row = protobuf_to_dict(order, including_default_value_fields=True, dcls=DictLikeOrder)
+            row["origin_module"] = order.properties.get("origin_module")
+            row["origin_product"] = order.properties.get("origin_product")
+            rows.append(row)
+    return rows
+
+
+def get_orders(account_id: str | None = None) -> list[dict[str, Any]]:
+    """查询日内委托，任一账户查询失败时抛出原生 SDK 错误。"""
+    return _query_orders(unfinished=False, account_id=account_id)
+
+
+def get_unfinished_orders(account_id: str | None = None) -> list[dict[str, Any]]:
+    """查询未结委托，不能以失败账户缺席的集合确认撤单。"""
+    return _query_orders(unfinished=True, account_id=account_id)
 
 
 class GMApiBridge:
@@ -98,8 +140,8 @@ class GMApiBridge:
         if kwargs.get("account_id") is None:
             kwargs.pop("account_id", None)
         if operation in {"get_orders", "get_unfinished_orders", "get_execution_reports"}:
-            rows = method()
             account_id = kwargs.get("account_id")
+            rows = method(account_id=account_id) if operation != "get_execution_reports" else method()
             return rows if account_id is None else [row for row in rows if row.get("account_id") == account_id]
         if operation == "order_volume" and submission_validator is not None:
             submission_validator()

@@ -1,0 +1,10 @@
+[
+  {"name":"exchange_ahead_200ms","bids":[[99,2]],"asks":[[101,3]],"source_offset_us":200000,"validity_us":1000000,"cursor_offset_us":500000,"book_valid":true,"available":true},
+  {"name":"exchange_behind","bids":[[99,2]],"asks":[[101,3]],"source_offset_us":-200000,"validity_us":1000000,"cursor_offset_us":500000,"book_valid":true,"available":true},
+  {"name":"exact_expiry","bids":[[99,2]],"asks":[[101,3]],"source_offset_us":200000,"validity_us":1000000,"cursor_offset_us":1000000,"book_valid":true,"available":false},
+  {"name":"unknown_expiry","bids":[[99,2]],"asks":[[101,3]],"source_offset_us":null,"validity_us":null,"cursor_offset_us":1,"book_valid":true,"available":false},
+  {"name":"zero_top_quantity","bids":[[99,0]],"asks":[[101,3]],"source_offset_us":0,"validity_us":1000000,"cursor_offset_us":0,"book_valid":false,"available":true},
+  {"name":"crossed","bids":[[102,2]],"asks":[[101,3]],"source_offset_us":0,"validity_us":1000000,"cursor_offset_us":0,"book_valid":false,"available":true},
+  {"name":"unordered_depth","bids":[[98,2],[99,1]],"asks":[[101,3]],"source_offset_us":0,"validity_us":1000000,"cursor_offset_us":0,"book_valid":false,"available":true},
+  {"name":"missing_side","bids":[],"asks":[[101,3]],"source_offset_us":0,"validity_us":1000000,"cursor_offset_us":0,"book_valid":false,"available":true}
+]

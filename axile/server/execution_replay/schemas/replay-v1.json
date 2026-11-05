@@ -1,0 +1,1924 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:axile:execution-replay:v1",
+  "title": "Axile execution observation and checkpoint v1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/event"
+    },
+    {
+      "$ref": "#/$defs/checkpoint"
+    }
+  ],
+  "$defs": {
+    "safeInteger": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "nullableNumber": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "nullableString": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 8192
+    },
+    "quality": {
+      "type": "object",
+      "maxProperties": 2048,
+      "additionalProperties": {
+        "enum": [
+          "known",
+          "missing",
+          "invalid"
+        ]
+      }
+    },
+    "scope": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "symbols"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "account",
+                "symbols"
+              ]
+            },
+            "symbols": {
+              "type": "array",
+              "maxItems": 2048,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "array",
+          "maxItems": 2048,
+          "items": {
+            "type": "string",
+            "maxLength": 256
+          }
+        }
+      ]
+    },
+    "level": {
+      "type": "object",
+      "required": [
+        "price",
+        "quantity"
+      ],
+      "properties": {
+        "price": {
+          "type": "number"
+        },
+        "quantity": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "queryBasis": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "start_seq",
+        "request_revision"
+      ],
+      "properties": {
+        "start_seq": {
+          "$ref": "#/$defs/safeInteger"
+        },
+        "request_revision": {
+          "$ref": "#/$defs/safeInteger"
+        },
+        "recording_id": {
+          "type": "string"
+        },
+        "sync_generation": {
+          "$ref": "#/$defs/safeInteger"
+        }
+      },
+      "additionalProperties": false
+    },
+    "data": {
+      "type": "object",
+      "maxProperties": 2048,
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "symbol": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "symbols": {
+          "type": "array",
+          "maxItems": 2048,
+          "items": {
+            "type": "string",
+            "maxLength": 256
+          }
+        },
+        "source": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "source_seq": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "source_time_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "source_time_quality": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "source_precision": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "source_quality": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "query_started_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "query_finished_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "received_time_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Local receipt time in microseconds; exchange clock offsets do not change this observation."
+        },
+        "publish_time_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "field_quality": {
+          "$ref": "#/$defs/quality"
+        },
+        "attributes": {
+          "type": "object",
+          "maxProperties": 2048
+        },
+        "native_identity": {
+          "type": "object",
+          "maxProperties": 2048
+        },
+        "execution_id": {
+          "type": [
+            "string",
+            "integer",
+            "null"
+          ]
+        },
+        "origin": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "operation": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "command_id": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "request_id": {
+          "type": [
+            "string",
+            "integer",
+            "null"
+          ]
+        },
+        "phase": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "kind": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "reason": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "error_type": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "success": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "outcome": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "accepted": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "actual_parameters": {
+          "type": "object"
+        },
+        "requested_parameters": {
+          "type": "object"
+        },
+        "order_id": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "client_order_id": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "direction": {
+          "enum": [
+            "BUY",
+            "SELL",
+            null
+          ]
+        },
+        "position_side": {
+          "enum": [
+            "LONG",
+            "SHORT",
+            "NET",
+            null
+          ]
+        },
+        "offset": {
+          "enum": [
+            "OPEN",
+            "CLOSE",
+            "CLOSETODAY",
+            "CLOSEYESTERDAY",
+            null
+          ]
+        },
+        "order_type": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "price": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "filled_quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "remaining_quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "average_price": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "on_book": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "confirmed_book": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "order_stage": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "reduce_only": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "close_position": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "time_in_force": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "trigger_price": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "trigger_condition": {
+          "type": [
+            "object",
+            "string",
+            "null"
+          ]
+        },
+        "replacement_order_id": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "previous_order_id": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "replaced_by": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "command_phase": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "create_time_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "update_time_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "trade_key": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "identity_quality": {
+          "enum": [
+            "stable",
+            "weak",
+            "unknown"
+          ]
+        },
+        "granularity": {
+          "enum": [
+            "trade",
+            "aggregate",
+            null
+          ]
+        },
+        "aggressor": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "is_maker": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "fee": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "fee_currency": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "execution_type": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "association": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "order_identity": {
+          "type": [
+            "object",
+            "string",
+            "null"
+          ]
+        },
+        "trade_identity": {
+          "type": [
+            "object",
+            "string",
+            "null"
+          ]
+        },
+        "associated_execution_id": {
+          "type": [
+            "string",
+            "integer",
+            "null"
+          ]
+        },
+        "bids": {
+          "type": "array",
+          "maxItems": 2048,
+          "items": {
+            "$ref": "#/$defs/level"
+          }
+        },
+        "asks": {
+          "type": "array",
+          "maxItems": 2048,
+          "items": {
+            "$ref": "#/$defs/level"
+          }
+        },
+        "available_depth": {
+          "type": [
+            "integer",
+            "object",
+            "null"
+          ]
+        },
+        "depth_coverage": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "book_valid": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Structural validity of the observed book, independent of time and connection state."
+        },
+        "valid_until_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Exclusive local receipt expiry. Null means no known validity interval beyond the observation."
+        },
+        "last_price": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "last_price_kind": {
+          "enum": [
+            "trade",
+            "mid",
+            "fallback",
+            "unknown",
+            null
+          ]
+        },
+        "volume": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "volume_kind": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "turnover": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "scope_complete": {
+          "type": "boolean"
+        },
+        "sync_generation": {
+          "$ref": "#/$defs/safeInteger"
+        },
+        "synchronized": {
+          "type": "boolean"
+        },
+        "query_basis": {
+          "$ref": "#/$defs/queryBasis"
+        },
+        "orders": {
+          "type": "array",
+          "maxItems": 2048,
+          "items": {
+            "$ref": "#/$defs/orderRow"
+          }
+        },
+        "positions": {
+          "type": "array",
+          "maxItems": 2048,
+          "items": {
+            "$ref": "#/$defs/positionRow"
+          }
+        },
+        "position_basis": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "target": {},
+        "target_quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "targets": {},
+        "algorithm": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "stage": {},
+        "stage_id": {},
+        "stage_targets": {},
+        "ending_reason": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "instrument": {
+          "type": "object"
+        },
+        "streams": {
+          "type": "object"
+        },
+        "connected": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "ready": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "available": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Connection/generation availability, independent of book structure."
+        },
+        "availability": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "boundary": {},
+        "complete": {
+          "type": "boolean"
+        },
+        "start_us": {
+          "$ref": "#/$defs/safeInteger"
+        },
+        "end_us": {
+          "$ref": "#/$defs/safeInteger"
+        },
+        "details": {
+          "type": "object"
+        },
+        "environment": {},
+        "position_mode": {},
+        "delivery_method": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "delivery": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "intermediate_states": {
+          "type": [
+            "string",
+            "boolean",
+            "null"
+          ]
+        },
+        "source_event_id": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "source_times": {
+          "type": "object",
+          "maxProperties": 32,
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "trade_id": {
+          "type": [
+            "string",
+            "integer",
+            "null"
+          ]
+        },
+        "assets": {
+          "type": "object",
+          "properties": {
+            "balance": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "available_cash": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "frozen_margin": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "equity": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "margin": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "available_margin": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "unrealized_pnl": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "realized_pnl": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "currency": {
+              "$ref": "#/$defs/nullableString"
+            }
+          },
+          "additionalProperties": false
+        },
+        "return_code": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "error_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "today_quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "yesterday_quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "available_quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "frozen_quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "long_frozen": {},
+        "short_frozen": {}
+      },
+      "additionalProperties": false
+    },
+    "event": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "recording_id",
+        "capture_seq",
+        "time_us",
+        "topic",
+        "data"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "recording_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,128}$"
+        },
+        "capture_seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "time_us": {
+          "$ref": "#/$defs/safeInteger"
+        },
+        "topic": {
+          "type": "string",
+          "pattern": "^/(execution|command|order|order_set|trade|account_observation|connection|quote/[^/]+|market_trade/[^/]+)$"
+        },
+        "data": {
+          "$ref": "#/$defs/data"
+        }
+      },
+      "additionalProperties": false
+    },
+    "checkpoint": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "account_id",
+        "recording_id",
+        "context",
+        "projection"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "account_id": {
+          "$ref": "#/$defs/safeInteger"
+        },
+        "recording_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,128}$"
+        },
+        "context": {
+          "type": "object"
+        },
+        "projection": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    },
+    "orderRow": {
+      "type": "object",
+      "maxProperties": 2048,
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "symbol": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "symbols": {
+          "type": "array",
+          "maxItems": 2048,
+          "items": {
+            "type": "string",
+            "maxLength": 256
+          }
+        },
+        "source": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "source_seq": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "source_time_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "source_time_quality": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "source_precision": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "source_quality": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "query_started_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "query_finished_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "received_time_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Local receipt time in microseconds; exchange clock offsets do not change this observation."
+        },
+        "publish_time_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "field_quality": {
+          "$ref": "#/$defs/quality"
+        },
+        "attributes": {
+          "type": "object",
+          "maxProperties": 2048
+        },
+        "native_identity": {
+          "type": "object",
+          "maxProperties": 2048
+        },
+        "execution_id": {
+          "type": [
+            "string",
+            "integer",
+            "null"
+          ]
+        },
+        "origin": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "operation": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "command_id": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "request_id": {
+          "type": [
+            "string",
+            "integer",
+            "null"
+          ]
+        },
+        "phase": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "kind": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "reason": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "error_type": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "success": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "outcome": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "accepted": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "actual_parameters": {
+          "type": "object"
+        },
+        "requested_parameters": {
+          "type": "object"
+        },
+        "order_id": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "client_order_id": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "direction": {
+          "enum": [
+            "BUY",
+            "SELL",
+            null
+          ]
+        },
+        "position_side": {
+          "enum": [
+            "LONG",
+            "SHORT",
+            "NET",
+            null
+          ]
+        },
+        "offset": {
+          "enum": [
+            "OPEN",
+            "CLOSE",
+            "CLOSETODAY",
+            "CLOSEYESTERDAY",
+            null
+          ]
+        },
+        "order_type": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "price": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "filled_quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "remaining_quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "average_price": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "on_book": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "confirmed_book": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "order_stage": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "reduce_only": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "close_position": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "time_in_force": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "trigger_price": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "trigger_condition": {
+          "type": [
+            "object",
+            "string",
+            "null"
+          ]
+        },
+        "replacement_order_id": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "previous_order_id": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "replaced_by": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "command_phase": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "create_time_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "update_time_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "trade_key": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "identity_quality": {
+          "enum": [
+            "stable",
+            "weak",
+            "unknown"
+          ]
+        },
+        "granularity": {
+          "enum": [
+            "trade",
+            "aggregate",
+            null
+          ]
+        },
+        "aggressor": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "is_maker": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "fee": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "fee_currency": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "execution_type": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "association": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "order_identity": {
+          "type": [
+            "object",
+            "string",
+            "null"
+          ]
+        },
+        "trade_identity": {
+          "type": [
+            "object",
+            "string",
+            "null"
+          ]
+        },
+        "associated_execution_id": {
+          "type": [
+            "string",
+            "integer",
+            "null"
+          ]
+        },
+        "bids": {
+          "type": "array",
+          "maxItems": 2048,
+          "items": {
+            "$ref": "#/$defs/level"
+          }
+        },
+        "asks": {
+          "type": "array",
+          "maxItems": 2048,
+          "items": {
+            "$ref": "#/$defs/level"
+          }
+        },
+        "available_depth": {
+          "type": [
+            "integer",
+            "object",
+            "null"
+          ]
+        },
+        "depth_coverage": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "book_valid": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Structural validity of the observed book, independent of time and connection state."
+        },
+        "valid_until_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Exclusive local receipt expiry. Null means no known validity interval beyond the observation."
+        },
+        "last_price": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "last_price_kind": {
+          "enum": [
+            "trade",
+            "mid",
+            "fallback",
+            "unknown",
+            null
+          ]
+        },
+        "volume": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "volume_kind": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "turnover": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "scope_complete": {
+          "type": "boolean"
+        },
+        "sync_generation": {
+          "$ref": "#/$defs/safeInteger"
+        },
+        "synchronized": {
+          "type": "boolean"
+        },
+        "query_basis": {
+          "$ref": "#/$defs/queryBasis"
+        },
+        "position_basis": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "target": {},
+        "target_quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "targets": {},
+        "algorithm": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "stage": {},
+        "stage_id": {},
+        "stage_targets": {},
+        "ending_reason": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "instrument": {
+          "type": "object"
+        },
+        "streams": {
+          "type": "object"
+        },
+        "connected": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "ready": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "available": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Connection/generation availability, independent of book structure."
+        },
+        "availability": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "boundary": {},
+        "complete": {
+          "type": "boolean"
+        },
+        "start_us": {
+          "$ref": "#/$defs/safeInteger"
+        },
+        "end_us": {
+          "$ref": "#/$defs/safeInteger"
+        },
+        "details": {
+          "type": "object"
+        },
+        "environment": {},
+        "position_mode": {},
+        "delivery_method": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "delivery": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "intermediate_states": {
+          "type": [
+            "string",
+            "boolean",
+            "null"
+          ]
+        },
+        "source_event_id": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "source_times": {
+          "type": "object",
+          "maxProperties": 32,
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "trade_id": {
+          "type": [
+            "string",
+            "integer",
+            "null"
+          ]
+        },
+        "assets": {
+          "type": "object",
+          "properties": {
+            "balance": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "available_cash": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "frozen_margin": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "equity": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "margin": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "available_margin": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "unrealized_pnl": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "realized_pnl": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "currency": {
+              "$ref": "#/$defs/nullableString"
+            }
+          },
+          "additionalProperties": false
+        },
+        "return_code": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "error_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "today_quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "yesterday_quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "available_quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "frozen_quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "long_frozen": {},
+        "short_frozen": {}
+      },
+      "additionalProperties": false
+    },
+    "positionRow": {
+      "type": "object",
+      "maxProperties": 2048,
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "symbol": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "symbols": {
+          "type": "array",
+          "maxItems": 2048,
+          "items": {
+            "type": "string",
+            "maxLength": 256
+          }
+        },
+        "source": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "source_seq": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "source_time_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "source_time_quality": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "source_precision": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "source_quality": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "query_started_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "query_finished_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "received_time_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Local receipt time in microseconds; exchange clock offsets do not change this observation."
+        },
+        "publish_time_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "field_quality": {
+          "$ref": "#/$defs/quality"
+        },
+        "attributes": {
+          "type": "object",
+          "maxProperties": 2048
+        },
+        "native_identity": {
+          "type": "object",
+          "maxProperties": 2048
+        },
+        "execution_id": {
+          "type": [
+            "string",
+            "integer",
+            "null"
+          ]
+        },
+        "origin": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "operation": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "command_id": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "request_id": {
+          "type": [
+            "string",
+            "integer",
+            "null"
+          ]
+        },
+        "phase": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "kind": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "reason": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "error_type": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "success": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "outcome": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "accepted": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "actual_parameters": {
+          "type": "object"
+        },
+        "requested_parameters": {
+          "type": "object"
+        },
+        "order_id": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "client_order_id": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "direction": {
+          "enum": [
+            "BUY",
+            "SELL",
+            null
+          ]
+        },
+        "position_side": {
+          "enum": [
+            "LONG",
+            "SHORT",
+            "NET",
+            null
+          ]
+        },
+        "offset": {
+          "enum": [
+            "OPEN",
+            "CLOSE",
+            "CLOSETODAY",
+            "CLOSEYESTERDAY",
+            null
+          ]
+        },
+        "order_type": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "price": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "filled_quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "remaining_quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "average_price": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "on_book": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "confirmed_book": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "order_stage": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "reduce_only": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "close_position": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "time_in_force": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "trigger_price": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "trigger_condition": {
+          "type": [
+            "object",
+            "string",
+            "null"
+          ]
+        },
+        "replacement_order_id": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "previous_order_id": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "replaced_by": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "command_phase": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "create_time_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "update_time_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "trade_key": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "identity_quality": {
+          "enum": [
+            "stable",
+            "weak",
+            "unknown"
+          ]
+        },
+        "granularity": {
+          "enum": [
+            "trade",
+            "aggregate",
+            null
+          ]
+        },
+        "aggressor": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "is_maker": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "fee": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "fee_currency": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "execution_type": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "association": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "order_identity": {
+          "type": [
+            "object",
+            "string",
+            "null"
+          ]
+        },
+        "trade_identity": {
+          "type": [
+            "object",
+            "string",
+            "null"
+          ]
+        },
+        "associated_execution_id": {
+          "type": [
+            "string",
+            "integer",
+            "null"
+          ]
+        },
+        "bids": {
+          "type": "array",
+          "maxItems": 2048,
+          "items": {
+            "$ref": "#/$defs/level"
+          }
+        },
+        "asks": {
+          "type": "array",
+          "maxItems": 2048,
+          "items": {
+            "$ref": "#/$defs/level"
+          }
+        },
+        "available_depth": {
+          "type": [
+            "integer",
+            "object",
+            "null"
+          ]
+        },
+        "depth_coverage": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "book_valid": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Structural validity of the observed book, independent of time and connection state."
+        },
+        "valid_until_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Exclusive local receipt expiry. Null means no known validity interval beyond the observation."
+        },
+        "last_price": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "last_price_kind": {
+          "enum": [
+            "trade",
+            "mid",
+            "fallback",
+            "unknown",
+            null
+          ]
+        },
+        "volume": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "volume_kind": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "turnover": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "scope_complete": {
+          "type": "boolean"
+        },
+        "sync_generation": {
+          "$ref": "#/$defs/safeInteger"
+        },
+        "synchronized": {
+          "type": "boolean"
+        },
+        "query_basis": {
+          "$ref": "#/$defs/queryBasis"
+        },
+        "position_basis": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "target": {},
+        "target_quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "targets": {},
+        "algorithm": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "stage": {},
+        "stage_id": {},
+        "stage_targets": {},
+        "ending_reason": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "instrument": {
+          "type": "object"
+        },
+        "streams": {
+          "type": "object"
+        },
+        "connected": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "ready": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "available": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Connection/generation availability, independent of book structure."
+        },
+        "availability": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "boundary": {},
+        "complete": {
+          "type": "boolean"
+        },
+        "start_us": {
+          "$ref": "#/$defs/safeInteger"
+        },
+        "end_us": {
+          "$ref": "#/$defs/safeInteger"
+        },
+        "details": {
+          "type": "object"
+        },
+        "environment": {},
+        "position_mode": {},
+        "delivery_method": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "delivery": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "intermediate_states": {
+          "type": [
+            "string",
+            "boolean",
+            "null"
+          ]
+        },
+        "source_event_id": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "source_times": {
+          "type": "object",
+          "maxProperties": 32,
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "trade_id": {
+          "type": [
+            "string",
+            "integer",
+            "null"
+          ]
+        },
+        "assets": {
+          "type": "object",
+          "properties": {
+            "balance": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "available_cash": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "frozen_margin": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "equity": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "margin": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "available_margin": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "unrealized_pnl": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "realized_pnl": {
+              "$ref": "#/$defs/nullableNumber"
+            },
+            "currency": {
+              "$ref": "#/$defs/nullableString"
+            }
+          },
+          "additionalProperties": false
+        },
+        "return_code": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "error_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "today_quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "yesterday_quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "available_quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "frozen_quantity": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "long_frozen": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "short_frozen": {
+          "$ref": "#/$defs/nullableNumber"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

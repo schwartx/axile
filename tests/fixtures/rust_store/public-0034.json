@@ -4038,141 +4038,15 @@
         "primary_key": false
       },
       {
-        "name": "bid_price",
-        "type": "FLOAT",
+        "name": "bids",
+        "type": "JSON",
         "nullable": true,
         "default": null,
         "primary_key": false
       },
       {
-        "name": "bid_price_2",
-        "type": "FLOAT",
-        "nullable": true,
-        "default": null,
-        "primary_key": false
-      },
-      {
-        "name": "bid_price_3",
-        "type": "FLOAT",
-        "nullable": true,
-        "default": null,
-        "primary_key": false
-      },
-      {
-        "name": "bid_price_4",
-        "type": "FLOAT",
-        "nullable": true,
-        "default": null,
-        "primary_key": false
-      },
-      {
-        "name": "bid_price_5",
-        "type": "FLOAT",
-        "nullable": true,
-        "default": null,
-        "primary_key": false
-      },
-      {
-        "name": "bid_volume",
-        "type": "FLOAT",
-        "nullable": true,
-        "default": null,
-        "primary_key": false
-      },
-      {
-        "name": "bid_volume_2",
-        "type": "FLOAT",
-        "nullable": true,
-        "default": null,
-        "primary_key": false
-      },
-      {
-        "name": "bid_volume_3",
-        "type": "FLOAT",
-        "nullable": true,
-        "default": null,
-        "primary_key": false
-      },
-      {
-        "name": "bid_volume_4",
-        "type": "FLOAT",
-        "nullable": true,
-        "default": null,
-        "primary_key": false
-      },
-      {
-        "name": "bid_volume_5",
-        "type": "FLOAT",
-        "nullable": true,
-        "default": null,
-        "primary_key": false
-      },
-      {
-        "name": "ask_price",
-        "type": "FLOAT",
-        "nullable": true,
-        "default": null,
-        "primary_key": false
-      },
-      {
-        "name": "ask_price_2",
-        "type": "FLOAT",
-        "nullable": true,
-        "default": null,
-        "primary_key": false
-      },
-      {
-        "name": "ask_price_3",
-        "type": "FLOAT",
-        "nullable": true,
-        "default": null,
-        "primary_key": false
-      },
-      {
-        "name": "ask_price_4",
-        "type": "FLOAT",
-        "nullable": true,
-        "default": null,
-        "primary_key": false
-      },
-      {
-        "name": "ask_price_5",
-        "type": "FLOAT",
-        "nullable": true,
-        "default": null,
-        "primary_key": false
-      },
-      {
-        "name": "ask_volume",
-        "type": "FLOAT",
-        "nullable": true,
-        "default": null,
-        "primary_key": false
-      },
-      {
-        "name": "ask_volume_2",
-        "type": "FLOAT",
-        "nullable": true,
-        "default": null,
-        "primary_key": false
-      },
-      {
-        "name": "ask_volume_3",
-        "type": "FLOAT",
-        "nullable": true,
-        "default": null,
-        "primary_key": false
-      },
-      {
-        "name": "ask_volume_4",
-        "type": "FLOAT",
-        "nullable": true,
-        "default": null,
-        "primary_key": false
-      },
-      {
-        "name": "ask_volume_5",
-        "type": "FLOAT",
+        "name": "asks",
+        "type": "JSON",
         "nullable": true,
         "default": null,
         "primary_key": false

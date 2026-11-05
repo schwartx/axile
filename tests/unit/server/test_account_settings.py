@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from axile.server.core import db
 from axile.server.db.models import Account, AccountNotificationState, AccountSnapshot, AccountUpdate
+from axile.server.db.models.account import AccountCreate, AccountPublic
 from axile.server.execution import notification_state
 from tests.conftest import native_store_call
 from tests.sqlite_oracle import utc_time
@@ -40,6 +41,90 @@ def account_data() -> dict:
 
 def stored_account(path):
     return Account.model_validate(native_store_call(path, "account_get", {"account_id": 1}))
+
+
+def test_replay_recording_models_default_false_and_patch_preserves_omission():
+    account = Account(**account_data())
+    assert account.replay_recording_enabled is False
+    assert AccountSnapshot.model_validate(account.model_dump()).replay_recording_enabled is False
+    assert AccountPublic.model_validate(account.model_dump()).replay_recording_enabled is False
+    create_data = account_data()
+    create_data.pop("id")
+    assert AccountCreate(**create_data).replay_recording_enabled is False
+    assert AccountUpdate().model_dump(exclude_unset=True) == {}
+    assert AccountUpdate(replay_recording_enabled=False).model_dump(exclude_unset=True) == {
+        "replay_recording_enabled": False
+    }
+    assert AccountUpdate(replay_recording_enabled=True).replay_recording_enabled is True
+    assert account.replay_config_version == 0
+    snapshot = AccountSnapshot.model_validate(account_data() | {"runtime_sync": {"revision": 7}})
+    assert snapshot.model_dump()["replay_config_version"] == 7
+    snapshot = AccountSnapshot.model_validate(
+        account_data() | {"runtime_sync": {"revision": 7}, "replay_config_version": 8}
+    )
+    assert snapshot.replay_config_version == 8
+    assert "replay_config_version" not in AccountPublic.model_fields
+    assert "replay_config_version" not in AccountCreate.model_fields
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "true", "false"])
+def test_replay_recording_models_reject_non_boolean(value):
+    account = Account(**account_data()).model_dump()
+    for model in (Account, AccountSnapshot, AccountPublic):
+        with pytest.raises(ValidationError, match="replay_recording_enabled"):
+            model.model_validate(account | {"replay_recording_enabled": value})
+    with pytest.raises(ValidationError, match="replay_recording_enabled"):
+        AccountUpdate(replay_recording_enabled=value)
+
+
+def test_replay_recording_native_group_patch_and_legacy_default(native_database):
+    saved = native_store_call(
+        native_database, "account_create", {"account": account_data(), "now": "2026-09-30T10:00:00"}
+    )["account"]
+    identity = saved["id"]
+    assert saved["replay_recording_enabled"] is False
+    result = native_store_call(
+        native_database,
+        "account_update",
+        {"account_id": identity, "patch": {"replay_recording_enabled": True}, "now": "2026-09-30T10:01:00"},
+    )
+    assert result["runtime_changed"] is False
+    assert result["account"]["replay_recording_enabled"] is True
+    assert result["account"]["algorithm"] == account_data()["algorithm"]
+    with closing(sqlite3.connect(native_database)) as connection, connection:
+        assert "replay_recording_enabled" not in {row[1] for row in connection.execute("PRAGMA table_info(account)")}
+        assert connection.execute(
+            "SELECT json_extract(execution,'$.replay_recording_enabled') FROM account_settings WHERE account_id=?",
+            (identity,),
+        ).fetchone() == (1,)
+        connection.execute(
+            "UPDATE account_settings SET execution=json_remove(execution,'$.replay_recording_enabled') WHERE account_id=?",
+            (identity,),
+        )
+    assert (
+        native_store_call(native_database, "account_get", {"account_id": identity})["replay_recording_enabled"] is False
+    )
+
+
+def test_replay_recording_copy_defaults_off(native_database):
+    saved = native_store_call(
+        native_database,
+        "account_create",
+        {
+            "account": account_data() | {"is_started": False, "replay_recording_enabled": True},
+            "now": "2026-09-30T10:00:00",
+        },
+    )["account"]
+    copied = native_store_call(
+        native_database,
+        "account_copy",
+        {"account_id": saved["id"], "name": "复制账户", "now": "2026-09-30T10:01:00"},
+    )
+    assert copied["replay_recording_enabled"] is False
+    assert (
+        native_store_call(native_database, "account_get", {"account_id": saved["id"]})["replay_recording_enabled"]
+        is True
+    )
 
 
 def test_settings_persist_patch_and_snapshot_are_independent(native_database):

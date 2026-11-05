@@ -127,10 +127,8 @@ def _symbol_result(index: int, number: int, when: str, spec: DatasetSpec) -> dic
         "first_tick": {
             "symbol": symbol,
             "last_price": price,
-            "bid_price": price - 0.01,
-            "ask_price": price + 0.01,
-            "bid_volume": 100.0,
-            "ask_volume": 100.0,
+            "bids": [[price - 0.01, 100.0]],
+            "asks": [[price + 0.01, 100.0]],
             "update_time": when,
             "book_valid": True,
             "extra": {},

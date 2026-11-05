@@ -1,3 +1,4 @@
+import { ResizeHandle } from '@/components/ui/ResizeHandle'
 import { PythonCheckStatus } from '@/components/ui/PythonCheckStatus'
 import type { PythonChecks } from '@/components/ui/pythonChecks'
 import { useErrorPresentation } from '@/lib/errorPresentation'
@@ -151,49 +152,16 @@ export function PythonWorkbenchPane({
           docHref={docHref}
         />
       </div>
-      <div
-        role="separator"
-        aria-label="调整代码与问题的高度"
-        aria-orientation="horizontal"
-        aria-valuemin={0}
-        aria-valuemax={80}
-        aria-valuenow={fitProblems ? undefined : Math.round(split * 100)}
-        aria-valuetext={fitProblems ? '代码问题按内容高度展开' : undefined}
-        tabIndex={problemsOpen ? 0 : -1}
-        inert={!problemsOpen}
-        title="拖动分配代码与问题的高度 · 双击平均分配"
-        className={`group relative z-10 cursor-row-resize touch-none outline-none ${problemsOpen ? 'block' : 'invisible'}`}
-        onDoubleClick={() => persistSplit(DEFAULT_SPLIT)}
-        onPointerDown={(event) => {
-          if (!problemsOpen) return
-          event.preventDefault()
-          event.currentTarget.setPointerCapture(event.pointerId)
-          setResizingState(true)
-          setSplit(splitAt(event.clientY))
-        }}
-        onPointerMove={(event) => {
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) setSplit(splitAt(event.clientY))
-        }}
-        onPointerUp={(event) => {
-          const next = splitAt(event.clientY)
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
-          persistSplit(next)
-          setResizingState(false)
-        }}
-        onPointerCancel={() => setResizingState(false)}
-        onKeyDown={(event) => {
-          let next = fitProblems ? currentSplit() : split
-          if (event.key === 'ArrowUp') next += 0.05
-          else if (event.key === 'ArrowDown') next -= 0.05
-          else if (event.key === 'Home') next = 0
-          else if (event.key === 'End') next = 0.8
-          else return
-          event.preventDefault()
-          persistSplit(Math.min(Math.max(next, 0), 0.8))
-        }}
-      >
-        <span className="absolute inset-x-0 top-1/2 h-px bg-line transition-colors duration-130 group-hover:bg-accent group-focus:bg-accent" />
-      </div>
+      <ResizeHandle
+        aria-label="调整代码与问题的高度" orientation="horizontal"
+        value={split} min={0} max={0.8} step={-0.05}
+        aria-valuetext={fitProblems ? '代码问题按内容高度展开' : `${Math.round(split * 100)}%`}
+        disabled={!problemsOpen} title="拖动分配代码与问题的高度 · 双击恢复默认"
+        className={problemsOpen ? 'block' : 'invisible'}
+        valueAt={splitAt} keyboardValue={() => fitProblems ? currentSplit() : split}
+        onChange={setSplit} onCommit={persistSplit} onReset={() => persistSplit(DEFAULT_SPLIT)}
+        onResizeChange={setResizingState}
+      />
       <PythonRunPanel
         kind="problems"
         title="代码检查"

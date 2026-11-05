@@ -128,10 +128,8 @@ def build_fallback_tracker() -> tuple[FallbackExecutor, OrderTracker, UnifiedOrd
     tracker.latest_prices["rb2610"] = UnifiedPriceData(
         symbol="rb2610",
         last_price=100.0,
-        bid_price=99.9,
-        ask_price=100.1,
-        bid_volume=1.0,
-        ask_volume=1.0,
+        asks=[(100.1, 1.0)],
+        bids=[(99.9, 1.0)],
         volume=10.0,
         turnover=1000.0,
         timestamp=1,

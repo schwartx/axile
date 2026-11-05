@@ -7,7 +7,7 @@ test('live expansion reads fills from the derived execution detail', () => {
       symbol_results: {
         rb2610: {
           sizing: { unit_multiplier: 10 },
-          first_tick: { bid_price: 99, ask_price: 101 },
+          first_tick: { bids: [[99, 1]], asks: [[101, 1]] },
           orders: [{ order_id: 'o1', direction: 'BUY' }],
           trades: [{ trade_price: 100, trade_volume: 1, order_id: 'o1' }],
         },

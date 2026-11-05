@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from axile.common.order_param_model import OrderParamModel
 from axile.executor.connection_progress import ConnectionStepDefinition as ConnectionStepDefinition
@@ -48,6 +48,30 @@ class _FrozenDescriptorModel(BaseModel):
     """为渠道描述模型提供不可变且禁止额外字段的共同配置."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ReplayDisplayField(_FrozenDescriptorModel):
+    """描述录制时冻结的只读字段，不承载脚本或组件。"""
+
+    key: str = Field(pattern=r"^[a-z][a-z0-9_]*$", max_length=80)
+    label: str = Field(min_length=1, max_length=120)
+    kind: Literal["text", "number", "bool", "enum"] = "text"
+    group: str | None = Field(default=None, max_length=80)
+    unit: str | None = Field(default=None, max_length=40)
+    decimals: int | None = Field(default=None, ge=0, le=18)
+    values: dict[str, str] = Field(default_factory=dict, max_length=128)
+
+
+class ChannelReplayCapability(_FrozenDescriptorModel):
+    """声明渠道可交付的回放事实与允许字段；实际覆盖由录制确定。"""
+
+    supported: bool = Field(default=False, strict=True)
+    schema_version: Literal[1] = 1
+    adapter_version: str = Field(default="1", min_length=1, max_length=80)
+    streams: dict[str, dict[str, JsonValue]] = Field(default_factory=dict, max_length=8)
+    display: dict[str, list[ReplayDisplayField]] = Field(default_factory=dict, max_length=8)
+    attributes: dict[str, list[str]] = Field(default_factory=dict, max_length=16)
+    native_identity: dict[str, list[str]] = Field(default_factory=dict, max_length=16)
 
 
 class AlgorithmReference(_FrozenDescriptorModel):
@@ -388,6 +412,7 @@ class ChannelDescriptor(_FrozenDescriptorModel):
     currency: str = Field(min_length=1)
     units: ChannelUnits = Field(default_factory=ChannelUnits)
     ui: ChannelUi = Field(default_factory=ChannelUi)
+    replay: ChannelReplayCapability = Field(default_factory=ChannelReplayCapability)
     futures_close: FuturesCloseCapability | None = None
     defaults: ChannelDefaults
     leverage: ChannelLeverage

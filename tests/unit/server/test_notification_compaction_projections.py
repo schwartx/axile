@@ -37,7 +37,7 @@ def _result():
         "symbol_results": {
             "A": {
                 "status": "PARTIAL",
-                "first_tick": {"last_price": 100.0, "bid_price": 100.0, "ask_price": 100.0},
+                "first_tick": {"last_price": 100.0, "bids": [[100.0, 1]], "asks": [[100.0, 1]]},
                 "sizing": {"current_quantity": 0, "target_quantity": 3, "unit_multiplier": 10},
                 "orders": [{"order_id": "o1", "direction": "BUY", "filled_volume": 2}],
                 "trades": [

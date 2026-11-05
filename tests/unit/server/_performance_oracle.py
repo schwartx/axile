@@ -51,9 +51,9 @@ def _mark_price(raw_tick: object) -> float | None:
     last = _number(tick.get("last_price"))
     if last is not None and last > 0:
         return last
-    bid, ask = tick.get("bid_price"), tick.get("ask_price")
-    bid = _number(bid[0] if isinstance(bid, list) and bid else bid)
-    ask = _number(ask[0] if isinstance(ask, list) and ask else ask)
+    bids, asks = tick.get("bids"), tick.get("asks")
+    bid = _number(bids[0][0]) if isinstance(bids, list) and bids and isinstance(bids[0], list) and bids[0] else None
+    ask = _number(asks[0][0]) if isinstance(asks, list) and asks and isinstance(asks[0], list) and asks[0] else None
     if bid is None or ask is None or bid <= 0 or ask < bid:
         return None
     return (bid + ask) / 2

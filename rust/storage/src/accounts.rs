@@ -36,6 +36,7 @@ const EXECUTION: &[&str] = &[
     "forbidden_symbols",
     "risk_symbols",
     "write_empty_record",
+    "replay_recording_enabled",
     "execution_timeout",
 ];
 const SCHEDULE: &[&str] = &[
@@ -85,6 +86,16 @@ fn sql(error: rusqlite::Error) -> AnalysisError {
 
 fn invalid(message: impl Into<String>) -> AnalysisError {
     AnalysisError::new("ACCOUNT_INPUT", message)
+}
+
+fn validate_replay_recording(value: Option<&Value>, code: &str) -> Result<(), AnalysisError> {
+    if value.is_some_and(|value| !value.is_boolean()) {
+        return Err(AnalysisError::new(
+            code,
+            "replay_recording_enabled 必须是布尔值",
+        ));
+    }
+    Ok(())
 }
 
 fn id(request: &Value) -> Result<i64, AnalysisError> {
@@ -170,6 +181,9 @@ fn account_row(row: &Row<'_>, states: bool) -> Result<Value, AnalysisError> {
     }
     normalize_schedule(&mut data)?;
     data.insert("gm_sessions".into(), data["channel_options"]["gm"].clone());
+    data.entry("replay_recording_enabled")
+        .or_insert(json!(false));
+    validate_replay_recording(data.get("replay_recording_enabled"), "ACCOUNT_DATA")?;
     if states {
         for (offset, name, boolean, table) in [
             (
@@ -230,7 +244,20 @@ pub(crate) fn snapshot_on(
     connection: &Connection,
     account_id: i64,
 ) -> Result<Option<Value>, AnalysisError> {
-    Ok(select_accounts(connection, Some(account_id), false)?.pop())
+    let mut account = select_accounts(connection, Some(account_id), false)?.pop();
+    if let Some(account) = account.as_mut() {
+        let revision = connection
+            .query_row(
+                "SELECT revision FROM accountruntimesync WHERE account_id=?1",
+                [account_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(sql)?
+            .unwrap_or(0);
+        account["replay_config_version"] = json!(revision);
+    }
+    Ok(account)
 }
 
 pub(crate) fn load_on(
@@ -341,7 +368,13 @@ fn settings(data: &Value, fields: &[&str]) -> Value {
             .map(|name| {
                 (
                     (*name).into(),
-                    data.get(*name).cloned().unwrap_or(Value::Null),
+                    data.get(*name).cloned().unwrap_or_else(|| {
+                        if *name == "replay_recording_enabled" {
+                            json!(false)
+                        } else {
+                            Value::Null
+                        }
+                    }),
                 )
             })
             .collect(),
@@ -349,6 +382,7 @@ fn settings(data: &Value, fields: &[&str]) -> Value {
 }
 
 fn insert_on(connection: &Connection, data: &Value, now: &str) -> Result<i64, AnalysisError> {
+    validate_replay_recording(data.get("replay_recording_enabled"), "ACCOUNT_INPUT")?;
     crate::control_policy::parse_override(data["account_control_override"].clone())
         .map_err(|error| AnalysisError::caused_by("ACCOUNT_INPUT", error))?;
     ensure_portfolio_on(connection, data["portfolio_id"].as_i64())?;
@@ -445,6 +479,7 @@ fn public_account(mut account: Value, request: &Value) -> Result<Value, Analysis
         "feishu_key",
         "connection_state",
         "channel_options",
+        "replay_config_version",
     ] {
         data.remove(name);
     }
@@ -592,6 +627,7 @@ pub fn account_copy(path: &str, request: &Value) -> Result<Value, AnalysisError>
         source["copied_from_account_name"] = source["name"].clone();
         source["name"] = json!(name);
         source["is_started"] = json!(false);
+        source["replay_recording_enabled"] = json!(false);
         if source["execution_notification_code"]
             .as_str()
             .is_some_and(|code| code.trim().is_empty())
@@ -616,6 +652,7 @@ fn patch_on(
     data: &Map<String, Value>,
     now: &str,
 ) -> Result<(), AnalysisError> {
+    validate_replay_recording(data.get("replay_recording_enabled"), "ACCOUNT_INPUT")?;
     let mut columns = vec!["updated_at_us=?1".to_owned()];
     let mut arguments = vec![SqlValue::Integer(
         crate::time_us::parse(now).map_err(invalid)?,
@@ -1044,6 +1081,72 @@ mod tests {
         ))
         .is_err());
         assert_eq!(snapshot_on(&connection, id).unwrap().unwrap(), saved);
+    }
+
+    #[test]
+    fn replay_recording_is_strict_optional_execution_setting() {
+        let connection = database();
+        let id = insert_on(&connection, &account(), "2026-10-23T09:00:00").unwrap();
+        assert_eq!(
+            snapshot_on(&connection, id).unwrap().unwrap()["replay_config_version"],
+            0
+        );
+        runtime_sync::enqueue_on(&connection, id, false, None, "2026-10-23T09:00:00").unwrap();
+        assert_eq!(
+            snapshot_on(&connection, id).unwrap().unwrap()["replay_config_version"],
+            1
+        );
+        assert!(require_on(&connection, id)
+            .unwrap()
+            .get("replay_config_version")
+            .is_none());
+        assert_eq!(
+            snapshot_on(&connection, id).unwrap().unwrap()["replay_recording_enabled"],
+            false
+        );
+        patch_on(
+            &connection,
+            id,
+            json!({"replay_recording_enabled":true})
+                .as_object()
+                .unwrap(),
+            "2026-10-23T09:01:00",
+        )
+        .unwrap();
+        let saved = snapshot_on(&connection, id).unwrap().unwrap();
+        assert_eq!(saved["replay_recording_enabled"], true);
+        assert_eq!(saved["algorithm"], account()["algorithm"]);
+        connection.execute(
+            "UPDATE account_settings SET execution=json_remove(execution,'$.replay_recording_enabled') WHERE account_id=?1",
+            [id],
+        ).unwrap();
+        assert_eq!(
+            snapshot_on(&connection, id).unwrap().unwrap()["replay_recording_enabled"],
+            false
+        );
+        for value in [Value::Null, json!(1), json!("true")] {
+            let mut input = account();
+            input["replay_recording_enabled"] = value.clone();
+            assert_eq!(
+                insert_on(&connection, &input, "2026-10-23T09:02:00")
+                    .unwrap_err()
+                    .code,
+                "ACCOUNT_INPUT"
+            );
+            assert_eq!(
+                patch_on(
+                    &connection,
+                    id,
+                    json!({"replay_recording_enabled":value})
+                        .as_object()
+                        .unwrap(),
+                    "2026-10-23T09:02:00",
+                )
+                .unwrap_err()
+                .code,
+                "ACCOUNT_INPUT"
+            );
+        }
     }
 
     #[test]

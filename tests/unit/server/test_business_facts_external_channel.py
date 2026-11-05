@@ -352,10 +352,8 @@ def test_custom_sizing_ticks_and_native_price_conversion_remain_frozen(native_da
                 "first_tick": {
                     "symbol": "XAGCNY",
                     "last_price": 3210.125,
-                    "bid_price": 3209.875,
-                    "ask_price": 3210.25,
-                    "bid_volume": 0,
-                    "ask_volume": 0.125,
+                    "bids": [[3209.875, 0]],
+                    "asks": [[3210.25, 0.125]],
                     "timestamp": 1792425600123,
                     "update_time": "2026-10-20T00:00:00.123456+08:00",
                     "book_valid": False,

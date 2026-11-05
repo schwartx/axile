@@ -39,7 +39,7 @@ _RESULT = {
             "symbol": "A",
             "status": "SUCCEEDED",
             "target_volume": 2,
-            "first_tick": {"bid_price": 39.0, "ask_price": 40.0},
+            "first_tick": {"bids": [[39.0, 1]], "asks": [[40.0, 1]]},
             "sizing": {"unit_multiplier": 1},
             "orders": [{"order_id": "o1", "direction": "BUY", "volume": 2, "price": 40.0}],
             "trades": [{"trade_id": "t1", "order_id": "o1", "trade_price": 40.0, "trade_volume": 2}],

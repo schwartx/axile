@@ -26,12 +26,14 @@ from axile.channels.contracts import (
     ChannelNumberConstraints,
     ChannelPlugin,
     ChannelPortfolioPreset,
+    ChannelReplayCapability,
     ChannelSchedule,
     ChannelSessionWindow,
     ChannelUi,
     ChannelUnits,
     ConnectionProgress,
     ConnectionStepDefinition,
+    ReplayDisplayField,
 )
 from axile.channels.gm_sessions import GMSessionSettings
 from axile.channels.schedule_clock import (
@@ -50,6 +52,238 @@ from axile.executor.models.unified_input_accounts import (
     GMAccountConfig,
     TQAccountConfig,
 )
+
+
+def _ctp_replay_capability() -> ChannelReplayCapability:
+    """声明原生期货观察能力，实际档数和覆盖由录制确认。"""
+    offsets = {"0": "开仓", "1": "平仓", "2": "强平", "3": "平今", "4": "平昨", "5": "强减", "6": "本地强平"}
+    attributes = [
+        "hedge_flag",
+        "native_order_type",
+        "time_condition",
+        "volume_condition",
+        "submit_status",
+        "status_msg",
+        "native_direction",
+        "native_status",
+        "native_comb_offset_flag",
+    ]
+    identities = [
+        "trading_day",
+        "front_id",
+        "session_id",
+        "order_ref",
+        "exchange_id",
+        "order_sys_id",
+        "trade_id",
+        "request_id",
+    ]
+    return ChannelReplayCapability(
+        supported=True,
+        adapter_version="2",
+        streams={
+            kind: {
+                "availability": "partial",
+                "reason": "waiting_observation",
+                "delivery": delivery,
+                "intermediate_states": "observed_only",
+            }
+            for kind, delivery in (
+                ("depth", "callback"),
+                ("own_order", "callback"),
+                ("own_trade", "callback"),
+                ("position", "query"),
+            )
+        }
+        | {"market_trade": {"availability": "unavailable", "reason": "source_not_provided"}},
+        attributes={
+            "order": attributes,
+            "command": attributes,
+            "trade": ["native_direction", "native_offset_flag"],
+            "position": ["native_position_direction"],
+        },
+        native_identity={
+            kind: identities
+            for kind in ("quote", "order", "trade", "command", "account_observation", "order_set", "connection")
+        }
+        | {"position": ["trading_day", "exchange_id"]},
+        display={
+            "order": [
+                ReplayDisplayField(
+                    key="hedge_flag",
+                    label="投机／套保",
+                    kind="enum",
+                    values={"1": "投机", "2": "套利", "3": "套保", "5": "做市"},
+                ),
+                ReplayDisplayField(key="status_msg", label="柜台说明"),
+                ReplayDisplayField(
+                    key="native_direction", label="原生买卖方向", kind="enum", values={"0": "买", "1": "卖"}
+                ),
+                ReplayDisplayField(
+                    key="native_status",
+                    label="原生委托状态",
+                    kind="enum",
+                    values={
+                        "0": "全部成交",
+                        "1": "部分成交，在队列中",
+                        "2": "部分成交，不在队列中",
+                        "3": "未成交，在队列中",
+                        "4": "未成交，不在队列中",
+                        "5": "已撤单",
+                        "a": "未知",
+                        "b": "尚未触发",
+                        "c": "已触发",
+                    },
+                ),
+                ReplayDisplayField(
+                    key="native_comb_offset_flag",
+                    label="原生开平标志",
+                    kind="enum",
+                    values=offsets,
+                ),
+            ],
+            "trade": [
+                ReplayDisplayField(
+                    key="native_direction", label="原生买卖方向", kind="enum", values={"0": "买", "1": "卖"}
+                ),
+                ReplayDisplayField(
+                    key="native_offset_flag",
+                    label="原生开平标志",
+                    kind="enum",
+                    values=offsets,
+                ),
+            ],
+            "position": [
+                ReplayDisplayField(
+                    key="native_position_direction",
+                    label="原生持仓方向",
+                    kind="enum",
+                    values={"1": "净持仓", "2": "多头", "3": "空头"},
+                )
+            ],
+        },
+    )
+
+
+def _gm_replay_capability() -> ChannelReplayCapability:
+    """声明掘金实际回调与查询快照；不承诺连续行情或市场逐笔。"""
+    attributes = [
+        "side",
+        "status",
+        "order_type",
+        "order_style",
+        "order_business",
+        "position_effect",
+        "position_side",
+        "ord_rej_reason",
+        "ord_rej_reason_detail",
+        "order_duration",
+        "order_qualifier",
+        "stop_price",
+        "filled_amount",
+        "filled_vwap",
+        "exec_type",
+        "commission",
+        "cost",
+        "vwap",
+        "vwap_diluted",
+        "vwap_open",
+        "market_value",
+        "available",
+        "available_now",
+        "available_today",
+        "order_frozen_today",
+        "target_volume",
+        "target_value",
+        "target_percent",
+        "order_frozen",
+        "price",
+        "volume",
+    ]
+    kinds = ("quote", "order", "trade", "command", "position", "account_observation", "order_set", "connection")
+    return ChannelReplayCapability(
+        supported=True,
+        streams={
+            kind: {
+                "availability": "partial",
+                "reason": "waiting_observation",
+                "delivery": "query" if kind == "position" else "callback_and_query",
+                "intermediate_states": "observed_only",
+            }
+            for kind in ("depth", "own_order", "own_trade", "position")
+        }
+        | {"market_trade": {"availability": "unavailable", "reason": "source_not_provided"}},
+        attributes={kind: attributes for kind in kinds},
+        native_identity={kind: ["cl_ord_id", "order_id", "ex_ord_id", "exec_id"] for kind in kinds},
+        display={
+            "order": [
+                ReplayDisplayField(key="status", label="原生委托状态", kind="number"),
+                ReplayDisplayField(key="order_business", label="委托业务类型", kind="number"),
+                ReplayDisplayField(key="ord_rej_reason_detail", label="拒绝说明"),
+                ReplayDisplayField(key="filled_amount", label="已成金额", kind="number", unit="CNY"),
+                ReplayDisplayField(key="filled_vwap", label="原生成交均价", kind="number"),
+            ],
+            "position": [
+                ReplayDisplayField(key="available_now", label="当前可卖", kind="number", unit="股"),
+                ReplayDisplayField(key="available_today", label="当日可用", kind="number", unit="股"),
+                ReplayDisplayField(key="order_frozen_today", label="当日委托冻结", kind="number", unit="股"),
+                ReplayDisplayField(key="vwap", label="原生持仓均价", kind="number"),
+                ReplayDisplayField(key="vwap_diluted", label="原生摊薄成本", kind="number"),
+            ],
+            "command": [ReplayDisplayField(key="target_volume", label="目标股数", kind="number", unit="股")],
+        },
+    )
+
+
+def _tq_replay_capability() -> ChannelReplayCapability:
+    """声明天勤快照差分，不将 SDK 合并后的观察当作完整逐笔流。"""
+    identity = ["order_id", "exchange_order_id", "trade_id", "exchange_trade_id", "exchange_id", "instrument_id"]
+    return ChannelReplayCapability(
+        supported=True,
+        streams={
+            kind: {
+                "availability": "partial",
+                "reason": "waiting_observation",
+                "delivery": "snapshot_diff" if kind != "position" else "query",
+                "intermediate_states": "observed_only",
+            }
+            for kind in ("depth", "own_order", "own_trade", "position")
+        }
+        | {"market_trade": {"availability": "unavailable", "reason": "source_not_provided"}},
+        attributes={
+            "order": [
+                "native_status",
+                "last_msg",
+                "price_type",
+                "time_condition",
+                "volume_condition",
+                "is_online",
+                "is_dead",
+                "is_error",
+                "account_mode",
+            ],
+            **{kind: ["account_mode"] for kind in ("quote", "command", "trade", "position")},
+        },
+        native_identity={
+            kind: identity for kind in ("quote", "order", "trade", "command", "position", "order_set", "connection")
+        },
+        display={
+            "order": [
+                ReplayDisplayField(key="native_status", label="原生委托状态"),
+                ReplayDisplayField(key="last_msg", label="原生委托说明"),
+                ReplayDisplayField(key="price_type", label="价格条件"),
+                ReplayDisplayField(key="time_condition", label="时间条件"),
+                ReplayDisplayField(key="volume_condition", label="数量条件"),
+                ReplayDisplayField(
+                    key="account_mode",
+                    label="账户模式",
+                    kind="enum",
+                    values={"live": "实盘", "kq": "快期模拟", "sim": "本地模拟"},
+                ),
+            ],
+        },
+    )
+
 
 _LEVERAGE = ChannelLeverage(min=0, max=125, step=0.1)
 _SINGLE_MAKER = AlgorithmReference(method="SINGLE-MAKER", params={})
@@ -189,6 +423,7 @@ def _ctp_plugin() -> ChannelPlugin:
                 position_value_label="货值",
                 account_connect_lead="填写凭据后可验证账户连接；验证通过仅代表本次接入成功。",
             ),
+            replay=_ctp_replay_capability(),
             connection_steps=_CTP_STEPS,
             connection_validation=ChannelConnectionValidation(
                 notice="使用当前凭据连接柜台，查询账户并确认当日结算；不创建账户、不下单。",
@@ -285,6 +520,7 @@ def _gm_plugin() -> ChannelPlugin:
                 steps=_GM_STEPS, notice="使用当前配置建立临时会话并核对账户；不保存配置、不下单。"
             ),
             channel="gm",
+            replay=_gm_replay_capability(),
             label="掘金",
             description="通过本机终端或 RPC 服务连接掘金量化",
             icon="landmark",
@@ -395,6 +631,7 @@ def _tq_plugin() -> ChannelPlugin:
                 steps=_TQ_STEPS, notice="使用当前配置建立临时会话并核对账户；不保存配置、不下单。"
             ),
             channel="tq",
+            replay=_tq_replay_capability(),
             futures_close=close_capability(automatic=False),
             label="天勤",
             description="通过天勤连接国内期货、期权与组合市场",
