@@ -108,8 +108,39 @@ def test_manual_disconnect_is_not_a_system_alert(database):
     engine, account = database
     binding = service.begin_connection_instance(account)
     service.record_connection_observation(binding, 1, ConnectionObservation("disconnected", "now", kind="session"))
+    service.record_connection_observation(binding, 2, ConnectionObservation("error", "late", "断开后的迟到错误"))
+    service.end_connection_instance(binding, "主动断开后的请求结束", TimeoutError("late timeout"))
     with Session(engine) as session:
         assert session.exec(select(NotificationEvent)).all() == []
+
+
+@pytest.mark.parametrize("new_instance", [False, True])
+def test_explicit_reconnect_rearms_alert_after_manual_disconnect(database, new_instance):
+    from axile.server.db.models.supplement import NotificationEvent
+
+    engine, account = database
+    binding = service.begin_connection_instance(account)
+    collector = service.ConnectionCollector(binding)
+    collector.observe_session(ConnectionObservation("disconnected", "manual-stop"))
+    service.consume_connection_snapshot(collector.snapshot())
+    if new_instance:
+        binding = service.begin_connection_instance(account)
+        assert binding.manually_disconnected
+        collector = service.ConnectionCollector(binding)
+    collector.observe_session(ConnectionObservation("recovering", "reconnect"))
+    collector.observe(ConnectionObservation("ok", "access", kind="access"))
+    collector.observe_session(ConnectionObservation("ok", "ready"))
+    service.consume_connection_snapshot(collector.snapshot())
+    collector.observe(ConnectionObservation("error", "failure", "重连后的真实断线"))
+    service.consume_connection_snapshot(collector.snapshot())
+    with Session(engine) as session:
+        state = session.get(AccountConnectionState, account.id)
+        assert not state.manually_disconnected
+        assert state.status == "error"
+        events = session.exec(select(NotificationEvent)).all()
+        assert len(events) == 1
+        assert events[0].context["error"]["message"] == "重连后的真实断线"
+        assert state.last_failure["error"]["connection_event_id"] == events[0].id
 
 
 def test_changed_config_rejects_old_runtime_and_clears_error(database):
@@ -390,6 +421,7 @@ def test_recovered_history_survives_success_and_does_not_advertise_old_failure(d
 
 def test_timeout_ends_session_rejects_late_result_and_preserves_original_failure(database):
     from axile.server import connection_runtime as runtime
+    from axile.server.db.models.supplement import NotificationEvent
 
     engine, account = database
     binding = service.begin_connection_instance(account)
@@ -398,6 +430,7 @@ def test_timeout_ends_session_rejects_late_result_and_preserves_original_failure
     collector.observe_session(ConnectionObservation("connecting", "start"))
     service.consume_connection_snapshot(collector.snapshot())
     service.end_connection_instance(binding, "连接准备超时", TimeoutError("original timeout"))
+    service.end_connection_instance(binding, "重复的连接准备超时", TimeoutError("duplicate timeout"))
     collector.observe_session(ConnectionObservation("ok", "late success"))
     service.consume_connection_snapshot(collector.snapshot())
     with Session(engine) as db:
@@ -406,12 +439,17 @@ def test_timeout_ends_session_rejects_late_result_and_preserves_original_failure
         assert detail.retry_after_seconds > 0
         assert detail.last_failure.error["technical_detail"] == "original timeout"
         assert db.get(AccountConnectionState, 1).instance_id == ""
+        events = db.exec(select(NotificationEvent)).all()
+        assert len(events) == 1
+        assert events[0].context["error"]["message"] == "连接准备超时"
+        assert detail.error["connection_event_id"] == events[0].id
     newer = service.begin_connection_instance(account)
     runtime.register_session(newer, lambda: True)
-    service.end_connection_instance(binding, "late old worker exit")
+    service.end_connection_instance(binding, "late old worker timeout", TimeoutError("late timeout"))
     assert runtime.current_session(1, newer.config_key).status == "uninitialized"
     with Session(engine) as db:
         assert db.get(AccountConnectionState, 1).instance_id == newer.instance_id
+        assert len(db.exec(select(NotificationEvent)).all()) == 1
 
 
 def test_active_business_failure_does_not_change_connection(database):
