@@ -848,6 +848,111 @@ def test_drop_account_disposes_registered_worker(monkeypatch: pytest.MonkeyPatch
     assert disposed == [handle]
 
 
+@pytest.mark.parametrize(("succeeded", "saved"), [(False, True), (True, False), (True, True)])
+def test_disconnect_only_retires_the_confirmed_worker_after_releasing_request_lock(monkeypatch, succeeded, saved):
+    manager = WorkerBackendManager()
+    old, replacement = _FakeHandle(), _FakeHandle()
+    manager._workers[2] = old
+    account = build_account(id=2)
+    monkeypatch.setattr(manager, "_bind_connection_request", lambda *_: account)
+    monkeypatch.setattr(manager, "configure_catalog_account", lambda *_: None)
+    monkeypatch.setattr(manager, "_is_manually_disconnected", lambda *_: saved)
+    old.connection.recv = lambda: WorkerBackendResponse(
+        request_id=old.connection.last_request_id,
+        kind="result" if succeeded else "error",
+        error=None if succeeded else WorkerBackendErrorPayload(type="logout_failed", message="注销失败"),
+    )
+    disposed = []
+
+    def dispose(handle):
+        disposed.append(handle)
+        assert 2 not in manager._workers
+        assert handle.request_lock.acquire(blocking=False)
+        handle.request_lock.release()
+        manager._workers[2] = replacement
+        handle.process.terminate()
+
+    monkeypatch.setattr(manager, "_dispose_handle", dispose)
+    if succeeded and saved:
+        asyncio.run(manager.disconnect_account(account))
+        assert disposed == [old]
+        assert manager._workers[2] is replacement
+        assert not old.process.is_alive() and not manager._retiring_workers
+    else:
+        with pytest.raises(WorkerBackendExecutionError, match="注销失败" if not succeeded else "状态未保存"):
+            asyncio.run(manager.disconnect_account(account))
+        assert not disposed
+        assert manager._workers[2] is old and not old.retired
+    manager._workers.clear()
+    manager.close()
+
+
+def test_disconnect_keeps_recording_drain_tracked_without_terminating_worker(monkeypatch):
+    manager = WorkerBackendManager()
+    handle = _FakeHandle(join_stops=False)
+    manager._workers[2] = handle
+    account = build_account(id=2)
+    monkeypatch.setattr(manager, "_bind_connection_request", lambda *_: account)
+    monkeypatch.setattr(manager, "configure_catalog_account", lambda *_: None)
+    monkeypatch.setattr(manager, "_is_manually_disconnected", lambda *_: True)
+    handle.connection.recv = lambda: WorkerBackendResponse(
+        request_id=handle.connection.last_request_id,
+        kind="result",
+        output_payload={"replay_draining": handle.connection.sent_commands[-1] == "shutdown"},
+    )
+    try:
+        asyncio.run(manager.disconnect_account(account))
+        assert handle.connection.sent_commands == ["disconnect", "shutdown"]
+        assert not manager._workers and manager._retiring_workers[2] == [handle]
+        assert handle.process.is_alive() and not handle.process.terminate_called
+    finally:
+        handle.process.terminate()
+        manager.close()
+
+
+def test_query_waiting_on_disconnected_worker_cannot_use_or_recreate_it(monkeypatch):
+    from axile.server.execution.resident_connection import AccountConnectionUnavailable
+
+    manager = WorkerBackendManager()
+    handle = _FakeHandle()
+    manager._workers[2] = handle
+    monkeypatch.setattr(manager, "_is_manually_disconnected", lambda *_: True)
+    entered = Event()
+    get_worker = manager._get_or_create_worker
+    failures = []
+
+    def get_then_wait(*args):
+        worker = get_worker(*args)
+        entered.set()
+        return worker
+
+    def query():
+        request = WorkerBackendRequest(
+            "late", "get_account_assets", build_account(id=2).model_dump(mode="json"), None, {}
+        )
+        try:
+            manager._request_blocking(2, request, 1)
+        except Exception as exc:
+            failures.append(exc)
+
+    monkeypatch.setattr(manager, "_get_or_create_worker", get_then_wait)
+    handle.request_lock.acquire()
+    thread = Thread(target=query, daemon=True)
+    thread.start()
+    try:
+        assert entered.wait(2)
+        with manager._lock:
+            manager._retire_worker_locked(2, handle)
+    finally:
+        handle.request_lock.release()
+        thread.join(2)
+        manager.close()
+    assert not thread.is_alive()
+    assert len(failures) == 1 and isinstance(failures[0], AccountConnectionUnavailable)
+    assert handle.connection.sent_commands == ["shutdown"]
+    assert not manager._workers
+
+
 @pytest.mark.parametrize("mode", ["success", "script_error", "prepare_error"])
 def test_calculate_worker_keeps_script_and_prepare_error_channels(monkeypatch, mode):
     from axile.executor.ctp.ctp_execute import CtpSessionRecoveryRequired

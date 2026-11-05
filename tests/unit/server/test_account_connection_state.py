@@ -601,9 +601,13 @@ def test_real_process_session_reuse_disconnect_and_reconnect_without_broker(data
         await manager.get_account_assets(snapshot)
         assert manager._workers[1].process.pid == first
         assert status().last_success_at is not None
+        process = manager._workers[1].process
         await manager.disconnect_account(snapshot)
         assert status().status == "disconnected" and status().manually_disconnected
-        await manager.drop_account(1)
+        assert not status().worker_alive and not process.is_alive()
+        assert not manager._workers
+        await manager.disconnect_account(snapshot)
+        assert not manager._workers
         # 模拟服务重启：新的 worker 仍须继承数据库中保存的主动断开意愿。
         from axile.server.connection_runtime import clear_sessions
 
@@ -612,8 +616,22 @@ def test_real_process_session_reuse_disconnect_and_reconnect_without_broker(data
             await manager.get_account_assets(snapshot)
         assert not manager._workers
         assert status().status == "disconnected"
+        with pytest.raises(AccountConnectionUnavailable, match="主动断开"):
+            await manager.prepare_account(snapshot)
+        assert not manager._workers
+        # 查询可能在断开之前通过会话检查，创建入口仍须阻止这些迟到请求。
+        with monkeypatch.context() as late:
+            late.setattr(manager, "_check_read_session", lambda *_: None)
+            with pytest.raises(AccountConnectionUnavailable, match="主动断开"):
+                await manager.get_account_assets(snapshot)
+            with pytest.raises(AccountConnectionUnavailable, match="主动断开"):
+                await manager.order_command(snapshot, {"command": "query"})
+        assert not manager._workers
+        await manager.disconnect_account(snapshot)
+        assert not manager._workers
         await manager.prepare_account(snapshot, force_reconnect=True)
         assert status().status == "ready" and not status().manually_disconnected
+        assert manager._workers[1].process.pid != first
         await manager.drop_account(1)
         assert status().status == "disconnected"
 
