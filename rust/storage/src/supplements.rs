@@ -105,8 +105,14 @@ fn account_schedule(
         |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?, row.get::<_, String>(2)?)),
     ).optional().map_err(database)?;
     row.map(|(channel, portfolio, schedule)| {
-        let schedule: Value =
+        let mut schedule: Value =
             serde_json::from_str(&schedule).map_err(|error| invalid(error.to_string()))?;
+        crate::accounts::normalize_schedule(
+            schedule
+                .as_object_mut()
+                .ok_or_else(|| invalid("排程配置必须是对象"))?,
+        )?;
+        schedule["gm_sessions"] = schedule["channel_options"]["gm"].clone();
         Ok(json!({"trade_channel":channel,"portfolio_id":portfolio,"schedule":schedule}))
     })
     .transpose()
@@ -684,7 +690,8 @@ fn enqueue_execution_finished(
     } else {
         None
     };
-    let needs_result = (ran && existing.is_none()) || matches!(row["status"].as_str(), Some("SKIPPED" | "SUCCEEDED"));
+    let needs_result = (ran && existing.is_none())
+        || matches!(row["status"].as_str(), Some("SKIPPED" | "SUCCEEDED"));
     let detail = record
         .filter(|_| needs_result)
         .map(|record_id| crate::notifications::execution_detail(connection, account_id, record_id))
@@ -804,6 +811,31 @@ mod tests {
 
     fn request() -> Value {
         json!({"now":NOW,"calendar_status_by_channel":{"ctp":"available_open"}})
+    }
+
+    #[test]
+    fn schedule_storage_shape_preserves_gm_permissions_and_fingerprint() {
+        let connection = fixture();
+        let sessions = json!({"opening_locked":{"enabled":true,"time":"09:24"}});
+        let legacy = json!({"is_started":true,"cron_expr":"0 9 * * *","supplement":{"count":1,"interval_minutes":1},"gm_sessions":sessions});
+        connection
+            .execute(
+                "UPDATE account_settings SET schedule=?1 WHERE account_id=1",
+                [legacy.to_string()],
+            )
+            .unwrap();
+        let before = account_schedule(&connection, 1).unwrap().unwrap();
+        let canonical = json!({"is_started":true,"cron_expr":"0 9 * * *","supplement":{"count":1,"interval_minutes":1},"channel_options":{"gm":sessions}});
+        connection
+            .execute(
+                "UPDATE account_settings SET schedule=?1 WHERE account_id=1",
+                [canonical.to_string()],
+            )
+            .unwrap();
+        let after = account_schedule(&connection, 1).unwrap().unwrap();
+        assert_eq!(before, after);
+        assert_eq!(after["schedule"]["gm_sessions"], sessions);
+        assert_eq!(fingerprint(&before).unwrap(), fingerprint(&after).unwrap());
     }
 
     #[test]

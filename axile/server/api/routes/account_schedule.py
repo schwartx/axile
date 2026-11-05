@@ -11,14 +11,14 @@ from pydantic import AwareDatetime, BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from axile.channels import get_channel
-from axile.channels.gm_sessions import GM_SPECIAL_WINDOWS, gm_phase
+from axile.channels.gm_sessions import GM_SPECIAL_WINDOWS, GMSessionSettings, gm_phase
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.trading_calendar import SHINNY_COVERAGE_END, SHINNY_COVERAGE_START
 from axile.server._native import _core
 from axile.server.core.db import analysis_store
 from axile.server.cron import SCHEDULER_TIMEZONE, effective_triggers, is_blank_cron_expr
-from axile.server.db.models.account_settings import GMSessionSettings, SupplementSettings
+from axile.server.db.models.account_settings import SupplementSettings
 from axile.server.supplement_plan import plan_supplements
 from axile.server.trading_calendar import (
     CalendarDecisionStatus,

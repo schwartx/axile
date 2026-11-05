@@ -6,6 +6,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+pytest.importorskip("gm.api")
+from gm.api import ExecType_Trade
+
 from axile.executor.algorithms.utils.order_tracker import OrderTracker
 from axile.executor.gm.common import convert_gm_trade_to_trade_record
 from axile.executor.gm.core import gm_strategy
@@ -21,6 +24,7 @@ class _DictLikeReport(dict):
 def native_trade():
     return {
         "exec_id": None,
+        "exec_type": ExecType_Trade,
         "cl_ord_id": "gm-client-1",
         "order_id": "exchange-1",
         "symbol": "SHSE.600000",
@@ -64,19 +68,35 @@ def test_early_native_trade_callback_replays_after_canonical_order_is_added(monk
 
 
 @pytest.mark.parametrize("report_type", [_DictLikeReport, SimpleNamespace])
-@pytest.mark.parametrize("volume,price", [(None, None), (0, 0), (40, 12.3)])
-def test_callback_preserves_native_hash_raw_evidence_and_null_numeric_fallbacks(
+@pytest.mark.parametrize(
+    "volume,price",
+    [
+        (None, None),
+        (0, 0),
+        (True, 12.3),
+        (40, True),
+        ("bad", 12.3),
+        (40, float("nan")),
+        (float("inf"), 12.3),
+        (40, 12.3),
+    ],
+)
+def test_callback_and_query_filter_invalid_numbers_and_preserve_valid_evidence(
     native_trade, report_type, volume, price
 ):
     native_trade.update(volume=volume, price=price)
     original = dict(native_trade)
 
     trade = gm_strategy._convert_execrpt_to_trade(report_type(**native_trade))
-    query_trade = convert_gm_trade_to_trade_record({**native_trade, "volume": volume or 0, "price": price or 0})
+    query_trade = convert_gm_trade_to_trade_record(native_trade)
 
+    assert native_trade == original
+    if (volume, price) != (40, 12.3):
+        assert trade is query_trade is None
+        return
     assert trade.trade_id == query_trade.trade_id
-    assert trade.trade_volume == (volume or 0)
-    assert trade.trade_price == (price or 0)
+    assert trade.trade_volume == volume
+    assert trade.trade_price == price
     assert trade.symbol == "600000.SH"
     assert trade.extra["symbol"] == "SHSE.600000"
     assert trade.extra["raw_trade_data"] == (original if report_type is _DictLikeReport else {})

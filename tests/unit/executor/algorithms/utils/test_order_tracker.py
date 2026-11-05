@@ -9,10 +9,13 @@ from unittest.mock import MagicMock
 import pytest
 
 from axile.common.trade_channel import TradeChannel
+from axile.domain.execution import ExecutionReasonFamily
+from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.algorithms.utils.order_tracker import ChaseConfig, OrderTracker
 from axile.executor.algorithms.utils.outcome import summarize_outcome
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.ctp.ctp_execute import CtpSessionRecoveryRequired
+from axile.executor.market_data_validation import MarketDataUnavailableError
 from axile.executor.models.order_channel_health import OrderChannelHealth
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, UnifiedOrder
@@ -25,6 +28,63 @@ from axile.executor.order_cancellation import (
 )
 from axile.executor.termination import ExecutionTerminated
 from tests.fixtures.algorithm_fakes import ClockStub
+
+
+def test_error_priority_keeps_message_and_reason_together():
+    tracker = OrderTracker(_FakeExecutor())
+    tracker.record_exception(MarketDataUnavailableError("A", "行情过期"))
+    blocked = tracker.outcome_inputs()
+    assert blocked["blocked_reason_code"] == MarketDataUnavailableError.reason_code
+    assert blocked["blocked_reason_family"] == ExecutionReasonFamily.MARKET_RULE
+    tracker.record_exception(RuntimeError("native failure"), order_id="other")
+    result = summarize_outcome(0, 0, 1, [], [], **tracker.outcome_inputs())
+    assert result["status"] == "FAILED"
+    assert result["reason_code"] is result["reason_family"] is None
+    tracker.explicit_error = "最终持仓查询失败"
+    assert tracker.outcome_inputs()["explicit_error"] == "最终持仓查询失败"
+    tracker.explicit_error = None
+    assert tracker.outcome_inputs()["explicit_error"] == "执行失败，具体原因未确认"
+    tracker._set_order_error("other", None)
+    assert tracker.outcome_inputs() == blocked
+    tracker.explicit_blocked_error = "旧接口改写说明"
+    assert tracker.outcome_inputs()["blocked_reason_code"] is None
+    assert tracker.outcome_inputs()["blocked_reason_family"] is None
+
+
+def test_account_block_uses_existing_family_and_no_invented_code():
+    tracker = OrderTracker(_FakeExecutor())
+    tracker.record_exception(
+        AccountControlBlockedError(
+            "账户受阻", account_id=1, execution_id=None, channel=TradeChannel.GM, operation="place_order"
+        )
+    )
+    result = summarize_outcome(0, 0, 1, [], [], **tracker.outcome_inputs())
+    assert result["status"] == "BLOCKED"
+    assert result["reason_code"] is None
+    assert result["reason_family"] == ExecutionReasonFamily.ACCOUNT_STATE
+
+
+@pytest.mark.parametrize("clear_by", ["retry", "overwrite", "cancellation", "terminal"])
+def test_order_error_metadata_is_cleared_with_its_message(clear_by):
+    tracker = OrderTracker(_FakeExecutor())
+    order = _build_pending_order("first")
+    tracker.add_order(order)
+    tracker.record_exception(MarketDataUnavailableError(order.symbol, "已过期"), order_id=order.order_id)
+    tracker.record_exception(RuntimeError("other failed"), order_id="other")
+    if clear_by == "terminal":
+        tracker.on_order_update(order.model_copy(update={"status": OrderStatus.FILLED}))
+    elif clear_by == "cancellation":
+        tracker.record_cancellation_result(
+            CancellationResult(
+                orders={(order.symbol, order.order_id): OrderCancellation(CancelRequestStatus.UNKNOWN, "撤单未知")}
+            )
+        )
+    else:
+        tracker._set_order_error(order.order_id, None if clear_by == "retry" else "普通失败")
+    inputs = tracker.outcome_inputs()
+    assert inputs["error_reason_code"] is inputs["error_reason_family"] is None
+    assert order.order_id not in tracker._order_error_reasons
+    assert tracker._order_errors["other"] == "执行失败，具体原因未确认"
 
 
 class _Logger:
@@ -881,20 +941,48 @@ def test_one_order_chase_success_does_not_clear_another_failure(monkeypatch):
     assert tracker.explicit_error is None
 
 
+def test_chase_market_failure_keeps_original_order_reason_and_other_failures(monkeypatch):
+    executor = _ChaseExecutor()
+    tracker = OrderTracker(executor, chase_config=ChaseConfig(enabled=True, interval=0))
+    executor.tracker = tracker
+    order = _build_pending_order("original")
+    tracker.add_order(order, direction=OrderDirection.BUY)
+    tracker.latest_prices[order.symbol] = _wide_spread_price(order.symbol)
+    tracker.record_exception(RuntimeError("other failed"), order_id="other")
+    monkeypatch.setattr(
+        executor, "place_order", MagicMock(side_effect=MarketDataUnavailableError(order.symbol, "已过期"))
+    )
+
+    tracker._check_and_chase()
+
+    assert tracker.completed_orders[order.order_id].status == OrderStatus.CANCELED
+    assert tracker._order_error_reasons[order.order_id] == (
+        MarketDataUnavailableError.reason_code,
+        ExecutionReasonFamily.MARKET_RULE,
+    )
+    assert tracker._order_errors["other"] == "执行失败，具体原因未确认"
+    assert tracker.outcome_inputs()["error_reason_code"] is None
+    tracker._set_order_error("other", None)
+    assert tracker.outcome_inputs()["error_reason_code"] == MarketDataUnavailableError.reason_code
+
+
 def test_market_fallback_clears_only_its_own_error(monkeypatch):
     executor = _ChaseExecutor()
     tracker = OrderTracker(executor=executor)
-    tracker._set_order_error("A", "A 未恢复")
-    tracker._set_order_error("B", "B 未恢复")
+    tracker.record_exception(RuntimeError("A 未恢复"), order_id="A")
+    tracker.record_exception(MarketDataUnavailableError(executor.symbol, "B 未恢复"), order_id="B")
     monkeypatch.setattr(tracker, "_is_market_fallback_price_safe", lambda *args: True)
     tracker._submit_market_fallback_order(
         _build_pending_order("B"), {"symbol": executor.symbol, "direction": OrderDirection.BUY}
     )
-    assert tracker.explicit_error == "A 未恢复"
+    assert tracker.explicit_error == "执行失败，具体原因未确认"
+    assert "B" not in tracker._order_error_reasons
+    assert tracker.outcome_inputs()["error_reason_code"] is None
     tracker._submit_market_fallback_order(
         _build_pending_order("A"), {"symbol": executor.symbol, "direction": OrderDirection.BUY}
     )
     assert tracker.explicit_error is None
+    assert tracker._order_error_reasons == {}
 
 
 def test_market_fallback_entry_submits_only_one_batch(monkeypatch):

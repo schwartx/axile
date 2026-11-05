@@ -1,5 +1,6 @@
 """账户拆分的持久化、迁移与通知成功摘要契约。"""
 
+import json
 import sqlite3
 from contextlib import closing
 
@@ -132,7 +133,7 @@ def test_notification_result_preserves_success_and_ignores_older_results(monkeyp
 
 
 def test_gm_sessions_persist_and_roundtrip_in_public_snapshot(native_database):
-    from axile.server.db.models.account_settings import GMSessionSettings
+    from axile.channels.gm_sessions import GMSessionSettings
 
     sessions = GMSessionSettings(opening_cancelable={"enabled": True, "time": "09:15"})
     data = account_data() | {"trade_channel": "gm", "gm_sessions": sessions.model_dump()}
@@ -144,6 +145,7 @@ def test_gm_sessions_persist_and_roundtrip_in_public_snapshot(native_database):
     account_id = created["account"]["id"]
     loaded = Account.model_validate(native_store_call(native_database, "account_get", {"account_id": account_id}))
     assert loaded.gm_sessions == sessions
+    assert loaded.channel_options == {"gm": sessions.model_dump()}
     assert AccountSnapshot.model_validate(loaded.model_dump()).gm_sessions == sessions
     scheduled = native_store_call(native_database, "runtime_sync_scheduler_account", {"account_id": account_id})
     assert scheduled["gm_sessions"] == sessions.model_dump()
@@ -153,3 +155,56 @@ def test_gm_sessions_persist_and_roundtrip_in_public_snapshot(native_database):
         {"account_id": account_id, "patch": {"gm_sessions": None}, "now": "2026-09-01T09:01:00+08:00"},
     )
     assert native_store_call(native_database, "account_get", {"account_id": account_id})["gm_sessions"] is None
+
+
+def test_legacy_schedule_json_is_read_and_rewritten_as_channel_options(native_database):
+    with closing(sqlite3.connect(native_database)) as connection, connection:
+        insert_account(connection, Account(**(account_data() | {"trade_channel": "gm"})))
+        connection.execute(
+            "UPDATE account_settings SET schedule=?",
+            (json.dumps({"gm_sessions": {"opening_locked": {"enabled": True, "time": "09:24"}}}),),
+        )
+    account = stored_account(native_database)
+    assert account.gm_sessions.opening_locked.time == "09:24"
+    native_store_call(
+        native_database,
+        "account_update",
+        {"account_id": 1, "patch": {"cron_expr": "30 9 * * *"}, "now": "2026-09-30T12:00:00"},
+    )
+    with closing(sqlite3.connect(native_database)) as connection:
+        stored = json.loads(connection.execute("SELECT schedule FROM account_settings").fetchone()[0])
+    assert "gm_sessions" not in stored
+    assert stored["channel_options"]["gm"]["opening_locked"] == {"enabled": True, "time": "09:24"}
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"gm": {"unknown": True}},
+        {"gm": {"opening_locked": {"time": "09:25"}}},
+        {"gm": {"after_hours": {"enabled": True, "time": "15:05"}}},
+        {"ctp": {}},
+        {"missing-channel": {}},
+        {" GM ": {}},
+        {"GM": {}, "gm": {}},
+        None,
+        [],
+        "bad",
+        1,
+    ],
+)
+def test_snapshot_channel_options_do_not_bypass_plugin_validation(options):
+    with pytest.raises(ValidationError):
+        AccountSnapshot.model_validate(account_data() | {"channel_options": options})
+
+
+def test_snapshot_channel_options_restore_legacy_model_and_reject_conflicts():
+    snapshot = AccountSnapshot.model_validate(
+        account_data() | {"channel_options": {"gm": {"opening_locked": {"enabled": True, "time": "09:24"}}}}
+    )
+    assert snapshot.gm_sessions.opening_locked.time == "09:24"
+    assert snapshot.channel_options["gm"]["opening_locked"] == {"enabled": True, "time": "09:24"}
+    with pytest.raises(ValidationError, match="冲突"):
+        AccountSnapshot.model_validate(
+            account_data() | {"channel_options": {"gm": {}}, "gm_sessions": {"opening_locked": {"time": "09:24"}}}
+        )

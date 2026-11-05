@@ -38,7 +38,13 @@ const EXECUTION: &[&str] = &[
     "write_empty_record",
     "execution_timeout",
 ];
-const SCHEDULE: &[&str] = &["is_started", "cron_expr", "gm_sessions", "supplement"];
+const SCHEDULE: &[&str] = &[
+    "is_started",
+    "cron_expr",
+    "gm_sessions",
+    "channel_options",
+    "supplement",
+];
 const NOTIFICATION: &[&str] = &["feishu_key", "execution_notification_code"];
 const BACKTEST: &[&str] = &["backtest_weight_type", "backtest_fee_rate"];
 const GROUPS: &[(&str, &[&str])] = &[
@@ -122,6 +128,28 @@ fn object(text: &str) -> Result<Map<String, Value>, AnalysisError> {
         .ok_or_else(|| AnalysisError::new("ACCOUNT_DATA", "账户配置必须是对象"))
 }
 
+pub(crate) fn normalize_schedule(values: &mut Map<String, Value>) -> Result<(), AnalysisError> {
+    let mut options = match values.remove("channel_options") {
+        None | Some(Value::Null) => Map::new(),
+        Some(Value::Object(options)) => options,
+        Some(_) => return Err(invalid("channel_options 必须是对象")),
+    };
+    if let Some(legacy) = values.remove("gm_sessions") {
+        if legacy.is_null() {
+            options.remove("gm");
+        } else if legacy.is_object() {
+            options.insert("gm".into(), legacy);
+        } else {
+            return Err(invalid("gm_sessions 必须是对象或空值"));
+        }
+    }
+    if options.values().any(|value| !value.is_object()) {
+        return Err(invalid("渠道调度配置必须是对象"));
+    }
+    values.insert("channel_options".into(), Value::Object(options));
+    Ok(())
+}
+
 fn account_row(row: &Row<'_>, states: bool) -> Result<Value, AnalysisError> {
     let mut data = Map::new();
     for (index, name) in IDENTITY.iter().enumerate() {
@@ -140,6 +168,8 @@ fn account_row(row: &Row<'_>, states: bool) -> Result<Value, AnalysisError> {
         let group: String = row.get(IDENTITY.len() + offset).map_err(sql)?;
         data.extend(object(&group)?);
     }
+    normalize_schedule(&mut data)?;
+    data.insert("gm_sessions".into(), data["channel_options"]["gm"].clone());
     if states {
         for (offset, name, boolean, table) in [
             (
@@ -346,11 +376,17 @@ fn insert_on(connection: &Connection, data: &Value, now: &str) -> Result<i64, An
         SqlValue::Integer(account_id),
         argument(&data["account_config"]),
     ];
-    arguments.extend(
-        GROUPS
-            .iter()
-            .map(|(_, fields)| argument(&settings(data, fields))),
-    );
+    for (group, fields) in GROUPS {
+        let mut values = settings(data, fields);
+        if *group == "schedule" {
+            let values = values.as_object_mut().expect("settings object");
+            if data.get("gm_sessions").is_none() {
+                values.remove("gm_sessions");
+            }
+            normalize_schedule(values)?;
+        }
+        arguments.push(argument(&values));
+    }
     connection.execute("INSERT INTO account_settings(account_id,connection,execution,schedule,notification,backtest) VALUES(?1,?2,?3,?4,?5,?6)", params_from_iter(arguments)).map_err(sql)?;
     bind_on(connection, account_id, data["portfolio_id"].as_i64(), now)?;
     Ok(account_id)
@@ -404,7 +440,12 @@ fn public_account(mut account: Value, request: &Value) -> Result<Value, Analysis
     let connection =
         crate::connection_state::public_connection(&account, &request["live_sessions"], false)?;
     let data = account.as_object_mut().unwrap();
-    for name in ["account_config", "feishu_key", "connection_state"] {
+    for name in [
+        "account_config",
+        "feishu_key",
+        "connection_state",
+        "channel_options",
+    ] {
         data.remove(name);
     }
     if let Some(state) = data
@@ -631,7 +672,13 @@ fn patch_on(
             )
             .map_err(sql)?;
         let mut values = object(&raw)?;
+        if *group == "schedule" {
+            normalize_schedule(&mut values)?;
+        }
         values.extend(changes);
+        if *group == "schedule" {
+            normalize_schedule(&mut values)?;
+        }
         connection
             .execute(
                 &format!("UPDATE account_settings SET {group}=?1 WHERE account_id=?2"),
@@ -663,12 +710,19 @@ pub fn account_update(path: &str, request: &Value) -> Result<Value, AnalysisErro
             data.get(*name)
                 .is_some_and(|value| value != &previous[*name])
         });
-        let schedule_changed = ["cron_expr", "supplement", "gm_sessions", "trade_channel", "portfolio_id"]
-            .iter()
-            .any(|name| {
-                data.get(*name)
-                    .is_some_and(|value| value != &previous[*name])
-            });
+        let schedule_changed = [
+            "cron_expr",
+            "supplement",
+            "gm_sessions",
+            "channel_options",
+            "trade_channel",
+            "portfolio_id",
+        ]
+        .iter()
+        .any(|name| {
+            data.get(*name)
+                .is_some_and(|value| value != &previous[*name])
+        });
         if (!previous["supplement"].is_null() || previous["has_pending_supplement"] == true)
             && (schedule_changed || data.get("is_started") == Some(&json!(false)))
         {
@@ -924,6 +978,72 @@ mod tests {
             stored,
             crate::time_us::parse("2026-10-23T01:00:00.123456Z").unwrap()
         );
+    }
+
+    #[test]
+    fn schedule_options_preserve_legacy_reads_and_clear_only_gm_on_patch() {
+        let connection = database();
+        let mut input = account();
+        input["gm_sessions"] = json!({"opening_locked": {"enabled": true, "time": "09:24"}});
+        let canonical = {
+            let mut canonical = input.clone();
+            canonical.as_object_mut().unwrap().remove("gm_sessions");
+            canonical["channel_options"] = json!({"gm":input["gm_sessions"]});
+            canonical
+        };
+        let id = insert_on(&connection, &canonical, "2026-10-23T09:00:00").unwrap();
+        let stored: String = connection
+            .query_row(
+                "SELECT schedule FROM account_settings WHERE account_id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let stored: Value = serde_json::from_str(&stored).unwrap();
+        assert!(stored.get("gm_sessions").is_none());
+        assert_eq!(stored["channel_options"]["gm"], input["gm_sessions"]);
+        assert_eq!(
+            snapshot_on(&connection, id).unwrap().unwrap()["gm_sessions"],
+            input["gm_sessions"]
+        );
+        connection.execute(
+            "UPDATE account_settings SET schedule=?1 WHERE account_id=?2",
+            params![json!({"is_started":false,"cron_expr":"","gm_sessions":input["gm_sessions"],"supplement":null}).to_string(), id]
+        ).unwrap();
+        let legacy = snapshot_on(&connection, id).unwrap().unwrap();
+        assert_eq!(legacy["gm_sessions"], input["gm_sessions"]);
+        assert_eq!(legacy["channel_options"]["gm"], input["gm_sessions"]);
+        let other =
+            json!({"channel_options":{"gm":input["gm_sessions"],"external":{"enabled":true}}});
+        patch_on(
+            &connection,
+            id,
+            other.as_object().unwrap(),
+            "2026-10-23T09:01:00",
+        )
+        .unwrap();
+        patch_on(
+            &connection,
+            id,
+            json!({"gm_sessions":null}).as_object().unwrap(),
+            "2026-10-23T09:02:00",
+        )
+        .unwrap();
+        let saved = snapshot_on(&connection, id).unwrap().unwrap();
+        assert!(saved["gm_sessions"].is_null());
+        assert_eq!(
+            saved["channel_options"],
+            json!({"external":{"enabled":true}})
+        );
+        let invalid_patch = json!({"channel_options": {"gm":false}});
+        assert!(writer_scope::immediate(&connection, || patch_on(
+            &connection,
+            id,
+            invalid_patch.as_object().unwrap(),
+            "2026-10-23T09:03:00"
+        ))
+        .is_err());
+        assert_eq!(snapshot_on(&connection, id).unwrap().unwrap(), saved);
     }
 
     #[test]

@@ -7,7 +7,7 @@ import pytest
 
 pytest.importorskip("gm.api")
 
-from axile.channels.gm_sessions import SHANGHAI, gm_session_context
+from axile.channels.gm_sessions import SHANGHAI, GMSessionSettings, gm_session_context
 from axile.executor.abstract_executor import AbstractExecutor
 from axile.executor.gm.core import api_bridge
 from axile.executor.gm.core.api_bridge import GMApiBridge
@@ -15,7 +15,6 @@ from axile.executor.gm.gm_execute import GMExecutor
 from axile.executor.models.unified_input import GMAccountConfig, UnifiedStandardInput
 from axile.executor.order_cancellation import CancelNotAllowedError
 from axile.executor.termination import ExecutionTerminated
-from axile.server.db.models.account_settings import GMSessionSettings
 
 
 def test_sdk_dequeue_rechecks_clock_for_both_order_and_cancel(monkeypatch):

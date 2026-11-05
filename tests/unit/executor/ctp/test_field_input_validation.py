@@ -136,3 +136,72 @@ def test_raw_native_boundary_rejects_before_state_checks(value, name):
     with pytest.raises(CTPInputValidationError, match="合约代码格式"):
         CTPExecutor._call_trader_request(executor, name, SimpleNamespace(InstrumentID=value))
     assert executor._trader_api.mock_calls == []
+
+
+@pytest.mark.parametrize("session_id", [-978444561, -2147483648, 0, 2, 2147483647])
+def test_generated_cancel_id_preserves_signed_session_in_native_request(config, session_id):
+    from axile.executor.ctp.converters import stable_order_id
+
+    order_id = stable_order_id("20261104", 1, session_id, "8")
+    assert validate_cancel_id(order_id) == order_id
+    executor = SimpleNamespace(
+        _order_keys={
+            order_id: dict(order_ref="8", front_id=1, session_id=session_id, exchange_id="SHFE", order_sys_id="100")
+        },
+        _config=lambda: config,
+        _get_pending_orders_impl=Mock(),
+        _send_trader_request=Mock(),
+    )
+    assert CTPExecutor._cancel_order_impl(executor, "rb2612", order_id)
+    executor._send_trader_request.assert_called_once()
+    operation, method, request = executor._send_trader_request.call_args.args
+    assert (operation, method) == ("cancel_order_ctp", "ReqOrderAction")
+    assert (request.FrontID, request.SessionID, request.OrderRef) == (1, session_id, "8")
+    executor._get_pending_orders_impl.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "20261104:1:--2:8",
+        "20261104:1:+2:8",
+        "20261104:1:-:8",
+        "20261104:1:2.0:8",
+        "20261104:-1:2:8",
+        "20261104:1:2:-8",
+        "20261104:1:-2:1234567890123",
+        "20261104:1:-2:8\n",
+    ],
+)
+def test_invalid_signed_cancel_id_never_reaches_lookup_or_send(value):
+    test_cancel_rejected_before_lookup_or_query(value)
+
+
+def test_manual_cancel_accepts_negative_session_before_worker_dispatch(monkeypatch):
+    import asyncio
+
+    from axile.common.trade_channel import TradeChannel
+    from axile.server import account_orders
+    from axile.server.db.models.account_order import OrderCancelRequest
+
+    state = Mock(side_effect=RuntimeError("worker dispatch reached"))
+    monkeypatch.setattr(account_orders, "_state", state)
+    payload = OrderCancelRequest(request_id="offline", order_id="20261104:1:-978444561:8", symbol="rb2612")
+    account = SimpleNamespace(trade_channel=TradeChannel.CTP)
+    with pytest.raises(RuntimeError, match="worker dispatch reached"):
+        asyncio.run(account_orders.cancel_account_order(account, payload))
+    state.assert_called_once_with(account)
+
+
+def test_cancel_all_preserves_local_validation_reason():
+    from tests.unit.executor.test_base_executor_account_control_wrappers import (
+        _build_guard,
+        _make_pending_order,
+        _WrapperExecutor,
+    )
+
+    executor = _WrapperExecutor(_build_guard({}))
+    executor.pending_orders = [_make_pending_order("rb2612", "invalid-id")]
+    executor.cancel_results = {"invalid-id": CTPInputValidationError("订单编号格式不正确")}
+    with pytest.raises(RuntimeError, match="invalid-id.*CTP 参数无效.*订单编号格式不正确"):
+        executor.cancel_all_orders()

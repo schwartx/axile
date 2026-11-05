@@ -21,8 +21,7 @@ from tests.fixtures.algorithm_fakes import build_fallback_tracker as _build_trac
 
 
 def test_gm_auction_keeps_algorithm_parameters_and_wait_budget(monkeypatch):
-    from axile.channels.gm_sessions import SHANGHAI, gm_session_context
-    from axile.server.db.models.account_settings import GMSessionSettings
+    from axile.channels.gm_sessions import SHANGHAI, GMSessionSettings, gm_session_context
 
     now = datetime(2026, 9, 1, 9, 20, tzinfo=SHANGHAI)
     executor = _SingleMakerExecutor()
@@ -772,45 +771,12 @@ def test_single_maker_market_order_on_invalid_book(
     assert captured["price"] == 0.0
 
 
-def test_single_maker_active_price_on_invalid_book(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """盘口无效 + on_missing_book=active → 强制对手价（即便 price_strategy=PASSIVE）。"""
+def test_single_maker_active_blocks_invalid_book(monkeypatch: pytest.MonkeyPatch) -> None:
     tracker = MagicMock()
-    tracker.wait_for_completion.return_value = True
-    tracker.get_all_orders.return_value = []
-    tracker.get_all_trades.return_value = []
     monkeypatch.setattr(single_maker_impl, "setup_order_tracker", lambda *_a, **_k: tracker)
     monkeypatch.setattr(single_maker_impl, "teardown_order_tracker", lambda *_a, **_k: None)
-
-    captured: dict[str, object] = {}
-
-    def _capture(
-        direction: OrderDirection,
-        market_data: UnifiedPriceData | None,
-        price_strategy: str = "PASSIVE",
-    ) -> tuple[OrderType, float]:
-        _ = (direction, market_data)
-        captured["price_strategy"] = price_strategy
-        return OrderType.LIMIT, 101.0
-
-    monkeypatch.setattr(single_maker_impl, "determine_order_price", _capture)
-    monkeypatch.setattr(
-        single_maker_impl,
-        "submit_and_track_split_orders",
-        lambda *_a, **_k: [
-            UnifiedOrder(
-                order_id="act-1",
-                symbol="rb2610",
-                direction=OrderDirection.BUY,
-                order_type=OrderType.LIMIT,
-                volume=1.0,
-                price=101.0,
-                status=OrderStatus.PENDING,
-            )
-        ],
-    )
-
+    submit = MagicMock()
+    monkeypatch.setattr(single_maker_impl, "submit_and_track_split_orders", submit)
     executor = _SingleMakerExecutor()
     monkeypatch.setattr(executor, "get_market_data", _invalid_book_tick)
     algorithm_input = AlgorithmInput(
@@ -820,12 +786,11 @@ def test_single_maker_active_price_on_invalid_book(
         params=single_maker_impl.SingleMakerParams(price_strategy="PASSIVE", on_missing_book="active"),
     )
 
-    single_maker_impl.single_maker_callback(
-        cast("ExecutorProtocol", executor),
-        algorithm_input,
-    )
+    result = single_maker_impl.single_maker_callback(cast("ExecutorProtocol", executor), algorithm_input)
 
-    assert captured["price_strategy"] == "ACTIVE"
+    submit.assert_not_called()
+    assert result.status == ExecutionStatus.BLOCKED
+    assert result.reason_code == "COMMON.MARKET_DATA.UNAVAILABLE"
 
 
 def test_single_maker_params_on_missing_book_validation() -> None:

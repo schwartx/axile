@@ -1,6 +1,6 @@
 """补发开跑前的日历判断；终态通知在原生 intent 事务内产生。"""
 
-from axile.server.db.models.account_settings import GMSessionSettings
+from axile.channels.gm_sessions import GMSessionSettings
 from axile.server.execution.supplements import calendar_context
 from axile.server.native_store import native_operation
 

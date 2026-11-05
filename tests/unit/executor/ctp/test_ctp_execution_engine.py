@@ -9,9 +9,10 @@ import pytest
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionReasonFamily
 from axile.executor.abstract_executor.base import AbstractExecutor
+from axile.executor.algorithms.utils.clock import clock_now_ms
 from axile.executor.ctp.ctp_execute import CtpExecutionEngine
 from axile.executor.models.execution_result import AlgorithmResult, ExecutionStatus, TargetSizingStatus
-from axile.executor.models.unified_account_assets import UnifiedAccountAssets
+from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_input import CTPAccountConfig, UnifiedStandardInput
 from axile.executor.models.unified_order import OrderDirection, OrderStatus, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
@@ -23,6 +24,7 @@ class _CtpSessionExecutor(AbstractExecutor):
         self.market_data_requests: list[list[str]] = []
         self.websocket_requests: list[list[str]] = []
         self.cancel_all_orders_calls = 0
+        self.holdings: dict[str, float] = {}
         self.pending_orders: list[UnifiedOrder] = []
         self.cancelled_orders: list[tuple[str, str]] = []
         super().__init__(
@@ -54,7 +56,21 @@ class _CtpSessionExecutor(AbstractExecutor):
         return self.decisions[symbol]
 
     def get_account_assets(self) -> UnifiedAccountAssets:
-        return UnifiedAccountAssets(available_cash=1000, total_asset=1000, market_value=0, positions=[])
+        return UnifiedAccountAssets(
+            available_cash=1000,
+            total_asset=1000,
+            market_value=0,
+            positions=[
+                Position(
+                    symbol=symbol,
+                    volume=volume,
+                    available_volume=volume,
+                    market_value=volume * 100,
+                    direction=PositionDirection.LONG,
+                )
+                for symbol, volume in self.holdings.items()
+            ],
+        )
 
     def get_market_data(self, symbols: list[str]) -> dict[str, UnifiedPriceData]:
         blocked = [symbol for symbol in symbols if self.decisions.get(symbol)]
@@ -71,7 +87,7 @@ class _CtpSessionExecutor(AbstractExecutor):
                 ask_volume=1,
                 volume=1,
                 turnover=100,
-                timestamp=1,
+                timestamp=clock_now_ms(),
                 update_time="2026-08-25T21:29:00",
             )
             for symbol in symbols
@@ -169,6 +185,7 @@ def test_ctp_engine_only_queries_and_dispatches_session_allowed_symbols(monkeypa
         lambda _name, _session: (
             lambda _session, algorithm_input: (
                 dispatched_symbols.append(algorithm_input.symbol)
+                or executor.holdings.update({algorithm_input.symbol: algorithm_input.target_volume})
                 or AlgorithmResult(
                     symbol=algorithm_input.symbol,
                     algorithm="SINGLE-MAKER",
@@ -185,10 +202,7 @@ def test_ctp_engine_only_queries_and_dispatches_session_allowed_symbols(monkeypa
     assert output.symbol_results["IF2609"].error is None
     assert output.symbol_results["IF2609"].outcome_reason == "非交易时段"
     assert output.symbol_results["IF2609"].reason_code == "COMMON.SESSION.CLOSED"
-    assert output.symbol_results["IF2609"].memory == {
-        "symbol_decision_reason_code": "COMMON.SESSION.CLOSED",
-        "symbol_decision_reason_family": ExecutionReasonFamily.MARKET_RULE.value,
-    }
+    assert output.symbol_results["IF2609"].reason_family == ExecutionReasonFamily.MARKET_RULE
     assert output.symbol_results["IF2609"].sizing is not None
     assert output.symbol_results["IF2609"].sizing.status is TargetSizingStatus.UNAVAILABLE
     assert executor.market_data_requests == [["ag2612"]]
@@ -203,20 +217,22 @@ def test_mixed_session_output_preserves_open_results_and_closed_targets(monkeypa
     from axile.executor.session_closed import COMMON_SESSION_CLOSED, session_closed_scope
 
     executor = _CtpSessionExecutor({"IF2609": "CTP.SESSION.CLOSED", "ag2612": None})
-    monkeypatch.setattr(
-        engine_module,
-        "resolve_algorithm",
-        lambda _name, _session: (
-            lambda _session, value: AlgorithmResult(
-                symbol=value.symbol,
-                algorithm="SINGLE-MAKER",
-                status=open_status,
-                target_volume=value.target_volume,
-                final_volume=0,
-                error="下单失败" if open_status == ExecutionStatus.FAILED else None,
-            )
-        ),
-    )
+    if open_status == ExecutionStatus.NOOP:
+        executor.holdings["ag2612"] = 2
+
+    def algorithm(_session, value):
+        if open_status != ExecutionStatus.FAILED:
+            executor.holdings[value.symbol] = value.target_volume
+        return AlgorithmResult(
+            symbol=value.symbol,
+            algorithm="SINGLE-MAKER",
+            status=open_status,
+            target_volume=value.target_volume,
+            final_volume=0,
+            error="下单失败" if open_status == ExecutionStatus.FAILED else None,
+        )
+
+    monkeypatch.setattr(engine_module, "resolve_algorithm", lambda _name, _session: algorithm)
     output = executor.execute(_input(), cleanup=False)
     assert output.symbol_results["ag2612"].status == open_status
     assert output.symbol_results["IF2609"].final_volume is None
@@ -278,7 +294,7 @@ def test_ctp_engine_sizes_closed_symbol_from_cached_quote_without_blocking_io(
             ask_volume=1,
             volume=1,
             turnover=100,
-            timestamp=1,
+            timestamp=clock_now_ms(),
             update_time="2026-08-25T11:29:00",
         )
     }
@@ -289,6 +305,7 @@ def test_ctp_engine_sizes_closed_symbol_from_cached_quote_without_blocking_io(
         lambda _name, _session: (
             lambda _session, algorithm_input: (
                 dispatched_symbols.append(algorithm_input.symbol)
+                or executor.holdings.update({algorithm_input.symbol: algorithm_input.target_volume})
                 or AlgorithmResult(
                     symbol=algorithm_input.symbol,
                     algorithm="SINGLE-MAKER",
@@ -385,10 +402,8 @@ def test_ctp_session_decision_emits_market_rule_audit() -> None:
                 algorithm="SINGLE-MAKER",
                 status=ExecutionStatus.BLOCKED,
                 error="CTP.SESSION.NO_SESSION_TABLE",
-                memory={
-                    "symbol_decision_reason_code": "CTP.SESSION.NO_SESSION_TABLE",
-                    "symbol_decision_reason_family": ExecutionReasonFamily.MARKET_RULE.value,
-                },
+                reason_code="CTP.SESSION.NO_SESSION_TABLE",
+                reason_family=ExecutionReasonFamily.MARKET_RULE,
             )
         ],
     )

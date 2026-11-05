@@ -6,13 +6,14 @@ import pytest
 
 from axile.channels.gm_sessions import (
     SHANGHAI,
+    GMSessionSettings,
+    GMSessionTime,
     check_gm_operation,
     gm_phase,
     gm_session_context,
 )
 from axile.executor.order_cancellation import CancelNotAllowedError
 from axile.server.cron import effective_triggers
-from axile.server.db.models.account_settings import GMSessionSettings
 
 
 def moment(clock: str) -> datetime:
@@ -93,7 +94,7 @@ def test_effective_triggers_merge_once_without_turning_on_empty_cron():
     [
         ("opening_cancelable", "09:19"),
         ("opening_cancelable", "09:20"),
-        ("opening_locked", "09:24"),
+        ("opening_locked", "09:19"),
         ("opening_locked", "09:25"),
         ("closing_auction", "14:59"),
         ("closing_auction", "15:00"),
@@ -105,6 +106,27 @@ def test_effective_triggers_merge_once_without_turning_on_empty_cron():
 def test_settings_reject_nonfixed_times(phase, time):
     with pytest.raises(ValueError, match="触发时间"):
         GMSessionSettings(**{phase: {"enabled": False, "time": time}})
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("minute", range(20, 25))
+def test_settings_accept_opening_locked_trigger_range(enabled, minute):
+    clock = f"09:{minute}"
+    settings = GMSessionSettings(opening_locked={"enabled": enabled, "time": clock})
+    assert settings.opening_locked.enabled is enabled
+    assert settings.opening_locked.time == clock
+
+
+@pytest.mark.parametrize(
+    ("model", "values", "field"),
+    [(GMSessionTime, {"time": "09:20"}, "time"), (GMSessionSettings, {}, "opening_locked")],
+)
+def test_settings_forbid_extra_fields_and_mutation(model, values, field):
+    with pytest.raises(ValueError, match="extra_forbidden"):
+        model(**values, unknown=True)
+    settings = model(**values)
+    with pytest.raises(ValueError, match="frozen_instance"):
+        setattr(settings, field, getattr(settings, field))
 
 
 def test_after_hours_is_unavailable_on_server_and_settings_are_gm_only():

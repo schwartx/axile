@@ -257,6 +257,21 @@ fn latest(
     Ok(views(connection, head.into_iter().collect())?.pop())
 }
 
+fn execution_target_snapshot(
+    connection: &Connection,
+    execution_id: &str,
+) -> Result<Option<Value>, AnalysisError> {
+    let stored = connection
+        .query_row(
+            &format!("SELECT {HEAD_COLUMNS} FROM target_weight_snapshot WHERE execution_id=?1"),
+            [execution_id],
+            head,
+        )
+        .optional()
+        .map_err(sql)?;
+    Ok(views(connection, stored.into_iter().collect())?.pop())
+}
+
 pub(crate) fn latest_portfolio_target_snapshot(
     connection: &Connection,
     portfolio_id: i64,
@@ -309,6 +324,10 @@ pub fn target_operation(path: &str, request: &Value) -> Result<Value, AnalysisEr
     let connection = crate::storage_connection::open_reader(Path::new(path))?;
     connection.execute_batch("BEGIN DEFERRED;").map_err(sql)?;
     match operation {
+        "execution" => Ok(
+            execution_target_snapshot(&connection, text(request, "execution_id")?)?
+                .unwrap_or(Value::Null),
+        ),
         "latest_account" => Ok(latest_account_target_snapshot(
             &connection,
             integer(request, "account_id")?,
@@ -405,6 +424,30 @@ mod tests {
                 .unwrap_or(Value::Null),
             Value::Null
         );
+    }
+
+    #[test]
+    fn execution_lookup_keeps_frozen_account_identity_and_weights() {
+        let connection = Connection::open_in_memory().unwrap();
+        schema(&connection);
+        let request = json!({"portfolio_id":7,"account_id":2,"raw_weights":{"native":0.25},
+            "normalized_weights":{"native":0.5},"source":"execution","execution_id":"frozen",
+            "calculated_at":"2026-10-23T09:00:00.000000Z"});
+        let saved = append_target_snapshot(&connection, &request).unwrap();
+        append_target_snapshot(
+            &connection,
+            &json!({"portfolio_id":8,"account_id":3,
+            "raw_weights":{},"normalized_weights":{},"source":"execution","execution_id":"other",
+            "calculated_at":"2026-10-23T10:00:00.000000Z"}),
+        )
+        .unwrap();
+        assert_eq!(
+            execution_target_snapshot(&connection, "frozen").unwrap(),
+            Some(saved)
+        );
+        assert!(execution_target_snapshot(&connection, "absent")
+            .unwrap()
+            .is_none());
     }
 
     #[test]

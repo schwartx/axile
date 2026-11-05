@@ -8,20 +8,19 @@ from typing import Any, cast
 
 from axile.common.order_param_model import OrderParamModel
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
-from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.algorithms.core.base import ExecutorProtocol
 from axile.executor.algorithms.exceptions import (
     RECOVERABLE_ALGORITHM_EXCEPTIONS,
     SubMinQuantityError,
-    execution_error_message,
     format_exception_message,
 )
 from axile.executor.algorithms.utils.clock import get_default_clock
 from axile.executor.algorithms.utils.order_tracker import ChaseConfig, OrderTracker
 from axile.executor.algorithms.utils.trading import cancel_pending_orders_via_query, determine_order_price
+from axile.executor.market_data_validation import MarketDataPurpose
 from axile.executor.models.unified_account_assets import PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, UnifiedOrder
-from axile.executor.models.unified_price import UnifiedPriceData
+from axile.executor.models.unified_price import UnifiedPriceData, clone_price_data
 from axile.executor.order_volume_limits import split_order_volumes
 from axile.executor.termination import ExecutionTerminated
 
@@ -412,6 +411,8 @@ def submit_and_track_order(
             order_type,
             volume,
             price,
+            market_data=cast("UnifiedPriceData | None", kwargs.pop("market_data", None)),
+            market_data_purpose=cast("MarketDataPurpose | None", kwargs.pop("market_data_purpose", None)),
             **kwargs,
         )
     except SubMinQuantityError as exc:
@@ -706,7 +707,8 @@ def submit_and_track_split_orders(
     deadline : float | None, default=None
         调用方提供的绝对截止时间，与外层等待共用；缺省时按时间额度计算。
     **kwargs : object
-        额外的下单参数，例如 ``trade_rule``。
+        额外的下单参数，例如 ``trade_rule``；``market_data`` 应为实际定价使用的快照，
+        整次拆单复用其冻结副本，不随追单刷新变更。
 
     Returns
     -------
@@ -724,6 +726,9 @@ def submit_and_track_split_orders(
     穿零时与 OFFSET 模型一样由 :func:`_submit_close_open_orders`
     拆成平仓腿和开仓腿，逐腿复核持仓且不超过本片额度。
     """
+    market_data = kwargs.get("market_data")
+    if isinstance(market_data, UnifiedPriceData):
+        kwargs["market_data"] = market_data.model_copy(deep=True)
     if deadline is None:
         deadline = get_default_clock().time() + leg_timeout_seconds
     model = _resolve_order_param_model(executor)
@@ -828,11 +833,8 @@ def execute_order_slice(
     片末主动撤除未成交余量，避免其在后续片间等待期间成交，破坏累计进度表的量核对。
     未成交余量由算法的后续切片按原计划补回。
     """
-    order_type, price = determine_order_price(
-        direction,
-        executor.get_market_data(),
-        price_strategy=price_strategy,
-    )
+    market_data = clone_price_data(executor.get_market_data())
+    order_type, price = determine_order_price(direction, market_data, price_strategy=price_strategy)
     detail: dict[str, Any] = {
         "direction": direction.value,
         "volume": slice_qty,
@@ -853,6 +855,7 @@ def execute_order_slice(
             current_volume=float(current_volume),
             leg_timeout_seconds=fill_wait_seconds,
             deadline=deadline,
+            market_data=market_data,
         )
         if not orders:
             detail["skipped"] = "no_order_submitted"
@@ -869,10 +872,7 @@ def execute_order_slice(
     except RECOVERABLE_ALGORITHM_EXCEPTIONS as exc:
         if getattr(exc, "requires_session_recovery", False):
             raise
-        if isinstance(exc, AccountControlBlockedError):
-            tracker.explicit_blocked_error = exc.execution_error
-        else:
-            tracker.explicit_error = execution_error_message(exc, "报单")
+        tracker.record_exception(exc, "报单")
         error_message = format_exception_message(exc)
         executor.logger.error(f"{executor.symbol} 下单失败: {error_message}")
         detail["error"] = error_message

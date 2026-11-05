@@ -142,7 +142,7 @@ def _convert_order_to_unified(order: DictLikeOrder) -> UnifiedOrder:
     return convert_gm_order_to_unified(raw)
 
 
-def _convert_execrpt_to_trade(execrpt: DictLikeExecRpt) -> TradeRecord:
+def _convert_execrpt_to_trade(execrpt: DictLikeExecRpt) -> TradeRecord | None:
     """将GM执行回报转换为统一成交记录."""
     trade_time = execrpt.created_at
     if isinstance(trade_time, datetime):
@@ -155,11 +155,14 @@ def _convert_execrpt_to_trade(execrpt: DictLikeExecRpt) -> TradeRecord:
             "order_id": getattr(execrpt, "order_id", None),
             "symbol": str(getattr(execrpt, "symbol", "") or ""),
             "created_at": str(trade_time) if trade_time else "",
-            "volume": float(getattr(execrpt, "volume", 0) or 0),
-            "price": float(getattr(execrpt, "price", 0) or 0),
+            "exec_type": getattr(execrpt, "exec_type", None),
+            "volume": getattr(execrpt, "volume", None),
+            "price": getattr(execrpt, "price", None),
             "account_id": getattr(execrpt, "account_id", None),
         }
     )
+    if trade is None:
+        return None
     trade.extra["raw_trade_data"] = dict(execrpt) if hasattr(execrpt, "__iter__") else {}  # pyright: ignore[reportUnknownArgumentType]
     return trade
 
@@ -317,6 +320,7 @@ def on_tick(_context: Context, tick: TickLikeDict2) -> None:
 
         if dispatcher:
             unified_price = _convert_tick_to_unified(tick)
+            unified_price.extra.update(source="gm.subscription", time_basis="exchange")
             dispatcher.dispatch_price_data(unified_price)
 
     except Exception as e:
@@ -373,7 +377,8 @@ def on_execution_report(_context: Context, execrpt: DictLikeExecRpt) -> None:
 
         if dispatcher:
             trade_record = _convert_execrpt_to_trade(execrpt)
-            dispatcher.dispatch_trade_record(trade_record)
+            if trade_record is not None:
+                dispatcher.dispatch_trade_record(trade_record)
 
     except Exception as e:
         _emit_runtime_log("error", f"处理成交回报出错: {e}")

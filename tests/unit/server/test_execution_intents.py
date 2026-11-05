@@ -13,12 +13,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from axile.channels.gm_sessions import SHANGHAI, gm_session_context
+from axile.channels.gm_sessions import SHANGHAI, GMSessionSettings, gm_session_context
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
 from axile.server.core import db
 from axile.server.db.models import Account
-from axile.server.db.models.account_settings import GMSessionSettings
 from axile.server.execution import intents as intents_module
 from axile.server.execution import registry as execution_registry
 from axile.server.execution.intents import (

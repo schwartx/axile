@@ -23,6 +23,7 @@ def test_native_reject_replays_only_into_matching_session(monkeypatch, callback,
         broker.quote()
         monkeypatch.setattr(executor, "_get_ctp_session_block_reason", lambda _symbol: None)
         session = ExecutionSession(executor, "ag2612")
+        session.get_market_data()
         tracker = OrderTracker(session)
         session.register_order_callback(tracker.on_order_update)
         captured = []

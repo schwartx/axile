@@ -4,6 +4,7 @@ import os
 import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -179,7 +180,8 @@ def test_unknown_quote_time_is_not_fresh(changes):
     assert quote.extra["event_time_status"] == "unknown"
     assert not quote.is_valid()
     # 调用实际新鲜度门禁，未知时间不能成为可用的新行情。
-    assert not OrderTracker._price_is_fresh(None, quote, time.time())
+    tracker = OrderTracker(SimpleNamespace(logger=Mock()))
+    assert not tracker._price_is_fresh(quote, tracker.clock.time())
 
 
 def test_order_uses_insert_date_and_keeps_trading_day_identity():
