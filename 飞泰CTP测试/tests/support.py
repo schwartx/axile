@@ -74,10 +74,8 @@ class OfflineSession:
         return UnifiedPriceData(
             symbol=self.symbol,
             last_price=3500,
-            bid_price=3499,
-            ask_price=3501,
-            bid_volume=10,
-            ask_volume=10,
+            bids=[(3499, 10)],
+            asks=[(3501, 10)],
             volume=100,
             timestamp=get_default_clock().time() * 1000,
             update_time=clock_now_iso(),
