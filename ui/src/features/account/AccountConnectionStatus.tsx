@@ -50,7 +50,7 @@ export function AccountConnectionStatus({ accountId }: { accountId: number }) {
       }}
       className={`${buttonClass} connection-toggle max-w-full cursor-pointer border active:bg-ink-3/10 disabled:cursor-default`}>
       <ConnectionIcon connected={connected} busy={busy} phase={phase} />
-      <span id={`connection-state-${accountId}`} className="flex min-w-0 flex-col gap-1"><InkRewrite text={switchLabel} tone="prose" fluid overflow />
+      <span id={`connection-state-${accountId}`} className="flex min-w-0 flex-col gap-1"><InkRewrite text={switchLabel} tone="prose" fluid overflow className="min-w-[4em]" />
         {progressing && progress && <ConnectionProgressBar progress={progress} compact />}
       </span>
     </button>
