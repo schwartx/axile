@@ -155,7 +155,7 @@ def record_connection_observation(
             if result.scalar_one_or_none() is None:
                 session.rollback()
                 return
-            if observation.status in {"error", "cooldown"} and not binding.manually_disconnected:
+            if observation.status in {"error", "cooldown"} and not state.manually_disconnected:
                 from axile.server.connection_notifications import enqueue_connection_failure
 
                 event_id = enqueue_connection_failure(session, binding, state, values)
@@ -343,13 +343,15 @@ def end_connection_instance(
 
         with Session(connection_engine()) as session:
             values: dict[str, object] = {"instance_id": ""}
+            failure = None
             if error is not None:
-                values["last_failure"] = {
+                failure = {
                     "observed_at": clock_now_iso(),
                     "message": message,
                     "error": exception_details(error),
                 }
-            session.execute(
+                values["last_failure"] = failure
+            state = session.execute(
                 update(AccountConnectionState)
                 .where(
                     col(AccountConnectionState.account_id) == binding.account_id,
@@ -357,7 +359,19 @@ def end_connection_instance(
                     col(AccountConnectionState.config_key) == binding.config_key,
                 )
                 .values(**values)
-            )
+                .returning(AccountConnectionState)
+            ).scalar_one_or_none()
+            if state is None:
+                return
+            if failure is not None and not state.manually_disconnected:
+                from axile.server.connection_notifications import enqueue_connection_failure
+
+                event_id = enqueue_connection_failure(session, binding, state, failure)
+                state.last_failure = {
+                    **failure,
+                    "error": {**failure["error"], "connection_event_id": event_id},
+                }
+                session.add(state)
             session.commit()
             from axile.server.connection_events import connection_hub
 
