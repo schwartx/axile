@@ -66,11 +66,11 @@ def test_submission_revalidates_consumed_quote_after_real_guard_wait(monkeypatch
     def sleep(seconds):
         clock.sleep(seconds)
         if publish_fresh_quote:
-            callbacks[0](quote(clock.time(), symbol="rb2610", bid_price=89, ask_price=91))
+            callbacks[0](quote(clock.time(), symbol="rb2610", bids=[(89, 100)], asks=[(91, 100)]))
 
     guard._sleep = sleep
     with pytest.raises(MarketDataUnavailableError, match="已过期"):
-        session.place_order(OrderDirection.BUY, OrderType.LIMIT, 1, consumed.bid_price)
+        session.place_order(OrderDirection.BUY, OrderType.LIMIT, 1, consumed.bids[0][0])
     assert clock.time() >= 1006
     assert submitted == []
     failure = owner.account_orders.activity.snapshot()["failures"][-1]
@@ -87,7 +87,7 @@ def test_callback_in_other_thread_cannot_replace_consumed_quote(monkeypatch):
     owner = Owner(quote())
     session = ExecutionSession(owner, "600584.SH")
     session.get_market_data()
-    session.register_price_callback(lambda q: session.place_order(OrderDirection.BUY, OrderType.LIMIT, 1, q.bid_price))
+    session.register_price_callback(lambda q: session.place_order(OrderDirection.BUY, OrderType.LIMIT, 1, q.bids[0][0]))
     now[0] += 6
     with ThreadPoolExecutor(max_workers=1) as pool:
         pool.submit(owner.callbacks[0], quote(now[0])).result(timeout=2)
@@ -101,7 +101,7 @@ def test_callback_in_other_thread_cannot_replace_consumed_quote(monkeypatch):
     [
         (OrderType.LIMIT, {"timestamp": 0}, "时间无效"),
         (OrderType.LIMIT, {"timestamp": 994000}, "已过期"),
-        (OrderType.LIMIT, {"book_valid": False}, "缺少真实盘口"),
+        (OrderType.LIMIT, {"bids": [], "asks": []}, "缺少真实盘口"),
         (OrderType.MARKET, {"last_price": 0}, "参考价格无效"),
     ],
 )
@@ -141,7 +141,7 @@ def test_direct_market_order_accepts_reference_without_book(monkeypatch):
     monkeypatch.setattr(get_default_clock(), "time", lambda: 1000.0)
     owner = _TestExecutor()
     monkeypatch.setattr(
-        owner, "get_market_data", lambda symbols: {symbols[0]: quote(symbol=symbols[0], book_valid=False)}
+        owner, "get_market_data", lambda symbols: {symbols[0]: quote(symbol=symbols[0], bids=[], asks=[])}
     )
     order = owner.place_order("rb2610", OrderDirection.BUY, OrderType.MARKET, 1)
     assert order.symbol == "rb2610"
@@ -150,7 +150,7 @@ def test_direct_market_order_accepts_reference_without_book(monkeypatch):
 @pytest.mark.parametrize("order_type,purpose", [(OrderType.MARKET, "order"), (OrderType.LIMIT, "sizing")])
 def test_session_cannot_bypass_required_order_book(monkeypatch, order_type, purpose):
     monkeypatch.setattr(get_default_clock(), "time", lambda: 1000.0)
-    owner = Owner(quote(book_valid=False))
+    owner = Owner(quote(bids=[], asks=[]))
     session = ExecutionSession(owner, "600584.SH")
     with pytest.raises(MarketDataUnavailableError, match="缺少真实盘口"):
         session.place_order(OrderDirection.BUY, order_type, 1, market_data=owner.quote, market_data_purpose=purpose)

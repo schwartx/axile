@@ -231,10 +231,8 @@ class _FuturesExecutor:
         return UnifiedPriceData(
             symbol=self.symbol,
             last_price=3200,
-            bid_price=3199,
-            ask_price=3201,
-            bid_volume=10,
-            ask_volume=10,
+            asks=[(3201, 10)],
+            bids=[(3199, 10)],
             volume=100,
             turnover=3_200_000,
             timestamp=1,
@@ -494,7 +492,7 @@ def test_target_pos_task_price_strategy_uses_expected_book_side(
 
 
 def test_target_pos_task_active_price_falls_back_to_last_price() -> None:
-    market_data = _FuturesExecutor(TradeChannel.CTP).get_market_data().model_copy(update={"ask_price": 0})
+    market_data = _FuturesExecutor(TradeChannel.CTP).get_market_data().model_copy(update={"asks": []})
 
     assert _calculate_order_price(market_data, "ACTIVE", OrderDirection.BUY) == 3200
 

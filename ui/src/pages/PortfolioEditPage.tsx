@@ -1,3 +1,4 @@
+import { ResizeHandle } from '@/components/ui/ResizeHandle'
 import { shanghaiLabel } from '@/features/history/costs'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useViewTransitionState } from 'react-router'
@@ -461,58 +462,17 @@ export function PortfolioEditPage() {
             resultContent={calc.result?.valid && calc.result.target ? <WeightResult target={calc.result.target} /> : null}
           />
 
-          <div
-            role="separator"
-            aria-label="调整目标面板与跟随账户的高度"
-            aria-orientation="horizontal"
-            aria-valuemin={20}
-            aria-valuemax={80}
-            aria-valuenow={Math.round(panelSplit * 100)}
-            tabIndex={resultFr && followersFr ? 0 : -1}
-            inert={!(resultFr && followersFr)}
-            title="拖动分配面板高度 · 双击平均分配"
-            className={`group relative z-10 cursor-row-resize touch-none outline-none md:border-r md:border-line ${
-              resultFr && followersFr ? 'block' : 'invisible'
-            }`}
-            onDoubleClick={() => {
-              setPanelSplit(0.5)
-              window.localStorage.setItem(PANEL_SPLIT_KEY, '0.5')
-            }}
-            onPointerDown={(event) => {
-              if (!(resultFr && followersFr)) return
-              event.preventDefault()
-              event.currentTarget.setPointerCapture(event.pointerId)
-              setResizingPanels(true)
-              setPanelSplit(panelSplitAt(event.clientY))
-            }}
-            onPointerMove={(event) => {
-              if (event.currentTarget.hasPointerCapture(event.pointerId)) setPanelSplit(panelSplitAt(event.clientY))
-            }}
-            onPointerUp={(event) => {
-              const finalSplit = panelSplitAt(event.clientY)
-              if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-                event.currentTarget.releasePointerCapture(event.pointerId)
-              }
-              setPanelSplit(finalSplit)
-              setResizingPanels(false)
-              window.localStorage.setItem(PANEL_SPLIT_KEY, String(finalSplit))
-            }}
-            onPointerCancel={() => setResizingPanels(false)}
-            onKeyDown={(event) => {
-              let next = panelSplit
-              if (event.key === 'ArrowUp') next -= 0.05
-              else if (event.key === 'ArrowDown') next += 0.05
-              else if (event.key === 'Home') next = 0.2
-              else if (event.key === 'End') next = 0.8
-              else return
-              event.preventDefault()
-              next = Math.min(Math.max(next, 0.2), 0.8)
-              setPanelSplit(next)
-              window.localStorage.setItem(PANEL_SPLIT_KEY, String(next))
-            }}
-          >
-            <span className="absolute inset-x-0 top-1/2 h-px bg-line transition-colors duration-130 group-hover:bg-accent group-focus:bg-accent" />
-          </div>
+          <ResizeHandle
+            aria-label="调整目标面板与跟随账户的高度" orientation="horizontal"
+            value={panelSplit} min={0.2} max={0.8} step={0.05}
+            aria-valuetext={`${Math.round(panelSplit * 100)}%`}
+            disabled={!(resultFr && followersFr)} title="拖动分配面板高度 · 双击平均分配"
+            className={`md:border-r md:border-line ${resultFr && followersFr ? 'block' : 'invisible'}`}
+            valueAt={panelSplitAt} onChange={setPanelSplit}
+            onCommit={next => { setPanelSplit(next); window.localStorage.setItem(PANEL_SPLIT_KEY, String(next)) }}
+            onReset={() => { setPanelSplit(0.5); window.localStorage.setItem(PANEL_SPLIT_KEY, '0.5') }}
+            onResizeChange={setResizingPanels}
+          />
 
           {/* 跟随关系是组合的静态元数据；面板外壳与「目标」共用。 */}
           <WorkbenchPanel

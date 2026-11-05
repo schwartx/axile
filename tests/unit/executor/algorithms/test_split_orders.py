@@ -198,8 +198,8 @@ def test_real_algorithm_split_keeps_pricing_evidence_during_refresh(monkeypatch,
             refreshed = True
             if expire:
                 clock.now += 0.6
-            owner.quote.bid_price = 199
-            owner.quote.ask_price = 201
+            owner.quote.bids[0] = (199, owner.quote.bids[0][1])
+            owner.quote.asks[0] = (201, owner.quote.asks[0][1])
             owner.quote.timestamp = int(clock.now * 1000)
             assert tracker._rest_refresh_price(SYMBOL, clock.now) is not None
         return result
@@ -216,7 +216,7 @@ def test_real_algorithm_split_keeps_pricing_evidence_during_refresh(monkeypatch,
 
     assert refreshed
     assert len(evidence) >= 2
-    assert evidence[0][0] == evidence[1][0] == original_quote.bid_price
+    assert evidence[0][0] == evidence[1][0] == original_quote.bids[0][0]
     assert evidence[0][1] == evidence[1][1] == original_quote
     if expire:
         assert len(owner.submissions) == 1

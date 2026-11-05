@@ -1,7 +1,9 @@
 import { displayCurrencyUnit } from '@/lib/format'
 import { useCallback, type ReactNode } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { useLocation } from 'react-router'
+import { ChevronDown, ExternalLink } from 'lucide-react'
 import { Select } from '@/components/ui/Select'
+import { Link } from '@/components/ui/nav'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { usePolling } from '@/lib/hooks/usePolling'
 import { getActivitySymbols } from '@/lib/api/accounts'
@@ -94,12 +96,14 @@ function TradeList({ accountId, scope, trades, expansion, update, currency, unit
 }
 
 function ExecutionExpansion({ row, accountId, scope, expansion, update, currency, units, detailLink }: RowProps) {
+  const location = useLocation()
   const evidence = usePolling(useCallback((signal: AbortSignal) => readEvidence(row, accountId, signal), [row, accountId]), {
     queryKey: `journal-evidence:${row.executionId}`, intervalMs: 0, enabled: expansion.open && !!row.executionId,
   })
   const scoped = !!scope && (scope.start != null || !!scope.day)
   return <div className="border-l-2 border-accent px-3 py-2" data-testid="execution-expansion">
     <div className="mb-2 flex min-h-9 flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+      {row.executionId && <Link to={`/accounts/${accountId}/executions/${row.executionId}/replay`} state={{ replayReturn: { to: `${location.pathname}${location.search}` } }} className="inline-flex min-h-9 items-center gap-1 text-accent hover:underline focus-visible:outline-2 focus-visible:outline-accent">查看回放 <ExternalLink size={13} aria-hidden /></Link>}
       {detailLink(row.executionId)}
       <span aria-hidden className="text-ink-3">·</span>
       <ExecutionErrorEvidence accountId={accountId} executionId={row.executionId} recordId={row.recordId} record={row.record} enabled={expansion.open} className="inline-flex items-center [&>button]:text-xs" />

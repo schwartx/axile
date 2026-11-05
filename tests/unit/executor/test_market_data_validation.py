@@ -28,10 +28,8 @@ def quote(now=1000.0, **changes):
     values = dict(
         symbol="600584.SH",
         last_price=10.0,
-        bid_price=9.9,
-        ask_price=10.1,
-        bid_volume=100,
-        ask_volume=100,
+        bids=[(9.9, 100)],
+        asks=[(10.1, 100)],
         volume=0,
         timestamp=int(now * 1000),
         update_time="",
@@ -56,16 +54,28 @@ def test_invalid_sizing_quote(changes, reason):
 
 
 def test_sizing_does_not_require_order_book():
-    q = quote(bid_price=0, ask_price=0, book_valid=False)
+    q = quote(bids=[], asks=[])
     assert market_data_error(q, now=1000, max_age=5, purpose="sizing") is None
     assert market_data_error(q, now=1000, max_age=5, purpose="order") == "缺少真实盘口"
 
 
 @pytest.mark.parametrize(
-    "changes", [{"bid_price": float("nan")}, {"ask_price": float("inf")}, {"bid_price": 11}, {"book_valid": False}]
+    "changes",
+    [
+        {"bids": [(float("nan"), 100)]},
+        {"asks": [(float("inf"), 100)]},
+        {"bids": [(11, 100)]},
+        {"bids": []},
+        {"asks": []},
+        {"bids": [(9.9, 0)]},
+    ],
 )
 def test_invalid_order_book(changes):
-    assert market_data_error(quote(**changes), now=1000, max_age=5, purpose="order")
+    assert market_data_error(quote().model_copy(update=changes), now=1000, max_age=5, purpose="order")
+
+
+def test_fresh_two_sided_order_book_is_usable():
+    assert market_data_error(quote(), now=1000, max_age=5, purpose="order") is None
 
 
 class Owner(AbstractExecutorCapabilityMixin):
@@ -133,13 +143,13 @@ def test_subscription_evidence_is_scoped_to_callback_and_unregisters(now, callba
 
     def callback(fresh):
         received.append(fresh)
-        assert session.place_order(OrderDirection.BUY, OrderType.LIMIT, 100, fresh.bid_price) == "order"
+        assert session.place_order(OrderDirection.BUY, OrderType.LIMIT, 100, fresh.bids[0][0]) == "order"
         if callback_raises:
             raise RuntimeError("callback failed")
 
     session.register_price_callback(callback)
     now[0] += 6
-    fresh = quote(now[0], bid_price=8.9, ask_price=9.1)
+    fresh = quote(now[0], bids=[(8.9, 100)], asks=[(9.1, 100)])
     if callback_raises:
         with pytest.raises(RuntimeError, match="callback failed"):
             owner.callbacks[0](fresh)

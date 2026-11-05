@@ -257,6 +257,8 @@ export interface Account {
   } | null
   portfolio_id: number | null
   write_empty_record: number | null
+  /** 录制已有连接上的回放数据；旧响应缺失时默认关闭。 */
+  replay_recording_enabled?: boolean
   /** 执行层总超时（秒）。一次执行跑满该额度即硬中断（不撤单），与算法级 `max_wait_seconds` 不同层。 */
   execution_timeout: number
   updated_at: string

@@ -41,9 +41,4 @@ def market_data_error(
         return None if math.isfinite(quote.last_price) and quote.last_price > 0 else "参考价格无效"
     if not quote.book_valid:
         return "缺少真实盘口"
-    prices = (quote.bid_price, quote.ask_price)
-    if not all(math.isfinite(price) and price >= 0 for price in prices) or not any(prices):
-        return "盘口价格无效"
-    if all(prices) and quote.bid_price > quote.ask_price:
-        return "盘口买卖价交叉"
     return None

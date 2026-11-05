@@ -1,3 +1,4 @@
+import { ResizeHandle } from '@/components/ui/ResizeHandle'
 import { useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { PythonSaveBar } from '@/components/ui/PythonSaveBar'
 import { usePythonSaveShortcut, type PythonSaveAction } from '@/components/ui/pythonSaveAction'
@@ -47,48 +48,15 @@ export function PythonWorkbench({ storageKey, inspector, children, resizingPanel
       >
         {inspector}
         {children}
-        <div
-          role="separator"
-          aria-label="调整运行检查器宽度"
-          aria-orientation="vertical"
-          aria-valuemin={MIN_WIDTH}
-          aria-valuemax={MAX_WIDTH}
-          aria-valuenow={Math.round(width)}
-          tabIndex={0}
+        <ResizeHandle
+          aria-label="调整运行检查器宽度" orientation="vertical"
+          value={width} min={MIN_WIDTH} max={MAX_WIDTH} step={16}
           title="左右拖动调整宽度 · 双击恢复默认"
-          className="group absolute inset-y-0 z-20 hidden w-[7px] -translate-x-1/2 touch-none cursor-col-resize outline-none md:block"
-          style={{ left: `${width}px` }}
-          onDoubleClick={() => persist(DEFAULT_WIDTH)}
-          onPointerDown={(event) => {
-            event.preventDefault()
-            event.currentTarget.setPointerCapture(event.pointerId)
-            setResizing(true)
-            setWidth(widthAt(event.clientX))
-          }}
-          onPointerMove={(event) => {
-            if (event.currentTarget.hasPointerCapture(event.pointerId)) setWidth(widthAt(event.clientX))
-          }}
-          onPointerUp={(event) => {
-            if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
-            event.currentTarget.releasePointerCapture(event.pointerId)
-            persist(widthAt(event.clientX))
-            setResizing(false)
-          }}
-          onPointerCancel={() => setResizing(false)}
-          onKeyDown={(event) => {
-            let next = width
-            if (event.key === 'ArrowLeft') next -= 16
-            else if (event.key === 'ArrowRight') next += 16
-            else if (event.key === 'Home') next = MIN_WIDTH
-            else if (event.key === 'End') next = MAX_WIDTH
-            else return
-            event.preventDefault()
-            persist(clampInspectorWidth(next, container.current?.getBoundingClientRect().width))
-          }}
-        >
-          <span className={`absolute inset-y-0 left-1/2 w-px transition-colors duration-130 ${resizing ? 'bg-accent' : 'bg-line group-hover:bg-accent group-focus:bg-accent'}`} />
-          <span aria-hidden className={`absolute left-1/2 top-1/2 h-7 w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-surface transition-colors duration-130 ${resizing ? 'bg-accent' : 'bg-ink-3 group-hover:bg-accent group-focus:bg-accent'}`} />
-        </div>
+          className="absolute inset-y-0 z-20 hidden w-[7px] -translate-x-1/2 md:block"
+          style={{ left: `${width}px` }} valueAt={widthAt} onChange={setWidth}
+          onCommit={next => persist(clampInspectorWidth(next, container.current?.getBoundingClientRect().width))}
+          onReset={() => persist(DEFAULT_WIDTH)} onResizeChange={setResizing}
+        />
       </div>
       <PythonSaveBar action={saveAction} status={status} />
     </section>

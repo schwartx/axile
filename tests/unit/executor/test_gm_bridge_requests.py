@@ -61,8 +61,8 @@ def draining_runtime(runtime, monkeypatch):
             {"symbols": ["SZSE.000001", "SHSE.600000"]},
             {"symbols": ["SZSE.000001", "SHSE.600000"], "include_call_auction": True},
         ),
-        ("get_orders", {"account_id": "target"}, {}),
-        ("get_unfinished_orders", {"account_id": "target"}, {}),
+        ("get_orders", {"account_id": "target"}, {"account_id": "target"}),
+        ("get_unfinished_orders", {"account_id": "target"}, {"account_id": "target"}),
         ("get_execution_reports", {"account_id": "target"}, {}),
         (
             "order_cancel",
@@ -138,7 +138,7 @@ def test_local_order_and_trade_filters_keep_none_distinct_from_empty_account(
     sdk = Mock(return_value=records)
     monkeypatch.setattr(api_bridge, operation, sdk)
     assert bridge.call(operation, account_id=account_id) == (records if account_id is None else records[1:2])
-    sdk.assert_called_once_with()
+    sdk.assert_called_once_with(**({"account_id": account_id} if operation != "get_execution_reports" else {}))
 
 
 @pytest.mark.parametrize("operation", ["get_cash", "get_position"])

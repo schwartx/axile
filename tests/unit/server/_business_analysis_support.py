@@ -228,7 +228,7 @@ def record(index=1, **kwargs):
             "symbol_results": {
                 "A": {
                     "outcome": None,
-                    "first_tick": {"bid_price": 100 + index, "ask_price": 100 + index},
+                    "first_tick": {"bids": [[100 + index, 1]], "asks": [[100 + index, 1]]},
                     "sizing": {"unit_multiplier": 10},
                     "orders": [{"order_id": "buy", "direction": "BUY"}],
                     "trades": [
@@ -359,7 +359,7 @@ def sized_record(index: int, symbols: int) -> SimpleNamespace:
         targets[symbol] = 0.5 / symbols
         results[symbol] = {
             "status": "SUCCEEDED",
-            "first_tick": {"last_price": price, "bid_price": price, "ask_price": price},
+            "first_tick": {"last_price": price, "bids": [[price, 1]], "asks": [[price, 1]]},
             "sizing": {
                 "sizing_mode": "weight",
                 "status": "SIZED",

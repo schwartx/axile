@@ -63,25 +63,24 @@ def quote_to_unified(row: object, resolver: TQSymbolResolver) -> UnifiedPriceDat
     full_symbol = f"{exchange}.{local}" if exchange and "." not in local else local
     timestamp_nano = _value(row, "datetime", 0)
     update_time, timestamp = _quote_time(timestamp_nano)
-    bid = _float(row, "bid_price1")
-    ask = _float(row, "ask_price1")
     last = _float(row, "last_price")
     return UnifiedPriceData(
         symbol=resolver.to_axile(full_symbol),
         last_price=last,
-        bid_price=bid,
-        ask_price=ask,
-        bid_volume=_float(row, "bid_volume1"),
-        ask_volume=_float(row, "ask_volume1"),
+        bids=[
+            (price, _float(row, f"bid_volume{level}"))
+            for level in range(1, 6)
+            if (price := _float(row, f"bid_price{level}")) > 0
+        ],
+        asks=[
+            (price, _float(row, f"ask_volume{level}"))
+            for level in range(1, 6)
+            if (price := _float(row, f"ask_price{level}")) > 0
+        ],
         volume=_float(row, "volume"),
         turnover=_float(row, "amount"),
         timestamp=timestamp,
         update_time=update_time,
-        book_valid=bid > 0 and ask > 0,
-        **{f"bid_price_{level}": _float(row, f"bid_price{level}") for level in range(2, 6)},
-        **{f"ask_price_{level}": _float(row, f"ask_price{level}") for level in range(2, 6)},
-        **{f"bid_volume_{level}": _float(row, f"bid_volume{level}") for level in range(2, 6)},
-        **{f"ask_volume_{level}": _float(row, f"ask_volume{level}") for level in range(2, 6)},
         extra={
             "tq_symbol": full_symbol,
             "exchange_id": str(_value(row, "exchange_id", "") or ""),

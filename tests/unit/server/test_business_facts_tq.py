@@ -211,10 +211,8 @@ def _tq_tick() -> dict[str, object]:
     return {
         "symbol": "rb2701",
         "last_price": 3200.0,
-        "bid_price": 3199,
-        "ask_price": 3200,
-        "bid_volume": 0,
-        "ask_volume": 2,
+        "bids": [[3199, 0]],
+        "asks": [[3200, 2]],
         "timestamp": 1792414800123,
         "update_time": _NIGHT_TIME,
         "book_valid": True,

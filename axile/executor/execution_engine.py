@@ -32,6 +32,7 @@ from axile.executor.models.unified_order import UnifiedOrder
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.models.unified_price import UnifiedPriceData, clone_price_data
 from axile.executor.order_cancellation import CancelNotAllowedError
+from axile.executor.replay import observe, replay_enabled
 from axile.executor.session_closed import COMMON_SESSION_CLOSED, normal_session_skip
 from axile.executor.termination import ExecutionTerminated
 
@@ -272,6 +273,18 @@ class ExecutionEngine:
         """执行单个品种的算法任务."""
         session = self._create_symbol_session(task.symbol, task.audit_context)
         session.handle_termination_checkpoint()
+        if replay_enabled(self._owner):
+            observe(
+                self._owner,
+                "/execution",
+                {
+                    "execution_id": (task.audit_context or {}).get("execution_id"),
+                    "symbol": task.symbol,
+                    "phase": "target",
+                    "target_quantity": task.algorithm_input.target_volume,
+                    "algorithm": task.algorithm_name,
+                },
+            )
         return self._run_algorithm_with_session(session, task.algorithm_name, task.algorithm_input)
 
     def _run_algorithm_with_session(

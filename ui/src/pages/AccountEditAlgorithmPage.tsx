@@ -2,10 +2,14 @@ import { shortErrorReason } from '@/lib/errorInfo'
 /**
  * 账户执行算法子页 /accounts/:id/edit/algorithm。
  *
- * 主交易 + 清仓算法完整编辑器；保存只 PATCH 算法相关字段，保存与取消都不离开本页。
+ * 主交易 + 清仓算法完整编辑器；保存只 PATCH 改动字段，保存与取消都不离开本页。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Info } from 'lucide-react'
+import { Tooltip } from '@/components/ui/Tooltip'
+import { ReplayRecordingStatus } from '@/features/replay/ReplayRecordingStatus'
+import { replayRecordingPatch } from '@/features/replay/accountSetting'
 import { useParams, useViewTransitionState } from 'react-router'
 import { getAccount, updateAccount } from '@/lib/api/accounts'
 import { usePolling } from '@/lib/hooks/usePolling'
@@ -37,6 +41,7 @@ import {
   EditSynopsis,
   Row,
   Section,
+  Toggle,
 } from '@/features/account/editUi'
 import type { Account, AlgorithmSlot } from '@/types/api'
 
@@ -98,6 +103,7 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
   const [trade, setTrade] = useState<AlgorithmRef | null>(() => algorithmRefOf(accountPreview?.algorithm))
   const [empty, setEmpty] = useState<AlgorithmRef | null>(() => algorithmRefOf(accountPreview?.empty_positions_algorithm))
   const [closePolicy, setClosePolicy] = useState(accountPreview?.futures_close_policy ?? defaultClosePolicy())
+  const [replayRecording, setReplayRecording] = useState(accountPreview?.replay_recording_enabled ?? false)
   const [saving, setSaving] = useState(false)
   const [tradeError, setTradeError] = useState<string | null>(null)
   const [emptyError, setEmptyError] = useState<string | null>(null)
@@ -109,6 +115,7 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
     setTrade(algorithmRefOf(acc.algorithm) ?? descriptor.defaults.trade_algorithm)
     setEmpty(algorithmRefOf(acc.empty_positions_algorithm))
     setClosePolicy(acc.futures_close_policy ?? defaultClosePolicy())
+    setReplayRecording(acc.replay_recording_enabled ?? false)
     setSaveError(null)
     return true
   }, [acc, descriptor])
@@ -172,10 +179,13 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
   const tradeChanged = norm(trade) !== norm(origTrade)
   const emptyChanged = norm(empty) !== norm(origEmpty)
   const closeChanged = norm(closePolicy) !== norm(acc.futures_close_policy ?? defaultClosePolicy())
-  const dirty = tradeChanged || emptyChanged || closeChanged
+  const recordingPatch = replayRecordingPatch(replayRecording, acc.replay_recording_enabled)
+  const recordingChanged = recordingPatch.replay_recording_enabled !== undefined
+  const dirty = tradeChanged || emptyChanged || closeChanged || recordingChanged
 
   const err = tradeError ?? emptyError ?? algoParamError(trade) ?? algoParamError(empty)
   const changes: string[] = []
+  if (recordingChanged) changes.push(`执行回放录制：${replayRecording ? '开启' : '关闭'}`)
   if (closeChanged) changes.push('平仓规则已改')
   if (tradeChanged) changes.push('主交易算法已改')
   if (emptyChanged) changes.push(empty ? '清仓算法已改' : '清仓算法已清除')
@@ -183,7 +193,7 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
   const save = async () => {
     if (err) return toast(`算法参数非法：${err}`)
     if (!dirty) return toast('没有改动')
-    const patch: Partial<Account> = {}
+    const patch: Partial<Account> = { ...recordingPatch }
     if (tradeChanged) patch.algorithm = trade as unknown as Record<string, unknown>
     if (emptyChanged) {
       patch.empty_positions_algorithm = empty
@@ -203,12 +213,15 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
       setTrade(algorithmRefOf(updated.algorithm) ?? descriptor.defaults.trade_algorithm)
       setEmpty(algorithmRefOf(updated.empty_positions_algorithm))
       setClosePolicy(updated.futures_close_policy ?? defaultClosePolicy())
+      setReplayRecording(updated.replay_recording_enabled ?? false)
       runtime.acceptSaved(updated.runtime_sync)
       // 保存响应直接写摘要缓存：返回详情时 hero「算法」值首帧即新值，FLIP 落地同文。
       writeAccountConfigSummary(accountId, updated, {
         showShortLeverage: descriptor.ui.show_short_leverage,
       })
-      toast(shortErrorReason(runtimeSyncMessage(updated.runtime_sync)))
+      toast(tradeChanged || emptyChanged || closeChanged
+        ? shortErrorReason(runtimeSyncMessage(updated.runtime_sync))
+        : '录制设置已保存，实际状态请看录制开关旁的提示。')
       void refreshAccounts()
     } catch (e) {
       if (alive.current) {
@@ -251,6 +264,24 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
           <p className="mb-3 text-sm text-ink-3">常规调仓与清仓共用，修改后用于后续执行。</p>
           <FuturesClosePolicyEditor value={closePolicy} capability={descriptor.futures_close} onChange={(value) => { setSaveError(null); setClosePolicy(value) }} />
         </Section>}
+
+        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1" role="group" aria-label="执行回放录制">
+          <div className="inline-flex items-center gap-1">
+            <span className="text-[12px] font-semibold tracking-wide text-ink-3">执行回放录制</span>
+            <Tooltip content="记录行情、委托和成交，方便之后回看执行过程。开启并保存后开始记录，之前的数据不会补录。">
+              <button type="button" aria-label="执行回放录制说明" className="inline-flex size-6 shrink-0 items-center justify-center rounded-chip text-ink-3 hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent">
+                <Info size={14} aria-hidden />
+              </button>
+            </Tooltip>
+          </div>
+          <div className="flex min-w-0 items-center gap-2">
+            <Toggle on={replayRecording} onClick={() => { setSaveError(null); setReplayRecording(!replayRecording) }} ariaLabel="记录执行回放" />
+            <div className="flex min-w-0 flex-wrap items-center gap-x-1">
+              {recordingChanged && <span className="text-[12px] text-ink-3">待保存</span>}
+              <ReplayRecordingStatus accountId={accountId} savedEnabled={acc.replay_recording_enabled ?? false} />
+            </div>
+          </div>
+        </div>
 
         <Section label="主交易算法">
           <p className="mb-3 text-sm text-ink-3">用于常规定时调仓。</p>

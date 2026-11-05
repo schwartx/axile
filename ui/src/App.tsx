@@ -17,6 +17,7 @@ import { AccountEditNotificationPage } from '@/pages/AccountEditNotificationPage
 import { AccountEditControlPage } from '@/pages/AccountEditControlPage'
 import { AccountHoldingsPage } from '@/pages/AccountHoldingsPage'
 import { ExecutionDetailPage } from '@/pages/ExecutionDetailPage'
+import { ExecutionReplayPage } from '@/pages/ExecutionReplayPage'
 import { AccountHistoryPage } from '@/pages/AccountHistoryPage'
 import { AccountExecutionsPage } from '@/pages/AccountExecutionsPage'
 import { PortfoliosPage } from '@/pages/PortfoliosPage'
@@ -112,6 +113,7 @@ const router = createBrowserRouter([
           { path: 'accounts/:id/history', element: <AccountHistoryPage /> },
           { path: 'accounts/:id/executions', element: <AccountExecutionsPage /> },
           { path: 'accounts/:id/executions/:executionId', element: <ExecutionDetailPage /> },
+          { path: 'accounts/:id/executions/:executionId/replay', element: <ExecutionReplayPage />, handle: { fullBleed: true } },
           { path: 'portfolios', element: <PortfoliosPage /> },
           { path: 'portfolios/:id/edit', element: <PortfolioEditPage />, handle: { fullBleed: true } },
           { path: 'settings/notification', element: <SystemEditNotificationPage />, handle: { fullBleed: true } },

@@ -346,9 +346,16 @@ async def copy_account(
         try:
             payload = AccountCreate.model_validate(
                 source.model_dump(
-                    exclude={"id", "created_at", "updated_at", "copied_from_account_id", "copied_from_account_name"}
+                    exclude={
+                        "id",
+                        "created_at",
+                        "updated_at",
+                        "copied_from_account_id",
+                        "copied_from_account_name",
+                        "replay_config_version",
+                    }
                 )
-                | {"name": request.name.strip(), "is_started": False}
+                | {"name": request.name.strip(), "is_started": False, "replay_recording_enabled": False}
             )
             ensure_account_control_preset_compatible(payload.account_control_preset, payload.trade_channel)
             config = _validate_channel_account_config(payload.trade_channel, payload.account_config)
@@ -664,6 +671,15 @@ async def update_account(
         return await _update_account(sched, account_id, account, response)
 
 
+async def _configure_replay_response(account: dict[str, Any], response: Response) -> None:
+    """保存配置后交付录制意愿，未确认时返回待生效而不改交易同步状态。"""
+    from axile.server.execution.worker_backend.manager import get_worker_backend_manager
+
+    replay_status = await get_worker_backend_manager().configure_replay(Account.model_validate(account))
+    if replay_status["effective_version"] != replay_status["config_version"]:
+        response.status_code = status.HTTP_202_ACCEPTED
+
+
 async def _update_account(
     sched: SchedDep,
     account_id: int,
@@ -672,6 +688,7 @@ async def _update_account(
 ) -> AccountPublic:
     """更新账户."""
     db_account = await _get_account_or_404(account_id)
+    previous_sync = db_account.runtime_sync
 
     try:
         # 账户控制 binding 要按“更新后的目标状态”校验，不能只看当前库里的旧值。
@@ -752,9 +769,30 @@ async def _update_account(
     from axile.server.execution.notification_outbox import wake_notifications
     from axile.server.execution.supplements import reap_cancelled_queue
 
+    if set(data) == {"replay_recording_enabled"}:
+        # 录制配置不进入普通运行态对齐，避免已连接账户被 prepare 或修改调度。
+        await _configure_replay_response(db_account, response)
+        sync = db_account["runtime_sync"]
+        if previous_sync is None or previous_sync.status == "synchronized":
+            attempt = await native_operation("runtime_sync_begin_attempt", {"account_id": account_id, "now": now_str()})
+            sync = await native_operation(
+                "runtime_sync_finish_attempt",
+                {
+                    "account_id": account_id,
+                    "revision": attempt["revision"],
+                    "attempt_id": attempt["attempt_id"],
+                    "status": "synchronized",
+                    "error": None,
+                    "now": now_str(),
+                },
+            )
+        return await _account_response(db_account, sync)
+
     await reap_cancelled_queue(db_account["id"])
     wake_notifications(db_account["id"])
     sync = await _reconcile_committed_runtime(sched, db_account["id"])
+    if "replay_recording_enabled" in data:
+        await _configure_replay_response(db_account, response)
     if sync["status"] != "synchronized":
         response.status_code = status.HTTP_202_ACCEPTED
     return await _account_response(db_account, sync)

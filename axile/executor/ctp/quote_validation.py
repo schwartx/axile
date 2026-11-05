@@ -25,7 +25,11 @@ def quote_error(
         return "stale_exchange_time"
     if received <= 0 or not 0 <= now - received <= max_age:
         return "stale_receive_time"
-    if not quote.book_valid or quote.bid_volume <= 0 or quote.ask_volume <= 0:
+    if (
+        not quote.book_valid
+        or (quote.bids[0][1] if quote.bids else 0.0) <= 0
+        or (quote.asks[0][1] if quote.asks else 0.0) <= 0
+    ):
         return "missing_two_sided_book"
     lower = quote.extra.get("lower_limit_price", 0)
     upper = quote.extra.get("upper_limit_price", 0)
@@ -33,10 +37,14 @@ def quote_error(
         return "invalid_price_limits"
     if not 0 < lower <= upper or tick <= 0:
         return "missing_price_limits_or_tick"
-    for price in (quote.last_price, quote.bid_price, quote.ask_price):
+    for price in (
+        quote.last_price,
+        (quote.bids[0][0] if quote.bids else 0.0),
+        (quote.asks[0][0] if quote.asks else 0.0),
+    ):
         if not price_in_bounds(price, tick=tick, lower=lower, upper=upper):
             return "invalid_book_price"
-    if quote.bid_price > quote.ask_price:
+    if (quote.bids[0][0] if quote.bids else 0.0) > (quote.asks[0][0] if quote.asks else 0.0):
         return "crossed_book"
     return None
 

@@ -9,6 +9,7 @@ from axile.channels import (
     ChannelDefaults,
     ChannelLeverage,
     ChannelPortfolioPreset,
+    ChannelReplayCapability,
     ChannelSchedule,
     ChannelUi,
     ChannelUnits,
@@ -47,6 +48,7 @@ class ChannelCapabilityPublic(BaseModel):
     currency: str
     units: ChannelUnits
     ui: ChannelUi
+    replay: ChannelReplayCapability = ChannelReplayCapability()
     defaults: ChannelDefaults
     leverage: ChannelLeverage
     account_form: ChannelAccountForm

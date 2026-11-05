@@ -30,6 +30,8 @@ from axile.server.execution.worker_backend.protocol import (
     WorkerBackendErrorPayload,
     WorkerBackendRequest,
     WorkerBackendResponse,
+    WorkerReplayControl,
+    WorkerReplayStatus,
     WorkerTerminationSignal,
 )
 from axile.server.execution.worker_backend.worker_audit import (
@@ -289,6 +291,9 @@ def _handle_execute_trade(
     executor = None
     termination_controller = _activate_worker_termination(state, request.execution_id)
     normalized_symbol_fields: dict[str, object] | None = None
+    replay_end_reason = "completed"
+    from axile.server.execution.worker_backend.replay import begin_worker_replay_execution, end_worker_replay_execution
+
     try:
         # worker 入口只保留命令级主线，具体的状态准备和审计细节都下沉到专用模块。
         executor = _resolve_prepared_executor(
@@ -302,6 +307,7 @@ def _handle_execute_trade(
         normalize_connected = getattr(executor, "_normalize_connected_standard_input", lambda value: value)
         standard_input = cast(UnifiedStandardInput, normalize(standard_input))
         standard_input = cast(UnifiedStandardInput, normalize_connected(standard_input))
+        begin_worker_replay_execution(state, request.execution_id, tuple(standard_input.curr_target))
         normalized_symbol_fields = {field: getattr(standard_input, field) for field in _SYMBOL_FIELDS}
         audit_input = {**audit_input, **sanitize_execution_input(standard_input.to_dict())}
         before_account_assets = _capture_before_account_snapshot(executor)
@@ -325,6 +331,7 @@ def _handle_execute_trade(
                 **({"notification_snapshot": notification_snapshot} if notification_snapshot else {}),
             ),
         )
+        replay_end_reason = str(output.status)
         result = _dump_output_payload(output)
         _append_success_audit(
             account=account,
@@ -340,12 +347,14 @@ def _handle_execute_trade(
             normalized_symbol_fields=normalized_symbol_fields,
         )
     except ExecutionTerminated as exc:
+        replay_end_reason = "terminated"
         return _build_terminated_response(
             request_id=request.request_id,
             account=account,
             exc=exc,
         )
     except Exception as exc:  # noqa: BLE001
+        replay_end_reason = "failed"
         return _handle_worker_command_failure(
             request=request,
             account=account,
@@ -358,6 +367,7 @@ def _handle_execute_trade(
             normalized_symbol_fields=normalized_symbol_fields,
         )
     finally:
+        end_worker_replay_execution(state, replay_end_reason)
         _finalize_with_orders(executor, state)
         _clear_worker_termination(state, request.execution_id)
 
@@ -392,6 +402,9 @@ def _handle_empty_positions(
     notification_snapshot = cast("dict[str, object] | None", request.payload.get("notification_snapshot"))
     executor = None
     termination_controller = _activate_worker_termination(state, request.execution_id)
+    replay_end_reason = "completed"
+    from axile.server.execution.worker_backend.replay import begin_worker_replay_execution, end_worker_replay_execution
+
     try:
         # 清仓和调仓共用同一套外层骨架，差异只保留在请求解析、pre-audit 和真实调用上。
         executor = _resolve_prepared_executor(
@@ -402,6 +415,10 @@ def _handle_empty_positions(
             termination_controller=termination_controller,
         )
         before_account_assets = _capture_before_account_snapshot(executor)
+        positions = before_account_assets.get("positions", []) if before_account_assets is not None else []
+        positions = positions if isinstance(positions, list) else []
+        symbols = tuple(str(row["symbol"]) for row in positions if isinstance(row, dict) and row.get("symbol"))
+        begin_worker_replay_execution(state, request.execution_id, symbols)
         _append_empty_positions_pre_execute_audit(
             account=account,
             execution_id=request.execution_id,
@@ -420,6 +437,7 @@ def _handle_empty_positions(
                 **empty_kwargs,
             ),
         )
+        replay_end_reason = str(output.status)
         result = _dump_output_payload(output)
         _append_success_audit(
             account=account,
@@ -431,12 +449,14 @@ def _handle_empty_positions(
         )
         return _build_result_response(request_id=request.request_id, result=result)
     except ExecutionTerminated as exc:
+        replay_end_reason = "terminated"
         return _build_terminated_response(
             request_id=request.request_id,
             account=account,
             exc=exc,
         )
     except Exception as exc:  # noqa: BLE001
+        replay_end_reason = "failed"
         return _handle_worker_command_failure(
             request=request,
             account=account,
@@ -448,6 +468,7 @@ def _handle_empty_positions(
             append_failed_audit=_append_failed_audit,
         )
     finally:
+        end_worker_replay_execution(state, replay_end_reason)
         _finalize_with_orders(executor, state)
         _clear_worker_termination(state, request.execution_id)
 
@@ -477,10 +498,20 @@ def _handle_shutdown(
             state.executor = None
             state.account_id = None
             state.config_signature = None
+    try:
+        replay_draining = (
+            state.replay_recorder is not None and state.replay_recorder.status().get("recording_id") is not None
+        )
+    except Exception:  # noqa: BLE001 - 状态不可用时保留收尾机会
+        replay_draining = state.replay_recorder is not None
     return WorkerBackendResponse(
         request_id=request.request_id,
         kind="result",
-        output_payload={"shutdown": True, "reason": reason},
+        output_payload={
+            "shutdown": True,
+            "reason": reason,
+            "replay_draining": replay_draining,
+        },
     )
 
 
@@ -533,6 +564,16 @@ def _run_termination_control_loop(connection: Connection, state: _WorkerBackendS
                 return
             if isinstance(signal, WorkerTerminationSignal):
                 _request_worker_termination(state, signal)
+            elif isinstance(signal, WorkerReplayControl):
+                from axile.server.execution.worker_backend.replay import configure_worker_replay, worker_replay_status
+
+                status = (
+                    configure_worker_replay(state, signal.config)
+                    if signal.config is not None
+                    else worker_replay_status(state)
+                )
+                if signal.request_id is not None:
+                    connection.send(WorkerReplayStatus(signal.request_id, status))
     except (EOFError, OSError):
         return
     except BaseException as exc:  # noqa: BLE001 - IPC 最外层必须保留所有进程退出原因
@@ -638,6 +679,10 @@ def run_worker_backend_loop(
             state.request_active = True
             try:
                 _bind_worker_session(state, binding, current_request)
+                if current_request.replay_config is not None:
+                    from axile.server.execution.worker_backend.replay import configure_worker_replay
+
+                    configure_worker_replay(state, current_request.replay_config)
                 response = _handle_worker_request(current_request, state)
             finally:
                 state.request_active = False
@@ -682,6 +727,9 @@ def run_worker_backend_loop(
                 request_id,
             )
     finally:
+        from axile.server.execution.worker_backend.replay import close_worker_replay
+
+        close_worker_replay(state)
         try:
             with state.resource_lock:
                 _close_executor(state.executor)

@@ -89,10 +89,8 @@ class _LifecycleRecorderExecutor(AbstractExecutor):
             symbol: UnifiedPriceData(
                 symbol=symbol,
                 last_price=100.0,
-                bid_price=99.0,
-                ask_price=101.0,
-                bid_volume=1.0,
-                ask_volume=1.0,
+                asks=[(101.0, 1.0)],
+                bids=[(99.0, 1.0)],
                 volume=1.0,
                 turnover=1.0,
                 timestamp=1,

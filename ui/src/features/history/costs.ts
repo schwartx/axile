@@ -70,7 +70,7 @@ export function costTrades(record: CostRecord): CostTrade[] {
   return Object.entries(dict(dict(record.result).symbol_results)).flatMap(([symbol, raw]) => {
     const result = dict(raw)
     const tick = dict(result.first_tick)
-    const bid = positive(tick.bid_price), ask = positive(tick.ask_price)
+    const bid = positive(Array.isArray(tick.bids) ? tick.bids[0]?.[0] : undefined), ask = positive(Array.isArray(tick.asks) ? tick.asks[0]?.[0] : undefined)
     const mid = bid != null && ask != null && ask >= bid ? (bid + ask) / 2 : null
     const reference = mid ?? positive(tick.last_price)
     const multiplier = positive(dict(result.sizing).unit_multiplier)

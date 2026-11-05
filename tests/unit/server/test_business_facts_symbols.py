@@ -73,7 +73,7 @@ def test_fixed_sql_binds_input_json_and_symbol_text_separately(native_database):
                     "first_tick": {
                         "symbol": "tick.B",
                         "last_price": 0,
-                        "bid_price": None,
+                        "bids": None,
                         "ask_price": 0.0,
                         "bid_price_5": 1.5,
                         "ask_volume_5": 0,
@@ -108,7 +108,7 @@ def test_symbol_roundtrip_preserves_sparse_and_malformed_evidence(native_databas
 def test_explicit_null_symbol_fields_keep_presence_without_inventing_missing_fields(native_database):
     payload = {
         "symbol_results": {
-            "null": {"error": None, "sizing": {"reason_code": None}, "first_tick": {"bid_price": None}},
+            "null": {"error": None, "sizing": {"reason_code": None}, "first_tick": {"bids": None}},
             "missing": {"sizing": {}, "first_tick": {}},
         }
     }
@@ -116,7 +116,7 @@ def test_explicit_null_symbol_fields_keep_presence_without_inventing_missing_fie
     for table, nested, field in (
         ("execution_symbol_result", None, "error"),
         ("execution_symbol_sizing", "sizing", "reason_code"),
-        ("execution_symbol_tick", "first_tick", "bid_price"),
+        ("execution_symbol_tick", "first_tick", "bids"),
     ):
         null = actual["null"] if nested is None else actual["null"][nested]
         missing = actual["missing"] if nested is None else actual["missing"][nested]
@@ -155,7 +155,7 @@ def test_symbol_encoder_excludes_delegated_arrays_and_keeps_native_identity(nati
     assert business_evidence(read_result(native_database, record)) == business_evidence(payload)
 
 
-def test_roundtrip_keeps_every_sizing_and_five_level_tick_field(native_database):
+def test_roundtrip_keeps_every_sizing_and_tick_field(native_database):
     fixture = Path(__file__).parents[3] / "rust/storage/src/business_facts_ops/testdata/head_symbols_inputs_v0037.json"
     case = next(
         case for case in json.loads(fixture.read_text())["cases"] if case["name"] == "all-sizing-five-level-tick"
@@ -231,3 +231,53 @@ def test_sql_roundtrip_and_narrow_readers_preserve_order_and_do_not_load_arrays(
     assert native_store_call(native_database, "execution_read", {"op": "status", "execution_id": "missing"}) is None
     with pytest.raises(_core.NativeError, match="未知执行读取阶段"):
         native_store_call(native_database, "execution_read", {"op": "orders", "record_id": record["id"]})
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_twenty_level_tick_roundtrip_keeps_arrays_and_price_reference(native_database, nested):
+    from axile.executor.models.unified_price import UnifiedPriceData
+
+    price = UnifiedPriceData(
+        symbol="A",
+        last_price=100,
+        bids=[(99 - i, i + 1) for i in range(20)],
+        asks=[(101 + i, i + 2) for i in range(20)],
+        volume=0,
+        timestamp=1,
+        update_time="1970-01-01T00:00:00.001",
+    )
+    tick = price.model_dump(mode="json")
+    payload = {"symbol_results": {"A": {"first_tick": tick}}} if nested else {"first_ticks": {"A": tick}}
+    result = _roundtrip(native_database, payload)
+    actual = result["symbol_results"]["A"]["first_tick"] if nested else result["first_ticks"]["A"]
+    assert actual["bids"] == tick["bids"] and actual["asks"] == tick["asks"]
+    restored = UnifiedPriceData.model_validate(actual)
+    assert restored.bids == price.bids and restored.asks == price.asks
+    stored = rows(native_database, "execution_symbol_tick")[0]
+    assert stored["bids"] == tick["bids"] and stored["asks"] == tick["asks"]
+
+
+@pytest.mark.parametrize("depth", [5, 20])
+def test_depth_downgrade_preserves_or_rejects_without_mutation(native_database, depth):
+    levels = [[100 - i, i + 1] for i in range(depth)]
+    record = persist_result(native_database, {"first_ticks": {"A": {"bids": levels, "asks": []}}})
+    if depth > 5:
+        before = rows(native_database, "execution_symbol_tick")
+        with pytest.raises(_core.NativeError, match="exceeds five"):
+            native_store_call(native_database, "migration_downgrade", {"public": "0033"})
+        assert rows(native_database, "execution_symbol_tick") == before
+    else:
+        native_store_call(native_database, "migration_downgrade", {"public": "0033"})
+        with closing(sqlite3.connect(native_database)) as connection:
+            raw = json.loads(
+                connection.execute("SELECT raw_result FROM executerecord WHERE id=?", (record["id"],)).fetchone()[0]
+            )
+        tick = raw["first_ticks"]["A"]
+        assert tick["bid_price"] == 100 and tick["bid_volume_5"] == 5
+        assert "bids" not in tick
+
+
+def test_old_development_0034_schema_is_rejected(native_database):
+    sql(native_database, "ALTER TABLE execution_symbol_tick RENAME COLUMN bids TO bid_price")
+    with pytest.raises(_core.NativeError, match="unsupported development schema"):
+        native_store_call(native_database, "migration_upgrade", {"public": "0034"})

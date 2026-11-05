@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-01T05:31:21Z",
+  "title": "Design System: Axile 管理界面",
+  "extensions": {
+    "shadows": [
+      {
+        "name": "card",
+        "value": "var(--shadow-card)",
+        "purpose": "菜单等既有升层场景；Card 默认不使用。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "回放次级按钮",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "ExecutionReplayPage 的标题行按钮；只展示外观。",
+      "html": "<button type=\"button\" class=\"ds-replay-secondary\">录制信息</button>",
+      "css": ".ds-replay-secondary{display:inline-flex;min-height:40px;align-items:center;justify-content:center;gap:6px;border:1px solid var(--color-line);border-radius:var(--radius-chip);padding:0 12px;background:transparent;color:var(--color-ink-2);font:13px/1.5 var(--font-sans);cursor:pointer}.ds-replay-secondary:hover{background:var(--color-fill)}.ds-replay-secondary:focus-visible{outline:2px solid var(--color-accent);outline-offset:2px}.ds-replay-secondary:disabled{cursor:default;opacity:.4}"
+    },
+    {
+      "name": "回放播放按钮",
+      "kind": "button",
+      "refersTo": "replay-play",
+      "description": "回放播放条的强调按钮；实际换字由 InkRewrite 管理。",
+      "html": "<button type=\"button\" class=\"ds-replay-play\"><svg width=\"15\" height=\"15\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><polygon points=\"6 3 20 12 6 21 6 3\"/></svg>播放</button>",
+      "css": ".ds-replay-play{display:inline-flex;min-height:36px;min-width:84px;align-items:center;justify-content:center;gap:6px;border:1px solid var(--color-line);border-radius:var(--radius-chip);padding:0 12px;background:var(--color-accent-soft);color:var(--color-accent);font:13px/1.5 var(--font-sans);cursor:pointer}.ds-replay-play:focus-visible{outline:2px solid var(--color-accent);outline-offset:2px}.ds-replay-play:disabled{cursor:default;opacity:.4}"
+    },
+    {
+      "name": "连接字段外观",
+      "kind": "input",
+      "description": "ConnectionFieldInput 的标签与输入结构；省略动作区及全部业务行为。",
+      "html": "<div class=\"ds-connection-field\"><label for=\"ds-field-name\">名称</label><div class=\"ds-connection-value\"><input id=\"ds-field-name\" type=\"text\" placeholder=\"输入名称\"/></div></div>",
+      "css": ".ds-connection-field{border:1px solid var(--color-line);border-radius:8px;background:var(--color-surface);padding:8px 14px;color:var(--color-ink-1);font-family:var(--font-sans)}.ds-connection-field:focus-within{border-color:var(--color-accent)}.ds-connection-field label{display:block;color:var(--color-ink-2);font-size:13px;line-height:16px}.ds-connection-value{display:flex;min-height:32px;align-items:center;margin-top:2px}.ds-connection-value input{min-width:0;flex:1;border:0;background:transparent;color:var(--color-ink-1);font:16px/28px var(--font-sans)}.ds-connection-value input::placeholder{color:var(--color-ink-3)}.ds-connection-value input:focus-visible{outline:none}"
+    },
+    {
+      "name": "面板",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Card 的静态外壳；组件本身不规定内距或添加阴影。",
+      "html": "<div class=\"ds-card\">面板内容</div>",
+      "css": ".ds-card{border:1px solid var(--color-line);border-radius:var(--radius-card);background:var(--color-surface);color:var(--color-ink-1);font-family:var(--font-sans)}"
+    },
+    {
+      "name": "中性标签",
+      "kind": "chip",
+      "refersTo": "chip",
+      "description": "Chip 的默认状态；颜色不承担成功或失败判断。",
+      "html": "<span class=\"ds-chip\">只读</span>",
+      "css": ".ds-chip{border-radius:var(--radius-chip);background:var(--color-fill);padding:3px 10px;color:var(--color-ink-2);font:12px/1.5 var(--font-sans)}"
+    },
+    {
+      "name": "返回入口",
+      "kind": "nav",
+      "description": "BackLink 的图标入口；应用导航仍使用 nav.tsx。",
+      "html": "<a class=\"ds-back\" href=\"#\" aria-label=\"返回执行详情\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m15 18-6-6 6-6\"/></svg></a>",
+      "css": ".ds-back{display:inline-flex;width:44px;height:44px;flex-shrink:0;align-items:center;justify-content:center;border-radius:var(--radius-chip);color:var(--color-ink-2);text-decoration:none}.ds-back:hover{background:var(--color-bg-subtle);color:var(--color-ink-1)}.ds-back:active{background:var(--color-fill)}.ds-back:focus-visible{outline:2px solid var(--color-accent);outline-offset:2px}@media(min-width:768px){.ds-back{width:36px;height:36px}}@media(pointer:coarse){.ds-back{width:44px;height:44px}}"
+    }
+  ],
+  "narrative": {
+    "northStar": "交易驾驶舱",
+    "overview": "这是现有管理界面的代码扫描记录，继承 [axon-frontend-language](../../.claude/skills/axon-frontend-language/SKILL.md)。结构保持紧凑、安静，颜色与动效服务于状态判读和信息连续性。\n\n[theme.css](src/styles/theme.css) 是颜色、字体、圆角与 keyframes 的代码真源。上面的变量引用随明暗主题、增强对比度与行情偏好解析；本文和侧车不提供另一份可独立编辑的配色表。修改视觉规则时先修改真源，再更新记录。",
+    "keyCharacteristics": [
+      "中性面板、细分隔线和小圆角组织信息。",
+      "行情方向、操作与质量各自使用语义通道。",
+      "复用既有控件与过渡入口，保留键盘和减少动态效果路径。"
+    ],
+    "rules": [
+      {
+        "name": "The Semantic Channels Rule",
+        "body": "行情方向使用 `market-up/down`，操作与有利质量使用 `primary`，不利质量和警告使用 `warning`；正常、持平和未知保持中性。状态文字、符号、位置或线型补充颜色。",
+        "section": "colors"
+      }
+    ],
+    "dos": [
+      "Do 从 CSS 真源和既有组件消费语义、主题与交互规则。",
+      "Do 保留键盘、焦点、减少动态效果及非颜色线索。",
+      "Do 将单页构图和验收证据留在对应表面说明中。"
+    ],
+    "donts": [
+      "Don't 把涨跌色当作成功或失败色，或用强调色反复确认健康。",
+      "Don't 为首次出现添加表演，或为同一对象叠加两套连续性机制。",
+      "Don't 把当前截图、偏好开关或本文当作全站 WCAG、性能或交易验收证明。"
+    ]
+  }
+}

@@ -820,7 +820,8 @@ mod tests {
             .unwrap();
         }
         assert_eq!(after, raw);
-        let raw = json!({"channel":"EXAMPLE_CHANNEL","error":"-2019","outcome_reason":"保留原业务说明"});
+        let raw =
+            json!({"channel":"EXAMPLE_CHANNEL","error":"-2019","outcome_reason":"保留原业务说明"});
         assert!(patch_document(&raw, &[], &codes).unwrap().1.is_empty());
     }
 }

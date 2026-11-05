@@ -282,7 +282,7 @@ def test_intraday_returns_use_equity_instead_of_summing_bar_returns():
 
 @pytest.mark.parametrize("layout", ["nested", "dict", "list"])
 def test_tick_formats_and_failed_records(layout):
-    tick = {"symbol": "A", "bid_price": [99], "ask_price": [101]}
+    tick = {"symbol": "A", "bids": [[99, 1]], "asks": [[101, 1]]}
     result = {"account_assets": {"total_asset": 100}}
     if layout == "nested":
         result["symbol_results"] = {"A": {"first_tick": tick}}
@@ -335,15 +335,22 @@ def test_mark_price_prefers_last_with_mid_fallback():
         )
 
     # 最新价有效时优先于买卖中间价。
-    assert observation(record_with_tick({"last_price": 98.0, "bid_price": 90, "ask_price": 110})).prices == {"A": 98.0}
+    assert observation(record_with_tick({"last_price": 98.0, "bids": [[90, 1]], "asks": [[110, 1]]})).prices == {
+        "A": 98.0
+    }
     # 无最新价回退中间价；仅最新价无盘口也可用。
-    assert observation(record_with_tick({"bid_price": 99, "ask_price": 101})).prices == {"A": 100.0}
+    assert observation(record_with_tick({"bids": [[99, 1]], "asks": [[101, 1]]})).prices == {"A": 100.0}
     assert observation(record_with_tick({"last_price": 97.0})).prices == {"A": 97.0}
     # 最新价无效回退中间价；盘口无效仍然剔除。
-    assert observation(record_with_tick({"last_price": 0.0, "bid_price": 99, "ask_price": 101})).prices == {"A": 100.0}
+    assert observation(record_with_tick({"last_price": 0.0, "bids": [[99, 1]], "asks": [[101, 1]]})).prices == {
+        "A": 100.0
+    }
+    for bids in ([], [[]], [99], [[True, 1]], [["99", 1]]):
+        assert observation(record_with_tick({"bids": bids, "asks": [[101, 1]]})).prices == {}
+    assert observation(record_with_tick({"bids": [[99, 1]], "asks": []})).prices == {}
     assert (
         observation(
-            record_with_tick({"last_price": 98.0, "bid_price": 99, "ask_price": 101, "book_valid": False})
+            record_with_tick({"last_price": 98.0, "bids": [[99, 1]], "asks": [[101, 1]], "book_valid": False})
         ).prices
         == {}
     )
@@ -369,7 +376,7 @@ def test_below_min_quantity_replays_zero_executable_weight():
         {
             "X": {
                 **sized(qty=0.0, reason="COMMON.SIZING.BELOW_MIN_QUANTITY"),
-                "first_tick": {"bid_price": 99, "ask_price": 101},
+                "first_tick": {"bids": [[99, 1]], "asks": [[101, 1]]},
             }
         },
         curr_target={"X": 1.05},
@@ -443,7 +450,7 @@ def test_lots_mode_falls_back_to_curr_target():
 
 def test_partial_sizing_evidence_falls_back_whole_record():
     record = sized_record(
-        {"X": sized(qty=1.0), "S": {"first_tick": {"bid_price": 99, "ask_price": 101}}},
+        {"X": sized(qty=1.0), "S": {"first_tick": {"bids": [[99, 1]], "asks": [[101, 1]]}}},
         curr_target={"X": 0.6, "S": 0.4},
     )
     assert observation(record).target == {"X": 0.6, "S": 0.4}
@@ -471,7 +478,7 @@ def test_clear_positions_with_full_sizing_still_empties_target():
 
 def test_forbidden_symbol_absent_from_derived_vector_participates():
     record = sized_record(
-        {"A": {**sized(qty=1.0, notional=100.0), "first_tick": {"bid_price": 99, "ask_price": 101}}},
+        {"A": {**sized(qty=1.0, notional=100.0), "first_tick": {"bids": [[99, 1]], "asks": [[101, 1]]}}},
         curr_target={"F": 0.4, "A": 0.6},
     )
     assert observation(record).target == {"A": pytest.approx(100.0 / 102335.888)}
@@ -484,11 +491,11 @@ def test_below_min_weight_excluded_from_portfolio_pnl():
             {
                 "X": {
                     **sized(qty=0.0, reason="COMMON.SIZING.BELOW_MIN_QUANTITY", notional=None),
-                    "first_tick": {"bid_price": x_price - 1, "ask_price": x_price + 1},
+                    "first_tick": {"bids": [[x_price - 1, 1]], "asks": [[x_price + 1, 1]]},
                 },
                 "S": {
                     **sized(qty=1.0, notional=100.0, equity=102335.888),
-                    "first_tick": {"bid_price": 99, "ask_price": 101},
+                    "first_tick": {"bids": [[99, 1]], "asks": [[101, 1]]},
                 },
             },
             curr_target={"X": 1.05, "S": 0.0},

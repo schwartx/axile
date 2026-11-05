@@ -59,7 +59,7 @@ def test_foreign_quote_fill_value_uses_frozen_account_rate_and_tca_keeps_native_
             "00700.HK": {
                 "orders": [order],
                 "sizing": {"value_conversion": conversion},
-                "first_tick": {"bid_price": 1.5163, "ask_price": 1.5165},
+                "first_tick": {"bids": [[1.5163, 1]], "asks": [[1.5165, 1]]},
                 "trades": [{"order_id": "o1", "trade_value": 5.91396, "value_conversion": conversion}],
             }
         },
@@ -176,7 +176,7 @@ def test_symbol_tca_slippage_liquidity_fee_and_tree() -> None:
             "ag2612": {
                 "status": "SUCCEEDED",
                 "target_volume": 0,
-                "first_tick": {"bid_price": 100.0, "ask_price": 100.1, "last_price": 100.05},
+                "first_tick": {"bids": [[100.0, 1]], "asks": [[100.1, 1]], "last_price": 100.05},
                 "orders": [
                     {
                         "order_id": "o1",
@@ -232,7 +232,7 @@ def test_symbol_tca_counts_zero_trades_when_order_filled_without_trade_records()
             "TA701": {
                 "status": "SUCCEEDED",
                 "target_volume": -3.0,
-                "first_tick": {"bid_price": 5517.0, "ask_price": 5518.0, "last_price": 5517.5},
+                "first_tick": {"bids": [[5517.0, 1]], "asks": [[5518.0, 1]], "last_price": 5517.5},
                 "orders": [
                     {
                         "order_id": "o1",

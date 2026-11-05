@@ -249,10 +249,8 @@ def test_ctp_unknown_quote_time_and_book_validity_remain_explicit(native_databas
     first_tick = {
         "symbol": "rb2611",
         "last_price": 3500.0,
-        "bid_price": 0.0,
-        "ask_price": 0.0,
-        "bid_volume": 0,
-        "ask_volume": 0,
+        "bids": [],
+        "asks": [],
         "timestamp": 0,
         "update_time": "",
         "book_valid": False,

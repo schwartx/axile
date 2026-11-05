@@ -48,6 +48,7 @@ class ResidentConnectionState:
     connection_observer: Callable[[ConnectionObservation], None] | None = None
     attempt_revision: int = 0
     reconciled_revision: object | None = None
+    replay_connection_observer: Callable[[bool], None] | None = None
 
 
 def executor_config_signature(account: AccountContext) -> str:
@@ -56,6 +57,11 @@ def executor_config_signature(account: AccountContext) -> str:
 
 
 def _observe(state: ResidentConnectionState, status: ConnectionStatus, message: str | None = None) -> None:
+    if state.replay_connection_observer is not None:
+        try:
+            state.replay_connection_observer(status == "ok")
+        except Exception:
+            logger.warning("录制连接观察失败，交易连接状态保持原状")
     logger.bind(account_id=state.account_id).info("账户会话状态更新 status={}", status)
     if state.connection_observer is not None:
         labels = {
