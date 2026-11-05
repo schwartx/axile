@@ -20,6 +20,7 @@ from gm.model import DictLikeAccountStatus, DictLikeExecRpt, DictLikeOrder  # ty
 from gm.model.storage import Context  # type: ignore
 
 from axile.executor import replay as recording
+from axile.executor.algorithms.utils.clock import clock_monotonic
 from axile.executor.gm import replay
 from axile.executor.gm.common import (
     AccConnectionState,
@@ -294,6 +295,8 @@ def _apply_account_startup_status(context: GMStrategyRuntimeContext, status: dic
     state = status.get("state", 0)
     context.startup_state["account_state"] = state
     _update_startup_phase("account_status_checked", account_state=state)
+    if state != AccConnectionState.DISCONNECTED:
+        context.account_disconnected_at = None
     if state == AccConnectionState.LOGGEDIN:
         if context.connection_monitor is not None:
             context.connection_monitor.succeeded()
@@ -303,6 +306,23 @@ def _apply_account_startup_status(context: GMStrategyRuntimeContext, status: dic
                 context.connection_monitor.step("account_login", "passed")
             context.ready_event.set()
             _update_startup_phase("ready_signaled", account_state=state)
+    elif state == AccConnectionState.DISCONNECTED:
+        disconnected_at = getattr(context, "account_disconnected_at", None)
+        if disconnected_at is None:
+            context.account_disconnected_at = clock_monotonic()
+        elif clock_monotonic() - disconnected_at >= 2.0:
+            error = GMAccountStartupError(context.account_id, status)
+            error.execution_error = "GM 交易账户未连接，请先连接交易账户"
+            capability = getattr(context, "can_connect_account", None)
+            if context.connection_monitor is not None:
+                report_account_status(
+                    context.connection_monitor,
+                    error,
+                    context.account_id,
+                    status,
+                    can_connect=bool(capability and capability()),
+                )
+            raise error
     elif state == AccConnectionState.ERROR:
         error = GMAccountStartupError(context.account_id, status)
         if context.connection_monitor is not None:
@@ -324,13 +344,17 @@ def _fail_account_startup(context: GMStrategyRuntimeContext, error: Exception) -
 
 
 def _check_account_startup(context: GMStrategyRuntimeContext) -> bool:
-    """读取初始状态一次，连接/登录中的后续结果由已有账户回调推进。"""
+    """初始断开快照两秒后复核；连接中、登录中的后续结果由账户回调推进。"""
     if context.startup_failed:
         return False
     if not context.account_id or context.ready_event.is_set():
         return True
-    if not context.strategy_initialized or context.account_checked:
+    if not context.strategy_initialized:
         return False
+    if context.account_checked:
+        disconnected_at = getattr(context, "account_disconnected_at", None)
+        if disconnected_at is None or clock_monotonic() - disconnected_at < 2.0:
+            return False
     context.account_checked = True
     try:
         status = GMApiBridge.get_account_status(context.account_id)
@@ -345,7 +369,7 @@ def _check_account_startup(context: GMStrategyRuntimeContext) -> bool:
     except Exception as error:
         if context.connection_monitor is not None and getattr(error, "status", None) in {1000, 1026}:
             report_runtime_failure(context.connection_monitor, error)
-        if context.connection_monitor is not None:
+        if context.connection_monitor is not None and not isinstance(error, GMAccountStartupError):
             report_gm_failure(
                 context.connection_monitor,
                 error,
@@ -487,10 +511,16 @@ def on_account_status(_context: Context, account: DictLikeAccountStatus) -> None
             context.stats["connection_revision"] = context.stats.get("connection_revision", 0) + 1
         context.ready_event.clear()
         report_account_status(
-            context.connection_monitor, RuntimeError(f"账户连接异常: {status}"), context.account_id, status
+            context.connection_monitor,
+            RuntimeError(f"账户连接异常: {status}"),
+            context.account_id,
+            status,
+            can_connect=bool(
+                state == AccConnectionState.DISCONNECTED
+                and getattr(context, "can_connect_account", None)
+                and context.can_connect_account()
+            ),
         )
-        if state == AccConnectionState.DISCONNECTED:
-            context.connection_monitor.begin_recovery()
 
 
 def on_error(_context: Context, code: str, info: str | bytes) -> None:

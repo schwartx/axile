@@ -13,6 +13,8 @@ import { AccountHoldingsPage } from '../src/pages/AccountHoldingsPage'
 import { PortfolioEditPage } from '../src/pages/PortfolioEditPage'
 import { SystemConfigPage } from '../src/pages/SystemConfigPage'
 import { useLiveConnection } from '../src/stores/liveConnection'
+import { AccountConnectionAlerts } from '../src/features/account/AccountConnectionAlerts'
+import { connectionAlertId, useConnectionAlerts } from '../src/stores/connectionAlerts'
 import { AccountConnectionStatus } from '../src/features/account/AccountConnectionStatus'
 import { ApiError } from '../src/lib/api/client'
 import { useDomainStore, useDomainSync } from '../src/stores/domain'
@@ -34,7 +36,19 @@ useDomainStore.setState({ accounts: [item, { ...item, account_id: 8, name: '合�
 // 连接 UI 使用合成的 SSE 快照，不再为打开弹窗发起 REST 查询。
 const initialConnection = (window as unknown as { initialConnection?: AccountConnectionDetail }).initialConnection
 if (initialConnection) useLiveConnection.getState().apply({ stream_id: 'fixture', version: 1, kind: 'snapshot',
-  data: [7, 8].map(account_id => ({ account_id, connection: initialConnection })) })
+  data: (new URLSearchParams(location.search).has('alerts') ? [7] : [7, 8]).map(account_id => ({ account_id, connection: initialConnection })) })
+
+// 原有用例聚焦手动详情；alerts 用例保留生产自动告警行为。
+if (!new URLSearchParams(location.search).has('alerts')) {
+  const dismissAlerts = () => useConnectionAlerts.setState({ seen: new Set(
+    Object.entries(useLiveConnection.getState().frames).flatMap(([id, detail]) => {
+      const key = connectionAlertId(Number(id), detail)
+      return key ? [key] : []
+    }),
+  ) })
+  dismissAlerts()
+  useLiveConnection.subscribe(dismissAlerts)
+}
 
 export function Basic() {
   const [error, setError] = useState<Error>(failure('A'))
@@ -87,14 +101,14 @@ export function PythonFixture() {
 function AccountFixture() {
   const [current, setCurrent] = useState(item)
   return <>
-    <button type="button" onClick={() => setCurrent({ ...item, account_id: 8, name: '合成账户 B' })}>切换账户</button>
+    <button type="button" onClick={() => { useConnectionAlerts.getState().close(); setCurrent({ ...item, account_id: 8, name: '合成账户 B' }) }}>切换账户</button>
     <AccountDetail accountId={current.account_id} item={current} />
   </>
 }
 function ConnectionFixture() {
   const [accountId, setAccountId] = useState(7)
   return <main className="p-5 text-ink-1">
-    <button type="button" onClick={() => setAccountId(id => id === 7 ? 8 : 7)}>切换连接账户</button>
+    <button type="button" onClick={() => { useConnectionAlerts.getState().close(); setAccountId(id => id === 7 ? 8 : 7) }}>切换连接账户</button>
     <button type="button" onClick={() => {
       const state = useLiveConnection.getState()
       const current = state.frames[accountId]
@@ -121,5 +135,5 @@ const content = mode === 'outage' ? <AccountDetailPage /> : mode === 'connection
 const element = mode === 'outage' || new URLSearchParams(location.search).has('global') ? <GlobalFixture>{content}</GlobalFixture> : content
 const path = mode === 'portfolio' ? '/portfolios/9/edit' : mode === 'holdings' ? '/accounts/7/holdings' : '/accounts/7'
 const pattern = mode === 'portfolio' ? '/portfolios/:id/edit' : mode === 'holdings' ? '/accounts/:id/holdings' : '/accounts/:id'
-const router = createMemoryRouter([{ path: pattern, element }, { path: '*', element: <p>已离开测试上下文</p> }], { initialEntries: [path] })
+const router = createMemoryRouter([{ path: pattern, element: <><AccountConnectionAlerts />{element}</> }, { path: '*', element: <p>已离开测试上下文</p> }], { initialEntries: [path] })
 createRoot(document.getElementById('root')!).render(<RouterProvider router={router} />)

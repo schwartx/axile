@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { createBrowserRouter, Navigate, Outlet, RouterProvider, ScrollRestoration } from 'react-router'
+import { AccountConnectionAlerts } from '@/features/account/AccountConnectionAlerts'
 import { AppShell } from '@/components/AppShell'
 import { cancelCurveTransition, observeCurveNavigation } from '@/features/history/curveTransition'
 import { InitWizard } from '@/features/init/InitWizard'
@@ -46,6 +47,7 @@ function ConfiguredApp() {
   useBusinessSync()
   return (
     <>
+      <AccountConnectionAlerts />
       <ScrollRestoration />
       <Outlet />
     </>

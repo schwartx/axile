@@ -1,6 +1,8 @@
 """账户连接操作与交易任务、定时配置的边界。"""
 
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from fastapi import FastAPI, Response
@@ -63,7 +65,7 @@ def test_connection_operations_do_not_change_schedule_or_execute_trades(monkeypa
     assert calls == [(7, action == "reconnect")]
 
 
-@pytest.mark.parametrize("action", ["reconnect", "disconnect"])
+@pytest.mark.parametrize("action", ["reconnect", "disconnect", "connect-account"])
 @pytest.mark.parametrize("kind", ["running", "queued"])
 def test_connection_operations_reject_active_or_queued_execution(monkeypatch, action, kind):
     account = build_account(id=7)
@@ -71,6 +73,46 @@ def test_connection_operations_reject_active_or_queued_execution(monkeypatch, ac
     monkeypatch.setattr(routes, "_operate_connection", lambda *args, **kwargs: pytest.fail("不应操作连接"))
     response = client(account, monkeypatch).post(f"/account/7/connection/{action}")
     assert response.status_code == 409
+
+
+def test_channel_login_is_explicit_and_precedes_public_reconciliation(monkeypatch):
+    account = build_account(id=7, is_started=False)
+    calls = []
+    login = Mock(side_effect=lambda config: calls.append("channel-login"))
+    plugin = SimpleNamespace(connect_account=login, account_config_model=SimpleNamespace(model_validate=lambda c: c))
+    monkeypatch.setattr(routes, "get_channel", lambda _: plugin)
+
+    async def operate(snapshot, *, reconnect):
+        assert reconnect
+        calls.append("reconcile")
+
+    monkeypatch.setattr(routes, "_operate_connection", operate)
+    response = client(account, monkeypatch).post("/account/7/connection/connect-account")
+    assert response.status_code == 200, response.text
+    assert calls == ["channel-login", "reconcile"]
+    assert account.is_started is False
+
+
+def test_unsupported_channel_does_not_attempt_login_or_reconnect(monkeypatch):
+    account = build_account(id=7)
+    monkeypatch.setattr(routes, "get_channel", lambda _: SimpleNamespace(connect_account=None))
+    monkeypatch.setattr(routes, "_operate_connection", Mock(side_effect=AssertionError("不应重连")))
+    response = client(account, monkeypatch).post("/account/7/connection/connect-account")
+    assert response.status_code == 400
+
+
+def test_failed_channel_login_keeps_reason_and_does_not_reconnect(monkeypatch):
+    account = build_account(id=7)
+    error = RuntimeError("native detail")
+    error.execution_error = "交易账户连接被拒绝"
+    plugin = SimpleNamespace(
+        connect_account=Mock(side_effect=error), account_config_model=SimpleNamespace(model_validate=lambda c: c)
+    )
+    monkeypatch.setattr(routes, "get_channel", lambda _: plugin)
+    monkeypatch.setattr(routes, "_operate_connection", Mock(side_effect=AssertionError("不应重连")))
+    response = client(account, monkeypatch).post("/account/7/connection/connect-account")
+    assert response.status_code == 502
+    assert "交易账户连接被拒绝" in response.text
 
 
 @pytest.mark.parametrize("status", ["connecting", "recovering", "cooldown", "disconnected"])
@@ -104,12 +146,23 @@ def test_process_reconnect_forwards_force_without_execution_id(monkeypatch):
     assert calls == [{"force_reconnect": True}]
 
 
-def test_concurrent_failed_reconnects_share_one_attempt(monkeypatch):
+@pytest.mark.parametrize("connect", [False, True])
+def test_concurrent_failed_reconnects_share_one_attempt(monkeypatch, connect):
     account = build_account(id=7)
     calls = []
 
+    login = Mock()
+    monkeypatch.setattr(
+        routes,
+        "get_channel",
+        lambda _: SimpleNamespace(
+            connect_account=login, account_config_model=SimpleNamespace(model_validate=lambda c: c)
+        ),
+    )
+
     async def scenario():
         entered, release = asyncio.Event(), asyncio.Event()
+        action = routes.connect_trading_account if connect else routes.reconnect_account
 
         async def operate(snapshot, *, reconnect):
             calls.append(snapshot.id)
@@ -128,14 +181,15 @@ def test_concurrent_failed_reconnects_share_one_attempt(monkeypatch):
 
         monkeypatch.setattr(routes, "_get_account_snapshot_or_404", snapshot)
         monkeypatch.setattr(routes, "_operate_connection", operate)
-        first = asyncio.create_task(routes.reconnect_account(7))
+        first = asyncio.create_task(action(7))
         await entered.wait()
-        second = asyncio.create_task(routes.reconnect_account(7))
+        second = asyncio.create_task(action(7))
         await asyncio.sleep(0)
         release.set()
         results = await asyncio.gather(first, second, return_exceptions=True)
         assert all(isinstance(result, routes.HTTPException) and result.status_code == 502 for result in results)
         assert calls == [7]
+        assert login.call_count == int(connect)
         assert not routes._reconnect_tasks
 
     asyncio.run(scenario())

@@ -66,6 +66,8 @@ class GMStrategyRuntimeContext:
     strategy_initialized: bool = False
     account_was_ready: bool = False
     account_checked: bool = False
+    account_disconnected_at: float | None = None
+    can_connect_account: Callable[[], bool] | None = None
     startup_failed: bool = False
     startup_failure_handler: Callable[[Exception], None] | None = None
 

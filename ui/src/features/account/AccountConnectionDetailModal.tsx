@@ -38,21 +38,17 @@ export function AccountConnectionDetailModal({ selection, onClose }: {
   const view = selection ? connectionProblem(selection.accountId, selection.detail) : null
   const operationInfo = feedback.error ? errorInfo(feedback.error) : null
   if (operationInfo) operationInfo.evidence = operationInfo.evidence.filter(field => field.label !== 'HTTP')
-  const messages = [...new Set([view?.title, view?.summary].map(message => message?.trim()))]
-    .filter(message => message && message !== operationInfo?.message.trim())
+  const messages = [...new Set([view?.title, view?.summary].map(message => message?.trim()))].filter(Boolean)
   const copy = [view?.copy, operationInfo?.text].filter(Boolean).join('\n\n')
   const footerActions = <>
     {copy && <ErrorCopyButton text={copy} label="复制连接详情" variant="text" />}
     <button type="button" aria-label="关闭详情" onClick={onClose} className="cursor-pointer rounded-lg border border-line px-3 py-2 text-[13px] text-ink-2">关闭</button>
   </>
-  return <CenteredModal open={selection !== null} title="账户连接详情" onClose={onClose} widthClassName="w-[640px]"
+  return <CenteredModal open={selection !== null} title={selection?.detail.status === 'unavailable' ? '账户连接告警' : '账户连接详情'} onClose={onClose} widthClassName="w-[640px]"
     footer={selection
       ? <AccountConnectionActions key={selection.accountId} accountId={selection.accountId} detail={selection.detail}>{footerActions}</AccountConnectionActions>
       : <div className="flex flex-wrap items-center justify-end gap-2 border-t border-line px-[22px] py-3">{footerActions}</div>}>
     <div className="min-w-0 space-y-4 text-[13px] leading-relaxed [overflow-wrap:anywhere]">
-      {operationInfo && <section aria-label="连接操作结果" className="min-w-0">
-        <ErrorDetailsContent info={operationInfo} />
-      </section>}
       {view && <>
         <p className="whitespace-pre-wrap text-[14px] text-ink-2">{messages.join('\n')}</p>
         {selection?.detail.progress && <ConnectionProgressView key={selection.detail.progress.run_id}
@@ -69,9 +65,10 @@ export function AccountConnectionDetailModal({ selection, onClose }: {
           </div>)}</dl>}
           {!!section.steps?.length && <ol className="list-decimal space-y-2 pl-5">{section.steps.map((step, j) => <li key={j} className="whitespace-pre-wrap">{step}</li>)}</ol>}
         </section>)}
-        {!!view.actions.length && <div className="flex flex-wrap gap-3">{view.actions.map((action, i) =>
+        {!!view.actions.length && <div className="flex flex-wrap gap-3">{view.actions.filter(action => action.intent === 'open_connection_settings').map((action, i) =>
           <Link key={i} to={`/accounts/${selection!.accountId}/edit/connection`} onClick={onClose}
             className="rounded-lg border border-line px-3 py-2 text-accent focus-visible:outline-2 focus-visible:outline-accent">{action.label}</Link>)}</div>}
+        {operationInfo && <TechnicalDetails label="连接操作结果"><ErrorDetailsContent info={operationInfo} /></TechnicalDetails>}
         {view.history && <TechnicalDetails label="历史连接失败" preview={<><OverflowText className="min-w-0 flex-1 text-ink-3" text={view.history.message ?? ''} /><time className="ml-auto shrink-0 text-[12px] tabular-nums text-ink-3">{view.history.observed_at.replace('T', ' ').slice(5, 16)}</time></>}>
           <p className="mb-2 text-ink-2">{view.history.observed_at.replace('T', ' ').replace(/(\d{2}:\d{2}:\d{2})\.\d+/, '$1')}</p>
           <p className="text-ink-3">这条记录保留用于排查，不代表当前会话仍在故障。</p>

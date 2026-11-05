@@ -58,6 +58,15 @@ def _state(path):
     return rows[0] if rows else None
 
 
+def _notifications(path):
+    with closing(oracle_connect(path)) as connection:
+        connection.row_factory = sqlite3.Row
+        return [
+            {**dict(row), "context": json.loads(row["context"])}
+            for row in connection.execute("SELECT * FROM notification_event ORDER BY sequence")
+        ]
+
+
 @pytest.fixture
 def database(native_database, monkeypatch):
     monkeypatch.setattr(db, "database_path", lambda: str(native_database))
@@ -127,6 +136,70 @@ def test_old_instance_and_out_of_order_snapshots_cannot_overwrite(database):
     service.consume_connection_snapshot({"binding": asdict(new), "sequence": 2, "observation": asdict(failure)})
     assert _state(path).message == "新故障"
     assert _state(path).sequence == 2
+
+
+def test_connection_alert_is_durable_deduplicated_and_rearmed_after_recovery(database):
+    from axile.common.notification_context import CONNECTION_FAILURE_EVENT
+
+    path, account = database
+    binding = service.begin_connection_instance(account)
+    failure = ConnectionObservation(
+        "error", "2026-11-05T10:00:00.000000Z", "交易账户未连接", {}, presentation={"summary": "请连接交易账户"}
+    )
+    service.record_connection_observation(binding, 1, failure)
+    service.record_connection_observation(binding, 2, failure)
+    events = _notifications(path)
+    assert len(events) == 1
+    assert events[0]["event_type"] == CONNECTION_FAILURE_EVENT
+    assert events[0]["context"]["error"]["message"] == "请连接交易账户"
+    assert _state(path).error["connection_event_id"] == events[0]["id"]
+    assert _state(path).last_failure["error"]["connection_event_id"] == events[0]["id"]
+    newer = service.begin_connection_instance(account)
+    service.record_connection_observation(newer, 1, failure)
+    service.record_connection_observation(
+        newer, 2, ConnectionObservation("ok", "2026-11-05T10:01:00.000000Z", kind="access")
+    )
+    service.record_connection_observation(newer, 3, failure)
+    assert len(_notifications(path)) == 2
+
+
+def test_manual_disconnect_is_not_a_system_alert(database):
+    path, account = database
+    binding = service.begin_connection_instance(account)
+    service.record_connection_observation(
+        binding, 1, ConnectionObservation("disconnected", "2026-11-05T10:00:00.000000Z", kind="session")
+    )
+    service.record_connection_observation(
+        binding, 2, ConnectionObservation("error", "2026-11-05T10:00:01.000000Z", "断开后的迟到错误")
+    )
+    service.end_connection_instance(binding, "主动断开后的请求结束", TimeoutError("late timeout"))
+    assert _notifications(path) == []
+
+
+@pytest.mark.parametrize("new_instance", [False, True])
+def test_explicit_reconnect_rearms_alert_after_manual_disconnect(database, new_instance):
+    path, account = database
+    binding = service.begin_connection_instance(account)
+    collector = service.ConnectionCollector(binding)
+    collector.observe_session(ConnectionObservation("disconnected", "2026-11-05T10:00:00.000000Z"))
+    service.consume_connection_snapshot(collector.snapshot())
+    if new_instance:
+        binding = service.begin_connection_instance(account)
+        assert binding.manually_disconnected
+        collector = service.ConnectionCollector(binding)
+    collector.observe_session(ConnectionObservation("recovering", "2026-11-05T10:01:00.000000Z"))
+    collector.observe(ConnectionObservation("ok", "2026-11-05T10:01:01.000000Z", kind="access"))
+    collector.observe_session(ConnectionObservation("ok", "2026-11-05T10:01:02.000000Z"))
+    service.consume_connection_snapshot(collector.snapshot())
+    collector.observe(ConnectionObservation("error", "2026-11-05T10:02:00.000000Z", "重连后的真实断线"))
+    service.consume_connection_snapshot(collector.snapshot())
+    state = _state(path)
+    assert not state.manually_disconnected
+    assert state.status == "error"
+    events = _notifications(path)
+    assert len(events) == 1
+    assert events[0]["context"]["error"]["message"] == "重连后的真实断线"
+    assert state.last_failure["error"]["connection_event_id"] == events[0]["id"]
 
 
 def test_changed_config_rejects_old_runtime_and_clears_error(database):
@@ -406,6 +479,7 @@ def test_timeout_ends_session_rejects_late_result_and_preserves_original_failure
     collector.observe_session(ConnectionObservation("connecting", "2026-10-14T14:47:03.000000Z"))
     service.consume_connection_snapshot(collector.snapshot())
     service.end_connection_instance(binding, "连接准备超时", TimeoutError("original timeout"))
+    service.end_connection_instance(binding, "重复的连接准备超时", TimeoutError("duplicate timeout"))
     collector.observe_session(ConnectionObservation("ok", "2026-10-14T14:47:12.000000Z"))
     service.consume_connection_snapshot(collector.snapshot())
     detail = connection_view(_account(path), detail=True)
@@ -413,11 +487,16 @@ def test_timeout_ends_session_rejects_late_result_and_preserves_original_failure
     assert detail.retry_after_seconds > 0
     assert detail.last_failure.error["technical_detail"] == "original timeout"
     assert _state(path).instance_id == ""
+    events = _notifications(path)
+    assert len(events) == 1
+    assert events[0]["context"]["error"]["message"] == "连接准备超时"
+    assert detail.error["connection_event_id"] == events[0]["id"]
     newer = service.begin_connection_instance(account)
     runtime.register_session(newer, lambda: True)
-    service.end_connection_instance(binding, "late old worker exit")
+    service.end_connection_instance(binding, "late old worker timeout", TimeoutError("late timeout"))
     assert runtime.current_session(1, newer.config_key).status == "uninitialized"
     assert _state(path).instance_id == newer.instance_id
+    assert len(_notifications(path)) == 1
 
 
 def test_active_business_failure_does_not_change_connection(database):

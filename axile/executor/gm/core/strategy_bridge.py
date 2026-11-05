@@ -627,6 +627,13 @@ class GMStrategyBridge:
             startup_failure_handler=self._account_startup_failed,
         )
 
+        from axile.executor.gm.account_connection import can_connect_account
+        from axile.executor.gm.core.bridge_context import get_gm_strategy_runtime_context
+
+        context = get_gm_strategy_runtime_context()
+        if context is not None:
+            context.can_connect_account = lambda: can_connect_account(self._token, self._account_id, self._serv_addr)
+
         # 保存原始的 sys.argv，并临时替换为最小参数
         # 掘金的 run() 函数会解析 sys.argv，但主进程的命令行参数（如 --ssl-keyfile）不被支持
         original_argv = sys.argv

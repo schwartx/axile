@@ -26,8 +26,8 @@ from axile.server.account_control import providers
 from axile.server.account_control.ipc import sample
 from axile.server.account_control.schema import public_frame
 from axile.server.account_control.store import snapshots_from_baseline
-from axile.server.account_control.warnings import wake_pending_quota_warnings
 from axile.server.db.models.account_control_session import AccountControlSession
+from axile.server.execution.notification_outbox import wake_pending_system_notifications
 from axile.server.native_store import native_operation
 from axile.server.order_submissions import submission_window
 
@@ -197,7 +197,7 @@ class AccountControlMonitor:
         removed = [key for key in self.frames if key not in frames]
         for key in removed:
             self._history.pop(key, None)
-        await wake_pending_quota_warnings(receipt["pending_accounts"])
+        await wake_pending_system_notifications()
         # 整轮采样完成后同步发布，订阅者只看到完整的一轮。
         self.frames = frames
         self._publish(changed, removed)
