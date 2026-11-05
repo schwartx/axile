@@ -273,12 +273,17 @@ def _ctp_plugin() -> ChannelPlugin:
     )
 
 
-def _gm_plugin() -> ChannelPlugin:
-    """构造掘金内置渠道插件."""
+def _connect_gm_account(config: BaseAccountConfig) -> None:
+    """仅在显式连接账户时加载可选的 GM 模块。"""
     from axile.executor.gm.account_connection import connect_account
 
+    connect_account(config)
+
+
+def _gm_plugin() -> ChannelPlugin:
+    """构造掘金内置渠道插件."""
     return ChannelPlugin(
-        connect_account=connect_account,
+        connect_account=_connect_gm_account,
         schedule_settings_model=GMSessionSettings,
         legacy_schedule_field="gm_sessions",
         validate_connection=_validate_gm_connection,
