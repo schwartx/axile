@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol, cast
 
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
@@ -29,6 +30,15 @@ class PortfolioExecutor(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class ContextSettings:
+    """本次计算使用的只读执行配置；杠杆已解析渠道默认值。"""
+
+    long_leverage: float = 1.0
+    short_leverage: float = 1.0
+    weight_precision: float = 0.01
+
+
 class Context:
     """向自定义组合函数提供统一模型与完整的常驻渠道执行器.
 
@@ -38,11 +48,17 @@ class Context:
     全局状态的修改可能延续到后续成功请求；这是可信高级代码的既定能力。
     """
 
-    def __init__(self, executor: PortfolioExecutor) -> None:
+    def __init__(self, executor: PortfolioExecutor, *, settings: ContextSettings | None = None) -> None:
         """初始化组合上下文."""
         self.executor: PortfolioExecutor = executor
+        self._settings = settings if settings is not None else ContextSettings()
         self._account: UnifiedAccountAssets | None = None
         self._quotes: dict[str, UnifiedPriceData] = {}
+
+    @property
+    def settings(self) -> ContextSettings:
+        """返回本次计算的多空杠杆及权重精度，不包含渠道凭据。"""
+        return self._settings
 
     @property
     def account(self) -> UnifiedAccountAssets:
@@ -145,4 +161,4 @@ def build_sample_context() -> Context:
     return Context(cast("PortfolioExecutor", SamplePortfolioExecutor()))
 
 
-__all__ = ["Context", "PortfolioExecutor", "SamplePortfolioExecutor", "build_sample_context"]
+__all__ = ["Context", "ContextSettings", "PortfolioExecutor", "SamplePortfolioExecutor", "build_sample_context"]

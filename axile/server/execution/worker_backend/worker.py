@@ -22,8 +22,9 @@ from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.termination import ExecutionTerminated
-from axile.server.context import Context, PortfolioExecutor
+from axile.server.context import Context, ContextSettings, PortfolioExecutor
 from axile.server.db.models.account import AccountSnapshot
+from axile.server.execution.execution_algorithms import resolve_account_leverages
 from axile.server.execution.input_persistence import sanitize_execution_input
 from axile.server.execution.resident_connection import disconnect_resident_executor, executor_config_signature
 from axile.server.execution.worker_backend.catalog import RemoteCatalogProvider
@@ -232,7 +233,15 @@ def _handle_calculate_portfolio(
             daemon=True,
         )
         watchdog.start()
-        context = Context(cast("PortfolioExecutor", executor))
+        long_leverage, short_leverage = resolve_account_leverages(account)
+        context = Context(
+            cast("PortfolioExecutor", executor),
+            settings=ContextSettings(
+                long_leverage=long_leverage,
+                short_leverage=short_leverage,
+                weight_precision=account.weight_precision,
+            ),
+        )
         try:
             result = calculate_portfolio_target(code, context)
         except PortfolioFunctionError as exc:

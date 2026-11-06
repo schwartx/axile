@@ -17,6 +17,7 @@ export const CONTEXT_MODES: ContextMode[] = [
 ]
 
 export const CONTEXT_FIELDS: ContextField[] = [
+  { name: 'settings', type: 'ContextSettings', desc: '只读执行配置：long_leverage、short_leverage、weight_precision；杠杆已解析渠道默认值。无账户样例为 1、1、0.01；权重模式在执行层应用杠杆和精度，数量模式跳过这两项缩放' },
   { name: 'account', type: 'UnifiedAccountAssets', desc: '本次计算内缓存的账户资产快照' },
   { name: 'positions', type: 'list[Position]', desc: 'account.positions 的便捷入口' },
   { name: 'get_positions(symbol=None, direction=None)', type: 'list[Position]', desc: '按标的和多空方向筛选持仓' },
