@@ -10,7 +10,7 @@ import pytest
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
-from axile.server.context import Context, ContextSettings, PortfolioExecutor, build_sample_context
+from axile.server.context import Context, ContextSettings, PortfolioExecutor
 
 
 def _quote(symbol: str) -> UnifiedPriceData:
@@ -80,6 +80,7 @@ def test_settings_are_read_only_and_do_not_fetch_assets(executor: _Executor) -> 
     settings = ContextSettings(long_leverage=2.0, short_leverage=0.5, weight_precision=0.001)
     context = Context(cast("PortfolioExecutor", executor), settings=settings)
     assert context.settings is settings
+    assert context.executor is executor
     assert executor.assets_calls == 0
     with pytest.raises(FrozenInstanceError):
         setattr(context.settings, "long_leverage", 99.0)
@@ -87,16 +88,12 @@ def test_settings_are_read_only_and_do_not_fetch_assets(executor: _Executor) -> 
         setattr(context, "settings", ContextSettings())
 
 
-def test_sample_settings_are_explicit_neutral_defaults() -> None:
-    assert build_sample_context().settings == ContextSettings(1.0, 1.0, 0.01)
+def test_accountless_settings_are_explicit_neutral_defaults() -> None:
+    assert Context().settings == ContextSettings(1.0, 1.0, 0.01)
 
 
-def test_sample_settings_and_quote_multiplier_are_explicit() -> None:
+def test_accountless_settings_can_be_overridden_without_an_executor() -> None:
     settings = ContextSettings(long_leverage=2.5, short_leverage=0)
-    context = build_sample_context(settings=settings)
+    context = Context(settings=settings)
     assert context.settings is settings
-    quote = context.get_quote("FG701")
-    assert quote.last_price == 100
-    assert quote.extra["volume_multiple"] == 1
-    assert quote.extra["channel_type"] == "sample"
-    assert build_sample_context().settings == ContextSettings(1.0, 1.0, 0.01)
+    assert Context().settings == ContextSettings(1.0, 1.0, 0.01)

@@ -31,8 +31,8 @@ export interface CustomCalcValidation {
  * 改代码不清空旧结果，仅降级 stale（清空收放会让打字中的代码跳）。
  * 工作台编辑页与初始化向导（console 布局）共用这一份逻辑。
  */
-export function useCustomCalcValidation(code: string, market: string | null | undefined): CustomCalcValidation {
-  const [accountId, setAccountId] = useState<number | null>(null)
+export function useCustomCalcValidation(code: string, market: string | null | undefined, portfolioId?: number): CustomCalcValidation {
+  const [selection, setSelection] = useState<{ portfolioId: number | undefined; accountId: number | null } | null>(null)
   const [leverageDrafts, setLeverageDrafts] = useState<Record<string, { overrides: TrialLeverageOverrides | null; invalid: boolean }>>({})
   const setLeverageDraft = useCallback((id: number | null, overrides: TrialLeverageOverrides | null, invalid: boolean) => {
     setLeverageDrafts((previous) => ({ ...previous, [id ?? 'sample']: { overrides, invalid } }))
@@ -43,6 +43,9 @@ export function useCustomCalcValidation(code: string, market: string | null | un
     (channel) => channel.market === value || channel.portfolio.market_label === value,
   )?.market ?? value
   const matchingAccounts = accounts.filter((account) => market != null && marketId(account.market) === marketId(market))
+  const defaultAccountId = portfolioId == null ? null
+    : matchingAccounts.find((account) => account.portfolio_id === portfolioId)?.account_id ?? null
+  const accountId = selection && selection.portfolioId === portfolioId ? selection.accountId : defaultAccountId
   const contextAccountId = matchingAccounts.some((account) => account.account_id === accountId) ? accountId : null
   const selected = matchingAccounts.find((account) => account.account_id === contextAccountId)
   const channel = selected ? channels?.find((item) => item.channel === selected.trade_channel) : undefined
@@ -78,7 +81,7 @@ export function useCustomCalcValidation(code: string, market: string | null | un
     editorResult,
     stale,
     accountId: contextAccountId,
-    setAccountId,
+    setAccountId: (accountId) => setSelection({ portfolioId, accountId }),
     accounts: matchingAccounts,
     blockedReason,
     leverageEditing: !!(overrides || leverageDraft?.invalid),

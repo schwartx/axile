@@ -960,13 +960,12 @@ def test_query_waiting_on_disconnected_worker_cannot_use_or_recreate_it(monkeypa
 @pytest.mark.parametrize("overrides", [None, {"long_leverage": 4.0, "short_leverage": 0.0}])
 def test_calculate_worker_keeps_script_and_prepare_error_channels(monkeypatch, mode, overrides):
     from axile.executor.ctp.ctp_execute import CtpSessionRecoveryRequired
-    from axile.server.context import SamplePortfolioExecutor
     from axile.server.execution.worker_backend import worker
     from axile.server.execution.worker_backend.worker_state import _WorkerBackendState
 
     watches = []
     finalized = []
-    executor = SamplePortfolioExecutor()
+    executor = object()
 
     class Watchdog:
         def __init__(self, *, args, **kwargs):

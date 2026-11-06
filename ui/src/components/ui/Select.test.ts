@@ -18,9 +18,9 @@ test('分组说明只显示一次，搜索后保留，且不占用键盘选项�
     mock.module('react-dom', () => ({ createPortal: (children) => children }))
     globalThis.document = { body: {} }
     const { Select } = await import(${JSON.stringify(`${import.meta.dir}/Select.tsx`)})
-    const groupLabel = '真实持仓与行情 · 主动交易会产生真实委托'
+    const groupLabel = '试跑不会自动下单；函数中调用交易接口仍可能产生真实委托。'
     const options = [
-      { value: null, label: '样例数据', description: '不连接真实渠道' },
+      { value: null, label: '无账户试跑', description: '不连接真实渠道' },
       { value: 1, label: 'alpha', groupLabel },
       { value: 2, label: 'beta', groupLabel },
     ]

@@ -10,14 +10,14 @@ export const EXECUTION_TRIGGERS = [
 ]
 
 export const CONTEXT_MODES: ContextMode[] = [
-  { item: '账户与行情', sample: '固定样例资产，任意标的价格为 100、合约乘数为 1；均为样例值', real: '当前账户、持仓、行情和订单' },
-  { item: 'executor', sample: '仅实现通用查询的样例 executor', real: '当前渠道完整的真实 executor' },
+  { item: '账户与行情', sample: '不提供；实际读取时提示选择账户', real: '当前账户、持仓、行情和订单' },
+  { item: 'executor', sample: '不提供；实际读取时提示选择账户', real: '当前渠道完整的真实 executor' },
   { item: '运行位置', sample: '一次性子进程', real: '账户的常驻 worker' },
   { item: '渠道副作用', sample: '不连接真实渠道', real: '主动调用交易方法会立即作用于真实渠道' },
 ]
 
 export const CONTEXT_FIELDS: ContextField[] = [
-  { name: 'settings', type: 'ContextSettings', desc: '只读执行配置：long_leverage、short_leverage、weight_precision；杠杆已解析渠道默认值。工作台的临时杠杆只覆盖本次试跑，显式保存后才修改账户。样例默认 1、1、0.01，多空杠杆可临时调整并还原，不保存到账户；权重模式在执行层应用杠杆和精度，数量模式跳过这两项缩放' },
+  { name: 'settings', type: 'ContextSettings', desc: '只读执行配置：long_leverage、short_leverage、weight_precision；杠杆已解析渠道默认值。工作台的临时杠杆只覆盖本次试跑，显式保存后才修改账户。无账户默认 1、1、0.01，多空杠杆可临时调整并还原，不保存到账户；权重模式在执行层应用杠杆和精度，数量模式跳过这两项缩放' },
   { name: 'account', type: 'UnifiedAccountAssets', desc: '本次计算内缓存的账户资产快照' },
   { name: 'positions', type: 'list[Position]', desc: 'account.positions 的便捷入口' },
   { name: 'get_positions(symbol=None, direction=None)', type: 'list[Position]', desc: '按标的和多空方向筛选持仓' },
@@ -78,7 +78,7 @@ function table(headers: string[], rows: string[][]): string {
 function bullets(items: string[]): string { return items.map((item) => `- ${item}`).join('\n') }
 
 export function buildCustomCalcMarkdown(): string {
-  const modes = table(['能力', '样例上下文', '真实账户'], CONTEXT_MODES.map((mode) => [mode.item, mode.sample, mode.real]))
+  const modes = table(['能力', '无账户试跑', '真实账户'], CONTEXT_MODES.map((mode) => [mode.item, mode.sample, mode.real]))
   const fields = table(['字段或方法', '类型', '含义'], CONTEXT_FIELDS.map((field) => [`\`${field.name}\``, `\`${field.type}\``, field.desc]))
   const examples = CALC_EXAMPLES.map((example) => `### ${example.title}${example.advanced ? '（高级）' : ''}\n\n${example.desc}\n\n\`\`\`python\n${example.code}\n\`\`\``).join('\n\n')
   return `# 自定义组合函数
@@ -91,9 +91,11 @@ ${bullets(EXECUTION_TRIGGERS)}
 
 普通页面读取只显示最近一次成功保存的目标快照，不会执行用户函数。
 
-## 样例上下文与真实账户
+## 无账户试跑与真实账户
 
 ${modes}
+
+不依赖账户的函数可直接试跑，自行读取外部信号并返回权重或目标数量。只有实际读取 Context 的账户、持仓、行情、订单或 executor 时，才需要选择账户。
 
 > 真实账户“试跑”只表示 Axile 不会自动执行函数返回的目标；如果函数主动调用 executor 的交易方法，仍会产生真实交易。
 

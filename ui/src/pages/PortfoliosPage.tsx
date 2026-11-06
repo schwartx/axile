@@ -385,7 +385,7 @@ function TargetTimestamp({ state, snapshot }: {
 }) {
   const accounts = useDomainStore((store) => store.accounts)
   const contextId = snapshot?.context_account_id
-  const context = contextId == null ? '样例数据' : accounts?.find(account => account.account_id === contextId)?.name ?? `#${contextId}`
+  const context = contextId == null ? '无账户' : accounts?.find(account => account.account_id === contextId)?.name ?? `#${contextId}`
   if (state.kind !== 'ready' && state.kind !== 'empty') {
     return <span className="text-[12.5px] text-ink-3">{state.kind === 'loading' ? '正在读取目标…' : state.kind === 'unavailable' ? '目标暂不可用' : '尚未计算'}</span>
   }

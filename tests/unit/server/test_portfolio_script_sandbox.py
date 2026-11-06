@@ -9,7 +9,7 @@ import pytest
 
 from axile.executor.ctp.ctp_execute import CtpSessionRecoveryRequired
 from axile.server import portfolio_targets
-from axile.server.context import Context, build_sample_context
+from axile.server.context import Context
 from axile.server.execution.worker_backend import manager as worker_manager_module
 from axile.server.portfolio_runner import calculate_sample_portfolio
 from axile.server.portfolio_targets import PortfolioFunctionError, calculate_portfolio_target
@@ -17,19 +17,44 @@ from tests.unit.server._execution_test_support import build_account
 
 
 def _calculate(code: str):
-    return calculate_portfolio_target(code, build_sample_context())
+    return calculate_portfolio_target(code, Context())
 
 
 def test_function_runs_in_normal_python_environment() -> None:
-    result = _calculate(
-        "import math\ndef calculate_portfolio(context):\n    return {'rb2610': math.sqrt(context.get_price('rb2610')) / 10}\n"
-    )
+    result = _calculate("import math\ndef calculate_portfolio(context):\n    return {'rb2610': math.sqrt(100) / 10}\n")
     assert result.targets == {"rb2610": 1.0}
 
 
-def test_function_can_use_sample_account() -> None:
-    result = _calculate("def calculate_portfolio(context):\n    return {'cash': context.account.available_cash}\n")
-    assert result.targets == {"cash": 800_000.0}
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "context.account.available_cash",
+        "context.positions",
+        "context.get_positions()",
+        "context.get_price('rb2701')",
+        "context.get_quote('rb2701')",
+        "context.get_pending_orders()",
+        "context.query_trades('rb2701', 'order')",
+        "context.executor",
+    ],
+)
+def test_account_data_requires_an_account_only_when_read(expression: str) -> None:
+    code = f"def calculate_portfolio(context):\n    data = {expression}\n    return {{}}\n"
+    with pytest.raises(PortfolioFunctionError) as caught:
+        _calculate(code)
+    assert caught.value.error_type == "ValueError"
+    assert caught.value.error_line == 2
+    assert "先选择账户" in caught.value.error_message
+
+
+def test_account_dependent_branch_does_not_block_accountless_execution() -> None:
+    result = _calculate(
+        "def calculate_portfolio(context):\n"
+        "    if context.settings.long_leverage > 1:\n"
+        "        return {'cash': context.account.available_cash}\n"
+        "    return {'rb2701': 0.5}\n"
+    )
+    assert result.targets == {"rb2701": 0.5}
 
 
 @pytest.mark.parametrize(

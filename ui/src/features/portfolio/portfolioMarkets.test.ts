@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 
 import type { ChannelCapability } from '@/types/api'
-import { portfolioMarketOptions, portfolioTemplate } from './portfolioMarkets'
+import { portfolioMarketOptions, portfolioQuantityUnit, portfolioTemplate } from './portfolioMarkets'
 
 function channel(
   market: string,
@@ -55,6 +55,20 @@ describe('portfolio market presets', () => {
   const stocksChannel = channel('ashare', 'A股', ['600000.SH', '000001.SZ'])
   const options = portfolioMarketOptions([futuresChannel, stocksChannel])
   const futures = options[0]!
+
+  it('按账户渠道或组合市场解析单位，保留渠道声明的空单位', () => {
+    const contracts = { ...futuresChannel, units: { ...futuresChannel.units, quantity_label: '手' } }
+    const shares = { ...stocksChannel, units: { ...stocksChannel.units, quantity_label: '股' } }
+    const unnamed = { ...contracts, channel: 'custom', units: { ...contracts.units, quantity_label: '' } }
+    const catalog = [contracts, shares, unnamed]
+    expect(portfolioQuantityUnit(catalog, 'ctp')).toBe('手')
+    expect(portfolioQuantityUnit(catalog, '期货')).toBe('手')
+    expect(portfolioQuantityUnit(catalog, 'A股')).toBe('股')
+    expect(portfolioQuantityUnit(catalog, '期货', shares.channel)).toBe('股')
+    expect(portfolioQuantityUnit(catalog, '期货', 'custom')).toBe('')
+    expect(portfolioQuantityUnit(catalog, '未知市场')).toBe('')
+    expect(portfolioQuantityUnit([], '期货')).toBe('')
+  })
 
   it('deduplicates channels in stable market order', () => {
     const duplicate = channel('ctp', '另一个期货渠道', ['cu2610'])

@@ -20,7 +20,7 @@ import type { AccountDashboardItem, TrialLeverageOverrides } from '@/types/api'
 
 const textAction = 'min-w-0 cursor-pointer rounded px-1.5 py-1 text-left text-[12.5px] text-ink-2 hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default disabled:opacity-45'
 
-/** 原位编辑试跑杠杆；真实账户可显式保存，样例只允许还原。 */
+/** 原位编辑试跑杠杆；真实账户可显式保存，无账户只允许还原。 */
 export function AccountLeverageControl({ account, disabled, onLeverageChange }: {
   account: AccountDashboardItem | null
   disabled: boolean
@@ -140,7 +140,7 @@ export function PortfolioTrialAccounts({ accounts, accountId, portfolioId, onSel
   const loaded = useDomainStore((state) => state.accounts !== null)
   const refresh = useDomainStore((state) => state.refreshAccounts)
   const options = [
-    { value: null, label: '样例数据' },
+    { value: null, label: '无账户试跑' },
     ...accounts.map((account) => ({
       value: account.account_id,
       label: `${account.name} · ${describeLeverage(account.long_leverage ?? null, account.short_leverage ?? null,
@@ -154,7 +154,7 @@ export function PortfolioTrialAccounts({ accounts, accountId, portfolioId, onSel
       <div className="flex min-w-0 max-w-full items-center gap-1.5">
         <Select<number | null> value={accountId} options={options} onChange={onSelect} searchable disabled={disabled || leverageEditing}
           ariaLabel="试跑账户" appearance="inline" className="min-w-0 max-w-full px-1.5 py-1 text-[14px]"
-          selectedValue={<OverflowText text={selected?.name ?? '样例数据'} />} />
+          selectedValue={<OverflowText text={selected?.name ?? '无账户试跑'} />} />
         {selected && <Chip className="max-w-48 shrink-0"><OverflowText text={channelLabel(selected.trade_channel, '')} /></Chip>}
       </div>
       {selected && <fieldset disabled={disabled} className="ml-auto min-w-0 max-w-full">
@@ -164,7 +164,7 @@ export function PortfolioTrialAccounts({ accounts, accountId, portfolioId, onSel
     <div className="mt-1 flex min-h-8 min-w-0 items-start">
       <AccountLeverageControl key={selected?.account_id ?? 'sample'} account={selected ?? null} disabled={disabled} onLeverageChange={onLeverageChange} />
     </div>
-    {!selected && <p className="px-1.5 text-[12px] leading-5 text-ink-3">样例价格 100 · 合约乘数 1 · 不连接真实渠道</p>}
+    {!selected && <p className="px-1.5 text-[12px] leading-5 text-ink-3">读取账户或行情数据时，请选择账户</p>}
     <ErrorNotice title="账户列表加载失败" intent="read" error={error} hasData={loaded} variant="compact" onRetry={refresh} />
     <ErrorNotice title="连接操作失败" intent="mutation" error={selected ? feedback.error : null} contextKey={accountId ?? 'sample'} variant="compact" networkFeedback="global-only" />
   </section>

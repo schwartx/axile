@@ -18,8 +18,8 @@ export function CustomCalcDocPage() {
       <RuleList items={EXECUTION_TRIGGERS} />
       <p className="mt-4 border-l-2 border-accent pl-4 text-[14.5px] leading-7 text-ink-2">普通页面读取只显示最近一次成功保存的目标快照，不会执行用户函数。</p>
 
-      <SectionTitle id="contexts">样例上下文与真实账户</SectionTitle>
-      <DocTable headers={['能力', '样例上下文', '真实账户']} rows={CONTEXT_MODES.map((mode) => [mode.item, mode.sample, mode.real])} />
+      <SectionTitle id="contexts">无账户试跑与真实账户</SectionTitle>
+      <DocTable headers={['能力', '无账户试跑', '真实账户']} rows={CONTEXT_MODES.map((mode) => [mode.item, mode.sample, mode.real])} />
       <div className="mt-4 rounded-[8px] border border-warn/35 bg-warn/5 px-4 py-3.5 text-[14.5px] leading-7 text-ink-2">
         <div className="flex items-center gap-2 font-[600] text-warn"><TriangleAlert size={16} />真实账户执行边界</div>
         <p className="mt-1">“试跑”只表示 Axile 不会自动执行函数返回的目标；如果函数主动调用 executor 的交易方法，仍会产生真实交易。</p>

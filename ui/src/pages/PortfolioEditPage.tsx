@@ -27,6 +27,7 @@ import { BatchExecutionResults } from '@/features/portfolio/BatchExecutionResult
 import type { BatchResult } from '@/features/portfolio/batchExecutionSnapshot'
 import { targetSnapshotText } from '@/features/portfolio/targetSnapshotDisplay'
 import { portfolioTargetSummary } from '@/features/portfolio/portfolioCardSummary'
+import { portfolioQuantityUnit } from '@/features/portfolio/portfolioMarkets'
 import { useCustomCalcValidation } from '@/features/portfolio/useCustomCalcValidation'
 import { PortfolioTrialAccounts } from '@/features/portfolio/PortfolioTrialAccounts'
 import { portfolioNameVtName } from '@/features/portfolio/viewTransition'
@@ -135,7 +136,9 @@ export function PortfolioEditPage() {
   )
 
   // 试跑状态机（与初始化向导共用）：上下文选择、结果、stale、Ctrl+Enter 的回调目标。
-  const calc = useCustomCalcValidation(code, head?.market)
+  const calc = useCustomCalcValidation(code, head?.market, portfolioId)
+  const quantityUnitForAccount = (accountId: number | null | undefined) =>
+    portfolioQuantityUnit(channels ?? [], head?.market, accounts?.find((account) => account.account_id === accountId)?.trade_channel)
 
   // 成功只展开返回值（左列）并切到试跑分段，失败只展开问题（右列贴代码）；两列是独立 split pane。
   useEffect(() => {
@@ -180,7 +183,7 @@ export function PortfolioEditPage() {
     accounts?.find((account) => account.account_id === weights.data?.context_account_id)?.name
     ?? (weights.data?.context_account_id != null ? `#${weights.data.context_account_id}` : null)
   const snapshotStatusText = weights.data?.calculated_at
-    ? `${weights.data.context_account_id == null ? '样例数据' : `账户 ${snapshotContextName}`} · 目标更新于 ${shanghaiLabel(weights.data.calculated_at).slice(11, 16)}`
+    ? `${weights.data.context_account_id == null ? '无账户' : `账户 ${snapshotContextName}`} · 目标更新于 ${shanghaiLabel(weights.data.calculated_at).slice(11, 16)}`
     : weights.error
       ? '目标不可用'
       : weights.loading
@@ -395,7 +398,7 @@ export function PortfolioEditPage() {
                 {calc.accountId != null && (
                 <p className="border-l-2 border-warn pl-2 text-[12.5px] leading-5">
                   <InkRewrite
-                    text="真实数据 · 主动交易将产生真实委托"
+                    text="试跑不会自动下单；函数中调用交易接口仍可能产生真实委托。"
                     tone="label"
                     textClassName="text-warn"
                   />
@@ -448,8 +451,8 @@ export function PortfolioEditPage() {
               </div>
             )}
             statusOverride={targetTab === 'effective' ? snapshotStatus : undefined}
-            contentOverride={targetTab === 'effective' ? <SnapshotResult contextKey={portfolioId} weights={weights} /> : undefined}
-            resultContent={calc.result?.valid && calc.result.target ? <WeightResult target={calc.result.target} mode={calc.result.target_mode} /> : null}
+            contentOverride={targetTab === 'effective' ? <SnapshotResult contextKey={portfolioId} weights={weights} quantityUnit={quantityUnitForAccount(weights.data?.context_account_id)} /> : undefined}
+            resultContent={calc.result?.valid && calc.result.target ? <WeightResult target={calc.result.target} mode={calc.result.target_mode} quantityUnit={quantityUnitForAccount(calc.accountId)} /> : null}
           />
 
           <ResizeHandle

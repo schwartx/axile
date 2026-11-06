@@ -197,7 +197,7 @@ async def _run_custom_calc_validation(
 
 @router.post("/validate_custom_calc", response_model=ValidateCustomCalcResponse)
 async def validate_custom_calc(payload: ValidateCustomCalcRequest) -> ValidateCustomCalcResponse:
-    """使用样例或真实账户上下文试跑自定义组合函数。"""
+    """使用无账户或真实账户上下文试跑自定义组合函数。"""
     account = None
     overrides = payload.leverage_overrides.model_dump(exclude_none=True) if payload.leverage_overrides else {}
     if payload.account_id is not None:

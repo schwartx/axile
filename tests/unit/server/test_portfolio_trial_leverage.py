@@ -65,13 +65,11 @@ def test_trial_rejects_invalid_leverages_before_running(monkeypatch, value, acco
     runner.assert_not_awaited()
 
 
-def test_sample_trial_uses_temporary_leverage_and_complete_quotes_without_database(monkeypatch):
+def test_accountless_trial_uses_temporary_leverage_without_database(monkeypatch):
     client, _, native, runner = _client(monkeypatch)
     code = (
         "def calculate_portfolio(context):\n"
-        "    quote = context.get_quote('FG701')\n"
-        "    return {'long': context.settings.long_leverage, 'short': context.settings.short_leverage,\n"
-        "            'notional': quote.last_price * quote.extra['volume_multiple']}\n"
+        "    return {'long': context.settings.long_leverage, 'short': context.settings.short_leverage}\n"
     )
     response = client.post(
         "/portfolio/validate_custom_calc",
@@ -82,10 +80,26 @@ def test_sample_trial_uses_temporary_leverage_and_complete_quotes_without_databa
     )
     assert response.status_code == 200, response.text
     assert response.json()["valid"] is True
-    assert response.json()["target"] == {"long": 2.5, "short": 0, "notional": 100}
+    assert response.json()["target"] == {"long": 2.5, "short": 0}
     restored = client.post("/portfolio/validate_custom_calc", json={"custom_calc_py_code": code})
     assert restored.status_code == 200, restored.text
-    assert restored.json()["target"] == {"long": 1, "short": 1, "notional": 100}
+    assert restored.json()["target"] == {"long": 1, "short": 1}
+    native.assert_not_awaited()
+    runner.assert_not_awaited()
+
+
+@pytest.mark.parametrize("expression", ["context.account.total_asset", "context.get_quote('FG701')"])
+def test_accountless_trial_returns_actionable_error_at_the_data_access(monkeypatch, expression):
+    client, _, native, runner = _client(monkeypatch)
+    response = client.post(
+        "/portfolio/validate_custom_calc",
+        json={"custom_calc_py_code": f"def calculate_portfolio(context):\n    data = {expression}\n    return {{}}\n"},
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["valid"] is False and result["target"] is None
+    assert result["error_type"] == "ValueError" and result["error_line"] == 2
+    assert "先选择账户" in result["error_message"]
     native.assert_not_awaited()
     runner.assert_not_awaited()
 

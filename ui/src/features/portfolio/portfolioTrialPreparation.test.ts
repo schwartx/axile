@@ -148,7 +148,51 @@ test('连接和草稿状态约束全部试跑入口，连接就绪不自动运�
   `)
 })
 
-test('候选账户不撑开列表，样例显示杠杆且没有账户保存和连接操作', () => {
+test('默认使用同市场绑定账户，异步加载后生效且保留用户手动选择', () => {
+  check(hooks + `
+    const ui = ${JSON.stringify(ui)};
+    const domain = { accounts: null };
+    const catalog = { channels: null };
+    mock.module(ui + 'stores/domain.ts', () => ({ useDomainStore: select => select(domain) }));
+    mock.module(ui + 'stores/channels.ts', () => ({ useChannelCatalogStore: select => select(catalog) }));
+    mock.module(ui + 'stores/liveConnection.ts', () => ({ useAccountConnection: () => ({ status: 'ready' }) }));
+    mock.module(ui + 'stores/connectionOperations.ts', () => ({ useConnectionOperation: () => ({ pending: null }) }));
+    const requests = [];
+    mock.module(ui + 'lib/api/portfolios.ts', () => ({ validateCustomCalc: async body => {
+      requests.push(body); return { valid: true, target: { A: 1 } };
+    } }));
+    const { useCustomCalcValidation } = await import(ui + 'features/portfolio/useCustomCalcValidation.ts');
+    let portfolioId = 9; let market;
+    const render = () => { at = 0; return useCustomCalcValidation('return {}', market, portfolioId) };
+    let trial = render(); expect(trial.accountId).toBeNull();
+    domain.accounts = [
+      { account_id: 6, market: 'crypto', trade_channel: 'binance', portfolio_id: 9 },
+      { account_id: 7, market: '期货', trade_channel: 'ctp', portfolio_id: null },
+      { account_id: 8, market: 'ctp', trade_channel: 'ctp', portfolio_id: 9 },
+      { account_id: 9, market: '期货', trade_channel: 'ctp', portfolio_id: 9 },
+      { account_id: 10, market: '期货', trade_channel: 'ctp', portfolio_id: 10 },
+    ];
+    market = '期货'; trial = render(); expect(trial.accountId).toBe(9);
+    catalog.channels = [{ channel: 'ctp', market: 'ctp', portfolio: { market_label: '期货' },
+      defaults: { long_leverage: 1, short_leverage: 1 } }];
+    trial = render(); expect(trial.accountId).toBe(8);
+    expect(requests).toHaveLength(0);
+    await trial.run(); expect(requests.at(-1).account_id).toBe(8);
+    trial.setAccountId(null); trial = render(); expect(trial.accountId).toBeNull();
+    domain.accounts = domain.accounts.map(account => ({ ...account }));
+    trial = render(); expect(trial.accountId).toBeNull();
+    await trial.run(); expect(requests.at(-1).account_id).toBeNull();
+    trial.setAccountId(7); trial = render(); expect(trial.accountId).toBe(7);
+    trial = render(); expect(trial.accountId).toBe(7);
+    portfolioId = 10; trial = render(); expect(trial.accountId).toBe(10);
+    portfolioId = 11; trial = render(); expect(trial.accountId).toBeNull();
+    trial.setAccountId(null);
+    domain.accounts.push({ account_id: 11, market: '期货', trade_channel: 'ctp', portfolio_id: 11 });
+    trial = render(); expect(trial.accountId).toBeNull();
+  `)
+})
+
+test('候选账户不撑开列表，无账户试跑显示杠杆且不提供虚构数据', () => {
   check(`
     import { mock, expect } from 'bun:test';
     import { createElement } from 'react';
@@ -192,11 +236,12 @@ test('候选账户不撑开列表，样例显示杠杆且没有账户保存和�
     channel.ui.show_short_leverage = false;
     expect(render(1).match(/role="spinbutton"/g)).toHaveLength(1);
     const sample = render(null);
-    expect(sample).toContain('不连接真实渠道');
+    expect(sample).toContain('无账户试跑');
+    expect(sample).toContain('读取账户或行情数据时，请选择账户');
     expect(sample).not.toContain('role="switch"');
     expect(sample.match(/role="spinbutton"/g)).toHaveLength(2);
     expect(sample.match(/aria-valuenow="1"/g)).toHaveLength(2);
     expect(sample).not.toContain('保存到账户');
-    expect(sample).toContain('合约乘数 1');
+    expect(sample).not.toContain('合约乘数 1');
   `)
 })
