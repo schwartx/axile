@@ -2,8 +2,10 @@ import { useState } from 'react'
 import { usePythonRun } from '@/components/ui/pythonWorkbenchState'
 import type { PythonValidationState } from '@/components/ui/PythonFunctionEditor'
 import type { SelectOption } from '@/components/ui/Select'
+import { describeLeverage } from '@/features/account/configSummary'
 import { channelLabel } from '@/features/dashboard/display'
 import { validateCustomCalc } from '@/lib/api/portfolios'
+import { useChannelCatalogStore } from '@/stores/channels'
 import { useDomainStore } from '@/stores/domain'
 import type { ValidateCustomCalcResult } from '@/types/api'
 
@@ -27,12 +29,18 @@ export interface CustomCalcValidation {
  * 改代码不清空旧结果，仅降级 stale（清空收放会让打字中的代码跳）。
  * 工作台编辑页与初始化向导（console 布局）共用这一份逻辑。
  */
-export function useCustomCalcValidation(code: string): CustomCalcValidation {
+export function useCustomCalcValidation(code: string, market: string | null | undefined): CustomCalcValidation {
   const [accountId, setAccountId] = useState<number | null>(null)
   const accounts = useDomainStore((state) => state.accounts) ?? []
+  const channels = useChannelCatalogStore((state) => state.channels)
+  const marketId = (value: string) => channels?.find(
+    (channel) => channel.market === value || channel.portfolio.market_label === value,
+  )?.market ?? value
+  const matchingAccounts = accounts.filter((account) => market != null && marketId(account.market) === marketId(market))
+  const contextAccountId = matchingAccounts.some((account) => account.account_id === accountId) ? accountId : null
   const trial = usePythonRun<ValidateCustomCalcResult>({
-    code, contextKey: String(accountId),
-    execute: (draft) => validateCustomCalc({ custom_calc_py_code: draft, account_id: accountId }),
+    code, contextKey: String(contextAccountId),
+    execute: (draft) => validateCustomCalc({ custom_calc_py_code: draft, account_id: contextAccountId }),
     failed: (error) => {
       const message = error instanceof Error ? error.message : String(error)
       return { valid: false, target: null, error: message, traceback: null, error_line: null,
@@ -43,16 +51,23 @@ export function useCustomCalcValidation(code: string): CustomCalcValidation {
   })
   const { running: validating, result, editorResult, stale, run } = trial
 
-  // 选项自带说明：样例 = 安全沙箱（假数据、不连渠道）；账户 = 真实数据 + 真实副作用风险。
-  // 控件只说「样例上下文」会把这两级语义全吞掉。
+  // 真实账户共用组说明，选中后的交易提示由工作台保留。
   const contextOptions: SelectOption<number | null>[] = [
     { value: null, label: '样例数据', description: '固定样例资产，价格恒为 100，不连接真实渠道' },
-    ...accounts.map((account) => ({
-      value: account.account_id,
-      label: account.name,
-      description: '真实持仓与行情 · 主动交易会产生真实委托',
-      hint: channelLabel(account.trade_channel, account.market),
-    })),
+    ...matchingAccounts.map((account) => {
+      const channel = channels?.find((item) => item.channel === account.trade_channel)
+      const leverage = describeLeverage(
+        account.long_leverage ?? null,
+        account.short_leverage ?? null,
+        channel?.ui.show_short_leverage ?? true,
+      )
+      return {
+        value: account.account_id,
+        label: `${account.name} · ${leverage}`,
+        groupLabel: '真实持仓与行情 · 主动交易会产生真实委托',
+        hint: channelLabel(account.trade_channel, account.market),
+      }
+    }),
   ]
 
   return {
@@ -60,7 +75,7 @@ export function useCustomCalcValidation(code: string): CustomCalcValidation {
     result,
     editorResult,
     stale,
-    accountId,
+    accountId: contextAccountId,
     setAccountId,
     contextOptions,
     canRun: trial.canRun,

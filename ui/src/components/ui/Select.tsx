@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, ReactElement } from 'react'
 import { createPortal } from 'react-dom'
 
@@ -10,6 +10,8 @@ export interface SelectOption<T> {
   label: string
   description?: string
   hint?: string
+  /** 相邻同组的选项共用一条分隔说明；不参与键盘选项索引。 */
+  groupLabel?: string
 }
 
 /** 菜单相对触发器的定位结果（fixed 定位，随滚动/缩放实时重算）。 */
@@ -304,42 +306,49 @@ export function Select<T>({
                 const isSelected = o.value === value
                 const isActive = i === highlight
                 return (
-                  <li
-                    key={i}
-                    id={`${listId}-opt-${i}`}
-                    role="option"
-                    aria-selected={isSelected}
-                    onMouseEnter={() => {
-                      scrollIntentRef.current = null
-                      setHighlight(i)
-                    }}
-                    onClick={() => choose(o)}
-                    className={`flex cursor-pointer items-start gap-2 rounded-[7px] px-2.5 py-2 text-[14px] ${
-                      isActive ? 'bg-bg-subtle' : ''
-                    } ${isSelected ? 'font-[550] text-ink-1' : 'text-ink-2'}`}
-                  >
-                    <svg
-                      viewBox="0 0 12 12"
-                      aria-hidden
-                      className={`h-3.5 w-3.5 flex-none text-accent ${isSelected ? '' : 'invisible'}`}
+                  <Fragment key={i}>
+                    {o.groupLabel && o.groupLabel !== filtered[i - 1]?.groupLabel && (
+                      <li role="presentation" aria-hidden="true" className="mt-1 border-t border-line px-2.5 pt-2 pb-1 text-[12px] text-ink-3">
+                        {o.groupLabel}
+                      </li>
+                    )}
+                    <li
+                      id={`${listId}-opt-${i}`}
+                      role="option"
+                      aria-selected={isSelected}
+                      aria-description={o.groupLabel}
+                      onMouseEnter={() => {
+                        scrollIntentRef.current = null
+                        setHighlight(i)
+                      }}
+                      onClick={() => choose(o)}
+                      className={`flex cursor-pointer items-start gap-2 rounded-[7px] px-2.5 py-2 text-[14px] ${
+                        isActive ? 'bg-bg-subtle' : ''
+                      } ${isSelected ? 'font-[550] text-ink-1' : 'text-ink-2'}`}
                     >
-                      <path
-                        d="M2.5 6.5 5 9l4.5-5.5"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                    <span className="min-w-0 flex-1">
-                      <OverflowText text={o.label} />
-                      {o.description && (
-                        <OverflowText text={o.description} className="mt-0.5 text-[13px] font-normal text-ink-3" />
-                      )}
-                    </span>
-                    {o.hint && <span className="ml-auto flex-none text-[13px] font-normal text-ink-3">{o.hint}</span>}
-                  </li>
+                      <svg
+                        viewBox="0 0 12 12"
+                        aria-hidden
+                        className={`h-3.5 w-3.5 flex-none text-accent ${isSelected ? '' : 'invisible'}`}
+                      >
+                        <path
+                          d="M2.5 6.5 5 9l4.5-5.5"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                      <span className="min-w-0 flex-1">
+                        <OverflowText text={o.label} />
+                        {o.description && (
+                          <OverflowText text={o.description} className="mt-0.5 text-[13px] font-normal text-ink-3" />
+                        )}
+                      </span>
+                      {o.hint && <span className="ml-auto flex-none text-[13px] font-normal text-ink-3">{o.hint}</span>}
+                    </li>
+                  </Fragment>
                 )
               })}
             </ul>

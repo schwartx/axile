@@ -97,6 +97,17 @@ def test_dashboard_counts_off_symbols_zero_when_lots_already_match(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("long_leverage, short_leverage", [(3.5, 2), (0, 0), (None, None)])
+def test_dashboard_includes_configured_leverages(monkeypatch, long_leverage, short_leverage):
+    client, operation = _client(monkeypatch, None)
+    operation.return_value["accounts"][0].update(long_leverage=long_leverage, short_leverage=short_leverage)
+    response = client.get("/account/dashboard")
+    assert response.status_code == 200, response.text
+    item = response.json()["data"][0]
+    assert item["long_leverage"] == long_leverage
+    assert item["short_leverage"] == short_leverage
+
+
 @pytest.mark.parametrize(
     "assets",
     [

@@ -408,6 +408,8 @@ export interface AccountDashboardItem {
   remark: string | null
   market: string
   trade_channel: TradeChannel
+  long_leverage?: number | null
+  short_leverage?: number | null
   is_started: boolean
   portfolio_id: number | null
   is_scheduled: boolean

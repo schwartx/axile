@@ -9,6 +9,7 @@ import { Chip } from '@/components/ui/Card'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { InkRewrite } from '@/components/ui/InkRewrite'
+import { OverflowText } from '@/components/ui/OverflowText'
 import { Select } from '@/components/ui/Select'
 import { Segmented } from '@/components/ui/Segmented'
 import { Tooltip } from '@/components/ui/Tooltip'
@@ -20,6 +21,7 @@ import { PythonWorkbenchPane } from '@/components/ui/PythonWorkbenchPane'
 import { PythonRunPanel } from '@/components/ui/PythonRunPanel'
 import { WorkbenchPanel } from '@/components/ui/WorkbenchPanel'
 import { channelLabel } from '@/features/dashboard/display'
+import { describeLeverage } from '@/features/account/configSummary'
 import { WeightResult } from '@/features/portfolio/WeightResult'
 import { SnapshotResult } from '@/features/portfolio/SnapshotResult'
 import { BatchExecutionResults } from '@/features/portfolio/BatchExecutionResults'
@@ -39,6 +41,7 @@ import {
 } from '@/lib/api/portfolios'
 import { triggerExecute } from '@/lib/api/executions'
 import { useDomainStore } from '@/stores/domain'
+import { useChannelCatalogStore } from '@/stores/channels'
 import { useLiveExecStore } from '@/stores/liveExec'
 import { useToastStore } from '@/stores/ui'
 
@@ -68,6 +71,7 @@ export function PortfolioEditPage() {
     intervalMs: 0,
   })
   const accounts = useDomainStore((state) => state.accounts)
+  const channels = useChannelCatalogStore((state) => state.channels)
   const refreshPortfolios = useDomainStore((state) => state.refreshPortfolios)
   const portfolios = useDomainStore((state) => state.portfolios)
   const pf = portfolio.data
@@ -132,7 +136,7 @@ export function PortfolioEditPage() {
   )
 
   // 试跑状态机（与初始化向导共用）：上下文选择、结果、stale、Ctrl+Enter 的回调目标。
-  const calc = useCustomCalcValidation(code)
+  const calc = useCustomCalcValidation(code, head?.market)
 
   // 成功只展开返回值（左列）并切到试跑分段，失败只展开问题（右列贴代码）；两列是独立 split pane。
   useEffect(() => {
@@ -512,7 +516,14 @@ export function PortfolioEditPage() {
                         to={`/accounts/${account.account_id}`}
                         className="group flex items-center gap-2 rounded-[8px] px-2 py-1.5 hover:bg-fill"
                       >
-                        <span className="min-w-0 truncate text-[14px] text-ink-1">{account.name}</span>
+                        <OverflowText
+                          className="min-w-0 text-[14px] text-ink-1"
+                          text={`${account.name} · ${describeLeverage(
+                            account.long_leverage ?? null,
+                            account.short_leverage ?? null,
+                            channels?.find((channel) => channel.channel === account.trade_channel)?.ui.show_short_leverage ?? true,
+                          )}`}
+                        />
                         <span className="flex-none rounded-chip bg-fill px-1.5 py-px text-[11.5px] text-ink-2">
                           {channelLabel(account.trade_channel, account.market)}
                         </span>
