@@ -1,7 +1,9 @@
 import { useId, useRef, useState } from 'react'
-import { Clock3 } from 'lucide-react'
+import { Clock3, Trash2 } from 'lucide-react'
 import { CenteredModal } from '@/components/ui/CenteredModal'
+import { OverflowText } from '@/components/ui/OverflowText'
 import { Select } from '@/components/ui/Select'
+import { Segmented } from '@/components/ui/Segmented'
 import { CronFieldEditor } from '@/features/setup/CronFieldEditor'
 import { CronSettingHelp } from '@/features/setup/CronSettingHelp'
 import { cronToExpr } from '@/features/setup/cron'
@@ -19,7 +21,6 @@ export function CronSetting({ value, onConfirm }: { value: string; onConfirm: (v
   const [fieldIndex, setFieldIndex] = useState(0)
   const [showHelp, setShowHelp] = useState(false)
   const tabsId = useId()
-  const tabRefs = useRef<(HTMLButtonElement | null)[]>([])
   const listRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<HTMLDivElement>(null)
   const selectedIndex = Math.max(0, rules.findIndex((rule) => rule.id === selectedId))
@@ -78,31 +79,37 @@ export function CronSetting({ value, onConfirm }: { value: string; onConfirm: (v
     </button>
     {rules.length > 0 && <CenteredModal open={open} title="定时任务设置"
       titleSuffix={<span className="ml-3 inline-block rounded-md bg-fill px-2 py-0.5 align-middle text-xs font-normal text-ink-2">北京时间</span>}
-      onClose={() => setOpen(false)} widthClassName="w-[1080px] h-[min(680px,86dvh)]" scrollBody={false}
+      onClose={() => setOpen(false)} widthClassName="w-[1080px] h-[min(760px,86dvh)]" scrollBody={false}
       footer={<div className="mx-[22px] flex justify-end gap-2 border-t border-line py-3">
         <button type="button" onClick={() => setOpen(false)} className="rounded-[9px] border border-line px-4 py-2 text-sm text-ink-2 hover:bg-fill">取消</button>
         <button type="button" onClick={confirm} disabled={!rules.length || errors.some(Boolean)}
-          className="rounded-[9px] bg-accent px-4 py-2 text-sm font-semibold text-white disabled:cursor-default disabled:opacity-45">确定</button>
+          className="cursor-pointer rounded-[9px] bg-ink-1 px-4 py-2 text-sm font-semibold text-surface disabled:cursor-default disabled:opacity-45">确定</button>
       </div>}>
       {/* 窄屏只滚动正文；双栏时各区域独立滚动，标题和操作始终可见。 */}
       {selected && <div className="quiet-scrollbar grid min-h-0 flex-1 auto-rows-max grid-cols-1 gap-4 overflow-y-auto overscroll-contain py-1 pr-1 lg:auto-rows-auto lg:grid-cols-[400px_minmax(0,1fr)] lg:grid-rows-1 lg:overflow-hidden lg:pr-0">
         <section className="flex min-h-0 min-w-0 flex-col rounded-lg border border-line p-3" aria-label="定时表达式列表">
           <div className="mb-2 flex shrink-0 items-center justify-between gap-3">
             <span className="text-sm font-semibold">定时表达式列表<span className="ml-2 rounded-md bg-fill px-1.5 py-0.5 text-xs font-normal tabular-nums text-ink-3">{rules.length}</span></span>
-            <button type="button" onClick={addRule} className="shrink-0 rounded-md bg-accent px-2.5 py-1.5 text-xs font-semibold text-white">添加表达式</button>
+            <button type="button" onClick={addRule} className="shrink-0 cursor-pointer rounded-md bg-ink-1 px-2.5 py-1.5 text-xs font-semibold text-surface">添加表达式</button>
           </div>
           <div ref={listRef} className="quiet-scrollbar space-y-2 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain lg:pr-1 lg:[scrollbar-gutter:stable]">
             {rules.map((rule, index) => <div key={rule.id}
-              className={`flex items-start gap-2 rounded-lg border px-3 py-2 transition-colors ${errors[index] ? 'border-warn' : selected.id === rule.id ? 'border-accent bg-accent-soft' : 'border-line hover:border-accent/60'}`}>
-              <button type="button" aria-label={`编辑表达式 ${index + 1}`} aria-pressed={selected.id === rule.id} onClick={() => setSelectedId(rule.id)} className="flex min-w-0 flex-1 items-start gap-2 text-left">
+              className={`relative rounded-lg border px-3 py-2 transition-colors ${errors[index] ? 'border-warn' : selected.id === rule.id ? 'border-accent bg-accent-soft' : 'border-line hover:border-accent/60'}`}>
+              <button type="button" aria-label={`编辑表达式 ${index + 1}`} aria-pressed={selected.id === rule.id} onClick={() => setSelectedId(rule.id)} className="flex w-full min-w-0 items-start gap-2 text-left">
                 <span aria-hidden="true" className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[11px] tabular-nums ${selected.id === rule.id ? 'bg-accent text-white' : 'bg-fill text-ink-3'}`}>{index + 1}</span>
                 <span className="min-w-0 flex-1">
-                  <span title={descriptions[index]} className={`line-clamp-3 text-[13px] leading-[22px] ${errors[index] ? 'text-warn' : 'text-ink-1'}`}>{descriptions[index]}</span>
-                  <span title={rule.raw} className="mt-1 block truncate font-mono text-xs leading-relaxed text-ink-3">{rule.raw || '空表达式'}</span>
+                  <span className={`flow-root text-[13px] leading-[22px] ${errors[index] ? 'text-warn' : 'text-ink-1'}`}>
+                    {rules.length > 1 && <span aria-hidden="true" className="float-right ml-2 h-8 w-8" />}
+                    {descriptions[index]}
+                  </span>
+                  <OverflowText text={rule.raw || '空表达式'} className="mt-1 font-mono text-xs leading-relaxed text-ink-3" />
                   {errors[index] && <span id={`${tabsId}-error-${rule.id}`} role="alert" className="mt-1 block text-xs leading-relaxed text-warn">{errors[index]}</span>}
                 </span>
               </button>
-              {rules.length > 1 && <button type="button" aria-label={`删除表达式 ${index + 1}`} onClick={() => removeRule(rule.id)} className="mt-0.5 shrink-0 px-1 py-0.5 text-xs text-ink-3 hover:text-bad hover:underline">删除</button>}
+              {rules.length > 1 && <button type="button" aria-label={`删除表达式 ${index + 1}`} onClick={() => removeRule(rule.id)}
+                className="absolute right-3 top-2 inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-ink-2 transition-colors hover:bg-warn/10 hover:text-warn focus-visible:bg-warn/10 focus-visible:text-warn focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-warn motion-reduce:transition-none">
+                <Trash2 size={16} aria-hidden="true" />
+              </button>}
             </div>)}
           </div>
         </section>
@@ -114,29 +121,17 @@ export function CronSetting({ value, onConfirm }: { value: string; onConfirm: (v
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <span className="shrink-0 text-sm font-semibold">常用表达式</span>
-            <Select<string | null> value={null} options={CRON_SETTING_PRESETS} onChange={selectPreset} placeholder="选择常用表达式"
+            <Select<string | null> searchable value={null} options={CRON_SETTING_PRESETS} onChange={selectPreset} placeholder="选择常用表达式"
               ariaLabel="选择常用表达式" className="min-w-0 flex-1 justify-between px-3 py-1.5 text-sm" />
           </div>
           <div ref={editorRef} className="quiet-scrollbar lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-y-auto lg:overscroll-contain lg:pr-1 lg:[scrollbar-gutter:stable]">
             {showHelp && <CronSettingHelp />}
-            <div role="tablist" aria-label="时间字段" className="sticky top-0 z-10 flex shrink-0 justify-between gap-2 border-b border-line bg-surface lg:justify-start lg:gap-5">
-              {CRON_FIELDS.map((item, index) => <button key={item.id} ref={(node) => { tabRefs.current[index] = node }}
-                id={`${tabsId}-${item.id}`} type="button" role="tab" aria-selected={fieldIndex === index} aria-controls={`${tabsId}-panel`}
-                tabIndex={fieldIndex === index ? 0 : -1} onClick={() => setFieldIndex(index)}
-                onKeyDown={(event) => {
-                  let next: number
-                  if (event.key === 'ArrowRight') next = (index + 1) % CRON_FIELDS.length
-                  else if (event.key === 'ArrowLeft') next = (index + CRON_FIELDS.length - 1) % CRON_FIELDS.length
-                  else if (event.key === 'Home') next = 0
-                  else if (event.key === 'End') next = CRON_FIELDS.length - 1
-                  else return
-                  event.preventDefault()
-                  setFieldIndex(next)
-                  tabRefs.current[next]?.focus()
-                }}
-                className={`shrink-0 border-b-2 px-1 py-2.5 text-sm transition-colors ${fieldIndex === index ? 'border-accent font-semibold text-accent' : 'border-transparent text-ink-2 hover:text-accent'}`}>{item.label}</button>)}
+            <div className="sticky top-0 z-10 shrink-0 bg-surface py-1">
+              <Segmented value={field.id} options={CRON_FIELDS.map((item) => ({ value: item.id, label: item.label }))}
+                onChange={(next) => setFieldIndex(CRON_FIELDS.findIndex((item) => item.id === next))}
+                size="sm" ariaLabel="时间字段" panelId={`${tabsId}-panel`} className="w-full [&>button]:flex-1" />
             </div>
-            <div role="tabpanel" id={`${tabsId}-panel`} aria-labelledby={`${tabsId}-${field.id}`} className="lg:flex lg:flex-1 lg:flex-col">
+            <div role="tabpanel" id={`${tabsId}-panel`} aria-labelledby={`${tabsId}-panel-${field.id}`}>
               {selectedField ? <CronFieldEditor field={field} value={selectedField} onChange={changeField} />
                 : <p className="py-4 text-sm leading-relaxed text-ink-3">请先在下方将当前表达式调整为五段，或选择常用表达式。</p>}
             </div>

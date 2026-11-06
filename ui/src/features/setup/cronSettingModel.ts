@@ -25,6 +25,7 @@ export type CronFieldMode = 'every' | 'interval' | 'range' | 'specific' | 'raw'
 export interface CronFieldDraft {
   mode: CronFieldMode
   start: string
+  intervalStart: string
   end: string
   step: string
   values: number[]
@@ -75,21 +76,22 @@ export function formatCronField(field: CronFieldDefinition, draft: CronFieldDraf
   if (draft.original !== undefined) return draft.original
   switch (draft.mode) {
     case 'every': return '*'
-    case 'specific': return draft.values.length ? [...draft.values].sort((a, b) => a - b).join(',') : '*'
+    case 'specific': return [...draft.values].sort((a, b) => a - b).join(',')
     case 'range': return draft.start === draft.end ? draft.start : `${draft.start}-${draft.end}`
-    case 'interval': return `${/^\d+$/.test(draft.start) && Number(draft.start) === field.min ? '*' : draft.start}/${draft.step}`
+    case 'interval': return `${/^\d+$/.test(draft.intervalStart) && Number(draft.intervalStart) === field.min ? '*' : draft.intervalStart}/${draft.step}`
     case 'raw': return draft.raw
   }
 }
 
 export function cronFieldError(field: CronFieldDefinition, draft: CronFieldDraft): string | null {
+  if (draft.mode === 'specific' && !draft.values.length) return '请至少选择一项。'
   if (validFieldExpression(field, formatCronField(field, draft))) return null
   return `请检查${field.label}：取值为 ${field.min}–${field.max}，范围递增，间隔不能超过剩余跨度。`
 }
 
 function parseCronField(field: CronFieldDefinition, expression: string): CronFieldDraft {
   const draft: CronFieldDraft = {
-    mode: 'raw', start: String(field.min), end: String(field.max), step: '1', values: [], raw: expression, original: expression,
+    mode: 'raw', start: String(field.min), intervalStart: String(field.min), end: String(field.max), step: '1', values: [], raw: expression, original: expression,
   }
   if (!validFieldExpression(field, expression)) return draft
   if (expression === '*') return { ...draft, mode: 'every' }
@@ -106,7 +108,7 @@ function parseCronField(field: CronFieldDefinition, expression: string): CronFie
   }
   const interval = /^(\*|\d+)\/(\d+)$/.exec(expression)
   if (interval && field.id !== 'week') {
-    return { ...draft, mode: 'interval', start: interval[1] === '*' ? String(field.min) : interval[1]!, step: interval[2]! }
+    return { ...draft, mode: 'interval', intervalStart: interval[1] === '*' ? String(field.min) : interval[1]!, step: interval[2]! }
   }
   // 混合列表、带结束值的步长等不强行映射，仍可在当前表达式输入框编辑。
   return draft
