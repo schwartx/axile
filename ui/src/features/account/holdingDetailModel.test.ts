@@ -126,11 +126,11 @@ describe('在途剩余数量核对', () => {
 
 it('数量模式追加尚未持有的标的，保留冻结小数而不伪造权重', () => {
   const quantityTarget: TargetWeightSnapshot = { ...target, weights: {}, target_mode: 'quantity',
-    raw_targets: { BTCUSDT: 0.0159 }, quantities: { BTCUSDT: 0.015 }, sizing: { ...target.sizing!, rows: {
-      BTCUSDT: { ...evidence, symbol: 'BTCUSDT', sizing_mode: 'quantity', raw_quantity: 0.0159, target_quantity: 0.015 },
+    raw_targets: { XAUUSD: 0.0159 }, quantities: { XAUUSD: 0.015 }, sizing: { ...target.sizing!, rows: {
+      XAUUSD: { ...evidence, symbol: 'XAUUSD', sizing_mode: 'quantity', raw_quantity: 0.0159, target_quantity: 0.015 },
     } } }
-  expect(holdingPreviewRows([], 0, quantityTarget, true)[0].symbol).toBe('BTCUSDT')
-  expect(holdingTarget(quantityTarget, 'BTCUSDT')).toMatchObject({ weight: null, quantity: 0.015 })
-  expect(holdingTarget({ ...quantityTarget, sizing: { ...quantityTarget.sizing!, status: 'pending_execution' } }, 'BTCUSDT').quantity).toBeNull()
-  expect(holdingTarget(quantityTarget, 'ETHUSDT').quantity).toBe(0)
+  expect(holdingPreviewRows([], 0, quantityTarget, true)[0].symbol).toBe('XAUUSD')
+  expect(holdingTarget(quantityTarget, 'XAUUSD')).toMatchObject({ weight: null, quantity: 0.015 })
+  expect(holdingTarget({ ...quantityTarget, sizing: { ...quantityTarget.sizing!, status: 'pending_execution' } }, 'XAUUSD').quantity).toBeNull()
+  expect(holdingTarget(quantityTarget, 'XAGUSD').quantity).toBe(0)
 })

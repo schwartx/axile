@@ -64,7 +64,7 @@ print(json.dumps({"instant":instant,"kind":kind,"negative":negative,"opaque":opa
     )
     assert observed["kind"] == "integer"
     assert observed["opaque"] == '{ "created_at" : "not-a-date", "nested":{"trade_time":"2026-07-01T09:00:00"}}'
-    assert observed["revision"] == "0034"
+    assert observed["revision"] == "0035"
     assert observed["integrity"] == "ok"
 
 
@@ -208,8 +208,8 @@ def test_custom_table_time_dependencies_leave_0033_unchanged(published_database,
         "CREATE TRIGGER custom_audit AFTER UPDATE ON 'account' WHEN NEW.'created_at_us'>0 BEGIN SELECT 1; END",
     ],
 )
-def test_custom_quoted_time_dependencies_leave_0034_unchanged_on_downgrade(published_database, definition):
-    assert native_store_call(published_database, "migration_upgrade", {})["public"] == "0034"
+def test_custom_quoted_time_dependencies_leave_head_unchanged_on_downgrade(published_database, definition):
+    assert native_store_call(published_database, "migration_upgrade", {})["public"] == "0035"
     _core.close_database(str(published_database))
     with closing(sqlite3.connect(published_database)) as connection, connection:
         connection.execute(definition)
@@ -240,9 +240,9 @@ def test_safe_custom_sql_and_opaque_json_survive_upgrade_downgrade_upgrade(publi
         )
         connection.execute("CREATE TRIGGER businessXfacts_0034_custom AFTER UPDATE ON account BEGIN SELECT 1; END")
     for operation, request, revision in [
-        ("migration_upgrade", {}, "0034"),
+        ("migration_upgrade", {}, "0035"),
         ("migration_downgrade", {"public": "0033"}, "0033"),
-        ("migration_upgrade", {}, "0034"),
+        ("migration_upgrade", {}, "0035"),
     ]:
         assert native_store_call(published_database, operation, request)["public"] == revision
         _core.close_database(str(published_database))
@@ -277,9 +277,9 @@ def test_safe_rowid_trigger_survives_upgrade_downgrade_upgrade(published_databas
         connection.execute(definition)
     for ordinal, (operation, request, revision) in enumerate(
         [
-            ("migration_upgrade", {}, "0034"),
+            ("migration_upgrade", {}, "0035"),
             ("migration_downgrade", {"public": "0033"}, "0033"),
-            ("migration_upgrade", {}, "0034"),
+            ("migration_upgrade", {}, "0035"),
         ]
     ):
         assert native_store_call(published_database, operation, request)["public"] == revision
@@ -315,9 +315,9 @@ def test_safe_rowid_fields_and_aliases_remain_distinct(published_database, witho
             )
     for ordinal, (operation, request, revision) in enumerate(
         [
-            ("migration_upgrade", {}, "0034"),
+            ("migration_upgrade", {}, "0035"),
             ("migration_downgrade", {"public": "0033"}, "0033"),
-            ("migration_upgrade", {}, "0034"),
+            ("migration_upgrade", {}, "0035"),
         ]
     ):
         assert native_store_call(published_database, operation, request)["public"] == revision
@@ -362,9 +362,9 @@ def test_generated_rowid_alias_shadow_preserves_safe_trigger(published_database,
         )
     for ordinal, (operation, request, revision) in enumerate(
         [
-            ("migration_upgrade", {}, "0034"),
+            ("migration_upgrade", {}, "0035"),
             ("migration_downgrade", {"public": "0033"}, "0033"),
-            ("migration_upgrade", {}, "0034"),
+            ("migration_upgrade", {}, "0035"),
         ]
     ):
         assert native_store_call(published_database, operation, request)["public"] == revision
@@ -415,9 +415,9 @@ def test_safe_generated_columns_recompute_and_preserve_json(published_database, 
             row for row in connection.execute("PRAGMA table_xinfo(notification_event)") if row[1] == "guard"
         )
     for operation, request, revision in [
-        ("migration_upgrade", {}, "0034"),
+        ("migration_upgrade", {}, "0035"),
         ("migration_downgrade", {"public": "0033"}, "0033"),
-        ("migration_upgrade", {}, "0034"),
+        ("migration_upgrade", {}, "0035"),
     ]:
         assert native_store_call(published_database, operation, request)["public"] == revision
         _core.close_database(str(published_database))

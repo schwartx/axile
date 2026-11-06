@@ -23,7 +23,7 @@ def test_invalid_target_values_migrate_without_losing_original_evidence(request)
             ),
             {"raw": json.dumps(expected["raw_weights"]), "normalized": json.dumps(expected["normalized_weights"])},
         )
-    _upgrade(database, "0034")
+    _upgrade(database, "head")
     actual = native_store_call(
         database, "target_operation", {"op": "latest_account", "account_id": 2, "portfolio_id": 11}
     )

@@ -140,7 +140,7 @@ def _assert_native_migrations() -> None:
     initialize_database()
     assert _core.migration_current(str(database), "{}")["public"] == "0035"
     with closing(sqlite3.connect(database)) as oracle:
-        assert oracle.execute("SELECT version_num FROM alembic_version").fetchall() == [("0034",)]
+        assert oracle.execute("SELECT version_num FROM alembic_version").fetchall() == [("0035",)]
         journal_mode = oracle.execute("PRAGMA journal_mode").fetchone()
         assert journal_mode == ("wal",), journal_mode
         before = list(oracle.iterdump())

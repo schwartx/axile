@@ -12,9 +12,9 @@ import { useLiveOrders } from '../src/stores/liveOrders'
 import type { CurrentOrdersSnapshot } from '../src/lib/api/orders'
 import '../src/styles/theme.css'
 
-const binance = new URLSearchParams(location.search).has('binance')
-const currency = binance ? 'USDT' : 'CNY'
-const units = { quantity_kind: binance ? 'base_asset' : 'contract', quantity_label: binance ? '' : '手', quantity_max_decimals: binance ? 8 : 0, price_label: binance ? 'USDT' : '元', notional_label: binance ? 'USDT' : '元' } as const
+const fractional = new URLSearchParams(location.search).has('fractional')
+const currency = fractional ? 'USD' : 'CNY'
+const units = { quantity_kind: fractional ? 'base_asset' : 'contract', quantity_label: fractional ? '' : '手', quantity_max_decimals: fractional ? 8 : 0, price_label: fractional ? 'USD' : '元', notional_label: fractional ? 'USD' : '元' } as const
 
 useLiveConnection.getState().apply({ stream_id: 'fixture', version: 1, kind: 'snapshot',
   data: [1, 2].map(account_id => ({ account_id, connection: { status: 'ready', observed_at: null, message: null, error: null } })) })

@@ -556,13 +556,13 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         schema(&connection);
         let saved = append_target_snapshot(&connection, &json!({"portfolio_id":7,"account_id":2,
-            "target_mode":"quantity","raw_weights":{"BTCUSDT":0.015},"normalized_weights":{"BTCUSDT":0.015},
+            "target_mode":"quantity","raw_weights":{"XAUUSD":0.015},"normalized_weights":{"XAUUSD":0.015},
             "source":"execution","execution_id":"quantity","calculated_at":"2026-11-06T00:00:00Z"})).unwrap();
         assert_eq!(saved["target_mode"], "quantity");
         let restored = execution_target_snapshot(&connection, "quantity")
             .unwrap()
             .unwrap();
         assert_eq!(restored["target_mode"], "quantity");
-        assert_eq!(restored["raw_weights"]["BTCUSDT"], 0.015);
+        assert_eq!(restored["raw_weights"]["XAUUSD"], 0.015);
     }
 }

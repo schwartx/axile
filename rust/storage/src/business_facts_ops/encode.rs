@@ -1269,7 +1269,7 @@ mod tests {
     fn quantity_input_roundtrips_with_explicit_mode() {
         let encoded = encode_inputs(
             "qty",
-            &json!({"target_mode":"quantity","curr_target":{"BTCUSDT":0.015}}),
+            &json!({"target_mode":"quantity","curr_target":{"XAUUSD":0.015}}),
             1,
             None,
             "now",
@@ -1279,7 +1279,7 @@ mod tests {
         let restored =
             business_detail::decode_input(&encoded.0, &encoded.1, &encoded.2, &encoded.3).unwrap();
         assert_eq!(restored["target_mode"], "quantity");
-        assert_eq!(restored["curr_target"]["BTCUSDT"], 0.015);
+        assert_eq!(restored["curr_target"]["XAUUSD"], 0.015);
         assert!(restored.get("audit_evidence").is_none());
     }
 }

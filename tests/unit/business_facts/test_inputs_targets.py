@@ -317,7 +317,7 @@ def test_input_primary_identity_cannot_point_at_a_different_owner(native_databas
 
 
 def test_quantity_input_roundtrip_preserves_mode_and_retry_identity(native_database):
-    payload = {"target_mode": "quantity", "curr_target": {"BTCUSDT": 0.015}, "strategy_target": {"BTCUSDT": 0.015}}
+    payload = {"target_mode": "quantity", "curr_target": {"XAUUSD": 0.015}, "strategy_target": {"XAUUSD": 0.015}}
     decoded, facts = _roundtrip(native_database, payload)
     assert decoded == payload
     assert facts["execution_input"][0]["target_mode"] == "quantity"

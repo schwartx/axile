@@ -46,7 +46,7 @@ export function sizingReasonText(row: SizingEvidenceRow | null | undefined, quan
   if (isQuantizedZero(row)) return quantityLabel === '手' ? '不足1手' : '不足最小单位'
   const reason = typeof row.reason_code === 'string' ? row.reason_code : ''
   if (reason === 'COMMON.SIZING.BELOW_MIN_QUANTITY') return '不足最小交易数量'
-  if (reason === 'BINANCE.SIZING.MISSING_QUANTITY_STEP') return '缺少数量步长'
+  if (reason.endsWith('.SIZING.MISSING_QUANTITY_STEP')) return '缺少数量步长'
   if (reason.endsWith('.SIZING.BELOW_MIN_NOTIONAL')) return '不足最小名义金额'
   if (reason.endsWith('.SIZING.PURE_REDUCE_BELOW_MIN_NOTIONAL')) return '纯减仓例外'
   if (row.reason_code === 'COMMON.SIZING.MISSING_MARKET_DATA') return '缺少当时行情'

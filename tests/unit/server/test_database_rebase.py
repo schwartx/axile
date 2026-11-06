@@ -18,8 +18,8 @@ def _schema(path):
 def test_empty_database_and_released_database_have_the_same_final_schema(tmp_path):
     fresh, upgraded = tmp_path / "fresh.db", tmp_path / "upgraded.db"
     initialize_native_database(upgraded, revision="0033")
-    assert initialize_native_database(fresh)["public"] == "0034"
-    assert initialize_native_database(upgraded)["public"] == "0034"
+    assert initialize_native_database(fresh)["public"] == "0035"
+    assert initialize_native_database(upgraded)["public"] == "0035"
     assert schema_differences(_schema(fresh), _schema(upgraded)) == []
     assert "backup" not in initialize_native_database(upgraded)
     with closing(connect(fresh)) as connection:
@@ -90,7 +90,7 @@ def test_readonly_migration_commands_keep_a_missing_database_missing(tmp_path):
     for operation in ("migration_current", "migration_check"):
         receipt = native_store_call(path, operation, {})
         assert receipt["public"] is None
-        assert receipt["public_target"] == "0034"
+        assert receipt["public_target"] == "0035"
     assert not path.exists()
 
 

@@ -315,27 +315,27 @@ test('direct quantity targets keep their unit and do not display percentage weig
 })
 
 
-test('fractional Binance quantities keep decimals through the holding dialog', async ({ page }, testInfo) => {
+test('fractional quantities keep decimals through the holding dialog', async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: 'reduce' })
   await mock(page, { emptyOrders: true })
   await page.route('**/api/v1/account/*/asset_snapshots*', route => route.fulfill({ json: {
-    ...assets, data: [{ ...assets.data[0], assets: { total_asset: 10_000, currency: 'USDT', positions: [
-      { symbol: 'BTCUSDT', direction: '多头', volume: 0.01, available_volume: 0.01, market_value: 1_000 },
+    ...assets, data: [{ ...assets.data[0], assets: { total_asset: 10_000, currency: 'USD', positions: [
+      { symbol: 'XAUUSD', direction: '多头', volume: 0.01, available_volume: 0.01, market_value: 1_000 },
     ] } }],
   } }))
   await page.route('**/api/v1/account/*/target_snapshot', route => route.fulfill({ json: {
-    ...target, weights: {}, strategy_weights: null, target_mode: 'quantity', raw_targets: { BTCUSDT: 0.0159 },
-    quantities: { BTCUSDT: 0.015 }, sizing: { ...target.sizing, rows: { BTCUSDT: { ...evidence,
-      symbol: 'BTCUSDT', sizing_mode: 'quantity', account_weight: null, strategy_weight: null,
+    ...target, weights: {}, strategy_weights: null, target_mode: 'quantity', raw_targets: { XAUUSD: 0.0159 },
+    quantities: { XAUUSD: 0.015 }, sizing: { ...target.sizing, rows: { XAUUSD: { ...evidence,
+      symbol: 'XAUUSD', sizing_mode: 'quantity', account_weight: null, strategy_weight: null,
       reason_code: 'COMMON.SIZING.QUANTIZED', raw_quantity: 0.0159, target_quantity: 0.015,
       quantity_step: 0.001, min_quantity: 0.001, account_multiplier: null, weight_precision: null,
     } } },
   } }))
-  await page.goto('/e2e/holdings.html?binance=1')
-  await page.getByRole('button', { name: '查看 BTCUSDT 持仓与目标' }).click()
+  await page.goto('/e2e/holdings.html?fractional=1')
+  await page.getByRole('button', { name: '查看 XAUUSD 持仓与目标' }).click()
   const dialog = page.getByRole('dialog')
   await expect(dialog.getByText('直接数量目标 多0.0159', { exact: true })).toBeVisible()
   await expect(dialog.getByText('目标持仓', { exact: true }).locator('..').locator('dd')).toContainText('多0.015')
   await expect(dialog.getByText(/权益.*×/)).toHaveCount(0)
-  await page.screenshot({ path: testInfo.outputPath('binance-quantity-target.png') })
+  await page.screenshot({ path: testInfo.outputPath('fractional-quantity-target.png') })
 })

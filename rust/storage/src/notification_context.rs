@@ -768,13 +768,13 @@ mod tests {
     }
     #[test]
     fn quantity_notification_does_not_label_native_units_as_weight() {
-        let detail = json!({"input":{"target_mode":"quantity","curr_target":{"BTCUSDT":0.015}},
-            "result":{"status":"SUCCEEDED","channel_type":"binance","account_assets":{"total_asset":1000,
-                "available_cash":900,"market_value":100,"positions":[{"symbol":"BTCUSDT","volume":0.015,"direction":"多头","market_value":100}]},
-                "symbol_results":{"BTCUSDT":{"target_volume":0.015}}}});
+        let detail = json!({"input":{"target_mode":"quantity","curr_target":{"XAUUSD":0.015}},
+            "result":{"status":"SUCCEEDED","channel_type":"fractional","account_assets":{"total_asset":1000,
+                "available_cash":900,"market_value":100,"positions":[{"symbol":"XAUUSD","volume":0.015,"direction":"多头","market_value":100}]},
+                "symbol_results":{"XAUUSD":{"target_volume":0.015}}}});
         let context = preview(&detail, "account", "now", "original").unwrap();
         assert_eq!(context["targets"]["mode"], "quantity");
-        assert_eq!(context["targets"]["current"]["BTCUSDT"], 0.015);
+        assert_eq!(context["targets"]["current"]["XAUUSD"], 0.015);
         assert!(context["positions"][0]["target_weight"].is_null());
         assert_eq!(context["positions"][0]["target_volume"], 0.015);
     }
