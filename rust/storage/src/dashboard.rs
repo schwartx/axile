@@ -124,7 +124,7 @@ pub fn dashboard_inputs(connection: &Connection, account_ids: &[i64]) -> Result<
             ORDER BY s.id DESC LIMIT 1)),
         targets AS (SELECT t.* FROM bindings b JOIN target_weight_snapshot t ON t.id=(
             SELECT id FROM target_weight_snapshot WHERE account_id=b.account_id
-                AND portfolio_id=b.portfolio_id AND normalized_weights_kind NOT IN ('missing','null')
+                AND portfolio_id=b.portfolio_id AND normalized_weights_kind NOT IN ('null','missing')
             ORDER BY id DESC LIMIT 1))";
     let mut observations = observations(connection, cte, &ids)?;
     let mut targets = targets(connection, cte, &ids)?;
@@ -178,7 +178,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn latest_queries_do_not_scan_valid_history() {
+    fn latest_queries_do_not_scan_valid_or_unrelated_history() {
         let path = std::env::temp_dir().join(format!(
             "axile-latest-query-work-{}.sqlite",
             std::process::id()
@@ -188,9 +188,11 @@ mod tests {
         let connection = Connection::open(&path).unwrap();
         crate::calendar::register_time_function(&connection).unwrap();
         connection.execute_batch("INSERT INTO account(id,name,market,trade_channel,brokerage,created_at_us,updated_at_us)
-                VALUES(1,'latest','futures','ctp','',1793059200000000,1793059200000000);
+                VALUES(1,'latest','futures','ctp','',1793059200000000,1793059200000000),
+                      (2,'other','futures','ctp','',1793059200000000,1793059200000000);
             INSERT INTO portfolio(id,name,market,custom_calc_py_code,created_at_us,updated_at_us)
-                VALUES(7,'latest','futures','',1793059200000000,1793059200000000);
+                VALUES(7,'latest','futures','',1793059200000000,1793059200000000),
+                      (8,'other','futures','',1793059200000000,1793059200000000);
             CREATE TEMP TABLE history(id INTEGER PRIMARY KEY);
             WITH RECURSIVE ids(id) AS (VALUES(1) UNION ALL SELECT id+1 FROM ids WHERE id<10000)
                 INSERT INTO history SELECT id FROM ids;
@@ -218,6 +220,12 @@ mod tests {
                     SELECT id,1,7,1793091600000000 FROM history WHERE id>{previous} AND id<={count};
                 INSERT INTO target_weight_snapshot(id,account_id,portfolio_id,source,calculated_at_us,normalized_weights_kind,weights_metadata)
                     SELECT id,1,7,'manual',1793091600000000,'mapping','{{}}' FROM history WHERE id>{previous} AND id<={count};
+                INSERT INTO target_weight_snapshot(id,account_id,portfolio_id,source,calculated_at_us,normalized_weights_kind,weights_metadata)
+                    SELECT id+10000,1,7,'manual',1793091600000000,'null','{{}}' FROM history WHERE id>{previous} AND id<={count};
+                INSERT INTO target_weight_snapshot(id,account_id,portfolio_id,source,calculated_at_us,normalized_weights_kind,weights_metadata)
+                    SELECT id+20000,2,8,'manual',1793091600000000,'mapping','{{}}' FROM history WHERE id>{previous} AND id<={count};
+                INSERT INTO target_weight_snapshot(id,account_id,portfolio_id,source,calculated_at_us,normalized_weights_kind,weights_metadata)
+                    SELECT id+30000,1,8,'manual',1793091600000000,'missing','{{}}' FROM history WHERE id>{previous} AND id<={count};
                 INSERT INTO executerecord(id,account_id,execution_id,is_success,created_at_us,facts_complete)
                     SELECT id,1,'e'||id,1,1793091600000000,1 FROM history WHERE id>{previous} AND id<={count};
                 COMMIT;")).unwrap();
@@ -242,14 +250,41 @@ mod tests {
             assert_eq!(latest["id"], count);
             let latest_steps = steps.swap(0, Ordering::Relaxed);
             crate::asset_ops::ensure_execution_asset_snapshot(&connection, 0).unwrap();
-            let ensure_steps = steps.load(Ordering::Relaxed);
+            let ensure_steps = steps.swap(0, Ordering::Relaxed);
+            connection
+                .execute(
+                    "UPDATE portfolioaccount SET portfolio_id=8 WHERE id=?1",
+                    [count],
+                )
+                .unwrap();
+            steps.store(0, Ordering::Relaxed);
+            assert!(dashboard_inputs(&connection, &[1]).unwrap()["1"]["target_weights"].is_null());
+            let missing_dashboard_steps = steps.swap(0, Ordering::Relaxed);
+            assert!(
+                crate::target_ops::latest_account_target_snapshot(&connection, 1, 8)
+                    .unwrap()
+                    .is_none()
+            );
+            let missing_target_steps = steps.load(Ordering::Relaxed);
             connection.progress_handler(0, None::<fn() -> bool>);
-            work.push([dashboard_steps, latest_steps, ensure_steps]);
+            work.push([
+                dashboard_steps,
+                latest_steps,
+                ensure_steps,
+                missing_dashboard_steps,
+                missing_target_steps,
+            ]);
             previous = count;
         }
-        for (index, query) in ["dashboard", "latest", "execution snapshot"]
-            .iter()
-            .enumerate()
+        for (index, query) in [
+            "dashboard",
+            "latest",
+            "execution snapshot",
+            "dashboard without target",
+            "missing target",
+        ]
+        .iter()
+        .enumerate()
         {
             assert!(work[1][index] <= work[0][index] * 2, "{query}: {work:?}");
         }

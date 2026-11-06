@@ -515,6 +515,10 @@ pub fn migration_upgrade(path: &str, request: &Value) -> Result<Value, AnalysisE
             current.private = true;
         }
         move_public(connection, &mut current, targets.public, true)?;
+        if current.public == PUBLIC_HEAD_NUMBER {
+            // 已有 0034 数据库也需补齐索引，无需重建业务事实。
+            structured::install_target_query_index(connection)?;
+        }
         if crosses_structured {
             connection
                 .execute_batch(include_str!("migrations/cleanup_backups.sql"))
@@ -654,6 +658,44 @@ mod tests {
             migration_downgrade(path.as_str(), &dual_request("0033", "head")).unwrap();
             migration_upgrade(path.as_str(), &dual_request("head", "head")).unwrap();
         }
+    }
+
+    #[test]
+    fn target_query_index_is_backfilled_on_0034_upgrade_and_removed_on_downgrade() {
+        let path = DatabasePath::new();
+        migration_upgrade(path.as_str(), &json!({})).unwrap();
+        let connection = Connection::open(path.as_str()).unwrap();
+        connection
+            .execute_batch("DROP INDEX ix_target_weight_snapshot_account_portfolio_id")
+            .unwrap();
+        migration_current(path.as_str(), &json!({})).unwrap();
+        migration_check(path.as_str(), &json!({})).unwrap();
+        let index_count = || -> i64 {
+            connection.query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE type='index' AND name='ix_target_weight_snapshot_account_portfolio_id'",
+                [], |row| row.get(0),
+            ).unwrap()
+        };
+        assert_eq!(index_count(), 0);
+        for _ in 0..2 {
+            assert_eq!(
+                migration_upgrade(path.as_str(), &json!({})).unwrap()["public"],
+                "0034"
+            );
+            assert_eq!(index_count(), 1);
+        }
+        let columns = connection
+            .prepare("PRAGMA index_info(ix_target_weight_snapshot_account_portfolio_id)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(2))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(columns, ["account_id", "portfolio_id", "id"]);
+        migration_downgrade(path.as_str(), &json!({"public":"0033"})).unwrap();
+        assert_eq!(index_count(), 0);
+        migration_upgrade(path.as_str(), &json!({})).unwrap();
+        assert_eq!(index_count(), 1);
     }
 
     #[test]
