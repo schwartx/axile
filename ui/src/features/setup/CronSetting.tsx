@@ -1,6 +1,7 @@
 import { useId, useRef, useState } from 'react'
 import { Clock3 } from 'lucide-react'
 import { CenteredModal } from '@/components/ui/CenteredModal'
+import { OverflowText } from '@/components/ui/OverflowText'
 import { Select } from '@/components/ui/Select'
 import { Segmented } from '@/components/ui/Segmented'
 import { CronFieldEditor } from '@/features/setup/CronFieldEditor'
@@ -97,8 +98,8 @@ export function CronSetting({ value, onConfirm }: { value: string; onConfirm: (v
               <button type="button" aria-label={`编辑表达式 ${index + 1}`} aria-pressed={selected.id === rule.id} onClick={() => setSelectedId(rule.id)} className="flex min-w-0 flex-1 items-start gap-2 text-left">
                 <span aria-hidden="true" className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[11px] tabular-nums ${selected.id === rule.id ? 'bg-accent text-white' : 'bg-fill text-ink-3'}`}>{index + 1}</span>
                 <span className="min-w-0 flex-1">
-                  <span title={descriptions[index]} className={`line-clamp-3 text-[13px] leading-[22px] ${errors[index] ? 'text-warn' : 'text-ink-1'}`}>{descriptions[index]}</span>
-                  <span title={rule.raw} className="mt-1 block truncate font-mono text-xs leading-relaxed text-ink-3">{rule.raw || '空表达式'}</span>
+                  <span className={`line-clamp-3 text-[13px] leading-[22px] ${errors[index] ? 'text-warn' : 'text-ink-1'}`}>{descriptions[index]}</span>
+                  <OverflowText text={rule.raw || '空表达式'} className="mt-1 font-mono text-xs leading-relaxed text-ink-3" />
                   {errors[index] && <span id={`${tabsId}-error-${rule.id}`} role="alert" className="mt-1 block text-xs leading-relaxed text-warn">{errors[index]}</span>}
                 </span>
               </button>
