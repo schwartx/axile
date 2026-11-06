@@ -10,7 +10,6 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { InkRewrite } from '@/components/ui/InkRewrite'
 import { OverflowText } from '@/components/ui/OverflowText'
-import { Select } from '@/components/ui/Select'
 import { Segmented } from '@/components/ui/Segmented'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { ConfirmModal, type ConfirmSpec } from '@/components/ui/ConfirmModal'
@@ -29,6 +28,7 @@ import type { BatchResult } from '@/features/portfolio/batchExecutionSnapshot'
 import { targetSnapshotText } from '@/features/portfolio/targetSnapshotDisplay'
 import { portfolioTargetSummary } from '@/features/portfolio/portfolioCardSummary'
 import { useCustomCalcValidation } from '@/features/portfolio/useCustomCalcValidation'
+import { PortfolioTrialAccounts } from '@/features/portfolio/PortfolioTrialAccounts'
 import { portfolioNameVtName } from '@/features/portfolio/viewTransition'
 import { usePolling } from '@/lib/hooks/usePolling'
 import { useTargetSnapshot } from '@/lib/hooks/useTargetSnapshot'
@@ -37,7 +37,6 @@ import {
   getPortfolioTargetSnapshot,
   refreshPortfolioTargetSnapshot,
   updatePortfolio,
-  runAndSavePortfolio,
 } from '@/lib/api/portfolios'
 import { triggerExecute } from '@/lib/api/executions'
 import { useDomainStore } from '@/stores/domain'
@@ -278,20 +277,6 @@ export function PortfolioEditPage() {
     })
   }
 
-  const runAndPublish = async () => {
-    if (saving) return
-    const submitted = { name: name.trim(), code }
-    const result = await calc.run((draft) => runAndSavePortfolio(portfolioId, {
-      name: submitted.name, custom_calc_py_code: draft, account_id: calc.accountId,
-    }))
-    if (result?.valid) {
-      setOriginal(submitted)
-      toast('组合与目标快照已保存')
-      void refreshPortfolios()
-      void weights.reloadSnapshot()
-    }
-  }
-
   const restore = () => {
     draftState.restore()
     saveState.clearError()
@@ -397,16 +382,16 @@ export function PortfolioEditPage() {
           )}
 
           <div className="flex-none">
-            <div className="mt-4 flex flex-col gap-1.5">
-                <Select<number | null>
-                  ariaLabel="试跑数据来源"
-                  value={calc.accountId}
-                  onChange={calc.setAccountId}
-                  options={calc.contextOptions}
-                  className="w-full justify-between px-2.5 py-1.5 text-[13.5px]"
+            <div className="flex flex-col gap-2">
+                <PortfolioTrialAccounts
+                  accounts={calc.accounts}
+                  accountId={calc.accountId}
+                  portfolioId={portfolioId}
+                  onSelect={calc.setAccountId}
+                  onLeverageChange={calc.setLeverageDraft}
+                  leverageEditing={calc.leverageEditing}
+                  disabled={calc.validating || saving}
                 />
-                {/* 来源警示：选真实账户才升琥珀（主动交易有真实委托）。
-                    样例来源不再加说明——Select 选项本身已写「不连接真实渠道」，此处零信号。 */}
                 {calc.accountId != null && (
                 <p className="border-l-2 border-warn pl-2 text-[12.5px] leading-5">
                   <InkRewrite
@@ -419,16 +404,17 @@ export function PortfolioEditPage() {
                 <button
                   type="button"
                   className="inline-flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-[6px] border-0 bg-ink-1 px-3 py-1.5 text-[14px] font-[550] text-surface disabled:cursor-default disabled:opacity-45"
-                  onClick={() => void runAndPublish()}
-                  disabled={!calc.canRun || saving || !name.trim()}
+                  onClick={() => void calc.run()}
+                  disabled={!calc.canRun || saving}
                 >
                   <Play size={14} />
                   <InkRewrite
                     tone="label"
-                    text={calc.validating ? '试跑中…' : saving ? '保存中…' : '试跑并保存'}
+                    text={calc.validating ? '试跑中…' : saving ? '保存中…' : '试跑'}
                     textClassName="text-surface"
                   />
                 </button>
+                <InkRewrite text={calc.blockedReason ?? ''} tone="label" className="text-[12px] text-ink-3" />
             </div>
 
           </div>
@@ -557,6 +543,7 @@ export function PortfolioEditPage() {
             saveState.clearError()
           }}
           running={calc.validating}
+          runDisabled={!calc.canRun || saving}
           stale={calc.stale}
           result={calc.editorResult}
           onRun={() => void calc.run()}

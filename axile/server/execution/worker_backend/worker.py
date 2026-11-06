@@ -234,11 +234,12 @@ def _handle_calculate_portfolio(
         )
         watchdog.start()
         long_leverage, short_leverage = resolve_account_leverages(account)
+        overrides = cast("dict[str, float]", request.payload.get("leverage_overrides", {}))
         context = Context(
             cast("PortfolioExecutor", executor),
             settings=ContextSettings(
-                long_leverage=long_leverage,
-                short_leverage=short_leverage,
+                long_leverage=overrides.get("long_leverage", long_leverage),
+                short_leverage=overrides.get("short_leverage", short_leverage),
                 weight_precision=account.weight_precision,
             ),
         )

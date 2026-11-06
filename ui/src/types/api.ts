@@ -400,6 +400,12 @@ export interface AccountControlPolicyEditorModel {
   groups: AccountControlGroupMeta[]
 }
 
+/** 本次组合试跑的临时杠杆，不写入账户配置。 */
+export interface TrialLeverageOverrides {
+  long_leverage?: number
+  short_leverage?: number
+}
+
 /** 仪表盘聚合中的单账户项，对应 `AccountDashboardItemPublic`。 */
 export interface AccountDashboardItem {
   connection?: AccountConnection

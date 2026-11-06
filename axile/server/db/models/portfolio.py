@@ -73,17 +73,29 @@ class PortfolioCreate(PortfolioBase):
     model_config = ConfigDict(extra="forbid")
 
 
+class TrialLeverageOverrides(Model):
+    """仅本次试跑使用的杠杆覆盖值，不写入账户。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    long_leverage: float | None = Field(default=None, ge=0, allow_inf_nan=False, strict=True)
+    short_leverage: float | None = Field(default=None, ge=0, allow_inf_nan=False, strict=True)
+
+
 class ValidateCustomCalcRequest(Model):
     """校验自定义组合脚本的请求载荷."""
 
     custom_calc_py_code: str
     account_id: Optional[int] = None
+    leverage_overrides: TrialLeverageOverrides | None = None
 
 
-class RunAndSavePortfolioRequest(ValidateCustomCalcRequest):
+class RunAndSavePortfolioRequest(Model):
     """试跑成功后保存代码和原始目标快照。"""
 
     name: str = Field(min_length=1)
+    custom_calc_py_code: str
+    account_id: Optional[int] = None
 
 
 class ValidateCustomCalcResponse(Model):

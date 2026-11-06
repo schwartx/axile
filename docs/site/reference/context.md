@@ -33,6 +33,8 @@ def calculate_portfolio(context):
 
 `context.settings` 固定为本次计算的配置快照，不包含渠道凭据。无账户样例使用多空杠杆 `1.0`、权重精度 `0.01`。权重模式仍会在执行层应用对应方向的账户杠杆和权重精度；数量模式直接指定最终目标数量，跳过这两项缩放。
 
+组合工作台的临时杠杆只覆盖本次试跑的 `settings.long_leverage` 和 `settings.short_leverage`，不修改账户配置、常驻执行器或已保存目标。调整后可直接试跑，确认后再显式保存到账户。未读取这两个字段的组合函数，其原始输出不会因临时杠杆而自动缩放。
+
 | 模型 | 常用字段 |
 | --- | --- |
 | 账户资产 | `total_asset`、`available_cash`、`market_value`、`positions`、`currency`、`source` |

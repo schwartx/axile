@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Response, status
 from loguru import logger
 
+from axile.channels import get_channel
 from axile.executor.models.portfolio_target import PortfolioTarget
 from axile.server._native import _core
 from axile.server.db.models import (
@@ -162,13 +163,19 @@ async def refresh_portfolio_target_snapshot(portfolio_id: int) -> TargetWeightSn
 async def _run_custom_calc_validation(
     account: AccountContext | None,
     custom_calc_py_code: str,
+    *,
+    leverage_overrides: dict[str, float] | None = None,
 ) -> ValidateCustomCalcResponse:
     """在给定上下文中试跑自定义组合函数并返回结构化结果."""
     try:
         if account is None:
             result = await asyncio.to_thread(calculate_sample_portfolio, custom_calc_py_code)
         else:
-            result = await calculate_portfolio_for_account(account, custom_calc_py_code)
+            result = await calculate_portfolio_for_account(
+                account,
+                custom_calc_py_code,
+                **({"leverage_overrides": leverage_overrides} if leverage_overrides else {}),
+            )
     except BaseException as exc:  # noqa: BLE001 - 校验接口统一返回执行器与 IPC 错误
         error = exc if isinstance(exc, PortfolioFunctionError) else _error_from_exception(exc)
         return ValidateCustomCalcResponse(
@@ -188,12 +195,24 @@ async def _run_custom_calc_validation(
 async def validate_custom_calc(payload: ValidateCustomCalcRequest) -> ValidateCustomCalcResponse:
     """使用样例或真实账户上下文试跑自定义组合函数。"""
     account = None
+    overrides = payload.leverage_overrides.model_dump(exclude_none=True) if payload.leverage_overrides else {}
+    if overrides and payload.account_id is None:
+        raise HTTPException(status_code=422, detail="临时杠杆需要选择账户")
     if payload.account_id is not None:
         value = await _portfolio_native(
             "portfolio_operation", {"op": "validation_context", "account_id": payload.account_id}
         )
         account = AccountSnapshot.model_validate(value)
-    return await _run_custom_calc_validation(account, payload.custom_calc_py_code)
+        limits = get_channel(account.trade_channel).descriptor.leverage
+        for name, leverage in overrides.items():
+            steps = (leverage - limits.min) / limits.step
+            if not limits.min <= leverage <= limits.max or abs(steps - round(steps)) > 1e-9:
+                raise HTTPException(
+                    status_code=422, detail=f"{name} 需在 {limits.min:g}..{limits.max:g} 之间，步进 {limits.step:g}"
+                )
+    return await _run_custom_calc_validation(
+        account, payload.custom_calc_py_code, **({"leverage_overrides": overrides} if overrides else {})
+    )
 
 
 @router.post("/{portfolio_id:int}/run_and_save", response_model=ValidateCustomCalcResponse)

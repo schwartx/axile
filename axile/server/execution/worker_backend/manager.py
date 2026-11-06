@@ -1173,6 +1173,7 @@ class WorkerBackendManager:
         code: str,
         *,
         execution_id: str | None = None,
+        leverage_overrides: dict[str, float] | None = None,
     ) -> PortfolioTarget:
         """通过账户常驻 worker 执行自定义组合函数，失败后丢弃 worker."""
         if execution_id is None:
@@ -1183,7 +1184,7 @@ class WorkerBackendManager:
             command="calculate_portfolio",
             account_payload=account.model_dump(mode="json"),
             execution_id=execution_id,
-            payload={"code": code},
+            payload={"code": code, **({"leverage_overrides": leverage_overrides} if leverage_overrides else {})},
         )
         response = await asyncio.to_thread(
             self._request_blocking,

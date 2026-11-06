@@ -7,6 +7,7 @@ import type {
   PortfolioList,
   TargetWeightSnapshot,
   ValidateCustomCalcResult,
+  TrialLeverageOverrides,
 } from '@/types/api'
 
 /** 组合列表（不含策略）。 */
@@ -39,6 +40,7 @@ export function refreshPortfolioTargetSnapshot(id: number): Promise<TargetWeight
 export function validateCustomCalc(body: {
   custom_calc_py_code: string
   account_id?: number | null
+  leverage_overrides?: TrialLeverageOverrides | null
 }): Promise<ValidateCustomCalcResult> {
   return apiSend<ValidateCustomCalcResult>('POST', '/portfolio/validate_custom_calc', body)
 }

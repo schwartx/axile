@@ -589,7 +589,8 @@ def test_manager_maps_structured_error_to_failed_output() -> None:
     }
 
 
-def test_calculate_portfolio_keeps_replacement_after_ctp_session_recovery(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("overrides", [None, {"long_leverage": 4.0, "short_leverage": 0.0}])
+def test_calculate_portfolio_keeps_replacement_after_ctp_session_recovery(monkeypatch, overrides) -> None:
     manager = WorkerBackendManager()
     monkeypatch.setattr(manager, "_check_read_session", lambda _: None)
     account = build_account(id=2)
@@ -599,6 +600,8 @@ def test_calculate_portfolio_keeps_replacement_after_ctp_session_recovery(monkey
         del func
         request = args[1]
         assert isinstance(request, WorkerBackendRequest)
+        assert request.account_payload == account.model_dump(mode="json")
+        assert request.payload == {"code": "code", **({"leverage_overrides": overrides} if overrides else {})}
         return WorkerBackendResponse(
             request_id=request.request_id,
             kind="error",
@@ -617,7 +620,7 @@ def test_calculate_portfolio_keeps_replacement_after_ctp_session_recovery(monkey
     monkeypatch.setattr(manager, "drop_account", fake_drop_account)
 
     with pytest.raises(WorkerBackendExecutionError, match="return_code=-2"):
-        asyncio.run(manager.calculate_portfolio(account, "code"))
+        asyncio.run(manager.calculate_portfolio(account, "code", leverage_overrides=overrides))
 
     assert dropped == []
 
@@ -954,7 +957,8 @@ def test_query_waiting_on_disconnected_worker_cannot_use_or_recreate_it(monkeypa
 
 
 @pytest.mark.parametrize("mode", ["success", "script_error", "prepare_error"])
-def test_calculate_worker_keeps_script_and_prepare_error_channels(monkeypatch, mode):
+@pytest.mark.parametrize("overrides", [None, {"long_leverage": 4.0, "short_leverage": 0.0}])
+def test_calculate_worker_keeps_script_and_prepare_error_channels(monkeypatch, mode, overrides):
     from axile.executor.ctp.ctp_execute import CtpSessionRecoveryRequired
     from axile.server.context import SamplePortfolioExecutor
     from axile.server.execution.worker_backend import worker
@@ -993,9 +997,10 @@ def test_calculate_worker_keeps_script_and_prepare_error_channels(monkeypatch, m
         account_payload=build_account(id=2, long_leverage=2.0, short_leverage=0.5, weight_precision=0.001).model_dump(
             mode="json"
         ),
-        payload={"code": code},
+        payload={"code": code, **({"leverage_overrides": overrides} if overrides else {})},
     )
-    response = worker._handle_calculate_portfolio(request, _WorkerBackendState())
+    state = _WorkerBackendState()
+    response = worker._handle_calculate_portfolio(request, state)
     assert len(finalized) == 1
     if mode == "prepare_error":
         assert response.kind == "error" and response.error.type == "ctp_session_recovery_required"
@@ -1008,10 +1013,18 @@ def test_calculate_worker_keeps_script_and_prepare_error_channels(monkeypatch, m
             assert isinstance(result, PortfolioFunctionError)
             assert result.error_line == 2 and result.error_type == "ValueError"
         else:
+            expected_long = overrides["long_leverage"] if overrides else 2.0
+            expected_short = overrides["short_leverage"] if overrides else 0.5
             assert result == {
                 "mode": "weight",
-                "targets": {"x": 0.25, "long": 2.0, "short": 0.5, "precision": 0.001},
+                "targets": {"x": 0.25, "long": expected_long, "short": expected_short, "precision": 0.001},
             }
+            assert request.account_payload["long_leverage"] == 2.0
+            assert request.account_payload["short_leverage"] == 0.5
+            request.payload.pop("leverage_overrides", None)
+            again = worker._handle_calculate_portfolio(request, state)
+            assert again.output_payload["portfolio_result"]["targets"]["long"] == 2.0
+            assert again.output_payload["portfolio_result"]["targets"]["short"] == 0.5
 
 
 def test_termination_cancellation_facts_survive_worker_response_and_manager():
