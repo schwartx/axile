@@ -94,17 +94,20 @@ export function CronSetting({ value, onConfirm }: { value: string; onConfirm: (v
           </div>
           <div ref={listRef} className="quiet-scrollbar space-y-2 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain lg:pr-1 lg:[scrollbar-gutter:stable]">
             {rules.map((rule, index) => <div key={rule.id}
-              className={`flex items-start gap-2 rounded-lg border px-3 py-2 transition-colors ${errors[index] ? 'border-warn' : selected.id === rule.id ? 'border-accent bg-accent-soft' : 'border-line hover:border-accent/60'}`}>
-              <button type="button" aria-label={`编辑表达式 ${index + 1}`} aria-pressed={selected.id === rule.id} onClick={() => setSelectedId(rule.id)} className="flex min-w-0 flex-1 items-start gap-2 text-left">
+              className={`relative rounded-lg border px-3 py-2 transition-colors ${errors[index] ? 'border-warn' : selected.id === rule.id ? 'border-accent bg-accent-soft' : 'border-line hover:border-accent/60'}`}>
+              <button type="button" aria-label={`编辑表达式 ${index + 1}`} aria-pressed={selected.id === rule.id} onClick={() => setSelectedId(rule.id)} className="flex w-full min-w-0 items-start gap-2 text-left">
                 <span aria-hidden="true" className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[11px] tabular-nums ${selected.id === rule.id ? 'bg-accent text-white' : 'bg-fill text-ink-3'}`}>{index + 1}</span>
                 <span className="min-w-0 flex-1">
-                  <span className={`line-clamp-3 text-[13px] leading-[22px] ${errors[index] ? 'text-warn' : 'text-ink-1'}`}>{descriptions[index]}</span>
+                  <span className={`flow-root text-[13px] leading-[22px] ${errors[index] ? 'text-warn' : 'text-ink-1'}`}>
+                    {rules.length > 1 && <span aria-hidden="true" className="float-right ml-2 h-8 w-8" />}
+                    {descriptions[index]}
+                  </span>
                   <OverflowText text={rule.raw || '空表达式'} className="mt-1 font-mono text-xs leading-relaxed text-ink-3" />
                   {errors[index] && <span id={`${tabsId}-error-${rule.id}`} role="alert" className="mt-1 block text-xs leading-relaxed text-warn">{errors[index]}</span>}
                 </span>
               </button>
               {rules.length > 1 && <button type="button" aria-label={`删除表达式 ${index + 1}`} onClick={() => removeRule(rule.id)}
-                className="inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-md text-ink-2 transition-colors hover:bg-warn/10 hover:text-warn focus-visible:bg-warn/10 focus-visible:text-warn focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-warn motion-reduce:transition-none">
+                className="absolute right-3 top-2 inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-ink-2 transition-colors hover:bg-warn/10 hover:text-warn focus-visible:bg-warn/10 focus-visible:text-warn focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-warn motion-reduce:transition-none">
                 <Trash2 size={16} aria-hidden="true" />
               </button>}
             </div>)}
