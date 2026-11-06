@@ -16,7 +16,9 @@ const MAX_ROWS = 3
  * compact 用于向导，单行展示、无分隔线，溢出数量显示为 +N。
  * 可见数量是布局决策，不写死在数据层；测量在 useLayoutEffect 内完成，首帧即收敛，无入场跳变。
  */
-export function TargetChips({ entries, compact = false }: { entries: PortfolioTargetEntry[]; compact?: boolean }) {
+export function TargetChips({ entries, compact = false, quantityUnit = '' }: {
+  entries: PortfolioTargetEntry[]; compact?: boolean; quantityUnit?: string
+}) {
   const maxRows = compact ? 1 : MAX_ROWS
   const moreLabel = (count: number) => compact ? `+${count}` : `另有 ${count} 个`
   const rowRef = useRef<HTMLDivElement>(null)
@@ -75,7 +77,7 @@ export function TargetChips({ entries, compact = false }: { entries: PortfolioTa
     const observer = new ResizeObserver(fit)
     observer.observe(row)
     return () => observer.disconnect()
-  }, [signature, maxRows])
+  }, [signature, maxRows, quantityUnit])
 
   const hiddenCount = entries.length - visibleCount
   return (
@@ -83,24 +85,26 @@ export function TargetChips({ entries, compact = false }: { entries: PortfolioTa
       {/* 测量层：保持布局但不显示，读到的即各 chip 的固有宽度。 */}
       <div ref={measureRef} className="invisible absolute left-0 top-0 flex items-center gap-1.5" aria-hidden="true">
         {entries.map((entry) => (
-          <TargetChip key={entry.symbol} entry={entry} />
+          <TargetChip key={entry.symbol} entry={entry} quantityUnit={quantityUnit} />
         ))}
         {(entries.length > 1 || compact) && <Chip className="flex-none whitespace-nowrap text-ink-3">{moreLabel(entries.length)}</Chip>}
       </div>
       {entries.slice(0, visibleCount).map((entry) => (
-        <TargetChip key={entry.symbol} entry={entry} />
+        <TargetChip key={entry.symbol} entry={entry} quantityUnit={quantityUnit} />
       ))}
       {hiddenCount > 0 && <Chip className="flex-none whitespace-nowrap text-ink-3">{moreLabel(hiddenCount)}</Chip>}
     </div>
   )
 }
 
-function TargetChip({ entry }: { entry: PortfolioTargetEntry }) {
+function TargetChip({ entry, quantityUnit }: { entry: PortfolioTargetEntry; quantityUnit: string }) {
   return (
-    <Chip className="flex flex-none items-center gap-1.5">
+    <Chip className="flex flex-none items-center gap-1.5 whitespace-nowrap">
       <span className="truncate" title={entry.symbol}>{entry.symbol}</span>
       <span className={`font-[550] tabular-nums ${targetDirectionClass(entry.weight)}`}>
-        {entry.mode === 'quantity' ? `${entry.weight > 0 ? '+' : ''}${entry.weight}` : formatTargetWeight(entry.weight)}
+        {entry.mode === 'quantity'
+          ? `${entry.weight < 0 ? '空' : '多'} ${Math.abs(entry.weight).toLocaleString('en-US', { maximumSignificantDigits: 15, useGrouping: false })}${quantityUnit ? ` ${quantityUnit}` : ''}`
+          : formatTargetWeight(entry.weight)}
       </span>
     </Chip>
   )

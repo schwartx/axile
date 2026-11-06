@@ -4,8 +4,11 @@ import { Check, Code2 } from 'lucide-react'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { TargetChips } from '@/features/portfolio/TargetChips'
 import { formatTargetUpdatedAt, formatTargetWeight, portfolioTargetState, targetDirectionClass } from '@/features/portfolio/portfolioCardSummary'
+import { portfolioQuantityUnit } from '@/features/portfolio/portfolioMarkets'
 import { getPortfolioTargetSnapshot } from '@/lib/api/portfolios'
 import { usePolling } from '@/lib/hooks/usePolling'
+import { useDomainStore } from '@/stores/domain'
+import { useChannelCatalogStore } from '@/stores/channels'
 import type { PortfolioLite } from '@/types/api'
 
 /** 两行固定布局，选择与代码预览独立；只读快照，不在向导里执行策略。 */
@@ -17,6 +20,10 @@ export function PortfolioChoiceCard({ portfolio, selected, onSelect, onPreview }
 }) {
   const reader = useCallback((signal: AbortSignal) => getPortfolioTargetSnapshot(portfolio.id!, signal), [portfolio.id])
   const snapshot = usePolling(reader, { queryKey: `setup-portfolio:${portfolio.id}:${portfolio.updated_at}`, intervalMs: 0, enabled: portfolio.id != null })
+  const accounts = useDomainStore((state) => state.accounts)
+  const channels = useChannelCatalogStore((state) => state.channels)
+  const contextChannel = accounts?.find((account) => account.account_id === snapshot.data?.context_account_id)?.trade_channel
+  const quantityUnit = portfolioQuantityUnit(channels ?? [], portfolio.market, contextChannel)
   const state = portfolioTargetState(snapshot.data, snapshot.loading, snapshot.error, snapshot.stale)
   const calculated = state.kind === 'ready' || state.kind === 'empty'
   const summary = state.kind === 'ready' ? state.summary : null
@@ -43,13 +50,13 @@ export function PortfolioChoiceCard({ portfolio, selected, onSelect, onPreview }
             <span>{summary.activeCount} 个目标品种</span>
             {summary.mode !== 'quantity' && <><span>总敞口 <span className="tabular-nums text-ink-2">{formatTargetWeight(summary.grossExposure, false)}</span></span>
             <span>净敞口 <span className={`tabular-nums ${targetDirectionClass(summary.netExposure)}`}>{formatTargetWeight(summary.netExposure)}</span></span></>}
-            {summary.mode === 'quantity' && <span>数量目标</span>}
+            {summary.mode === 'quantity' && <span>目标持仓</span>}
           </span>}
           {portfolio.description && <OverflowText text={portfolio.description} className="hidden min-w-0 flex-1 text-[13px] text-ink-3 lg:block" />}
         </span>
         <span className="mt-2 flex h-6 min-w-0 items-center gap-4">
           {summary && <span className="flex-none text-[12px] text-ink-3 md:hidden">{summary.activeCount} 个品种</span>}
-          {summary ? <TargetChips entries={summary.entries} compact /> : <span className="min-w-0 flex-1 text-[13px] text-ink-3"><OverflowText text={holdings} /></span>}
+          {summary ? <TargetChips entries={summary.entries} quantityUnit={quantityUnit} compact /> : <span className="min-w-0 flex-1 text-[13px] text-ink-3"><OverflowText text={holdings} /></span>}
           {calculated && <time dateTime={state.calculatedAt} title={`最近成功计算：${state.calculatedAt}`} className="hidden flex-none text-[12px] text-ink-3 sm:block">{formatTargetUpdatedAt(state.calculatedAt)}</time>}
           {snapshot.error && <span aria-hidden className="w-16 flex-none" />}
         </span>

@@ -12,6 +12,7 @@ import { CreatePortfolioModal } from '@/features/portfolio/CreatePortfolioModal'
 import { TargetChips } from '@/features/portfolio/TargetChips'
 import { usePortfoliosTargets } from '@/features/portfolio/usePortfoliosTargets'
 import { portfolioNameVtName } from '@/features/portfolio/viewTransition'
+import { portfolioQuantityUnit } from '@/features/portfolio/portfolioMarkets'
 import {
   portfolioRollup,
   PORTFOLIO_ROLLUP_ICON,
@@ -27,6 +28,7 @@ import {
 } from '@/features/portfolio/portfolioCardSummary'
 import { channelLabel } from '@/features/dashboard/display'
 import { useDomainStore } from '@/stores/domain'
+import { useChannelCatalogStore } from '@/stores/channels'
 import { useToastStore } from '@/stores/ui'
 import type { AccountDashboardItem, PortfolioLite } from '@/types/api'
 
@@ -49,6 +51,7 @@ export function PortfoliosPage() {
 
   const portfolios = useDomainStore((s) => s.portfolios)
   const accounts = useDomainStore((s) => s.accounts)
+  const channels = useChannelCatalogStore((s) => s.channels)
   const portfoliosError = useDomainStore((s) => s.portfoliosError)
   const accountsError = useDomainStore((s) => s.accountsError)
   const refreshPortfolios = useDomainStore((s) => s.refreshPortfolios)
@@ -166,9 +169,13 @@ export function PortfoliosPage() {
 
       {list.length > 0 && (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,360px),1fr))] gap-4">
-          {list.map((p, index) => (
-            <PortfolioCard key={p.id} p={p} targetState={targetStates[index]} targetFetch={p.id == null ? undefined : targetFetches[p.id]} followers={followersOf(p.id)} accountsReady={accounts != null} accountsError={accountsError} onDelete={askDelete} onDuplicate={setCreateMode} />
-          ))}
+          {list.map((p, index) => {
+            const targetFetch = p.id == null ? undefined : targetFetches[p.id]
+            const contextChannel = accounts?.find((account) => account.account_id === targetFetch?.snapshot?.context_account_id)?.trade_channel
+            return <PortfolioCard key={p.id} p={p} targetState={targetStates[index]} targetFetch={targetFetch}
+              quantityUnit={portfolioQuantityUnit(channels ?? [], p.market, contextChannel)}
+              followers={followersOf(p.id)} accountsReady={accounts != null} accountsError={accountsError} onDelete={askDelete} onDuplicate={setCreateMode} />
+          })}
         </div>
       )}
 
@@ -191,6 +198,7 @@ function PortfolioCard({
   p,
   targetState,
   targetFetch,
+  quantityUnit,
   followers,
   accountsReady,
   accountsError,
@@ -200,6 +208,7 @@ function PortfolioCard({
   p: PortfolioLite
   targetState: PortfolioTargetState
   targetFetch?: import('@/features/portfolio/usePortfoliosTargets').PortfolioTargetFetch
+  quantityUnit: string
   followers: AccountDashboardItem[]
   accountsReady: boolean
   accountsError: Error | null
@@ -291,7 +300,7 @@ function PortfolioCard({
         </div>
       </div>
 
-      <TargetSummary state={targetState} />
+      <TargetSummary state={targetState} quantityUnit={quantityUnit} />
       <div onClick={(event) => event.stopPropagation()}>
         <ErrorNotice intent="mutation" title="组合函数执行失败" error={runError} variant="compact" contextKey={p.id ?? undefined} onRetry={running ? undefined : () => void runPortfolio()} />
       </div>
@@ -317,7 +326,7 @@ function PortfolioCard({
   )
 }
 
-function TargetSummary({ state }: { state: PortfolioTargetState }) {
+function TargetSummary({ state, quantityUnit }: { state: PortfolioTargetState; quantityUnit: string }) {
   if (state.kind === 'loading') {
     return (
       <div className="mt-3 grid grid-cols-3 gap-5 border-t border-line pt-3" aria-busy="true" aria-label="正在读取组合目标">
@@ -349,13 +358,15 @@ function TargetSummary({ state }: { state: PortfolioTargetState }) {
     : state.summary
   return (
     <div className="mt-3 border-t border-line pt-3">
-      <div className="grid grid-cols-3 gap-3">
+      {summary.mode === 'quantity' ? <div className="flex items-baseline justify-between gap-3">
+        <span className="text-[14px] font-[550] text-ink-2">目标持仓</span>
+        <span className="text-[12.5px] text-ink-3">{summary.activeCount} 个品种</span>
+      </div> : <div className="grid grid-cols-3 gap-3">
         <Metric label="目标品种" value={`${summary.activeCount} 个`} quiet />
-        {summary.mode !== 'quantity' && <><Metric label="总敞口" value={formatTargetWeight(summary.grossExposure, false)} />
-        <Metric label="净敞口" value={formatTargetWeight(summary.netExposure)} valueClass={targetDirectionClass(summary.netExposure)} /></>}
-        {summary.mode === 'quantity' && <Metric label="目标口径" value="数量" quiet />}
-      </div>
-      {state.kind === 'ready' && <TargetChips entries={summary.entries} />}
+        <Metric label="总敞口" value={formatTargetWeight(summary.grossExposure, false)} />
+        <Metric label="净敞口" value={formatTargetWeight(summary.netExposure)} valueClass={targetDirectionClass(summary.netExposure)} />
+      </div>}
+      {state.kind === 'ready' && <TargetChips entries={summary.entries} quantityUnit={quantityUnit} />}
     </div>
   )
 }
