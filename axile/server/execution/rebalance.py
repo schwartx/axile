@@ -15,6 +15,7 @@ from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind
 from axile.executor.algorithms.exceptions import execution_error_message
 from axile.executor.algorithms.utils.clock import clock_now
+from axile.executor.models.portfolio_target import PortfolioTarget, TargetMode
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.termination import ExecutionTerminated
 from axile.server.core.log_config import execution_log_context
@@ -39,6 +40,7 @@ class _ResolvedRebalanceRequest:
 
     portfolio_id: int
     curr_target: dict[str, float]
+    target_mode: TargetMode = "weight"
 
 
 async def _load_bound_portfolio(
@@ -97,7 +99,7 @@ async def _execute_portfolio_function(
     portfolio: Portfolio,
     execution_id: str | None,
     logger: "loguru.Logger",
-) -> dict[str, float]:
+) -> PortfolioTarget:
     """
     执行账户绑定的组合函数并返回目标权重.
 
@@ -124,10 +126,12 @@ async def _execute_portfolio_function(
 
     """
     try:
-        return await calculate_portfolio_for_account(
-            account,
-            portfolio.custom_calc_py_code,
-            execution_id=execution_id,
+        return PortfolioTarget.from_result(
+            await calculate_portfolio_for_account(
+                account,
+                portfolio.custom_calc_py_code,
+                execution_id=execution_id,
+            )
         )
     except Exception as e:
         # 脚本错误行号对用户有定位价值；异常原文属于技术证据，只进 technical_detail 与日志。
@@ -165,12 +169,16 @@ async def _resolve_rebalance_request(
     """解析本次调仓实际要执行的目标权重."""
     portfolio = await _load_bound_portfolio(account, cast("int", account.id), execution_id)
     curr_target = await _execute_portfolio_function(account, portfolio, execution_id, logger)
-    return _ResolvedRebalanceRequest(portfolio_id=cast("int", portfolio.id), curr_target=curr_target)
+    return _ResolvedRebalanceRequest(
+        portfolio_id=cast("int", portfolio.id), curr_target=curr_target.targets, target_mode=curr_target.mode
+    )
 
 
 def _normalize_rebalance_target(
     account: AccountContext,
     curr_target: dict[str, float],
+    *,
+    target_mode: TargetMode = "weight",
 ) -> dict[str, float]:
     """
     根据账户杠杆与精度约束规范化调仓目标权重.
@@ -192,6 +200,8 @@ def _normalize_rebalance_target(
     这里必须先按多空杠杆缩放，再按账户精度离散化；否则审计看到的目标、
     执行器实际收到的目标以及账户界面展示值会产生漂移。
     """
+    if target_mode == "quantity":
+        return dict(curr_target)
     weight_precision = account.weight_precision
     long_leverage, short_leverage = resolve_account_leverages(account)
 
@@ -221,6 +231,7 @@ def _build_rebalance_standard_input(
     execution_id: str | None,
     trigger_source: str,
     gm_session: dict[str, Any] | None = None,
+    target_mode: TargetMode = "weight",
 ) -> UnifiedStandardInput:
     """
     构造调仓执行器所需的标准输入模型.
@@ -247,6 +258,7 @@ def _build_rebalance_standard_input(
     standard_input = UnifiedStandardInput.from_dict(
         {
             "curr_target": curr_target,
+            "target_mode": target_mode,
             "last_target": last_target,
             "account_config": account.account_config,
             "algorithm": account.algorithm,
@@ -341,13 +353,17 @@ async def _run_account_rebalance(
                 or snapshot["normalized_weights"] is None
             ):
                 raise ValueError("执行目标快照不完整或不属于当前账户")
+            target_mode = PortfolioTarget(
+                mode=snapshot.get("target_mode", "weight"), targets=snapshot["raw_weights"]
+            ).mode
             curr_target = snapshot["raw_weights"]
-            normalized_target = snapshot["normalized_weights"]
+            normalized_target = PortfolioTarget(mode=target_mode, targets=snapshot["normalized_weights"]).targets
             portfolio_id = None
         else:
             request = await _resolve_rebalance_request(account, execution_id, logger)
             curr_target = request.curr_target
-            normalized_target = _normalize_rebalance_target(account, curr_target)
+            target_mode = request.target_mode
+            normalized_target = _normalize_rebalance_target(account, curr_target, target_mode=target_mode)
             portfolio_id = request.portfolio_id
         return await trade(
             account,
@@ -357,6 +373,7 @@ async def _run_account_rebalance(
             logger=logger,
             normalized_target=normalized_target,
             portfolio_id=portfolio_id,
+            target_mode=target_mode,
         )
 
 
@@ -368,6 +385,7 @@ async def trade(
     logger: "loguru.Logger | None" = None,
     cleanup: bool = True,
     normalized_target: dict[str, float] | None = None,
+    target_mode: TargetMode = "weight",
     portfolio_id: int | None = None,
 ) -> dict[str, Any]:
     """
@@ -400,7 +418,7 @@ async def trade(
         logger = loguru.logger
 
     if normalized_target is None:
-        normalized_target = _normalize_rebalance_target(account, curr_target)
+        normalized_target = _normalize_rebalance_target(account, curr_target, target_mode=target_mode)
     last_target = await _load_last_target_snapshot(account)
     notification_snapshot = await load_notification_snapshot(account)
     gm_session = None
@@ -418,6 +436,7 @@ async def trade(
         execution_id=execution_id,
         trigger_source=trigger_source,
         gm_session=gm_session,
+        target_mode=target_mode,
     )
     if execution_id and account.supplement:
         if await native_operation("supplement_has_execution_steps", {"execution_id": execution_id}):
@@ -442,6 +461,7 @@ async def trade(
                 portfolio_id=portfolio_id,
                 account_id=cast("int", account.id),
                 raw_weights=curr_target,
+                target_mode=target_mode,
                 normalized_weights=normalized_target,
                 source="execution",
                 execution_id=execution_id,

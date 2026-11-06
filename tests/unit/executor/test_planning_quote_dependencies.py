@@ -48,6 +48,7 @@ def test_only_trustworthy_zero_lots_without_gross_positions_skip_quote(source, h
         available_cash=1000, total_asset=1000, market_value=100 if held else 0, positions=positions, source=source
     )
     inputs = SimpleNamespace(
+        target_mode="weight",
         curr_target={"active": 1},
         last_target={"old": 1},
         trade_rules={"old": {"sizing_mode": mode}},

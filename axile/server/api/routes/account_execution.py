@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from axile.channels import get_channel
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionArtifactType, ExecutionTaskStatus
+from axile.executor.models.portfolio_target import PortfolioTarget, TargetMode
 from axile.server.api.deps import HistoryPaginationDep, SchedDep
 from axile.server.api.routes.account_support import _build_empty_positions_algorithm, _get_account_or_404
 from axile.server.api.routes.portfolio import resolve_portfolio_target
@@ -74,29 +75,38 @@ async def account_rebalance_plan(account_id: int) -> AccountRebalancePlanPublic:
             observed_at=None if assets_snapshot is None else assets_snapshot["created_at"],
             target_calculated_at=None if snapshot is None else snapshot["calculated_at"],
         )
+    mode: TargetMode = snapshot.get("target_mode", "weight")
     assets = assets_snapshot["assets"]
     total_asset = assets.get("total_asset")
     positions = assets.get("positions")
-    if (
-        not isinstance(positions, list)
-        or isinstance(total_asset, bool)
-        or not isinstance(total_asset, (int, float))
-        or not math.isfinite(total_asset)
-        or any(not isinstance(pos, dict) or pos.get("market_value") is None for pos in positions)
+    if not isinstance(positions, list) or (
+        mode == "weight"
+        and (
+            isinstance(total_asset, bool)
+            or not isinstance(total_asset, (int, float))
+            or not math.isfinite(total_asset)
+            or any(not isinstance(pos, dict) or pos.get("market_value") is None for pos in positions)
+        )
     ):
         return AccountRebalancePlanPublic(
             observed_at=assets_snapshot["created_at"],
             target_calculated_at=snapshot["calculated_at"],
         )
     plugin = get_channel(account.trade_channel)
+    if mode == "quantity":
+        public_target = await _account_target_public(account, snapshot)
+        if public_target.quantities is not None:
+            target = public_target.quantities
     plan = plan_executable_target(
         positions,
         target,
-        float(total_asset),
+        float(total_asset) if isinstance(total_asset, (int, float)) else 0.0,
+        target_mode=mode,
         canonicalize_symbol=plugin.canonicalize_symbol,
         quantize_target_quantity=plugin.quantize_target_quantity,
     )
     return AccountRebalancePlanPublic(
+        target_mode=mode,
         rows=[
             AccountRebalancePlanRowPublic(
                 symbol=row.symbol,
@@ -172,6 +182,7 @@ def _sizing_rows_from_facts(
     strategy_weights: dict[str, float],
     account_weights: dict[str, float],
     target_context: dict[str, object],
+    target_mode: TargetMode = "weight",
 ) -> dict[str, TargetSizingRowPublic]:
     """从冻结换算列构造展示，不读取审计附件内重复保存的结果。"""
     rows: dict[str, TargetSizingRowPublic] = {}
@@ -179,6 +190,8 @@ def _sizing_rows_from_facts(
         symbol = canonicalize(map_key)
         row = cast("dict[str, object]", dict(raw_sizing))
         row["symbol"] = symbol
+        if (row.get("sizing_mode", "weight") == "quantity") != (target_mode == "quantity"):
+            continue
         row["strategy_weight"] = strategy_weights.get(symbol)
         row["account_weight"] = account_weights.get(symbol, row.get("account_weight"))
         raw_weight = strategy_weights.get(symbol)
@@ -187,6 +200,8 @@ def _sizing_rows_from_facts(
             account_weight / raw_weight if raw_weight not in (None, 0.0) and account_weight is not None else None
         )
         row["weight_precision"] = target_context.get("weight_precision")
+        if target_mode == "quantity":
+            row.update(strategy_weight=None, account_weight=None, account_multiplier=None, weight_precision=None)
         try:
             rows[symbol] = TargetSizingRowPublic.model_validate(row)
         except ValidationError:
@@ -220,6 +235,7 @@ async def _sizing_evidence_for_snapshot(
                 strategy_weights=strategy_weights,
                 account_weights=account_weights,
                 target_context=evidence["target_context"],
+                target_mode=snapshot.get("target_mode", "weight"),
             )
             status = "available" if rows and set(account_weights).issubset(rows) else "unavailable"
         elif input_id is not None or versions.get(ExecutionArtifactType.TARGET_SNAPSHOT, 0) >= 2:
@@ -278,6 +294,8 @@ async def _account_target_public(
             before_id=snapshot["id"],
         )
         for previous in previous_snapshots:
+            if previous.get("target_mode", "weight") != snapshot.get("target_mode", "weight"):
+                continue
             if not _canonical_weights_equal(
                 previous.get("normalized_weights"),
                 snapshot.get("normalized_weights"),
@@ -374,11 +392,13 @@ async def refresh_account_target_snapshot(account_id: int) -> TargetWeightSnapsh
 
     try:
         raw_target = await resolve_portfolio_target(Portfolio.model_validate(portfolio), account)
-        normalized_target = _normalize_rebalance_target(account, raw_target)
+        raw_target = PortfolioTarget.from_result(raw_target)
+        normalized_target = _normalize_rebalance_target(account, raw_target.targets, target_mode=raw_target.mode)
         snapshot = await append_target_weight_snapshot(
             portfolio_id=portfolio_id,
             account_id=account_id,
-            raw_weights=raw_target,
+            raw_weights=raw_target.targets,
+            target_mode=raw_target.mode,
             normalized_weights=normalized_target,
             source="manual",
         )

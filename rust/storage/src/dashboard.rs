@@ -19,7 +19,7 @@ fn targets(connection: &Connection, cte: &str, ids: &str) -> Result<HashMap<i64,
     let mut statement = connection
         .prepare(&format!(
             "{cte}
-        SELECT t.account_id,t.normalized_weights_kind,t.weights_metadata,w.map_key,w.value
+        SELECT t.account_id,t.normalized_weights_kind,t.weights_metadata,w.map_key,w.value,t.target_mode
         FROM targets t LEFT JOIN target_weight_snapshot_weight w
         ON w.snapshot_id=t.id AND w.role='normalized_weights'
         ORDER BY t.account_id,w.map_key"
@@ -32,9 +32,10 @@ fn targets(connection: &Connection, cte: &str, ids: &str) -> Result<HashMap<i64,
         let kind: String = row.get(1).map_err(database)?;
         match kind.as_str() {
             "mapping" => {
-                let weights = result.entry(id).or_insert_with(|| json!({}));
+                let weights = result.entry(id).or_insert_with(|| json!({"mode":row.get::<_,String>(5).unwrap_or_else(|_| "weight".into()),"targets":{}}));
                 if let Some(key) = row.get::<_, Option<String>>(3).map_err(database)? {
-                    weights[key] = json!(row.get::<_, Option<f64>>(4).map_err(database)?);
+                    weights["targets"][key] =
+                        json!(row.get::<_, Option<f64>>(4).map_err(database)?);
                 }
             }
             "invalid" => {
@@ -44,9 +45,34 @@ fn targets(connection: &Connection, cte: &str, ids: &str) -> Result<HashMap<i64,
                 let value = metadata
                     .pointer("/normalized_weights/columns/value")
                     .ok_or_else(|| invalid("missing invalid target evidence"))?;
-                result.insert(id, value.clone());
+                result.insert(
+                    id,
+                    json!({"mode":row.get::<_,String>(5).map_err(database)?,"targets":value}),
+                );
             }
             _ => return Err(invalid("unknown target weight snapshot container state")),
+        }
+    }
+    if result.values().any(|target| target["mode"] == "quantity") {
+        let mut sizing = connection
+            .prepare(&format!(
+                "{cte}
+            SELECT t.account_id,s.map_key,z.target_quantity FROM targets t
+            JOIN executerecord r ON r.execution_id=t.execution_id AND r.account_id=t.account_id
+            JOIN execution_symbol_result s ON s.record_id=r.id
+            JOIN execution_symbol_sizing z ON z.record_id=s.record_id AND z.path=s.path || '/sizing'
+            WHERE t.target_mode='quantity' AND z.sizing_mode='quantity'"
+            ))
+            .map_err(database)?;
+        let mut rows = sizing.query([ids]).map_err(database)?;
+        while let Some(row) = rows.next().map_err(database)? {
+            let id: i64 = row.get(0).map_err(database)?;
+            let symbol: String = row.get(1).map_err(database)?;
+            let target = result.get_mut(&id).expect("selected target");
+            if !target["sizing"].is_object() {
+                target["sizing"] = json!({});
+            }
+            target["sizing"][symbol] = json!(row.get::<_, Option<f64>>(2).map_err(database)?);
         }
     }
     Ok(result)
@@ -152,12 +178,16 @@ pub fn dashboard_inputs(connection: &Connection, account_ids: &[i64]) -> Result<
         } else {
             Value::Null
         };
+        let target = targets.remove(&id);
         result.insert(
             id.to_string(),
             json!({
                 "portfolio_id":row.get::<_, Option<i64>>(1).map_err(database)?,
                 "latest":latest, "observation":observations.remove(&id),
-                "target_weights":targets.remove(&id),
+                "target_weights":target.as_ref().map(|target| if target["mode"] == "weight" {target["targets"].clone()} else {Value::Null}),
+                "sizing_quantities":target.as_ref().and_then(|target| target.get("sizing")).cloned(),
+                "target_mode":target.as_ref().map(|target| target["mode"].clone()).unwrap_or(json!("weight")),
+                "target_quantities":target.as_ref().filter(|target| target["mode"] == "quantity").map(|target| target["targets"].clone()),
                 "performance":performance.get(id.to_string()).cloned().unwrap_or_else(|| json!({
                     "version":null,"status":"empty","computed_at":null,"observed_at":null,
                     "account_equity":null,"account_daily_return":null,"points":[]
@@ -307,11 +337,11 @@ mod tests {
             CREATE TABLE business_asset_binding(asset_id TEXT,record_id INTEGER,path TEXT);
             CREATE TABLE executerecord(id INTEGER,account_id INTEGER,execution_id TEXT,input_id TEXT,result_input_id TEXT,created_at_us INTEGER,is_success INTEGER,display_status TEXT,result_staged INTEGER DEFAULT 0);
             CREATE TABLE execution_input(id TEXT,account_id INTEGER,owner_execution_id TEXT,execution_id TEXT);
-            CREATE TABLE target_weight_snapshot(id INTEGER,account_id INTEGER,portfolio_id INTEGER,normalized_weights_kind TEXT,weights_metadata TEXT);
+            CREATE TABLE target_weight_snapshot(target_mode TEXT NOT NULL DEFAULT 'weight',id INTEGER,account_id INTEGER,portfolio_id INTEGER,normalized_weights_kind TEXT,weights_metadata TEXT);
             CREATE TABLE target_weight_snapshot_weight(snapshot_id INTEGER,role TEXT,map_key TEXT,value REAL);
             CREATE TABLE account(id INTEGER); INSERT INTO account VALUES(1),(2); CREATE TABLE account_analysis(account_id INTEGER,source_version INTEGER,requested INTEGER,running_version INTEGER,error TEXT,retry_at_us INTEGER);
             INSERT INTO portfolioaccount VALUES(1,1,7);
-            INSERT INTO target_weight_snapshot VALUES(1,1,7,'mapping','{}');
+            INSERT INTO target_weight_snapshot(id,account_id,portfolio_id,normalized_weights_kind,weights_metadata) VALUES(1,1,7,'mapping','{}');
             ").unwrap();
         reader
             .execute_batch(include_str!("analysis/schema.sql"))
@@ -353,18 +383,21 @@ mod tests {
     fn target_batch_restores_invalid_values_and_empty_mappings() {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch("CREATE TABLE target_weight_snapshot
-            (id INTEGER,account_id INTEGER,normalized_weights_kind TEXT,weights_metadata TEXT);
+            (id INTEGER,account_id INTEGER,normalized_weights_kind TEXT,weights_metadata TEXT,target_mode TEXT DEFAULT 'weight');
             CREATE TABLE target_weight_snapshot_weight (snapshot_id INTEGER,role TEXT,map_key TEXT,value REAL);
-            INSERT INTO target_weight_snapshot VALUES
+            INSERT INTO target_weight_snapshot(id,account_id,normalized_weights_kind,weights_metadata) VALUES
             (1,1,'mapping','{}'),(2,2,'invalid','{\"normalized_weights\":{\"columns\":{\"value\":[]}}}'),
             (3,3,'mapping','{}');
             INSERT INTO target_weight_snapshot_weight VALUES (3,'normalized_weights','Z',NULL),
             (3,'normalized_weights','A',0.5),(3,'raw_weights','excluded',1);").unwrap();
         let cte = "WITH targets AS (SELECT * FROM target_weight_snapshot WHERE account_id IN (SELECT value FROM json_each(?1)))";
         let values = targets(&connection, cte, "[1,2,3]").unwrap();
-        assert_eq!(values[&1], json!({}));
-        assert_eq!(values[&2], json!([]));
-        assert_eq!(values[&3], json!({"A":0.5,"Z":null}));
+        assert_eq!(values[&1], json!({"mode":"weight","targets":{}}));
+        assert_eq!(values[&2], json!({"mode":"weight","targets":[]}));
+        assert_eq!(
+            values[&3],
+            json!({"mode":"weight","targets":{"A":0.5,"Z":null}})
+        );
         connection
             .execute(
                 "UPDATE target_weight_snapshot SET weights_metadata='{}' WHERE id=2",

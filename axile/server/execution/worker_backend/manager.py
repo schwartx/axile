@@ -16,6 +16,7 @@ from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.clock import clock_monotonic
 from axile.executor.instrument_catalog import InstrumentCatalog
 from axile.executor.models.execution_result import ExecutionOutcome, ExecutionStatus
+from axile.executor.models.portfolio_target import PortfolioTarget
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.termination import ExecutionTerminated, ExecutionTerminationController
@@ -1172,7 +1173,7 @@ class WorkerBackendManager:
         code: str,
         *,
         execution_id: str | None = None,
-    ) -> dict[str, float]:
+    ) -> PortfolioTarget:
         """通过账户常驻 worker 执行自定义组合函数，失败后丢弃 worker."""
         if execution_id is None:
             self._check_read_session(account)

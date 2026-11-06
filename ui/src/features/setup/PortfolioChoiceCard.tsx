@@ -41,8 +41,9 @@ export function PortfolioChoiceCard({ portfolio, selected, onSelect, onPreview }
           <span className="flex-none rounded-md bg-fill px-2 py-0.5 text-[12px] text-ink-2">{portfolio.market}</span>
           {summary && <span className="hidden flex-none items-center gap-3 text-[13px] text-ink-3 md:inline-flex">
             <span>{summary.activeCount} 个目标品种</span>
-            <span>总敞口 <span className="tabular-nums text-ink-2">{formatTargetWeight(summary.grossExposure, false)}</span></span>
-            <span>净敞口 <span className={`tabular-nums ${targetDirectionClass(summary.netExposure)}`}>{formatTargetWeight(summary.netExposure)}</span></span>
+            {summary.mode !== 'quantity' && <><span>总敞口 <span className="tabular-nums text-ink-2">{formatTargetWeight(summary.grossExposure, false)}</span></span>
+            <span>净敞口 <span className={`tabular-nums ${targetDirectionClass(summary.netExposure)}`}>{formatTargetWeight(summary.netExposure)}</span></span></>}
+            {summary.mode === 'quantity' && <span>数量目标</span>}
           </span>}
           {portfolio.description && <OverflowText text={portfolio.description} className="hidden min-w-0 flex-1 text-[13px] text-ink-3 lg:block" />}
         </span>

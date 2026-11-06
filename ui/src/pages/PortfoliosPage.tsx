@@ -345,14 +345,15 @@ function TargetSummary({ state }: { state: PortfolioTargetState }) {
   }
 
   const summary = state.kind === 'empty'
-    ? { activeCount: 0, grossExposure: 0, netExposure: 0, entries: [] }
+    ? { mode: state.mode, activeCount: 0, grossExposure: 0, netExposure: 0, entries: [] }
     : state.summary
   return (
     <div className="mt-3 border-t border-line pt-3">
       <div className="grid grid-cols-3 gap-3">
         <Metric label="目标品种" value={`${summary.activeCount} 个`} quiet />
-        <Metric label="总敞口" value={formatTargetWeight(summary.grossExposure, false)} />
-        <Metric label="净敞口" value={formatTargetWeight(summary.netExposure)} valueClass={targetDirectionClass(summary.netExposure)} />
+        {summary.mode !== 'quantity' && <><Metric label="总敞口" value={formatTargetWeight(summary.grossExposure, false)} />
+        <Metric label="净敞口" value={formatTargetWeight(summary.netExposure)} valueClass={targetDirectionClass(summary.netExposure)} /></>}
+        {summary.mode === 'quantity' && <Metric label="目标口径" value="数量" quiet />}
       </div>
       {state.kind === 'ready' && <TargetChips entries={summary.entries} />}
     </div>

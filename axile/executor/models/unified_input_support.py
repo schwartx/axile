@@ -216,6 +216,7 @@ def _collect_unified_input_extra(data: dict[str, object]) -> dict[str, object]:
         "channel_type",
         "account_config",
         "curr_target",
+        "target_mode",
         "last_target",
         "algorithm",
         "symbol_algorithms",

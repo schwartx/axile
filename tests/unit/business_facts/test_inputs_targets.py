@@ -314,3 +314,13 @@ def test_input_primary_identity_cannot_point_at_a_different_owner(native_databas
     with pytest.raises(_core.NativeError, match="其他执行"):
         freeze_input(native_database, {})
     assert len(rows(native_database, "execution_input")) == 1
+
+
+def test_quantity_input_roundtrip_preserves_mode_and_retry_identity(native_database):
+    payload = {"target_mode": "quantity", "curr_target": {"BTCUSDT": 0.015}, "strategy_target": {"BTCUSDT": 0.015}}
+    decoded, facts = _roundtrip(native_database, payload)
+    assert decoded == payload
+    assert facts["execution_input"][0]["target_mode"] == "quantity"
+    assert _roundtrip(native_database, payload)[0] == payload
+    with pytest.raises(_core.NativeError):
+        _roundtrip(native_database, {**payload, "target_mode": "weight"})

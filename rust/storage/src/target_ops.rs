@@ -9,7 +9,7 @@ use crate::error::AnalysisError;
 use crate::writer_scope;
 
 const ROLES: [&str; 2] = ["raw_weights", "normalized_weights"];
-const HEAD_COLUMNS: &str = "id,portfolio_id,account_id,raw_weights_kind,normalized_weights_kind,weights_metadata,source,execution_id,calculated_at_us";
+const HEAD_COLUMNS: &str = "id,portfolio_id,account_id,raw_weights_kind,normalized_weights_kind,weights_metadata,source,execution_id,calculated_at_us,target_mode";
 
 fn invalid(message: impl Into<String>) -> AnalysisError {
     AnalysisError::new("TARGET_INVALID", message)
@@ -145,6 +145,7 @@ fn json_column(row: &Row<'_>, name: &str) -> rusqlite::Result<Value> {
 
 fn head(row: &Row<'_>) -> rusqlite::Result<Value> {
     Ok(json!({
+        "target_mode": row.get::<_, String>("target_mode")?,
         "id": row.get::<_, i64>("id")?,
         "portfolio_id": row.get::<_, i64>("portfolio_id")?,
         "account_id": row.get::<_, Option<i64>>("account_id")?,
@@ -209,6 +210,11 @@ pub(crate) fn append_target_snapshot(
     let portfolio_id = integer(request, "portfolio_id")?;
     let account_id = optional_integer(request, "account_id")?;
     let source = text(request, "source")?;
+    let mode = match request.get("target_mode") {
+        None => "weight",
+        Some(Value::String(mode)) if matches!(mode.as_str(), "weight" | "quantity") => mode,
+        _ => return Err(invalid("invalid target_mode")),
+    };
     if !matches!(source, "manual" | "execution") {
         return Err(invalid("目标权重快照来源无效"));
     }
@@ -218,8 +224,8 @@ pub(crate) fn append_target_snapshot(
     let execution_id = optional_text(request, "execution_id")?;
     let (columns, mut rows) = encode_snapshot_weights(0, request)?;
     connection.execute(
-        "INSERT INTO target_weight_snapshot(portfolio_id,account_id,raw_weights_kind,normalized_weights_kind,weights_metadata,source,execution_id,calculated_at_us) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-        params![portfolio_id, account_id, text(&columns, "raw_weights_kind")?, text(&columns, "normalized_weights_kind")?, columns["weights_metadata"].to_string(), source, execution_id, calculated_at_us],
+        "INSERT INTO target_weight_snapshot(portfolio_id,account_id,raw_weights_kind,normalized_weights_kind,weights_metadata,source,execution_id,calculated_at_us,target_mode) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        params![portfolio_id, account_id, text(&columns, "raw_weights_kind")?, text(&columns, "normalized_weights_kind")?, columns["weights_metadata"].to_string(), source, execution_id, calculated_at_us, mode],
     ).map_err(sql)?;
     let id = connection.last_insert_rowid();
     let mut statement = connection.prepare_cached("INSERT INTO target_weight_snapshot_weight(snapshot_id,role,map_key,value,audit_evidence) VALUES (?1,?2,?3,?4,?5)").map_err(sql)?;
@@ -236,7 +242,7 @@ pub(crate) fn append_target_snapshot(
             ])
             .map_err(sql)?;
     }
-    let mut view = json!({"id": id, "portfolio_id": portfolio_id, "account_id": account_id,
+    let mut view = json!({"target_mode": mode,"id": id, "portfolio_id": portfolio_id, "account_id": account_id,
         "source": source, "execution_id": execution_id, "calculated_at": calculated_at});
     view.as_object_mut()
         .expect("snapshot identity")
@@ -350,7 +356,7 @@ mod tests {
     use super::*;
 
     fn schema(connection: &Connection) {
-        connection.execute_batch("CREATE TABLE target_weight_snapshot(id INTEGER PRIMARY KEY,portfolio_id INTEGER NOT NULL,account_id INTEGER,raw_weights_kind TEXT NOT NULL,normalized_weights_kind TEXT NOT NULL,weights_metadata TEXT NOT NULL,source TEXT NOT NULL,execution_id TEXT UNIQUE,calculated_at_us INTEGER NOT NULL); CREATE TABLE target_weight_snapshot_weight(snapshot_id INTEGER,role TEXT,map_key TEXT,value REAL,audit_evidence TEXT NOT NULL,PRIMARY KEY(snapshot_id,role,map_key)) WITHOUT ROWID;").unwrap();
+        connection.execute_batch("CREATE TABLE target_weight_snapshot(target_mode TEXT NOT NULL DEFAULT 'weight',id INTEGER PRIMARY KEY,portfolio_id INTEGER NOT NULL,account_id INTEGER,raw_weights_kind TEXT NOT NULL,normalized_weights_kind TEXT NOT NULL,weights_metadata TEXT NOT NULL,source TEXT NOT NULL,execution_id TEXT UNIQUE,calculated_at_us INTEGER NOT NULL); CREATE TABLE target_weight_snapshot_weight(snapshot_id INTEGER,role TEXT,map_key TEXT,value REAL,audit_evidence TEXT NOT NULL,PRIMARY KEY(snapshot_id,role,map_key)) WITHOUT ROWID;").unwrap();
     }
 
     #[test]
@@ -544,5 +550,19 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 0);
         }
+    }
+    #[test]
+    fn quantity_mode_and_fractional_target_roundtrip() {
+        let connection = Connection::open_in_memory().unwrap();
+        schema(&connection);
+        let saved = append_target_snapshot(&connection, &json!({"portfolio_id":7,"account_id":2,
+            "target_mode":"quantity","raw_weights":{"BTCUSDT":0.015},"normalized_weights":{"BTCUSDT":0.015},
+            "source":"execution","execution_id":"quantity","calculated_at":"2026-11-06T00:00:00Z"})).unwrap();
+        assert_eq!(saved["target_mode"], "quantity");
+        let restored = execution_target_snapshot(&connection, "quantity")
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored["target_mode"], "quantity");
+        assert_eq!(restored["raw_weights"]["BTCUSDT"], 0.015);
     }
 }

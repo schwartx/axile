@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from axile.channels.contracts import CanonicalizeSymbol, QuantizeTargetQuantity
+from axile.executor.models.portfolio_target import TargetMode
 
 # 无数量口径时的权重回退；与前端 ``rebalancePlan`` 在 ``quantities`` 缺失时一致。
 REBALANCE_THRESHOLD = 0.5
@@ -74,8 +75,8 @@ class ExecutableTargetRow:
     """一个规范化品种的当前仓位、可执行目标及对账结论."""
 
     symbol: str
-    current_weight: float
-    target_weight: float
+    current_weight: float | None
+    target_weight: float | None
     current_quantity: float | None
     target_quantity: float | None
     action: str
@@ -137,6 +138,7 @@ def plan_executable_target(
     *,
     canonicalize_symbol: CanonicalizeSymbol = _identity_symbol,
     quantize_target_quantity: QuantizeTargetQuantity | None = None,
+    target_mode: TargetMode = "weight",
 ) -> ExecutableTarget:
     """
     把持仓与目标收到渠道原生代码，并按可下单数量判定偏离.
@@ -160,6 +162,20 @@ def plan_executable_target(
         ``weights`` 已是持仓代码空间；有量化钩子时带 ``quantities``。
     """
     cur_lots, cur_mv, notional_per_unit, has_book = _position_totals(positions, canonicalize_symbol)
+
+    if target_mode == "quantity":
+        quantities = {canonicalize_symbol(key): float(value) for key, value in target.items()}
+        rows = []
+        for symbol in set(quantities) | set(cur_lots) | set(cur_mv):
+            wanted = quantities.get(symbol, 0.0)
+            current = cur_lots.get(symbol, 0.0 if symbol not in has_book else None)
+            aligned = current is not None and abs(current - wanted) <= _QTY_EPS
+            if current == 0 and wanted == 0:
+                continue
+            action, side = _action(current or 0.0, wanted, aligned)
+            rows.append(ExecutableTargetRow(symbol, None, None, current, wanted, action, side, aligned))
+        rows.sort(key=lambda row: abs((row.current_quantity or 0.0) - (row.target_quantity or 0.0)), reverse=True)
+        return ExecutableTarget({}, quantities, sum(not row.aligned for row in rows), tuple(rows))
 
     weights: dict[str, float] = {}
     for key, value in target.items():
@@ -187,7 +203,11 @@ def plan_executable_target(
             weights=weights,
             quantities=None,
             off_symbol_count=sum(not row.aligned for row in rows),
-            rows=tuple(sorted(rows, key=lambda row: abs(row.current_weight - row.target_weight), reverse=True)),
+            rows=tuple(
+                sorted(
+                    rows, key=lambda row: abs((row.current_weight or 0.0) - (row.target_weight or 0.0)), reverse=True
+                )
+            ),
         )
 
     quantities: dict[str, float] = {}
@@ -216,7 +236,7 @@ def plan_executable_target(
             aligned = abs(current - target_qty) <= _QTY_EPS
         action, side = _action(current_weight, weight, aligned)
         rows.append(ExecutableTargetRow(symbol, current_weight, weight, current, target_qty, action, side, aligned))
-    rows.sort(key=lambda row: abs(row.current_weight - row.target_weight), reverse=True)
+    rows.sort(key=lambda row: abs((row.current_weight or 0.0) - (row.target_weight or 0.0)), reverse=True)
     return ExecutableTarget(
         weights=weights,
         quantities=quantities,

@@ -316,6 +316,9 @@ class AbstractExecutorCapabilityMixin:
             if weight == 0:
                 decisions[symbol] = TargetSizingDecision(
                     symbol=symbol,
+                    sizing_mode="quantity"
+                    if trade_rules.get(symbol, {}).get("sizing_mode") == "quantity"
+                    else "weight",
                     reason_code="COMMON.SIZING.ZERO_TARGET",
                     account_weight=weight,
                     equity=account_assets.total_asset,
@@ -359,9 +362,12 @@ class AbstractExecutorCapabilityMixin:
             trade_rule = trade_rules.get(symbol, {})
             instance_volume = getattr(executor, "__dict__", {}).get("_calculate_generic_volume")
             class_volume = getattr(type(executor), "_calculate_generic_volume", None)
-            if callable(instance_volume) or (
-                class_volume is not None
-                and class_volume is not AbstractExecutorCapabilityMixin._calculate_generic_volume
+            if trade_rule.get("sizing_mode") != "quantity" and (
+                callable(instance_volume)
+                or (
+                    class_volume is not None
+                    and class_volume is not AbstractExecutorCapabilityMixin._calculate_generic_volume
+                )
             ):
                 volume = executor._calculate_generic_volume(
                     weight,
@@ -419,7 +425,8 @@ class AbstractExecutorCapabilityMixin:
         )
         precision_raw = trade_rule.get("quantity_precision")
         precision = precision_raw if isinstance(precision_raw, int) and not isinstance(precision_raw, bool) else None
-        raw_quantity = account_assets.total_asset * weight / price
+        mode = "quantity" if trade_rule.get("sizing_mode") == "quantity" else "weight"
+        raw_quantity = weight if mode == "quantity" else account_assets.total_asset * weight / price
         target_quantity = raw_quantity
         quantity_step: float | None = None
         if precision is not None:
@@ -443,12 +450,13 @@ class AbstractExecutorCapabilityMixin:
 
         return TargetSizingDecision(
             symbol=symbol or "",
-            account_weight=weight,
+            sizing_mode=mode,
+            account_weight=weight if mode == "weight" else 0.0,
             equity=account_assets.total_asset,
             reference_price=price,
             unit_multiplier=1.0,
             unit_notional=price,
-            target_notional=abs(account_assets.total_asset * weight),
+            target_notional=abs(account_assets.total_asset * weight) if mode == "weight" else abs(raw_quantity * price),
             raw_quantity=raw_quantity,
             target_quantity=float(target_quantity),
             quantity_step=quantity_step,

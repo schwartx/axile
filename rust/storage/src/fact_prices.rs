@@ -50,7 +50,9 @@ pub(crate) struct Sizing<'a> {
 
 impl Sizing<'_> {
     pub(crate) fn weight_and_units(&self) -> Option<(f64, f64)> {
-        if self.mode.unwrap_or("weight") != "weight" || self.status != Some("SIZED") {
+        if !matches!(self.mode.unwrap_or("weight"), "weight" | "quantity")
+            || self.status != Some("SIZED")
+        {
             return None;
         }
         let equity = positive(self.equity)?;

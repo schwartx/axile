@@ -699,15 +699,23 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
     ) -> TargetSizingDecision:
         """按天勤合约规格生成整数手目标及换算证据."""
         sizing_mode = str(trade_rule.get("sizing_mode", "weight"))
-        if sizing_mode == "lots":
+        if sizing_mode in {"lots", "quantity"}:
+            if sizing_mode == "quantity" and not float(weight).is_integer():
+                raise ValueError(f"{symbol} 的目标手数必须为整数: {weight}")
             target = float(int(weight))
             reason = "COMMON.SIZING.EXACT" if target == weight else "COMMON.SIZING.QUANTIZED"
+            quote = self._quote_snapshot(symbol) if symbol and sizing_mode == "quantity" else {}
+            multiplier = quote.get("volume_multiple", 0)
+            unit_notional = price * multiplier if price > 0 and multiplier > 0 else None
             return TargetSizingDecision(
                 symbol=symbol or "",
                 sizing_mode=sizing_mode,
                 reason_code=reason,
-                account_weight=weight,
+                account_weight=weight if sizing_mode == "lots" else 0.0,
                 equity=account_assets.total_asset,
+                reference_price=price if unit_notional is not None else None,
+                unit_notional=unit_notional,
+                target_notional=abs(target) * unit_notional if unit_notional is not None else None,
                 raw_quantity=weight,
                 target_quantity=target,
                 quantity_step=1.0,

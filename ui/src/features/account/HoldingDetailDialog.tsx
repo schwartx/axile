@@ -119,11 +119,12 @@ function CalculationMetadata({ target, observedAt }: { target: TargetWeightSnaps
 
 function TargetInputFields({ target, symbol, goal, unit }: { target: TargetWeightSnapshot | null; symbol: string; goal: HoldingTarget; unit: string }) {
   const evidence = goal.evidence
-  const direct = evidence?.sizing_mode === 'quantity'
-  const strategy = evidence?.strategy_weight ?? Object.entries(target?.strategy_weights ?? {}).find(([key]) => sameHoldingSymbol(key, symbol))?.[1]
+  const direct = target?.target_mode === 'quantity' || evidence?.sizing_mode === 'quantity'
+  const rawQuantity = Object.entries(target?.raw_targets ?? {}).find(([key]) => sameHoldingSymbol(key, symbol))?.[1]
+  const strategy = direct ? rawQuantity : evidence?.strategy_weight ?? Object.entries(target?.strategy_weights ?? {}).find(([key]) => sameHoldingSymbol(key, symbol))?.[1]
   return <dl className="grid gap-x-6 sm:grid-cols-2">
     <Field label={direct ? '策略数量目标' : '策略目标权重'} value={direct ? quantityText(strategy, unit) : weightText(strategy)} />
-    <Field label={direct ? '直接数量目标' : '账户目标权重'} value={direct ? quantityText(evidence.account_weight, unit) : weightText(goal.weight)} />
+    <Field label={direct ? '直接数量目标' : '账户目标权重'} value={direct ? quantityText(evidence?.raw_quantity ?? rawQuantity, unit) : weightText(goal.weight)} />
   </dl>
 }
 

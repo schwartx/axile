@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Response, status
 from loguru import logger
 
+from axile.executor.models.portfolio_target import PortfolioTarget
 from axile.server._native import _core
 from axile.server.db.models import (
     Portfolio,
@@ -102,7 +103,7 @@ async def update_portfolio(portfolio_id: int, portfolio: PortfolioUpdate) -> Res
     return Response(value, media_type="application/json", status_code=200)
 
 
-async def resolve_portfolio_target(portfolio: Portfolio, account: AccountContext | None) -> dict[str, float]:
+async def resolve_portfolio_target(portfolio: Portfolio, account: AccountContext | None) -> PortfolioTarget:
     """执行组合函数并返回未经账户杠杆和精度处理的目标权重."""
     try:
         if account is None:
@@ -139,11 +140,17 @@ async def refresh_portfolio_target_snapshot(portfolio_id: int) -> TargetWeightSn
         raise HTTPException(status_code=409, detail="组合或上下文账户正在执行或刷新，请稍后再试")
     try:
         raw_target = await resolve_portfolio_target(portfolio, account)
-        normalized_target = _normalize_rebalance_target(account, raw_target) if account is not None else None
+        raw_target = PortfolioTarget.from_result(raw_target)
+        normalized_target = (
+            _normalize_rebalance_target(account, raw_target.targets, target_mode=raw_target.mode)
+            if account is not None
+            else None
+        )
         snapshot = await append_target_weight_snapshot(
             portfolio_id=portfolio_id,
             account_id=account_id,
-            raw_weights=raw_target,
+            raw_weights=raw_target.targets,
+            target_mode=raw_target.mode,
             normalized_weights=normalized_target,
             source="manual",
         )
@@ -173,7 +180,8 @@ async def _run_custom_calc_validation(
             error_type=error.error_type,
             error_message=error.error_message,
         )
-    return ValidateCustomCalcResponse(valid=True, target=result)
+    target = PortfolioTarget.from_result(result)
+    return ValidateCustomCalcResponse(valid=True, target=target.targets, target_mode=target.mode)
 
 
 @router.post("/validate_custom_calc", response_model=ValidateCustomCalcResponse)
@@ -211,6 +219,7 @@ async def run_and_save_portfolio(portfolio_id: int, payload: RunAndSavePortfolio
                     "updated_at": now,
                     "account_id": payload.account_id,
                     "raw_weights": result.target,
+                    "target_mode": result.target_mode,
                     "normalized_weights": None,
                     "source": "manual",
                     "calculated_at": now,

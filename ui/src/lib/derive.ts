@@ -374,9 +374,9 @@ export function rebalancePlan(
 
 /** 将服务端唯一真源的可执行计划适配为详情图表使用的百分比行。 */
 export function rebalancePlanOfServer(plan: AccountRebalancePlan | null): RebalancePlan {
-  const rows: RebalanceRow[] = (plan?.rows ?? []).map((row) => {
-    const cur = row.current_weight * 100
-    const tgt = row.target_weight * 100
+  const rows: RebalanceRow[] = (plan?.rows ?? []).filter((row) => row.current_weight != null && row.target_weight != null).map((row) => {
+    const cur = (row.current_weight ?? 0) * 100
+    const tgt = (row.target_weight ?? 0) * 100
     return {
       symbol: row.symbol,
       cur,

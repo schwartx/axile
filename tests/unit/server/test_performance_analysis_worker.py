@@ -54,7 +54,7 @@ def test_native_capabilities_require_preparation_and_commit_confirmation(monkeyp
     with pytest.raises(RuntimeError, match="analysis_commit_confirmed"):
         analysis.ensure_native_capabilities()
     monkeypatch.delattr(analysis._core, "ANALYSIS_FACT_SCHEMA")
-    with pytest.raises(RuntimeError, match="schema 0034"):
+    with pytest.raises(RuntimeError, match="schema 0035"):
         analysis.ensure_native_capabilities()
 
 

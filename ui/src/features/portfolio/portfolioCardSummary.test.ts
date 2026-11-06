@@ -101,3 +101,14 @@ describe('formatTargetUpdatedAt', () => {
     expect(formatTargetUpdatedAt('invalid', now)).toBe('—')
   })
 })
+
+
+it('数量目标保留小数和极小数量，不汇总跨标的敞口', () => {
+  const summary = portfolioTargetSummary({ ...snapshot({}), target_mode: 'quantity',
+    raw_targets: { BTCUSDT: 0.015, ETHUSDT: -0.25, SMALL: 0.0000000001 } })
+  expect(summary.activeCount).toBe(3)
+  expect(summary.mode).toBe('quantity')
+  expect(summary.grossExposure).toBe(0)
+  expect(summary.netExposure).toBe(0)
+  expect(summary.entries.find(row => row.symbol === 'BTCUSDT')).toMatchObject({ weight: 0.015, mode: 'quantity' })
+})

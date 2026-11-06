@@ -640,9 +640,9 @@ mod tests {
         crate::calendar::register_time_function(&connection).unwrap();
         connection.execute_batch(
             "CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,execution_id TEXT,created_at_us INTEGER,execution_kind TEXT,input_id TEXT,result_input_id TEXT,facts_complete INTEGER,result_staged INTEGER DEFAULT 0);
-             CREATE TABLE execution_input(id TEXT,account_id INTEGER,curr_target_state TEXT);
+             CREATE TABLE execution_input(id TEXT,account_id INTEGER,curr_target_state TEXT,target_mode TEXT);
              CREATE TABLE execution_input_target(input_id TEXT,role TEXT,map_key TEXT,value REAL);
-             CREATE TABLE target_weight_snapshot(id INTEGER,account_id INTEGER,execution_id TEXT,normalized_weights_kind TEXT);
+             CREATE TABLE target_weight_snapshot(target_mode TEXT NOT NULL DEFAULT 'weight',id INTEGER,account_id INTEGER,execution_id TEXT,normalized_weights_kind TEXT);
              CREATE TABLE target_weight_snapshot_weight(snapshot_id INTEGER,role TEXT,map_key TEXT,value REAL);
              CREATE TABLE business_asset_binding(record_id INTEGER,path TEXT,asset_id TEXT);
              CREATE TABLE business_asset_snapshot(asset_id TEXT,total_asset REAL,observation_valid INTEGER);
@@ -673,7 +673,7 @@ mod tests {
             .unwrap();
         connection
             .execute(
-                "INSERT INTO execution_input VALUES(?1,1,?2)",
+                "INSERT INTO execution_input(id,account_id,curr_target_state) VALUES(?1,1,?2)",
                 params![id.to_string(), if target { "value" } else { "absent" }],
             )
             .unwrap();

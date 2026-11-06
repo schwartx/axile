@@ -16,18 +16,18 @@ interface WeightBarsProps {
   /** 品种 → 权重。组件内统一过滤零权重并按 |w| 降序，调用方无需预处理。 */
   weights: Record<string, number> | Array<readonly [string, number]>
   /** 数值格式：`percent` 为百分数一位小数（默认）；`raw` 为原始小数四位（函数调试场景）。 */
-  format?: 'percent' | 'raw'
+  format?: 'percent' | 'raw' | 'quantity'
   className?: string
 }
 
 export function WeightBars({ weights, format = 'percent', className = '' }: WeightBarsProps) {
   const rows = (Array.isArray(weights) ? weights.slice() : Object.entries(weights))
-    .filter(([, w]) => Math.abs(w) > 1e-9)
+    .filter(([, w]) => Number.isFinite(w) && Math.abs(w) > (format === 'quantity' ? 0 : 1e-9))
     .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
   if (rows.length === 0) return null
   const max = Math.abs(rows[0][1])
   return (
-    <div className={className} role="list" aria-label="品种权重">
+    <div className={className} role="list" aria-label={format === 'quantity' ? '品种目标数量' : '品种权重'}>
       {rows.map(([sym, w]) => (
         <div key={sym} role="listitem" className="flex items-center gap-3 py-1.5 text-[14.5px]">
           <OverflowText className="w-20 flex-none font-[520] text-ink-1" text={sym} />
@@ -39,8 +39,8 @@ export function WeightBars({ weights, format = 'percent', className = '' }: Weig
               style={{ width: `${((Math.abs(w) / max) * 100).toFixed(2)}%` }}
             />
           </div>
-          <span className="num w-16 flex-none text-right font-medium text-ink-1">
-            {format === 'raw' ? w.toFixed(4) : `${(w * 100).toFixed(1)}%`}
+          <span className="num min-w-16 flex-none text-right font-medium text-ink-1">
+            {format === 'quantity' ? w.toLocaleString('en-US', { maximumSignificantDigits: 15, useGrouping: false }) : format === 'raw' ? w.toFixed(4) : `${(w * 100).toFixed(1)}%`}
           </span>
         </div>
       ))}

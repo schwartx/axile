@@ -6,6 +6,7 @@ from typing import Literal, Optional
 
 from pydantic import Field
 
+from axile.executor.models.portfolio_target import TargetMode
 from axile.executor.models.value_conversion import PriceValueConversion
 from axile.server.db.models.base import Model
 
@@ -51,6 +52,8 @@ class TargetWeightSnapshotPublic(Model):
     """页面读取的最近一次目标权重计算结果."""
 
     weights: dict[str, float] = Field(default_factory=dict)
+    target_mode: TargetMode = "weight"
+    raw_targets: dict[str, float] = Field(default_factory=dict)
     quantities: Optional[dict[str, float]] = None
     strategy_weights: Optional[dict[str, float]] = None
     account_weights: Optional[dict[str, float]] = None

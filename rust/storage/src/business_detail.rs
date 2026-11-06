@@ -700,6 +700,9 @@ pub(crate) fn decode_input(
         return Ok(get(head, "root_value")?.clone());
     }
     let mut result = fields(head, INPUT)?;
+    if let Some(mode) = head.get("target_mode").filter(|mode| !mode.is_null()) {
+        result.insert("target_mode".into(), mode.clone());
+    }
     for role in [
         "curr_target",
         "last_target",

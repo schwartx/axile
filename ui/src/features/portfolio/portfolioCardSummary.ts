@@ -1,13 +1,15 @@
-import type { TargetWeightSnapshot } from '@/types/api'
+import type { TargetMode, TargetWeightSnapshot } from '@/types/api'
 
 const ACTIVE_WEIGHT_EPSILON = 1e-9
 
 export interface PortfolioTargetEntry {
   symbol: string
   weight: number
+  mode?: TargetMode
 }
 
 export interface PortfolioTargetSummary {
+  mode?: TargetMode
   activeCount: number
   grossExposure: number
   netExposure: number
@@ -19,26 +21,27 @@ export type PortfolioTargetState =
   | { kind: 'loading' }
   | { kind: 'unavailable' }
   | { kind: 'uncalculated' }
-  | { kind: 'empty'; calculatedAt: string; stale: boolean }
+  | { kind: 'empty'; calculatedAt: string; stale: boolean; mode?: TargetMode }
   | { kind: 'ready'; calculatedAt: string; stale: boolean; summary: PortfolioTargetSummary }
 
 /** 将目标权重整理成稳定摘要，供编辑结果与只读快照共用。 */
-export function targetWeightSummary(weights: Record<string, number>): PortfolioTargetSummary {
+export function targetWeightSummary(weights: Record<string, number>, mode: TargetMode = 'weight'): PortfolioTargetSummary {
   const entries = Object.entries(weights)
-    .filter(([, weight]) => Math.abs(weight) > ACTIVE_WEIGHT_EPSILON)
+    .filter(([, weight]) => Number.isFinite(weight) && Math.abs(weight) > (mode === 'quantity' ? 0 : ACTIVE_WEIGHT_EPSILON))
     .sort((left, right) => Math.abs(right[1]) - Math.abs(left[1]))
 
   return {
+    ...(mode === 'quantity' ? { mode } : {}),
     activeCount: entries.length,
-    grossExposure: entries.reduce((sum, [, weight]) => sum + Math.abs(weight), 0),
-    netExposure: entries.reduce((sum, [, weight]) => sum + weight, 0),
-    entries: entries.map(([symbol, weight]) => ({ symbol, weight })),
+    grossExposure: mode === 'weight' ? entries.reduce((sum, [, weight]) => sum + Math.abs(weight), 0) : 0,
+    netExposure: mode === 'weight' ? entries.reduce((sum, [, weight]) => sum + weight, 0) : 0,
+    entries: entries.map(([symbol, weight]) => ({ symbol, weight, ...(mode === 'quantity' ? { mode } : {}) })),
   }
 }
 
 /** 将只读目标快照整理成组合卡片需要的稳定摘要。 */
 export function portfolioTargetSummary(snapshot: TargetWeightSnapshot): PortfolioTargetSummary {
-  return targetWeightSummary(snapshot.weights)
+  return targetWeightSummary(snapshot.target_mode === 'quantity' ? snapshot.raw_targets ?? {} : snapshot.weights, snapshot.target_mode)
 }
 
 /** 区分加载失败、从未计算、目标为空和已有目标，避免把缺数据画成健康空仓。 */
@@ -57,7 +60,7 @@ export function portfolioTargetState(
 
   const summary = portfolioTargetSummary(snapshot)
   if (summary.activeCount === 0) {
-    return { kind: 'empty', calculatedAt: snapshot.calculated_at, stale }
+    return { kind: 'empty', calculatedAt: snapshot.calculated_at, stale, ...(summary.mode ? { mode: summary.mode } : {}) }
   }
   return { kind: 'ready', calculatedAt: snapshot.calculated_at, stale, summary }
 }

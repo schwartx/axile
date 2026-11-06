@@ -6,12 +6,13 @@
 """
 
 from collections.abc import Mapping
-from typing import override
+from typing import cast, override
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from axile.common.trade_channel import TradeChannel
 from axile.executor.futures_close_policy import FuturesClosePolicy
+from axile.executor.models.portfolio_target import PortfolioTarget, TargetMode
 from axile.executor.models.unified_input_accounts import (
     AccountConfig,
     BaseAccountConfig,
@@ -95,7 +96,8 @@ class UnifiedStandardInput(BaseModel):
     # === 核心必填字段 ===
     channel_type: TradeChannel = Field(..., description="交易渠道类型")
     account_config: BaseAccountConfig = Field(..., description="账户配置")
-    curr_target: dict[str, float] = Field(..., description="当前目标持仓权重")
+    curr_target: dict[str, float] = Field(..., description="当前带符号目标持仓，口径由 target_mode 决定")
+    target_mode: TargetMode = Field(default="weight", description="目标口径：权重或渠道原生数量")
 
     # === 可选字段 ===
     last_target: dict[str, float] = Field(default={}, description="上次目标持仓权重")
@@ -193,6 +195,8 @@ class UnifiedStandardInput(BaseModel):
         if not isinstance(value, Mapping):
             return value
         payload = dict(value)
+        if payload.get("target_mode") == "quantity":
+            payload["curr_target"] = PortfolioTarget.validate_targets(payload.get("curr_target", {}))
         channel = _resolve_input_channel(payload, None)
         plugin_defaults = _get_channel_default_algorithm(channel)
         if not payload.get("algorithm"):
@@ -303,7 +307,12 @@ class UnifiedStandardInput(BaseModel):
         return cls(
             channel_type=channel,
             account_config=account_config,
-            curr_target=_as_float_dict(data.get("curr_target", {})),
+            curr_target=(
+                PortfolioTarget.validate_targets(data.get("curr_target", {}))
+                if data.get("target_mode") == "quantity"
+                else _as_float_dict(data.get("curr_target", {}))
+            ),
+            target_mode=cast("TargetMode", data.get("target_mode", "weight")),
             last_target=_as_float_dict(data.get("last_target", {})),
             algorithm=algorithm,
             symbol_algorithms=symbol_algorithms,
@@ -333,6 +342,7 @@ class UnifiedStandardInput(BaseModel):
             "channel_type": _channel_value(self.channel_type),
             "account_config": _serialize_account_config(self.account_config),
             "curr_target": self.curr_target,
+            "target_mode": self.target_mode,
             "last_target": self.last_target,
             "algorithm": self.algorithm,
             "symbol_algorithms": self.symbol_algorithms,

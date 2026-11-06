@@ -138,6 +138,21 @@ export function HoldingsView({
   const ordinaryAligned = plan.rows.length - plan.off - quantizedAligned
   const heldCount = positions.filter((position) => Math.abs(signedPositionQuantity(position) ?? 0) > QTY_EPS).length
 
+  if (executablePlan?.target_mode === 'quantity') {
+    return <div>
+      <p className="mb-3 text-[14px] text-ink-2">数量目标 · {executablePlan.rows.length} 个品种 · {executablePlan.off_symbol_count ?? '—'} 个待调整</p>
+      <div role="table" aria-label="目标数量与持仓">
+        <div role="row" className="grid grid-cols-3 gap-3 border-b border-line pb-2 text-[12px] text-ink-3">
+          <span role="columnheader">代码</span><span role="columnheader">当前数量</span><span role="columnheader">目标数量</span>
+        </div>
+        {executablePlan.rows.map(row => <div role="row" key={row.symbol} className="grid grid-cols-3 gap-3 border-b border-line py-3 text-[13px]">
+          <OverflowText text={row.symbol} />
+          <span role="cell" className="num">{quantityText(row.current_quantity, quantityLabel)}</span>
+          <span role="cell" className="num">{quantityText(row.target_quantity, quantityLabel)} · {row.aligned ? '到位' : '待调整'}</span>
+        </div>)}
+      </div>
+    </div>
+  }
   if (plan.rows.length === 0) {
     return <p className="text-[14px] text-ink-2">当前空仓，且无目标持仓。</p>
   }

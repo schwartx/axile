@@ -1053,7 +1053,7 @@ def test_portfolio_exception_contract_preserves_rebalance_audit(monkeypatch, mod
         account, SimpleNamespace(custom_calc_py_code="code"), "e", None
     )
     if mode == "success":
-        assert asyncio.run(call) == {"x": 0.25}
+        assert asyncio.run(call).targets == {"x": 0.25}
         record.assert_not_awaited()
     elif mode == "cancelled":
         with pytest.raises(asyncio.CancelledError):
