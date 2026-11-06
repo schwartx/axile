@@ -83,14 +83,14 @@ export function CronSetting({ value, onConfirm }: { value: string; onConfirm: (v
       footer={<div className="mx-[22px] flex justify-end gap-2 border-t border-line py-3">
         <button type="button" onClick={() => setOpen(false)} className="rounded-[9px] border border-line px-4 py-2 text-sm text-ink-2 hover:bg-fill">取消</button>
         <button type="button" onClick={confirm} disabled={!rules.length || errors.some(Boolean)}
-          className="rounded-[9px] bg-accent px-4 py-2 text-sm font-semibold text-white disabled:cursor-default disabled:opacity-45">确定</button>
+          className="cursor-pointer rounded-[9px] bg-ink-1 px-4 py-2 text-sm font-semibold text-surface disabled:cursor-default disabled:opacity-45">确定</button>
       </div>}>
       {/* 窄屏只滚动正文；双栏时各区域独立滚动，标题和操作始终可见。 */}
       {selected && <div className="quiet-scrollbar grid min-h-0 flex-1 auto-rows-max grid-cols-1 gap-4 overflow-y-auto overscroll-contain py-1 pr-1 lg:auto-rows-auto lg:grid-cols-[400px_minmax(0,1fr)] lg:grid-rows-1 lg:overflow-hidden lg:pr-0">
         <section className="flex min-h-0 min-w-0 flex-col rounded-lg border border-line p-3" aria-label="定时表达式列表">
           <div className="mb-2 flex shrink-0 items-center justify-between gap-3">
             <span className="text-sm font-semibold">定时表达式列表<span className="ml-2 rounded-md bg-fill px-1.5 py-0.5 text-xs font-normal tabular-nums text-ink-3">{rules.length}</span></span>
-            <button type="button" onClick={addRule} className="shrink-0 rounded-md bg-accent px-2.5 py-1.5 text-xs font-semibold text-white">添加表达式</button>
+            <button type="button" onClick={addRule} className="shrink-0 cursor-pointer rounded-md bg-ink-1 px-2.5 py-1.5 text-xs font-semibold text-surface">添加表达式</button>
           </div>
           <div ref={listRef} className="quiet-scrollbar space-y-2 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain lg:pr-1 lg:[scrollbar-gutter:stable]">
             {rules.map((rule, index) => <div key={rule.id}
