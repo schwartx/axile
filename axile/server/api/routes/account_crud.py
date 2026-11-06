@@ -285,7 +285,13 @@ async def create_account(
             "account_create",
             {
                 "account": account.model_dump(mode="json")
-                | {"account_config": account_config, "execution_notification_code": code},
+                | {
+                    "account_config": account_config,
+                    "execution_notification_code": code,
+                    "feishu_key": None
+                    if code and code.strip() != DEFAULT_ACCOUNT_NOTIFICATION_CODE.strip()
+                    else account.feishu_key,
+                },
                 "idempotency_key": idempotency_key,
                 "now": now_str(),
             },
@@ -738,6 +744,12 @@ async def _update_account(
         next_notification_code = data.get("execution_notification_code", db_account.execution_notification_code)
         if next_notification_code:
             validate_notification_function(str(next_notification_code))
+        if (
+            "execution_notification_code" in data
+            and next_notification_code
+            and str(next_notification_code).strip() != DEFAULT_ACCOUNT_NOTIFICATION_CODE.strip()
+        ):
+            data["feishu_key"] = None
         if account.account_config is not None or account.trade_channel is not None:
             data["account_config"] = normalized_account_config
         Account.model_validate(db_account.model_dump() | data)

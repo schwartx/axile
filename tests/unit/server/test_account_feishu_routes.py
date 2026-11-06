@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.executor.feishu_notifications import build_execution_notification_context
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.server.api.routes import account_feishu
@@ -85,8 +86,10 @@ def _sample_assets() -> UnifiedAccountAssets:
     )
 
 
-def test_custom_notification_uses_saved_key_without_saving(monkeypatch) -> None:
-    """通用函数无需飞书凭证；省略凭证字段时继续使用账户保存值。"""
+@pytest.mark.parametrize("supplied", [{}, {"feishu_key": "draft-key"}])
+@pytest.mark.parametrize("custom", [True, False])
+def test_notification_trial_key_matches_mode_without_saving(monkeypatch, supplied, custom) -> None:
+    """试跑按通知方式提供凭证，但不修改已保存配置。"""
     account = build_account()
     captured = []
     monkeypatch.setattr(account_feishu, "_get_account_or_404", AsyncMock(return_value=account))
@@ -96,15 +99,18 @@ def test_custom_notification_uses_saved_key_without_saving(monkeypatch) -> None:
         "run_notification_function",
         lambda code, context, **kwargs: captured.append(kwargs) or SimpleNamespace(ok=True),
     )
-    for key in (None, "saved-key"):
+    for key in (None, "saved-key") if custom else ("saved-key",):
         account.feishu_key = key
         result = asyncio.run(
             account_feishu.test_account_notification_function(
                 1,
-                account_feishu.AccountNotificationFunctionTestRequest(code="def notify(context): pass"),
+                account_feishu.AccountNotificationFunctionTestRequest(
+                    code="def notify(context): pass" if custom else DEFAULT_ACCOUNT_NOTIFICATION_CODE,
+                    **supplied,
+                ),
             )
         )
         assert result.ok is True
-        assert captured[-1]["feishu_key"] == key
+        assert captured[-1]["feishu_key"] == (None if custom else supplied.get("feishu_key", key))
         assert account.feishu_key == key
         assert account.execution_notification_code is None

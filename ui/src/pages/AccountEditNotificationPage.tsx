@@ -92,6 +92,7 @@ export function AccountEditNotificationPage() {
         <div className="flex flex-wrap items-center gap-3"><AccountPageTitle accountId={accountId} page="执行通知函数" name={acc.name} channel={acc.trade_channel} market={acc.market} /></div>
         <label className="mt-2 block text-[13px] text-ink-3">试跑事件 <select value={eventType} onChange={(event) => setEventType(event.target.value as typeof eventType)} disabled={trial.running}><option value="execution.finished">执行完成</option><option value="supplement.cancelled">补发取消</option></select></label>
         <p className="mt-2 text-[13px] text-ink-3">{savedNotificationStatus}</p>
+        {code.trim() && code.trim() !== defaultCode?.trim() && <p className="mt-2 text-[13px] text-ink-3">保存自定义通知会清除账户的飞书 Webhook。试跑与保存后 AXILE_ACCOUNT_FEISHU_KEY 均为空，通知渠道和凭据需由函数自行配置。</p>}
       </>}
       code={code}
       onChange={(value) => { setCode(value); saveState.clearError() }}
