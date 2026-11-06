@@ -79,7 +79,7 @@ export function TargetChips({ entries, compact = false }: { entries: PortfolioTa
 
   const hiddenCount = entries.length - visibleCount
   return (
-    <div ref={rowRef} className={compact ? "relative flex h-6 min-w-0 flex-1 items-center gap-1.5 overflow-hidden" : "relative mt-3 flex flex-wrap items-center gap-1.5 border-t border-line pt-3"}>
+    <div ref={rowRef} className={compact ? "relative flex h-6 min-w-0 flex-1 items-center gap-1.5 overflow-hidden" : "relative mt-3 flex flex-wrap items-center gap-1.5"}>
       {/* 测量层：保持布局但不显示，读到的即各 chip 的固有宽度。 */}
       <div ref={measureRef} className="invisible absolute left-0 top-0 flex items-center gap-1.5" aria-hidden="true">
         {entries.map((entry) => (
