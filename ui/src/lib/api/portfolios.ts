@@ -3,6 +3,7 @@ import { apiGet, apiSend } from '@/lib/api/client'
 import type {
   Message,
   Portfolio,
+  PortfolioLite,
   PortfolioList,
   TargetWeightSnapshot,
   ValidateCustomCalcResult,
@@ -57,6 +58,18 @@ export function createPortfolio(body: {
     status: null,
     tag: null,
     ...body,
+  })
+}
+
+/** 用已保存的组合定义创建独立副本。 */
+export function createPortfolioCopy(source: PortfolioLite, name: string): Promise<Portfolio> {
+  return createPortfolio({
+    name,
+    market: source.market,
+    description: source.description,
+    custom_calc_py_code: source.custom_calc_py_code,
+    status: source.status,
+    tag: source.tag,
   })
 }
 

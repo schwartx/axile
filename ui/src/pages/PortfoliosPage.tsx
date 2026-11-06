@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams, useViewTransitionState } from 'react-router'
-import { LoaderCircle, Pencil, Play, Plus, Trash2 } from 'lucide-react'
+import { Copy, LoaderCircle, Play, Plus, Trash2 } from 'lucide-react'
 import { Link, useNavigate } from '@/components/ui/nav'
-import { Card, Chip } from '@/components/ui/Card'
+import { Card } from '@/components/ui/Card'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { IdentityHover } from '@/components/ui/IdentityHover'
-import { OverflowText } from '@/components/ui/OverflowText'
 import { ConfirmModal, type ConfirmSpec } from '@/components/ui/ConfirmModal'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { CreatePortfolioModal } from '@/features/portfolio/CreatePortfolioModal'
@@ -38,12 +37,12 @@ export function PortfoliosPage() {
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null)
   const [deleteError, setDeleteError] = useState<Error | null>(null)
   const [searchParams, setSearchParams] = useSearchParams()
-  const [createOpen, setCreateOpen] = useState(false)
+  const [createMode, setCreateMode] = useState<'new' | PortfolioLite | null>(null)
 
   // 「新建组合」深链（侧栏 / 设置首页）：弹层打开后立即抹掉 ?new=1，不把弹层态留在历史里。
   useEffect(() => {
     if (searchParams.get('new') === '1') {
-      setCreateOpen(true)
+      setCreateMode('new')
       setSearchParams({}, { replace: true })
     }
   }, [searchParams, setSearchParams])
@@ -118,7 +117,7 @@ export function PortfoliosPage() {
         </span>
         <button
           type="button"
-          onClick={() => setCreateOpen(true)}
+          onClick={() => setCreateMode('new')}
           className="inline-flex cursor-pointer items-center gap-1.5 rounded-chip border border-line px-3 py-1.5 text-[13px] text-ink-2 transition-colors duration-150 hover:border-border-strong hover:text-ink-1 motion-reduce:transition-none"
         >
           <Plus size={14} aria-hidden />新建组合
@@ -126,7 +125,7 @@ export function PortfoliosPage() {
       </div>
 
       {portfolios == null && !portfoliosError && (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(360px,1fr))] gap-4">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,360px),1fr))] gap-4">
           {Array.from({ length: 2 }, (_, index) => (
             <Card key={index} className="border px-6 py-4" aria-busy="true">
               <div className="flex items-center gap-3">
@@ -157,7 +156,7 @@ export function PortfoliosPage() {
           <p className="mt-2 text-[15px] text-ink-2">组合是「交易什么」的来源，可被多个账户复用。</p>
           <button
             type="button"
-            onClick={() => setCreateOpen(true)}
+            onClick={() => setCreateMode('new')}
             className="mt-6 inline-flex cursor-pointer items-center gap-1.5 rounded-chip bg-accent px-4 py-2 text-[14px] font-medium text-white transition-colors duration-150 hover:brightness-110 motion-reduce:transition-none"
           >
             <Plus size={14} aria-hidden />新建组合
@@ -166,18 +165,19 @@ export function PortfoliosPage() {
       )}
 
       {list.length > 0 && (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(360px,1fr))] gap-4">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,360px),1fr))] gap-4">
           {list.map((p, index) => (
-            <PortfolioCard key={p.id} p={p} targetState={targetStates[index]} targetFetch={p.id == null ? undefined : targetFetches[p.id]} followers={followersOf(p.id)} accountsReady={accounts != null} accountsError={accountsError} onDelete={askDelete} />
+            <PortfolioCard key={p.id} p={p} targetState={targetStates[index]} targetFetch={p.id == null ? undefined : targetFetches[p.id]} followers={followersOf(p.id)} accountsReady={accounts != null} accountsError={accountsError} onDelete={askDelete} onDuplicate={setCreateMode} />
           ))}
         </div>
       )}
 
       <CreatePortfolioModal
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
+        open={createMode != null}
+        duplicateFrom={createMode === 'new' ? null : createMode}
+        onClose={() => setCreateMode(null)}
         onCreated={(created) => {
-          setCreateOpen(false)
+          setCreateMode(null)
           if (created.id != null) navigate(`/portfolios/${created.id}/edit`)
         }}
       />
@@ -195,6 +195,7 @@ function PortfolioCard({
   accountsReady,
   accountsError,
   onDelete,
+  onDuplicate,
 }: {
   p: PortfolioLite
   targetState: PortfolioTargetState
@@ -203,6 +204,7 @@ function PortfolioCard({
   accountsReady: boolean
   accountsError: Error | null
   onDelete: (p: PortfolioLite) => void
+  onDuplicate: (p: PortfolioLite) => void
 }) {
   const navigate = useNavigate()
   const toast = useToastStore((s) => s.toast)
@@ -233,21 +235,25 @@ function PortfolioCard({
       className="flex h-full min-w-0 flex-col border px-6 py-4 transition-transform hover:-translate-y-px"
       onClick={() => navigate(to)}
     >
-      <div className="flex min-w-0 items-center gap-3">
-        <IdentityHover name={p.name} id={p.id} kind="组合" createdAt={p.created_at}>
-          <div
-            tabIndex={0}
-            className="min-w-0 text-[16px] font-[620] focus-visible:outline-2 focus-visible:outline-accent"
-            style={nameVt && p.id != null ? { viewTransitionName: portfolioNameVtName(p.id) } : undefined}
-          >
-            <OverflowText text={p.name} />
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <IdentityHover name={p.name} id={p.id} kind="组合" createdAt={p.created_at}>
+            <Link
+              to={to}
+              aria-label={`编辑组合：${p.name}`}
+              onClick={(event) => event.stopPropagation()}
+              className="block rounded-sm text-[16px] leading-snug font-[620] [overflow-wrap:anywhere] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              style={nameVt && p.id != null ? { viewTransitionName: portfolioNameVtName(p.id) } : undefined}
+            >
+              {p.name}
+            </Link>
+          </IdentityHover>
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[12px] text-ink-3">
+            <span>{p.market}</span>
+            {accountsReady && !accountsError && followers.length === 0 && <span>未绑定</span>}
           </div>
-        </IdentityHover>
-        <Chip className="flex-none">{p.market}</Chip>
-        {accountsReady && !accountsError && followers.length === 0 && (
-          <span className="flex-none text-[12px] font-normal text-ink-3">未绑定</span>
-        )}
-        <div className="ml-auto flex flex-none items-center gap-2" onClick={(e) => e.stopPropagation()}>
+        </div>
+        <div className="flex shrink-0 items-center gap-1" onClick={(e) => e.stopPropagation()}>
           <Tooltip content={running ? '正在执行组合函数…' : '执行组合函数并更新目标快照'}>
             <button
               type="button"
@@ -260,14 +266,15 @@ function PortfolioCard({
               {running ? <LoaderCircle size={14} className="animate-spin motion-reduce:animate-none" aria-hidden /> : <Play size={14} aria-hidden />}
             </button>
           </Tooltip>
-          <Tooltip content="编辑组合">
+          <Tooltip content="复制组合">
             <button
               type="button"
-              aria-label="编辑组合"
-              className="grid h-8 w-8 cursor-pointer place-items-center rounded-lg border border-line text-ink-2 hover:border-ink-3/40 hover:text-ink-1"
-              onClick={() => navigate(to)}
+              aria-label={`复制组合：${p.name}`}
+              disabled={p.id == null}
+              className="grid h-8 w-8 cursor-pointer place-items-center rounded-lg border border-line text-ink-2 enabled:hover:border-ink-3/40 enabled:hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-45"
+              onClick={() => onDuplicate(p)}
             >
-              <Pencil size={14} aria-hidden />
+              <Copy size={14} aria-hidden />
             </button>
           </Tooltip>
           <Tooltip content={accountsReady && !accountsError ? '删除组合' : '绑定关系确认后才能删除'}>
@@ -292,7 +299,7 @@ function PortfolioCard({
 
       <div className="mt-auto min-w-0 pt-3">
         <div className={`min-w-0 border-t border-line pt-3 text-[13.5px] text-ink-3 ${accountsReady && !accountsError && followers.length === 0 ? 'hidden' : ''}`}>
-          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+          <div className="grid min-w-0 gap-2">
             {accountsError ? (
               <span>绑定关系暂不可用</span>
             ) : !accountsReady ? (
@@ -377,14 +384,15 @@ function TargetTimestamp({ state, snapshot }: {
 }) {
   const accounts = useDomainStore((store) => store.accounts)
   const contextId = snapshot?.context_account_id
-  const context = contextId == null ? '样例数据' : `账户：${accounts?.find(account => account.account_id === contextId)?.name ?? `#${contextId}`}`
+  const context = contextId == null ? '样例数据' : accounts?.find(account => account.account_id === contextId)?.name ?? `#${contextId}`
   if (state.kind !== 'ready' && state.kind !== 'empty') {
     return <span className="text-[12.5px] text-ink-3">{state.kind === 'loading' ? '正在读取目标…' : state.kind === 'unavailable' ? '目标暂不可用' : '尚未计算'}</span>
   }
   return (
-    <span className="max-w-full break-words text-[12.5px] text-ink-3">
-      {context} · {formatTargetUpdatedAt(state.calculatedAt)}
-    </span>
+    <div className="min-w-0 text-[12px] leading-relaxed text-ink-3">
+      <div>目标计算于 {formatTargetUpdatedAt(state.calculatedAt)}</div>
+      <div className="[overflow-wrap:anywhere]">计算上下文：{context}</div>
+    </div>
   )
 }
 
@@ -394,19 +402,19 @@ function PortfolioFollowerLink({ account }: { account: AccountDashboardItem }) {
   return (
     <Link
       to={to}
-      className="-m-1 inline-flex min-w-0 items-center gap-2 rounded-md p-1 text-inherit hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      className="-m-1 flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 rounded-md p-1 text-inherit hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       onClick={(event) => event.stopPropagation()}
       aria-label={`查看账户 ${account.name}，${channelLabel(account.trade_channel, account.market)}`}
     >
       <span
-        className="max-w-32 truncate text-[15px] font-[620] text-ink-1"
+        className="min-w-0 text-[14px] font-[580] text-ink-1 [overflow-wrap:anywhere]"
         style={transitioning ? { viewTransitionName: `account-name-${account.account_id}` } : undefined}
       >
         {account.name}
       </span>
-      <Chip style={transitioning ? { viewTransitionName: `account-channel-${account.account_id}` } : undefined}>
+      <span className="text-[12px] text-ink-3" style={transitioning ? { viewTransitionName: `account-channel-${account.account_id}` } : undefined}>
         {channelLabel(account.trade_channel, account.market)}
-      </Chip>
+      </span>
     </Link>
   )
 }
