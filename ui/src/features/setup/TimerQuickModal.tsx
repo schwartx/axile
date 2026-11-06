@@ -170,7 +170,8 @@ function TimerQuickModalReady({
   const cronNext = fromComplex && state.autoOn ? cronExpr : timerStateToCronExpr(market, intent, nightSchedule)
   const nextSupplement = useMemo(() => timerSupplement({ autoOn: state.autoOn, supN: state.supN, supM: state.supM }), [state.autoOn, state.supN, state.supM])
   const nextSessions = useMemo(() => gmTimerSessions(tradeChannel, { gm_sessions: state.gm_sessions }), [tradeChannel, state.gm_sessions])
-  const dirty = !cronExprEqual(cronNext, cronExpr) || JSON.stringify(nextSupplement) !== JSON.stringify(supplement ?? null) || JSON.stringify(nextSessions) !== JSON.stringify(gmTimerSessions(tradeChannel, { gm_sessions: gmSessions }))
+  const sessionsChanged = JSON.stringify(nextSessions) !== JSON.stringify(gmTimerSessions(tradeChannel, { gm_sessions: gmSessions }))
+  const dirty = !cronExprEqual(cronNext, cronExpr) || JSON.stringify(nextSupplement) !== JSON.stringify(supplement ?? null) || sessionsChanged
   const validationError = timerEditorError(state)
   useEffect(() => {
     setPreview(null)
@@ -202,7 +203,11 @@ function TimerQuickModalReady({
     setSaving(true)
     setSaveError(null)
     try {
-      await updateAccount(accountId, { cron_expr: cronNext, supplement: nextSupplement, gm_sessions: nextSessions })
+      await updateAccount(accountId, {
+        cron_expr: cronNext,
+        supplement: nextSupplement,
+        ...(sessionsChanged ? { gm_sessions: nextSessions } : {}),
+      })
       toast(cronNext ? '节奏已更新' : '已关闭自动调仓节奏')
       onSaved()
       onClose()

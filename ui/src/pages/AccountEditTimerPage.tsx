@@ -89,7 +89,8 @@ export function AccountEditTimerPage() {
   const cronPrev = acc.cron_expr ?? ''
   const supplement = timerSupplement(timer)
   const gmSessions = gmTimerSessions(acc.trade_channel, timer)
-  const dirty = !cronExprEqual(cronNext, cronPrev) || JSON.stringify(supplement) !== JSON.stringify(acc.supplement ?? null) || JSON.stringify(gmSessions) !== JSON.stringify(gmTimerSessions(acc.trade_channel, { gm_sessions: acc.gm_sessions }))
+  const sessionsChanged = JSON.stringify(gmSessions) !== JSON.stringify(gmTimerSessions(acc.trade_channel, { gm_sessions: acc.gm_sessions }))
+  const dirty = !cronExprEqual(cronNext, cronPrev) || JSON.stringify(supplement) !== JSON.stringify(acc.supplement ?? null) || sessionsChanged
   const err = timerEditorError(timer)
   const changes = dirty ? [cronNext ? '定时任务已改' : '关闭自动调仓节奏'] : []
 
@@ -104,7 +105,11 @@ export function AccountEditTimerPage() {
     setSaving(true)
     setSaveError(null)
     try {
-      await updateAccount(accountId, { cron_expr: cronNext, supplement, gm_sessions: gmSessions })
+      await updateAccount(accountId, {
+        cron_expr: cronNext,
+        supplement,
+        ...(sessionsChanged ? { gm_sessions: gmSessions } : {}),
+      })
       toast(cronNext ? '节奏已更新' : '已关闭自动调仓节奏')
       void refreshAccounts()
       account.refresh()
