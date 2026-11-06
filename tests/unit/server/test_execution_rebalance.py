@@ -254,10 +254,10 @@ def test_trade_builds_model_before_execute_and_persists_dict(
     assert "account_config" in raw_input
 
 
-def test_trade_defaults_gm_ashare_short_leverage_to_zero_when_unset(
+def test_trade_uses_gm_channel_default_leverages_when_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """GM+A股 且未显式配置 short_leverage 时，应默认按 long-only 处理负目标。"""
+    """GM+A股 未显式配置杠杆时沿用渠道默认的 1x。"""
     monkeypatch.setattr(
         rebalance_execution, "clock_now", lambda **kwargs: datetime(2026, 11, 3, 10, 0, tzinfo=SHANGHAI)
     )
@@ -304,7 +304,7 @@ def test_trade_defaults_gm_ashare_short_leverage_to_zero_when_unset(
     standard_input = cast("dict[str, object]", manager.trade_calls[0]["standard_input_dict"])
     assert standard_input["curr_target"] == {
         "600000.SH": 0.13,
-        "588000.SH": 0.0,
+        "588000.SH": -0.09,
     }
 
 
@@ -1053,7 +1053,7 @@ def test_portfolio_exception_contract_preserves_rebalance_audit(monkeypatch, mod
         account, SimpleNamespace(custom_calc_py_code="code"), "e", None
     )
     if mode == "success":
-        assert asyncio.run(call) == {"x": 0.25}
+        assert asyncio.run(call).targets == {"x": 0.25}
         record.assert_not_awaited()
     elif mode == "cancelled":
         with pytest.raises(asyncio.CancelledError):

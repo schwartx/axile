@@ -39,9 +39,9 @@ def ensure_native_capabilities() -> None:
         "analysis_commit_confirmed",
     )
     if getattr(_core, "ANALYSIS_FACT_SCHEMA", None) != 42:
-        raise RuntimeError("Native analysis extension requires direct business facts schema 0034; rebuild the wheel")
-    if getattr(_core, "PUBLIC_HEAD", None) != "0034":
-        raise RuntimeError("Native analysis extension requires migration head 0034; rebuild the wheel")
+        raise RuntimeError("Native analysis extension requires direct business facts schema 0035; rebuild the wheel")
+    if getattr(_core, "PUBLIC_HEAD", None) != "0035":
+        raise RuntimeError("Native analysis extension requires migration head 0035; rebuild the wheel")
     missing = [name for name in required if not callable(getattr(_core, name, None))]
     if missing:
         raise RuntimeError(f"Native analysis extension must export {', '.join(missing)}; rebuild the wheel")

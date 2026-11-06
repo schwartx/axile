@@ -134,3 +134,21 @@ def test_invalid_market_price_is_not_silently_rendered_as_zero() -> None:
     assert decisions["bad"].status is TargetSizingStatus.UNAVAILABLE
     assert decisions["bad"].target_quantity is None
     assert decisions["bad"].reason_code == "COMMON.SIZING.INVALID_PRICE"
+
+
+@pytest.mark.parametrize("equity", [0, 100_000, 1_000_000])
+def test_ctp_direct_quantity_is_independent_of_equity(equity):
+    executor = object.__new__(CTPExecutor)
+    executor._instruments = {"m2701": SimpleNamespace(VolumeMultiple=10)}
+    sizing = executor._calculate_generic_sizing(
+        -3.0, 3_000, _assets(equity), {"sizing_mode": "quantity"}, symbol="m2701"
+    )
+    assert sizing.sizing_mode == "quantity"
+    assert sizing.raw_quantity == sizing.target_quantity == -3
+    assert sizing.unit_notional == 30_000
+
+
+def test_ctp_quantity_rejects_fractional_lots():
+    executor = object.__new__(CTPExecutor)
+    with pytest.raises(ValueError, match="整数"):
+        executor._calculate_generic_sizing(-2.8, 3_000, _assets(), {"sizing_mode": "quantity"}, symbol="m2701")

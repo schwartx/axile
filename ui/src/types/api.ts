@@ -462,8 +462,8 @@ export interface AccountDashboard {
 /** 服务端按渠道可执行规则计算的账户持仓对照。 */
 export interface AccountRebalancePlanRow {
   symbol: string
-  current_weight: number
-  target_weight: number
+  current_weight: number | null
+  target_weight: number | null
   current_quantity: number | null
   target_quantity: number | null
   action: 'aligned' | 'increase' | 'reduce' | 'open' | 'close' | 'flip'
@@ -472,6 +472,7 @@ export interface AccountRebalancePlanRow {
 }
 
 export interface AccountRebalancePlan {
+  target_mode?: TargetMode
   rows: AccountRebalancePlanRow[]
   off_symbol_count: number | null
   observed_at: string | null
@@ -569,7 +570,11 @@ export interface TargetSizing {
 }
 
 /** 最近一次成功计算的目标权重快照；`calculated_at=null` 表示从未计算。 */
+export type TargetMode = 'weight' | 'quantity'
+
 export interface TargetWeightSnapshot {
+  target_mode?: TargetMode
+  raw_targets?: LatestWeights
   weights: LatestWeights
   /** 渠道量化后的目标数量（与 weights 同 key）；渠道未提供时为 null。 */
   quantities?: LatestWeights | null
@@ -587,6 +592,7 @@ export interface TargetWeightSnapshot {
 
 /** 自定义组合脚本校验结果，对应后端 `ValidateCustomCalcResponse`。 */
 export interface ValidateCustomCalcResult {
+  target_mode?: TargetMode
   /** 脚本是否成功执行并返回合法权重。 */
   valid: boolean
   /** 成功时脚本返回的目标权重（symbol → weight）。 */

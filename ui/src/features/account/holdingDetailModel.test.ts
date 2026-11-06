@@ -122,3 +122,15 @@ describe('在途剩余数量核对', () => {
     expect(project({ orders: { ...snapshot, data: [] } })).toMatchObject({ effect: 'unchanged', actions: [{ kind: '卖开', quantity: 2 }] })
   })
 })
+
+
+it('数量模式追加尚未持有的标的，保留冻结小数而不伪造权重', () => {
+  const quantityTarget: TargetWeightSnapshot = { ...target, weights: {}, target_mode: 'quantity',
+    raw_targets: { XAUUSD: 0.0159 }, quantities: { XAUUSD: 0.015 }, sizing: { ...target.sizing!, rows: {
+      XAUUSD: { ...evidence, symbol: 'XAUUSD', sizing_mode: 'quantity', raw_quantity: 0.0159, target_quantity: 0.015 },
+    } } }
+  expect(holdingPreviewRows([], 0, quantityTarget, true)[0].symbol).toBe('XAUUSD')
+  expect(holdingTarget(quantityTarget, 'XAUUSD')).toMatchObject({ weight: null, quantity: 0.015 })
+  expect(holdingTarget({ ...quantityTarget, sizing: { ...quantityTarget.sizing!, status: 'pending_execution' } }, 'XAUUSD').quantity).toBeNull()
+  expect(holdingTarget(quantityTarget, 'XAGUSD').quantity).toBe(0)
+})

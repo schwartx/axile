@@ -16,7 +16,7 @@ from axile.server.portfolio_targets import PortfolioFunctionError, calculate_por
 from tests.unit.server._execution_test_support import build_account
 
 
-def _calculate(code: str) -> dict[str, float]:
+def _calculate(code: str):
     return calculate_portfolio_target(code, build_sample_context())
 
 
@@ -24,12 +24,12 @@ def test_function_runs_in_normal_python_environment() -> None:
     result = _calculate(
         "import math\ndef calculate_portfolio(context):\n    return {'rb2610': math.sqrt(context.get_price('rb2610')) / 10}\n"
     )
-    assert result == {"rb2610": 1.0}
+    assert result.targets == {"rb2610": 1.0}
 
 
 def test_function_can_use_sample_account() -> None:
     result = _calculate("def calculate_portfolio(context):\n    return {'cash': context.account.available_cash}\n")
-    assert result == {"cash": 800_000.0}
+    assert result.targets == {"cash": 800_000.0}
 
 
 @pytest.mark.parametrize(
@@ -134,7 +134,7 @@ def test_sample_runner_executes_in_disposable_process() -> None:
     result = calculate_sample_portfolio(
         "import os\ndef calculate_portfolio(context):\n    return {'pid': float(os.getpid())}\n"
     )
-    assert result["pid"] != float(__import__("os").getpid())
+    assert result.targets["pid"] != float(__import__("os").getpid())
 
 
 def test_sample_runner_terminates_infinite_loop() -> None:

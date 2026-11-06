@@ -4,6 +4,7 @@ from typing import Optional
 
 from pydantic import ConfigDict, Field, field_validator
 
+from axile.executor.models.portfolio_target import TargetMode
 from axile.server.db.models.base import Model, now_str
 
 
@@ -90,6 +91,7 @@ class ValidateCustomCalcResponse(Model):
 
     valid: bool
     target: Optional[dict[str, float]] = None
+    target_mode: TargetMode = "weight"
     error: Optional[str] = None
     traceback: Optional[str] = None
     error_line: Optional[int] = None

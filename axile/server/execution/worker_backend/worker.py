@@ -17,6 +17,7 @@ from loguru import logger
 from axile.executor.abstract_executor.base import AbstractExecutor
 from axile.executor.account_control.models import AccountControlContextKind, AccountControlSource
 from axile.executor.algorithms.utils.clock import get_default_clock
+from axile.executor.models.portfolio_target import PortfolioTarget
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import UnifiedStandardOutput
@@ -239,7 +240,7 @@ def _handle_calculate_portfolio(
         return WorkerBackendResponse(
             request_id=request.request_id,
             kind="result",
-            output_payload={"portfolio_result": result},
+            output_payload={"portfolio_result": result.model_dump() if isinstance(result, PortfolioTarget) else result},
             channel_type=account.trade_channel,
         )
     except Exception as exc:  # noqa: BLE001 - IPC 边界统一返回结构化错误

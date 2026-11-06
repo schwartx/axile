@@ -65,6 +65,7 @@ class AccountNotificationContext(TypedDict):
     execution: AccountNotificationExecution | None
     strategy: dict[str, object]
     assets: dict[str, object]
+    # targets.mode 区分权重与原生数量；target_volume 始终为可执行数量。
     targets: dict[str, object]
     positions: list[dict[str, object]] | None
     orders: list[dict[str, object]]

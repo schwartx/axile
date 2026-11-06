@@ -2,7 +2,7 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/axile)](https://pypi.org/project/axile/)
 
-Axile 是一个通过 Web 界面配置和运行的交易执行服务。输入投资组合的目标权重后，它根据账户权益和品种交易规则换算目标数量，并执行调仓。内置 CTP、天勤和掘金渠道，支持插件扩展。
+Axile 是一个通过 Web 界面配置和运行的交易执行服务。输入投资组合的目标权重或目标数量后，它按品种交易规则规划并执行调仓；权重模式会根据账户权益换算数量。内置 CTP、天勤和掘金渠道，支持插件扩展。
 
 [使用文档](https://schwartx.github.io/axile/) · [创建第一个组合](https://schwartx.github.io/axile/guide/first-portfolio.html)
 

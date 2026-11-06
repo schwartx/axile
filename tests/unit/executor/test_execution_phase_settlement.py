@@ -268,3 +268,25 @@ def test_snapshot_does_not_leak_into_a_second_run(monkeypatch):
     assert output.status == ExecutionStatus.SUCCEEDED
     assert output.symbol_results[SELL].final_volume == 900
     assert e._owner.account_assets_calls == 4
+
+
+def test_direct_quantity_survives_equity_change_between_phases(monkeypatch):
+    after_reduce = assets()
+    after_reduce.total_asset = 560_000
+    final = assets(buy=7.5)
+    final.total_asset = 560_000
+    e = engine([assets(sell=900), after_reduce, final])
+    planned = []
+
+    def dispatch(tasks):
+        planned.extend(tasks)
+        if tasks[0].symbol == SELL:
+            return [result()]
+        return [result(symbol=BUY, start=0, observed=7.5, target=7.5, filled=7.5, direction=OrderDirection.BUY)]
+
+    monkeypatch.setattr(e, "_run_prepared_symbol_algorithms", dispatch)
+    request = inputs(e).model_copy(update={"target_mode": "quantity", "curr_target": {SELL: 500.0, BUY: 7.5}})
+    output = e.run(request)
+    assert [task.algorithm_input.target_volume for task in planned] == [500, 7.5]
+    assert all(task.sizing.sizing_mode == "quantity" for task in planned)
+    assert output.status == ExecutionStatus.SUCCEEDED

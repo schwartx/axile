@@ -11,16 +11,18 @@ use crate::error::AnalysisError;
 mod error_patch;
 mod execution_views;
 mod private;
+mod quantity_targets;
 mod structured;
 
-pub const PUBLIC_HEAD: &str = "0034";
+pub const PUBLIC_HEAD: &str = "0035";
 pub const PRIVATE_HEAD: &str = "axon_0001";
 
 const PUBLIC_VERSION_TABLE: &str = "alembic_version";
 const PRIVATE_VERSION_TABLE: &str = "axon_alembic_version";
 const PRIVATE_BACKUP_TABLE: &str = "axon_0001_error_backup";
 const BASELINE_REVISION: u32 = 33;
-const PUBLIC_HEAD_NUMBER: u32 = 34;
+const STRUCTURED_REVISION: u32 = 34;
+const PUBLIC_HEAD_NUMBER: u32 = 35;
 
 fn invalid(message: impl Into<String>) -> AnalysisError {
     AnalysisError::new("MIGRATION_VALUE", message)
@@ -88,7 +90,12 @@ impl<'a> Policy<'a> {
             "head" => PUBLIC_HEAD_NUMBER,
 
             revision => revision_number(revision)
-                .filter(|n| matches!(*n, BASELINE_REVISION | PUBLIC_HEAD_NUMBER))
+                .filter(|n| {
+                    matches!(
+                        *n,
+                        BASELINE_REVISION | STRUCTURED_REVISION | PUBLIC_HEAD_NUMBER
+                    )
+                })
                 .ok_or_else(|| self.target_error())?,
         };
         let private = if self.codes.is_some() {
@@ -108,9 +115,9 @@ impl<'a> Policy<'a> {
 
     fn target_error(&self) -> AnalysisError {
         if self.codes.is_some() {
-            invalid("supported targets: public 0033/0034, private base/axon_0001")
+            invalid("supported targets: public 0033/0034/0035, private base/axon_0001")
         } else {
-            invalid("supported targets: public 0033/0034")
+            invalid("supported targets: public 0033/0034/0035")
         }
     }
 }
@@ -274,8 +281,11 @@ fn state(connection: Option<&Connection>) -> Result<State, AnalysisError> {
                     "unsupported development database revision: {revision}"
                 )));
             }
-            if number == PUBLIC_HEAD_NUMBER {
+            if number >= STRUCTURED_REVISION {
                 validate_final_schema(connection)?;
+            }
+            if number == PUBLIC_HEAD_NUMBER {
+                quantity_targets::validate(connection)?;
             }
             number
         }
@@ -366,15 +376,33 @@ fn move_public(
     if current.public == target {
         return Ok(());
     }
-    match (upgrade, current.public, target) {
-        (true, 0, PUBLIC_HEAD_NUMBER) => structured::create(connection)?,
-        (true, BASELINE_REVISION, PUBLIC_HEAD_NUMBER) => structured::upgrade(connection)?,
-        (false, PUBLIC_HEAD_NUMBER, BASELINE_REVISION) => structured::downgrade(connection)?,
-        _ => {
-            return Err(invalid(
-                "supported migration paths: empty/0033 to 0034, 0034 to 0033",
-            ))
+    if upgrade {
+        if target >= STRUCTURED_REVISION && current.public < STRUCTURED_REVISION {
+            match current.public {
+                0 => structured::create(connection)?,
+                BASELINE_REVISION => structured::upgrade(connection)?,
+                _ => return Err(invalid("unsupported public migration source")),
+            }
+            current.public = STRUCTURED_REVISION;
         }
+        if current.public == STRUCTURED_REVISION && target == PUBLIC_HEAD_NUMBER {
+            quantity_targets::upgrade(connection)?;
+            current.public = PUBLIC_HEAD_NUMBER;
+        }
+    } else {
+        if current.public == PUBLIC_HEAD_NUMBER && target < PUBLIC_HEAD_NUMBER {
+            quantity_targets::downgrade(connection)?;
+            current.public = STRUCTURED_REVISION;
+        }
+        if current.public == STRUCTURED_REVISION && target == BASELINE_REVISION {
+            structured::downgrade(connection)?;
+            current.public = BASELINE_REVISION;
+        }
+    }
+    if current.public != target {
+        return Err(invalid(
+            "supported migration paths: empty/0033/0034 to 0035, 0035 to 0034/0033",
+        ));
     }
     current.public = target;
     stamp(
@@ -445,6 +473,9 @@ fn scan(
     policy: &Policy<'_>,
     result: &mut Value,
 ) -> Result<(), AnalysisError> {
+    if current.public == PUBLIC_HEAD_NUMBER && targets.public < PUBLIC_HEAD_NUMBER {
+        quantity_targets::preflight_downgrade(connection)?;
+    }
     if current.public > BASELINE_REVISION && targets.public <= BASELINE_REVISION {
         structured::preflight_downgrade(connection)?;
     }
@@ -470,10 +501,12 @@ pub fn migration_upgrade(path: &str, request: &Value) -> Result<Value, AnalysisE
     let targets = policy.targets(request, false)?;
     read_scope(path, |connection| {
         let current = state(connection)?;
-        if current.public == 0 && targets.public != PUBLIC_HEAD_NUMBER {
-            return Err(invalid("empty databases can only be initialized at 0034"));
+        if current.public == 0 && targets.public < STRUCTURED_REVISION {
+            return Err(invalid(
+                "empty databases can only be initialized at 0034/0035",
+            ));
         }
-        if current.public == BASELINE_REVISION && targets.public == PUBLIC_HEAD_NUMBER {
+        if current.public == BASELINE_REVISION && targets.public >= STRUCTURED_REVISION {
             structured::check_analysis_dependencies(
                 connection.expect("existing baseline"),
                 current.public,
@@ -488,7 +521,7 @@ pub fn migration_upgrade(path: &str, request: &Value) -> Result<Value, AnalysisE
         }
         // 写锁已阻止其他写入；独立读连接备份尚未修改的已提交数据与 WAL。
         let crosses_structured =
-            current.public == BASELINE_REVISION && targets.public == PUBLIC_HEAD_NUMBER;
+            current.public == BASELINE_REVISION && targets.public >= STRUCTURED_REVISION;
         let backup = if current.public > 0 && crosses_structured {
             let database = database_path(path)?;
             let backup = crate::maintenance_ops::backup_path(
@@ -515,7 +548,7 @@ pub fn migration_upgrade(path: &str, request: &Value) -> Result<Value, AnalysisE
             current.private = true;
         }
         move_public(connection, &mut current, targets.public, true)?;
-        if current.public == PUBLIC_HEAD_NUMBER {
+        if current.public >= STRUCTURED_REVISION {
             // 已有 0034 数据库也需补齐索引，无需重建业务事实。
             structured::install_target_query_index(connection)?;
         }
@@ -539,7 +572,7 @@ pub fn migration_downgrade(path: &str, request: &Value) -> Result<Value, Analysi
     let targets = policy.targets(request, true)?;
     read_scope(path, |connection| {
         let current = state(connection)?;
-        if current.public == PUBLIC_HEAD_NUMBER && targets.public == BASELINE_REVISION {
+        if current.public >= STRUCTURED_REVISION && targets.public == BASELINE_REVISION {
             structured::check_analysis_dependencies(
                 connection.expect("existing final schema"),
                 current.public,
@@ -680,7 +713,7 @@ mod tests {
         for _ in 0..2 {
             assert_eq!(
                 migration_upgrade(path.as_str(), &json!({})).unwrap()["public"],
-                "0034"
+                "0035"
             );
             assert_eq!(index_count(), 1);
         }
@@ -902,14 +935,14 @@ mod tests {
 
     #[test]
     fn targets_only_allow_the_published_baseline_and_final_revision() {
-        for target in ["0033", "0034", "head"] {
+        for target in ["0033", "0034", "0035", "head"] {
             let request = dual_request(target, "head");
             assert!(Policy::parse(&request)
                 .unwrap()
                 .targets(&request, true)
                 .is_ok());
         }
-        for target in ["base", "0001", "0032", "0035", "0039"] {
+        for target in ["base", "0001", "0032", "0036", "0039"] {
             let request = dual_request(target, "base");
             assert!(Policy::parse(&request)
                 .unwrap()

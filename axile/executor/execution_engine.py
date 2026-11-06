@@ -635,13 +635,15 @@ class ExecutionEngine:
                 sizing=sizing,
                 status=(
                     ExecutionStatus.BLOCKED
-                    if sizing is not None and sizing.reason_code == "COMMON.MARKET_DATA.UNAVAILABLE"
+                    if sizing is not None
+                    and (sizing.reason_code == "COMMON.MARKET_DATA.UNAVAILABLE" or sizing.sizing_mode == "quantity")
                     else ExecutionStatus.FAILED
                 ),
                 reason_code=sizing.reason_code if sizing is not None else None,
                 reason_family=(
                     ExecutionReasonFamily.MARKET_RULE
-                    if sizing is not None and sizing.reason_code == "COMMON.MARKET_DATA.UNAVAILABLE"
+                    if sizing is not None
+                    and (sizing.reason_code == "COMMON.MARKET_DATA.UNAVAILABLE" or sizing.sizing_mode == "quantity")
                     else None
                 ),
             )
@@ -701,15 +703,16 @@ class ExecutionEngine:
         scoped_last_target = {
             symbol: weight for symbol, weight in standard_input.last_target.items() if symbol in set(symbols)
         }
-        quote_symbols = self._planning_quote_symbols(
-            symbols, scoped_curr_target, account_assets, standard_input.trade_rules
-        )
+        trade_rules = standard_input.trade_rules
+        if standard_input.target_mode == "quantity":
+            trade_rules = {symbol: {**trade_rules.get(symbol, {}), "sizing_mode": "quantity"} for symbol in symbols}
+        quote_symbols = self._planning_quote_symbols(symbols, scoped_curr_target, account_assets, trade_rules)
         planning_market_data = self._planning_market_data(quote_symbols)
         sizing_decisions = self._owner.calculate_target_sizing(
             scoped_curr_target,
             account_assets,
             planning_market_data,
-            standard_input.trade_rules,
+            trade_rules,
             scoped_last_target,
             standard_input.forbidden_symbols,
         )
@@ -728,7 +731,7 @@ class ExecutionEngine:
             for symbol in symbols
             if symbol in held
             or targets.get(symbol, 0) != 0
-            or rules.get(symbol, {}).get("sizing_mode", "weight") != "lots"
+            or rules.get(symbol, {}).get("sizing_mode", "weight") not in {"lots", "quantity"}
         ]
 
     def _classify_symbol_dispatch_phases(
@@ -1004,13 +1007,21 @@ class ExecutionEngine:
                         sizing=sizing,
                         status=(
                             ExecutionStatus.BLOCKED
-                            if sizing is not None and sizing.reason_code == "COMMON.MARKET_DATA.UNAVAILABLE"
+                            if sizing is not None
+                            and (
+                                sizing.reason_code == "COMMON.MARKET_DATA.UNAVAILABLE"
+                                or sizing.sizing_mode == "quantity"
+                            )
                             else ExecutionStatus.FAILED
                         ),
                         reason_code=sizing.reason_code if sizing is not None else None,
                         reason_family=(
                             ExecutionReasonFamily.MARKET_RULE
-                            if sizing is not None and sizing.reason_code == "COMMON.MARKET_DATA.UNAVAILABLE"
+                            if sizing is not None
+                            and (
+                                sizing.reason_code == "COMMON.MARKET_DATA.UNAVAILABLE"
+                                or sizing.sizing_mode == "quantity"
+                            )
                             else None
                         ),
                     )

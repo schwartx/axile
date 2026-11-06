@@ -25,7 +25,7 @@ import { SnapshotResult } from '@/features/portfolio/SnapshotResult'
 import { BatchExecutionResults } from '@/features/portfolio/BatchExecutionResults'
 import type { BatchResult } from '@/features/portfolio/batchExecutionSnapshot'
 import { targetSnapshotText } from '@/features/portfolio/targetSnapshotDisplay'
-import { targetWeightSummary } from '@/features/portfolio/portfolioCardSummary'
+import { portfolioTargetSummary } from '@/features/portfolio/portfolioCardSummary'
 import { useCustomCalcValidation } from '@/features/portfolio/useCustomCalcValidation'
 import { portfolioNameVtName } from '@/features/portfolio/viewTransition'
 import { usePolling } from '@/lib/hooks/usePolling'
@@ -197,8 +197,8 @@ export function PortfolioEditPage() {
           anyFollowerRunning
             ? '账户正在执行，结束后可重新计算'
             : weights.recalculating
-              ? '正在重新计算目标权重'
-              : '重新计算当前目标权重'
+              ? '正在重新计算目标'
+              : '重新计算当前目标'
         }
       >
         <span className="inline-flex flex-none">
@@ -206,7 +206,7 @@ export function PortfolioEditPage() {
             type="button"
             onClick={() => void weights.recalculate()}
             disabled={anyFollowerRunning || weights.loading || weights.recalculating}
-            aria-label={weights.recalculating ? '正在重新计算目标权重' : '重新计算当前目标权重'}
+            aria-label={weights.recalculating ? '正在重新计算目标' : '重新计算当前目标'}
             className="grid h-6 w-6 cursor-pointer place-items-center rounded-md text-ink-3 hover:bg-fill hover:text-ink-1 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
           >
             <RefreshCw size={14} className={weights.recalculating ? 'animate-spin motion-reduce:animate-none' : undefined} />
@@ -251,7 +251,7 @@ export function PortfolioEditPage() {
     weights.error != null ||
     weights.recalculateError != null ||
     (weights.data?.calculated_at != null &&
-      targetWeightSummary(weights.data.weights).entries.length > 0)
+      portfolioTargetSummary(weights.data).entries.length > 0)
   const trialContentful = Boolean(calc.result?.valid && calc.result?.target)
   const resultContentful = effectiveContentful || trialContentful
   const resultFr = resultOpen && resultContentful
@@ -459,7 +459,7 @@ export function PortfolioEditPage() {
             )}
             statusOverride={targetTab === 'effective' ? snapshotStatus : undefined}
             contentOverride={targetTab === 'effective' ? <SnapshotResult contextKey={portfolioId} weights={weights} /> : undefined}
-            resultContent={calc.result?.valid && calc.result.target ? <WeightResult target={calc.result.target} /> : null}
+            resultContent={calc.result?.valid && calc.result.target ? <WeightResult target={calc.result.target} mode={calc.result.target_mode} /> : null}
           />
 
           <ResizeHandle

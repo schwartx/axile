@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import math
 import traceback
-from typing import cast
 
 from axile.common.function_contract import accepts_context
 from axile.executor.connection_state import connection_error_scope
+from axile.executor.models.portfolio_target import PortfolioTarget
 from axile.server.context import Context
 
 
@@ -58,24 +57,12 @@ def _error_from_exception(exc: BaseException) -> PortfolioFunctionError:
     )
 
 
-def _normalize_target(target: object) -> dict[str, float]:
-    """校验并规范化 ``symbol -> weight`` 返回值."""
-    if not isinstance(target, dict):
-        raise TypeError(f"calculate_portfolio 必须返回 dict[str, float]，实际返回 {type(target).__name__}")
-    normalized: dict[str, float] = {}
-    for key, value in cast("dict[object, object]", target).items():
-        if not isinstance(key, str):
-            raise TypeError(f"权重字典的键必须是品种字符串，实际为 {type(key).__name__}: {key!r}")
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise TypeError(f"品种 {key} 的权重必须是数字，实际为 {type(value).__name__}: {value!r}")
-        weight = float(value)
-        if not math.isfinite(weight):
-            raise ValueError(f"品种 {key} 的权重不是有限数值: {value!r}")
-        normalized[key] = weight
-    return normalized
+def _normalize_target(target: object) -> PortfolioTarget:
+    """校验旧权重字典或带显式口径的目标返回值。"""
+    return PortfolioTarget.from_result(target)
 
 
-def calculate_portfolio_target(code: str, context: Context) -> dict[str, float]:
+def calculate_portfolio_target(code: str, context: Context) -> PortfolioTarget:
     """在当前 Python 运行环境执行 ``calculate_portfolio(context)``."""
     try:
         namespace: dict[str, object] = {}

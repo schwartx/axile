@@ -1002,7 +1002,7 @@ def test_calculate_worker_keeps_script_and_prepare_error_channels(monkeypatch, m
             assert isinstance(result, PortfolioFunctionError)
             assert result.error_line == 2 and result.error_type == "ValueError"
         else:
-            assert result == {"x": 0.25}
+            assert result == {"mode": "weight", "targets": {"x": 0.25}}
 
 
 def test_termination_cancellation_facts_survive_worker_response_and_manager():

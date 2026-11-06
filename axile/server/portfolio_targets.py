@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import cast
 
+from axile.executor.models.portfolio_target import PortfolioTarget
 from axile.server.portfolio_function import (
     PortfolioFunctionError,
     _error_from_exception,
@@ -17,7 +18,7 @@ async def calculate_portfolio_for_account(
     code: str,
     *,
     execution_id: str | None = None,
-) -> dict[str, float]:
+) -> PortfolioTarget:
     """通过账户常驻 worker 运行自定义组合函数."""
     from axile.server.db.models import Account
     from axile.server.execution.worker_backend.manager import get_worker_backend_manager

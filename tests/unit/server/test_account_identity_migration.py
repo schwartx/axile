@@ -127,7 +127,7 @@ def test_account_identity_migration_failure_rolls_back_ddl_and_rows(tmp_path):
         _insert_0033_account(connection)
         connection.execute(
             "CREATE TRIGGER reject_identity_revision BEFORE UPDATE ON alembic_version "
-            "WHEN NEW.version_num='0034' BEGIN SELECT RAISE(ABORT,'identity rejected'); END"
+            "WHEN NEW.version_num='0035' BEGIN SELECT RAISE(ABORT,'identity rejected'); END"
         )
         schema = connection.execute("SELECT type,name,sql FROM sqlite_master ORDER BY type,name").fetchall()
         account = connection.execute("SELECT * FROM account").fetchall()

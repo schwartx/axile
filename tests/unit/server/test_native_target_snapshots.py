@@ -42,6 +42,7 @@ def test_append_preserves_nonfinite_evidence_and_native_symbol_key(monkeypatch):
             "portfolio_id": 7,
             "account_id": None,
             "raw_weights": raw_weights,
+            "target_mode": "weight",
             "normalized_weights": None,
             "source": "manual",
             "execution_id": None,

@@ -26,8 +26,8 @@ def cleanup(database: Path) -> None:
         with connection:
             connection.execute("BEGIN IMMEDIATE")
             versions = connection.execute("SELECT version_num FROM alembic_version").fetchall()
-            if versions != [("0034",)]:
-                raise ValueError(f"仅支持 0034 数据库，当前版本：{versions!r}")
+            if versions not in ([("0034",)], [("0035",)]):
+                raise ValueError(f"仅支持 0034/0035 数据库，当前版本：{versions!r}")
             for table in BACKUP_TABLES:
                 connection.execute(f'DROP TABLE IF EXISTS "{table}"')
 

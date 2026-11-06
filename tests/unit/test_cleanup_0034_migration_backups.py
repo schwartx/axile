@@ -11,7 +11,7 @@ SCRIPT = Path(__file__).parents[2] / "scripts/cleanup_0034_migration_backups.py"
 MODULE = runpy.run_path(str(SCRIPT))
 
 
-@pytest.mark.parametrize("revision", ["0033", "0034"])
+@pytest.mark.parametrize("revision", ["0033", "0034", "0035"])
 def test_cleanup_preserves_business_data_and_version(tmp_path, revision):
     database = tmp_path / "history.db"
     with closing(sqlite3.connect(database)) as connection, connection:

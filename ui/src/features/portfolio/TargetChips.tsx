@@ -23,7 +23,7 @@ export function TargetChips({ entries, compact = false }: { entries: PortfolioTa
   const measureRef = useRef<HTMLDivElement>(null)
   const [visibleCount, setVisibleCount] = useState(entries.length)
   // 权重刷新会改 chip 文案宽度，内容签名驱动重测；条目数只影响签名，不单独依赖。
-  const signature = entries.map((entry) => `${entry.symbol}:${entry.weight}`).join('|')
+  const signature = entries.map((entry) => `${entry.symbol}:${entry.mode}:${entry.weight}`).join('|')
 
   useLayoutEffect(() => {
     const row = rowRef.current
@@ -100,7 +100,7 @@ function TargetChip({ entry }: { entry: PortfolioTargetEntry }) {
     <Chip className="flex flex-none items-center gap-1.5">
       <span className="truncate" title={entry.symbol}>{entry.symbol}</span>
       <span className={`font-[550] tabular-nums ${targetDirectionClass(entry.weight)}`}>
-        {formatTargetWeight(entry.weight)}
+        {entry.mode === 'quantity' ? `${entry.weight > 0 ? '+' : ''}${entry.weight}` : formatTargetWeight(entry.weight)}
       </span>
     </Chip>
   )

@@ -34,6 +34,8 @@ export const CONTRACT_CODE = `def calculate_portfolio(context):
 export const CALC_EXAMPLES: CalcExample[] = [
   { key: 'fixed', title: '固定目标权重', desc: '不依赖账户状态；适合固定配置或作为最小模板。', code: `def calculate_portfolio(context):
     return {"rb2610": 0.5, "ag2612": 0.5}` },
+  { key: 'quantity', title: '直接指定目标数量', desc: '期货使用整手；支持小数数量的渠道使用原生交易单位。目标不随账户权益和杠杆缩放。', code: `def calculate_portfolio(context):
+    return {"mode": "quantity", "targets": {"rb2701": 3, "ag2612": -2}}` },
   { key: 'position', title: '根据当前持仓调整目标', desc: '使用统一持仓模型，不依赖具体交易渠道。', code: `def calculate_portfolio(context):
     rb_positions = context.get_positions("rb2610")
     has_rb = any(position.volume > 0 for position in rb_positions)
@@ -62,9 +64,9 @@ export const EXECUTOR_RULES = [
 
 export const CONTRACT_RULES = [
   '函数必须且只能接收一个 `context` 参数。',
-  '返回值必须是 `dict[str, float]`；键必须是字符串，值必须是有限数字，布尔值不算数字。',
+  '旧的 `dict[str, float]` 按权重解释；数量模式显式返回 `{"mode": "quantity", "targets": {"rb2701": 3}}`。品种键必须为字符串，目标值必须是有限数字，布尔值不算数字。',
   '正数表示目标多头，负数表示目标空头，`0.5` 表示半仓；空字典 `{}` 表示目标空仓。',
-  '返回值是原始目标权重，不是委托数量。真实调仓还会按账户杠杆、精度和控制策略继续处理。',
+  '返回值表示完整目标持仓，不是买卖增量。数量模式跳过杠杆、权重精度和资金换算，保留渠道数量规则和执行控制；同一返回值不混用两种口径。',
   '标的格式由渠道决定；使用组合创建时针对该市场生成的默认代码最稳妥。',
 ]
 
@@ -80,7 +82,7 @@ export function buildCustomCalcMarkdown(): string {
   const examples = CALC_EXAMPLES.map((example) => `### ${example.title}${example.advanced ? '（高级）' : ''}\n\n${example.desc}\n\n\`\`\`python\n${example.code}\n\`\`\``).join('\n\n')
   return `# 自定义组合函数
 
-自定义组合函数在需要时计算一份“品种 → 原始目标权重”。Axile 随后才会根据账户配置处理杠杆、精度和调仓执行。
+自定义组合函数计算各品种的目标权重或目标数量。权重模式按账户配置换算数量，数量模式直接声明目标持仓；之后共用调仓执行链路。
 
 ## 何时执行
 

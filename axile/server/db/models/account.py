@@ -22,6 +22,7 @@ from axile.channels.schedule_settings import (
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.trade_channel import TradeChannel
 from axile.executor.futures_close_policy import FuturesClosePolicy
+from axile.executor.models.portfolio_target import TargetMode
 from axile.executor.models.unified_input import DEFAULT_EXECUTION_TIMEOUT_SECONDS
 from axile.server._native import _core
 from axile.server.db.models.account_connection import AccountConnectionPublic, AccountConnectionState
@@ -381,8 +382,8 @@ class AccountRebalancePlanRowPublic(Model):
     """账户可执行持仓对照中的一个规范化品种."""
 
     symbol: str
-    current_weight: float
-    target_weight: float
+    current_weight: Optional[float]
+    target_weight: Optional[float]
     current_quantity: Optional[float] = None
     target_quantity: Optional[float] = None
     action: str
@@ -394,6 +395,7 @@ class AccountRebalancePlanPublic(Model):
     """同一资产与目标快照下的可执行持仓对照."""
 
     rows: List[AccountRebalancePlanRowPublic] = Field(default_factory=list)
+    target_mode: TargetMode = "weight"
     off_symbol_count: Optional[int] = None
     observed_at: Optional[str] = None
     target_calculated_at: Optional[str] = None

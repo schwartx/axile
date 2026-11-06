@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, cast
 
+from axile.executor.models.portfolio_target import TargetMode
 from axile.server.db.models import TargetSizingPublic, TargetWeightSnapshotPublic
 from axile.server.db.models.base import now_str
 from axile.server.native_store import native_operation
@@ -19,6 +20,7 @@ async def append_target_weight_snapshot(
     portfolio_id: int,
     account_id: int | None,
     raw_weights: dict[str, float] | None,
+    target_mode: TargetMode = "weight",
     normalized_weights: dict[str, float] | None,
     source: Literal["manual", "execution"],
     execution_id: str | None = None,
@@ -31,6 +33,7 @@ async def append_target_weight_snapshot(
             "portfolio_id": portfolio_id,
             "account_id": account_id,
             "raw_weights": raw_weights,
+            "target_mode": target_mode,
             "normalized_weights": normalized_weights,
             "source": source,
             "execution_id": execution_id,
@@ -80,11 +83,14 @@ def target_snapshot_public(
     if snapshot is None:
         return TargetWeightSnapshotPublic()
     stored = snapshot.get("raw_weights") if weight_kind == "raw" else snapshot.get("normalized_weights")
+    mode = snapshot.get("target_mode", "weight")
     return TargetWeightSnapshotPublic(
-        weights=weights if weights is not None else (stored or {}),
+        target_mode=mode,
+        raw_targets=snapshot.get("raw_weights") or {},
+        weights=(weights if weights is not None else (stored or {})) if mode == "weight" else {},
         quantities=quantities,
-        strategy_weights=strategy_weights,
-        account_weights=account_weights,
+        strategy_weights=strategy_weights if mode == "weight" else None,
+        account_weights=account_weights if mode == "weight" else None,
         sizing=sizing,
         calculated_at=snapshot["calculated_at"],
         source=cast(Literal["manual", "execution"], snapshot["source"]),

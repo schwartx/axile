@@ -213,7 +213,7 @@ def test_current_and_check_do_not_create_a_missing_database(tmp_path: Path) -> N
     for operation in ("migration_current", "migration_check"):
         result = native_store_call(path, operation, {})
         assert result["public"] is None
-        assert result["public_target"] == "0034"
+        assert result["public_target"] == "0035"
         assert not path.exists()
         assert list(tmp_path.iterdir()) == []
 
@@ -230,11 +230,11 @@ def test_0033_upgrade_discards_backup_rows_and_reaches_real_head(tmp_path: Path)
             backup,
         )
     result = initialize_native_database(path)
-    assert result["public"] == "0034"
-    assert native_store_call(path, "migration_current", {})["public"] == "0034"
+    assert result["public"] == "0035"
+    assert native_store_call(path, "migration_current", {})["public"] == "0035"
     with closing(oracle_connect(path)) as connection, connection:
         assert not connection.execute("SELECT name FROM sqlite_master WHERE name LIKE '%_backup'").fetchall()
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchall() == [("0034",)]
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchall() == [("0035",)]
 
 
 def test_nonempty_0033_fixture_loads_without_current_models(tmp_path: Path) -> None:

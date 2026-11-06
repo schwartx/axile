@@ -22,7 +22,7 @@ export function SizingEvidence({
   const [open, setOpen] = useState(defaultExpanded)
   const detailId = useId()
   const reason = sizingReasonText(row, quantityLabel)
-  const input = row.sizing_mode === 'quantity' ? quantityText(row.account_weight, quantityLabel) : weightText(row.account_weight)
+  const input = row.sizing_mode === 'quantity' ? quantityText(row.raw_quantity ?? row.account_weight, quantityLabel) : weightText(row.account_weight)
   const summary = `${input} → ${quantityText(row.target_quantity, quantityLabel)} · ${reason}`
   const formulas = sizingFormulas(row, quantityLabel, currency)
 

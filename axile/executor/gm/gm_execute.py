@@ -1202,7 +1202,8 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
     ) -> TargetSizingDecision:
         """按股票整手规则生成目标股数及换算证据."""
         total_asset = account_assets.total_asset
-        if total_asset < 0 and weight != 0:
+        mode = "quantity" if trade_rule.get("sizing_mode") == "quantity" else "weight"
+        if mode == "weight" and total_asset < 0 and weight != 0:
             return TargetSizingDecision(
                 symbol=symbol or "",
                 status=TargetSizingStatus.UNAVAILABLE,
@@ -1213,8 +1214,10 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             )
         raw_lot_size = trade_rule.get("一手数量", 100)
         lot_size = float(raw_lot_size) if isinstance(raw_lot_size, int | float) else 100.0
-        raw_quantity = total_asset * weight / price
-        target_quantity = math.floor(raw_quantity / lot_size) * lot_size
+        raw_quantity = weight if mode == "quantity" else total_asset * weight / price
+        target_quantity = (
+            math.trunc(raw_quantity / lot_size) if mode == "quantity" else math.floor(raw_quantity / lot_size)
+        ) * lot_size
         reason_code = "COMMON.SIZING.EXACT"
         if raw_quantity != 0 and target_quantity == 0:
             reason_code = "COMMON.SIZING.BELOW_MIN_QUANTITY"
@@ -1222,12 +1225,13 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             reason_code = "COMMON.SIZING.QUANTIZED"
         return TargetSizingDecision(
             symbol=symbol or "",
-            account_weight=weight,
+            sizing_mode=mode,
+            account_weight=weight if mode == "weight" else 0.0,
             equity=total_asset,
             reference_price=price,
             unit_multiplier=1.0,
             unit_notional=price,
-            target_notional=abs(total_asset * weight),
+            target_notional=abs(total_asset * weight) if mode == "weight" else abs(raw_quantity * price),
             raw_quantity=raw_quantity,
             target_quantity=float(target_quantity),
             quantity_step=lot_size,

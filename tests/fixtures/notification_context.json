@@ -227,7 +227,8 @@
           "previous": {},
           "target_volume": {
             "rb2610": 2
-          }
+          },
+          "mode": "weight"
         },
         "orders": [
           {
@@ -380,7 +381,8 @@
         "targets": {
           "current": {},
           "previous": {},
-          "target_volume": {}
+          "target_volume": {},
+          "mode": "weight"
         },
         "orders": [],
         "symbols": [],
@@ -514,7 +516,8 @@
         "targets": {
           "current": {},
           "previous": {},
-          "target_volume": {}
+          "target_volume": {},
+          "mode": "weight"
         },
         "orders": [],
         "symbols": [],
@@ -624,7 +627,8 @@
         "targets": {
           "current": {},
           "previous": {},
-          "target_volume": {}
+          "target_volume": {},
+          "mode": "weight"
         },
         "orders": [],
         "symbols": [],

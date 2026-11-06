@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, time, timedelta
 from hashlib import sha256
 from typing import Annotated, Any, cast
@@ -503,13 +504,32 @@ async def account_dashboard(sched: SchedDep) -> AccountDashboardPublic:
             if latest_snapshot is not None
             else None
         )
-        target_weights = persisted["target_weights"]
+        target_mode = persisted.get("target_mode", "weight")
+        target_weights = (
+            persisted.get("target_quantities") if target_mode == "quantity" else persisted["target_weights"]
+        )
+        if target_mode == "quantity" and isinstance(target_weights, dict):
+            sized = persisted.get("sizing_quantities")
+            if isinstance(sized, dict) and sized:
+                requested = {plugin.canonicalize_symbol(key) for key in target_weights}
+                sized = {plugin.canonicalize_symbol(key): value for key, value in sized.items()}
+                if requested.issubset(sized):
+                    target_weights = (
+                        sized
+                        if all(isinstance(value, (int, float)) and math.isfinite(value) for value in sized.values())
+                        else None
+                    )
         off_symbol_count = None
-        if latest_snapshot is not None and valuation_complete and isinstance(target_weights, dict):
+        if (
+            latest_snapshot is not None
+            and (valuation_complete or target_mode == "quantity")
+            and isinstance(target_weights, dict)
+        ):
             off_symbol_count = plan_executable_target(
                 positions,
                 target_weights,
                 _safe_total_asset(assets),
+                target_mode=target_mode,
                 canonicalize_symbol=plugin.canonicalize_symbol,
                 quantize_target_quantity=plugin.quantize_target_quantity,
             ).off_symbol_count

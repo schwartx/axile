@@ -17,9 +17,9 @@ pub(crate) struct ObservationReader<'a> {
 impl<'a> ObservationReader<'a> {
     pub(crate) fn new(connection: &'a Connection) -> rusqlite::Result<Self> {
         Ok(Self {
-            header: connection.prepare("SELECT e.execution_id,e.created_at_us,e.execution_kind,i.id,i.curr_target_state FROM executerecord e LEFT JOIN execution_input i ON i.id=e.input_id AND i.account_id=e.account_id WHERE e.id=?1 AND e.account_id=?2")?,
+            header: connection.prepare("SELECT e.execution_id,e.created_at_us,e.execution_kind,i.id,i.curr_target_state,i.target_mode FROM executerecord e LEFT JOIN execution_input i ON i.id=e.input_id AND i.account_id=e.account_id WHERE e.id=?1 AND e.account_id=?2")?,
             target: connection.prepare("SELECT map_key,value FROM execution_input_target WHERE input_id=?1 AND role='curr_target' ORDER BY map_key")?,
-            snapshot: connection.prepare("SELECT id,normalized_weights_kind FROM target_weight_snapshot WHERE account_id=?1 AND execution_id=?2 ORDER BY id DESC LIMIT 1")?,
+            snapshot: connection.prepare("SELECT id,normalized_weights_kind,target_mode FROM target_weight_snapshot WHERE account_id=?1 AND execution_id=?2 ORDER BY id DESC LIMIT 1")?,
             snapshot_weights: connection.prepare("SELECT map_key,value FROM target_weight_snapshot_weight WHERE snapshot_id=?1 AND role='normalized_weights' ORDER BY map_key")?,
             assets: connection.prepare("SELECT a.total_asset FROM business_asset_binding b JOIN business_asset_snapshot a ON a.asset_id=b.asset_id WHERE b.record_id=?1 AND b.path='/account_assets' AND a.observation_valid=1")?,
             ticks: TickReader::new(connection)?,
@@ -28,7 +28,7 @@ impl<'a> ObservationReader<'a> {
     }
 
     pub(crate) fn read(&mut self, account: i64, record: i64) -> Result<Observation, String> {
-        let (execution_id, created_at, kind, input_id, target_state) = self
+        let (execution_id, created_at, kind, input_id, target_state, target_mode) = self
             .header
             .query_row(params![record, account], |row| {
                 Ok((
@@ -37,10 +37,14 @@ impl<'a> ObservationReader<'a> {
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, Option<String>>(3)?,
                     row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
                 ))
             })
             .map_err(|error| error.to_string())?;
-        let mut target_weight = if target_state.as_deref() == Some("value") {
+        let mut quantity_target = target_mode.as_deref() == Some("quantity");
+        let mut target_weight = if target_state.as_deref() == Some("value")
+            && target_mode.as_deref().unwrap_or("weight") == "weight"
+        {
             weights(&mut self.target, input_id.as_deref().unwrap_or_default())?
         } else {
             None
@@ -50,12 +54,17 @@ impl<'a> ObservationReader<'a> {
                 let snapshot = self
                     .snapshot
                     .query_row(params![account, execution], |row| {
-                        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
                     })
                     .optional()
                     .map_err(|error| error.to_string())?;
-                if let Some((id, state)) = snapshot {
-                    if state == "mapping" {
+                if let Some((id, state, mode)) = snapshot {
+                    quantity_target |= mode == "quantity";
+                    if state == "mapping" && mode == "weight" {
                         target_weight = weights(&mut self.snapshot_weights, id)?;
                     }
                 }
@@ -65,6 +74,9 @@ impl<'a> ObservationReader<'a> {
             .sizing
             .read(record)
             .map_err(|error| error.to_string())?;
+        if quantity_target {
+            target_weight = sizing.as_ref().map(|sizing| sizing.weights.clone());
+        }
         let (mut target, mut target_units, mut target_quantities) = match sizing {
             Some(sizing) => (
                 Some(sizing.weights),
@@ -99,6 +111,7 @@ impl<'a> ObservationReader<'a> {
             target_units,
             target_quantities,
             sizing_fallback,
+            quantity_target,
             prices: self
                 .ticks
                 .read(record)
@@ -167,9 +180,9 @@ mod tests {
         crate::calendar::register_time_function(&connection).unwrap();
         connection.execute_batch(
             "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,execution_id TEXT,created_at_us INTEGER,execution_kind TEXT,input_id TEXT,result_staged INTEGER DEFAULT 0);
-             CREATE TABLE execution_input(id TEXT,account_id INTEGER,curr_target_state TEXT);
+             CREATE TABLE execution_input(id TEXT,account_id INTEGER,curr_target_state TEXT,target_mode TEXT);
              CREATE TABLE execution_input_target(input_id TEXT,role TEXT,map_key TEXT,value REAL);
-             CREATE TABLE target_weight_snapshot(id INTEGER,account_id INTEGER,execution_id TEXT,normalized_weights_kind TEXT);
+             CREATE TABLE target_weight_snapshot(target_mode TEXT NOT NULL DEFAULT 'weight',id INTEGER,account_id INTEGER,execution_id TEXT,normalized_weights_kind TEXT);
              CREATE TABLE target_weight_snapshot_weight(snapshot_id INTEGER,role TEXT,map_key TEXT,value REAL);
              CREATE TABLE business_asset_binding(record_id INTEGER,path TEXT,asset_id TEXT);
              CREATE TABLE business_asset_snapshot(asset_id TEXT,total_asset REAL,observation_valid INTEGER);

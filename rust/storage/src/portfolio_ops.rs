@@ -199,10 +199,20 @@ fn target_public(snapshot: Option<Value>) -> Result<Value, AnalysisError> {
     if has_snapshot && !matches!(snapshot["source"].as_str(), Some("manual" | "execution")) {
         return Err(AnalysisError::new("TARGET_INVALID", "组合目标快照来源无效"));
     }
-    Ok(json!({"weights": weights,
+    let mode = snapshot
+        .get("target_mode")
+        .and_then(Value::as_str)
+        .unwrap_or("weight");
+    if !matches!(mode, "weight" | "quantity") {
+        return Err(AnalysisError::new("TARGET_INVALID", "组合目标快照口径无效"));
+    }
+    Ok(
+        json!({"weights": if mode == "weight" { weights.clone() } else { json!({}) },
+        "target_mode":mode,"raw_targets":weights,
         "quantities":null, "strategy_weights":null,"account_weights":null,"sizing":null,
         "calculated_at":snapshot["calculated_at"],"source":snapshot["source"],
-        "execution_id":snapshot["execution_id"],"context_account_id":snapshot["account_id"]}))
+        "execution_id":snapshot["execution_id"],"context_account_id":snapshot["account_id"]}),
+    )
 }
 
 /// 纯 HTTP 查询返回最终视图，由绑定层直接编码为 JSON 字节。
@@ -308,7 +318,7 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         schema(&connection);
         let saved = initial(&connection);
-        connection.execute_batch("CREATE TABLE target_weight_snapshot(id INTEGER PRIMARY KEY,portfolio_id INTEGER,account_id INTEGER,raw_weights_kind TEXT,normalized_weights_kind TEXT,weights_metadata TEXT,source TEXT,execution_id TEXT,calculated_at_us INTEGER); CREATE TABLE target_weight_snapshot_weight(snapshot_id INTEGER,role TEXT,map_key TEXT,value REAL,audit_evidence TEXT); CREATE TRIGGER reject_weight BEFORE INSERT ON target_weight_snapshot_weight BEGIN SELECT RAISE(ABORT,'reject weight'); END;").unwrap();
+        connection.execute_batch("CREATE TABLE target_weight_snapshot(target_mode TEXT NOT NULL DEFAULT 'weight',id INTEGER PRIMARY KEY,portfolio_id INTEGER,account_id INTEGER,raw_weights_kind TEXT,normalized_weights_kind TEXT,weights_metadata TEXT,source TEXT,execution_id TEXT,calculated_at_us INTEGER); CREATE TABLE target_weight_snapshot_weight(snapshot_id INTEGER,role TEXT,map_key TEXT,value REAL,audit_evidence TEXT); CREATE TRIGGER reject_weight BEFORE INSERT ON target_weight_snapshot_weight BEGIN SELECT RAISE(ABORT,'reject weight'); END;").unwrap();
         let request = json!({"portfolio_id":saved["id"],"changes":{"name":"changed","custom_calc_py_code":"new code"},"updated_at":"2026-10-23T10:00:00.000000Z","raw_weights":{"rb2610":1.0},"normalized_weights":null,"source":"manual","calculated_at":"2026-10-23T10:00:00.000000Z"});
         let result = writer_scope::immediate(&connection, || {
             update_on(&connection, &request)?;
@@ -359,7 +369,7 @@ mod tests {
     fn target_http_view_keeps_empty_fallback_and_rejects_invalid_weights() {
         assert_eq!(
             target_public(None).unwrap(),
-            json!({"weights":{},"quantities":null,
+            json!({"weights":{},"target_mode":"weight","raw_targets":{},"quantities":null,
             "strategy_weights":null,"account_weights":null,"sizing":null,"calculated_at":null,
             "source":null,"execution_id":null,"context_account_id":null})
         );
@@ -400,7 +410,7 @@ mod tests {
             "calculated_at":"2026-10-23T09:00:00.000000Z","execution_id":"e1","account_id":2})
             ))
             .unwrap(),
-            json!({"weights":{"native":0.5},"quantities":null,"strategy_weights":null,
+            json!({"weights":{"native":0.5},"target_mode":"weight","raw_targets":{"native":0.5},"quantities":null,"strategy_weights":null,
                 "account_weights":null,"sizing":null,"calculated_at":"2026-10-23T09:00:00.000000Z","source":"execution",
                 "execution_id":"e1","context_account_id":2})
         );

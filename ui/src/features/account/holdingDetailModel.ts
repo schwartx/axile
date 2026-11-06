@@ -39,9 +39,9 @@ export interface HoldingPreviewRow extends CurrentHoldingPreview {
 /** 已有持仓保留多空分行，追加尚未持有的非零目标，排序沿用持仓货值。 */
 export function holdingPreviewRows(positions: Position[], equity: number, target: TargetWeightSnapshot | null, observed: boolean): HoldingPreviewRow[] {
   const rows: HoldingPreviewRow[] = currentHoldingPreview(positions, equity)
-  const weights = target?.account_weights ?? target?.weights ?? {}
+  const weights = target?.target_mode === 'quantity' ? target.raw_targets ?? {} : target?.account_weights ?? target?.weights ?? {}
   for (const [symbol, weight] of Object.entries(weights)) {
-    if (!Number.isFinite(weight) || Math.abs(weight) <= EPS || rows.some(row => sameHoldingSymbol(row.symbol, symbol))) continue
+    if (!Number.isFinite(weight) || Math.abs(weight) <= (target?.target_mode === 'quantity' ? 0 : EPS) || rows.some(row => sameHoldingSymbol(row.symbol, symbol))) continue
     rows.push({ key: `${symbol}:target`, symbol, direction: weight < 0 ? 'short' : 'long',
       weight: observed ? 0 : null, volume: observed ? 0 : null, availableVolume: observed ? 0 : null,
       value: null, targetOnly: true })
@@ -92,8 +92,14 @@ export interface HoldingTarget {
 /** 目标只认冻结的换算结果；对照接口按行情估算的数量不充当执行记录。 */
 export function holdingTarget(target: TargetWeightSnapshot | null, symbol: string): HoldingTarget {
   if (!target?.calculated_at) return { weight: null, quantity: null, evidence: null }
-  const weight = finite(symbolEntry(target.account_weights ?? target.weights, symbol) ?? 0)
   const evidence = symbolEntry(target.sizing?.rows, symbol) ?? null
+  if (target.target_mode === 'quantity') {
+    const raw = finite(symbolEntry(target.raw_targets, symbol) ?? 0)
+    const quantity = raw === 0 ? 0 : target.sizing?.status === 'available'
+      ? finite(evidence?.target_quantity ?? symbolEntry(target.quantities, symbol)) : null
+    return { weight: null, quantity, evidence }
+  }
+  const weight = finite(symbolEntry(target.account_weights ?? target.weights, symbol) ?? 0)
   if (weight === 0) return { weight, quantity: 0, evidence }
   if (target.sizing?.status !== 'available') return { weight, quantity: null, evidence }
   return { weight, quantity: finite(evidence?.target_quantity ?? symbolEntry(target.quantities, symbol)), evidence }

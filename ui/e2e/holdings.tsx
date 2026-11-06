@@ -12,7 +12,9 @@ import { useLiveOrders } from '../src/stores/liveOrders'
 import type { CurrentOrdersSnapshot } from '../src/lib/api/orders'
 import '../src/styles/theme.css'
 
-const units = { quantity_kind: 'contract', quantity_label: '手', quantity_max_decimals: 0, price_label: '元', notional_label: '元' } as const
+const fractional = new URLSearchParams(location.search).has('fractional')
+const currency = fractional ? 'USD' : 'CNY'
+const units = { quantity_kind: fractional ? 'base_asset' : 'contract', quantity_label: fractional ? '' : '手', quantity_max_decimals: fractional ? 8 : 0, price_label: fractional ? 'USD' : '元', notional_label: fractional ? 'USD' : '元' } as const
 
 useLiveConnection.getState().apply({ stream_id: 'fixture', version: 1, kind: 'snapshot',
   data: [1, 2].map(account_id => ({ account_id, connection: { status: 'ready', observed_at: null, message: null, error: null } })) })
@@ -40,12 +42,12 @@ export function Fixture() {
       <h1 className="mb-4 text-sm text-ink-2">持仓 vs 目标 · 账户{accountId}</h1>
       <CurrentOrdersButton state={orders} />
       <HoldingsPreviewTable holdings={assets.loading || target.loading ? null : holdingPreviewRows(positions, latest?.assets.total_asset ?? 0, target.data, !!latest)}
-        observed={!!latest} currency="CNY" positionValueLabel="货值"
+        observed={!!latest} currency={currency} positionValueLabel="货值"
         onSelect={(value, keyboardOpened) => { setSelection({ accountId, symbol: value, keyboardOpened }) }} />
     </section>
     <CurrentOrdersDialog state={orders} accountName={`账户${accountId}`} units={units} />
     <HoldingDetailDialog symbol={symbol} restoreFocus={!!selection?.keyboardOpened} positions={positions} observed={!!latest}
-      observedAt={latest?.created_at ?? null} target={target.data} orders={orders} currency="CNY" units={units}
+      observedAt={latest?.created_at ?? null} target={target.data} orders={orders} currency={currency} units={units}
       dataStale={assets.stale || target.stale || !!assets.error || !!target.error} refreshing={assets.refreshing || target.refreshing}
       onClose={() => setSelection(null)} onRefresh={refresh} />
   </main>

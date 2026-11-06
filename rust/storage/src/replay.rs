@@ -23,6 +23,7 @@ pub struct Observation {
     pub prices: BTreeMap<String, f64>,
     pub target_weight: Option<BTreeMap<String, f64>>,
     pub sizing_fallback: bool,
+    pub quantity_target: bool,
     pub target_units: Option<BTreeMap<String, f64>>,
     pub target_quantities: Option<BTreeMap<String, f64>>,
 }
@@ -158,7 +159,7 @@ fn positions(
     equity: f64,
     target_weight: bool,
 ) -> Result<BTreeMap<String, Holding>, String> {
-    if !target_weight {
+    if !target_weight || item.quantity_target {
         if let Some(units) = &item.target_units {
             return units
                 .iter()
@@ -244,6 +245,7 @@ mod tests {
             prices: BTreeMap::from([("A".into(), price)]),
             target_weight: Some(BTreeMap::from([("A".into(), 1.0)])),
             sizing_fallback: false,
+            quantity_target: false,
             target_units: Some(BTreeMap::from([("A".into(), quantity)])),
             target_quantities: Some(BTreeMap::from([("A".into(), quantity)])),
         }
@@ -477,5 +479,24 @@ mod tests {
             .unwrap()
             .finish()
             .is_empty());
+    }
+    #[test]
+    fn quantity_targets_keep_units_in_both_replay_curves() {
+        let mut items = vec![
+            snapshot(0, 1, 10.0, 1.0),
+            snapshot(1, 2, 20.0, 1.0),
+            snapshot(2, 3, 30.0, 1.0),
+        ];
+        for item in &mut items {
+            item.quantity_target = true;
+            item.target_weight = item.target.clone();
+        }
+        let executable = run(&items, 0.0, false);
+        let original = run(&items, 0.0, true);
+        assert!((executable["2026-01-03"].cumulative_return - 0.2).abs() < 1e-12);
+        assert_eq!(
+            original["2026-01-03"].cumulative_return,
+            executable["2026-01-03"].cumulative_return
+        );
     }
 }

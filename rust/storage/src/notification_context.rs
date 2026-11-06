@@ -305,7 +305,11 @@ fn asset_context(result: &Value, inputs: &Value, target: &Value) -> (Value, Valu
             );
             let symbol = position["symbol"].as_str().unwrap_or("");
             value["target_volume"] = target.get(symbol).cloned().unwrap_or(json!(0));
-            value["target_weight"] = inputs["curr_target"][symbol].clone();
+            value["target_weight"] = if inputs["target_mode"] == "quantity" {
+                Value::Null
+            } else {
+                inputs["curr_target"][symbol].clone()
+            };
             value["rate"] = ratio(&position["market_value"], total);
             value
         })
@@ -481,6 +485,10 @@ fn result_context(
     for key in ["forbidden_symbols", "risk_symbols"] {
         context["strategy"][key] = inputs.get(key).cloned().unwrap_or(json!([]));
     }
+    context["targets"]["mode"] = inputs
+        .get("target_mode")
+        .cloned()
+        .unwrap_or(json!("weight"));
     context["targets"]["current"] = inputs.get("curr_target").cloned().unwrap_or(json!({}));
     context["targets"]["previous"] = inputs.get("last_target").cloned().unwrap_or(json!({}));
     context["targets"]["target_volume"] = target;
@@ -757,5 +765,17 @@ mod tests {
             vec!["z", "a"]
         );
         assert_eq!(context["positions"], json!([]));
+    }
+    #[test]
+    fn quantity_notification_does_not_label_native_units_as_weight() {
+        let detail = json!({"input":{"target_mode":"quantity","curr_target":{"XAUUSD":0.015}},
+            "result":{"status":"SUCCEEDED","channel_type":"fractional","account_assets":{"total_asset":1000,
+                "available_cash":900,"market_value":100,"positions":[{"symbol":"XAUUSD","volume":0.015,"direction":"多头","market_value":100}]},
+                "symbol_results":{"XAUUSD":{"target_volume":0.015}}}});
+        let context = preview(&detail, "account", "now", "original").unwrap();
+        assert_eq!(context["targets"]["mode"], "quantity");
+        assert_eq!(context["targets"]["current"]["XAUUSD"], 0.015);
+        assert!(context["positions"][0]["target_weight"].is_null());
+        assert_eq!(context["positions"][0]["target_volume"], 0.015);
     }
 }

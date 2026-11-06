@@ -2159,15 +2159,22 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
     ) -> TargetSizingDecision:
         """按 CTP 合约规格生成目标手数及换算证据."""
         sizing_mode = str(trade_rule.get("sizing_mode", "weight"))
-        if sizing_mode == "lots":
+        if sizing_mode in {"lots", "quantity"}:
+            if sizing_mode == "quantity" and not float(weight).is_integer():
+                raise ValueError(f"{symbol} 的目标手数必须为整数: {weight}")
             target = self._round_lots(weight, trade_rule)
             step = self._quantity_step(trade_rule)
+            multiplier = self._resolve_volume_multiple(symbol, trade_rule) if symbol else 0
+            unit_notional = price * multiplier if price > 0 and multiplier > 0 else None
             return TargetSizingDecision(
                 symbol=symbol or "",
                 sizing_mode=sizing_mode,
                 reason_code=("COMMON.SIZING.EXACT" if abs(target - weight) <= 1e-12 else "COMMON.SIZING.QUANTIZED"),
-                account_weight=weight,
+                account_weight=weight if sizing_mode == "lots" else 0.0,
                 equity=account_assets.total_asset,
+                reference_price=price if unit_notional is not None else None,
+                unit_notional=unit_notional,
+                target_notional=abs(target) * unit_notional if unit_notional is not None else None,
                 raw_quantity=weight,
                 target_quantity=target,
                 quantity_step=step,

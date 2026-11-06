@@ -443,13 +443,23 @@ pub(crate) fn encode_inputs(
         return Err("Execution input primary identity and owner differ".into());
     }
     let owner_execution_id = owner_execution_id.or(execution_id);
-    let body = if payload.is_object() {
+    let mut body = if payload.is_object() {
         normalize_targets(&payload)
     } else {
         Map::new()
     };
+    let target_mode = body.remove("target_mode");
+    if target_mode
+        .as_ref()
+        .is_some_and(|mode| !matches!(mode.as_str(), Some("weight" | "quantity")))
+    {
+        return Err("Invalid execution target_mode".into());
+    }
     let (columns, mut evidence) = store_columns(&body, INPUT_FIELDS, CHILD_FIELDS)?;
     let mut root = Map::new();
+    if let Some(mode) = target_mode {
+        root.insert("target_mode".into(), mode);
+    }
     root.insert("id".into(), json!(input_id));
     root.insert("account_id".into(), json!(account_id));
     root.insert(
@@ -1254,5 +1264,22 @@ mod tests {
         let mut negative_duration = base;
         negative_duration["execution_time"] = json!(-1);
         assert!(!legacy_placeholder(negative_duration.as_object().unwrap()));
+    }
+    #[test]
+    fn quantity_input_roundtrips_with_explicit_mode() {
+        let encoded = encode_inputs(
+            "qty",
+            &json!({"target_mode":"quantity","curr_target":{"XAUUSD":0.015}}),
+            1,
+            None,
+            "now",
+            None,
+        )
+        .unwrap();
+        let restored =
+            business_detail::decode_input(&encoded.0, &encoded.1, &encoded.2, &encoded.3).unwrap();
+        assert_eq!(restored["target_mode"], "quantity");
+        assert_eq!(restored["curr_target"]["XAUUSD"], 0.015);
+        assert!(restored.get("audit_evidence").is_none());
     }
 }

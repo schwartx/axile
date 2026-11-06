@@ -197,14 +197,14 @@ def test_account_target_weights_applies_short_leverage(monkeypatch) -> None:
 
 
 def test_account_target_weights_falls_back_to_channel_default_leverage(monkeypatch) -> None:
-    """杠杆为 ``None`` 时回落到渠道默认（CTP 多头默认 3x）。"""
+    """杠杆为 ``None`` 时回落到渠道默认（CTP 多头默认 1x）。"""
     session = _RouteData(_build_account(long_leverage=None, short_leverage=None), _build_portfolio())
     _patch_resolution(monkeypatch, portfolio_id=7, raw_target={"rb2610": 0.5})
 
     response = TestClient(_build_app(session, monkeypatch)).post("/account/1/target_snapshot/refresh")
 
     assert response.status_code == 200
-    assert response.json()["weights"] == {"rb2610": 1.5}
+    assert response.json()["weights"] == {"rb2610": 0.5}
 
 
 def test_account_target_snapshot_get_only_reads_snapshot(monkeypatch) -> None:
