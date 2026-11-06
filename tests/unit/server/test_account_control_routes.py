@@ -10,6 +10,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.exceptions import AccountControlConfigError
 from axile.executor.account_control.models import AccountControlOverride
@@ -123,6 +124,40 @@ def _seed_account(database, **changes: object) -> Account:
 
 def _load_account(database, account_id: int = 1) -> Account:
     return Account.model_validate(native_store_call(database, "account_get", {"account_id": account_id}))
+
+
+@pytest.mark.parametrize("custom", [True, False])
+def test_notification_save_clears_key_only_for_custom_code(account_client, custom) -> None:
+    client, database = account_client
+    _seed_account(database, is_started=False, feishu_key="saved-key")
+    code = "def notify(context): pass" if custom else DEFAULT_ACCOUNT_NOTIFICATION_CODE
+    response = client.patch("/account/1", json={"execution_notification_code": code, "feishu_key": "new-key"})
+    assert response.status_code == 200, response.text
+    saved = _load_account(database)
+    assert saved.execution_notification_code == code
+    assert saved.feishu_key == (None if custom else "new-key")
+
+
+def test_unrelated_save_preserves_legacy_custom_notification_key(account_client) -> None:
+    client, database = account_client
+    _seed_account(
+        database, is_started=False, feishu_key="saved-key", execution_notification_code="def notify(context): pass"
+    )
+    response = client.patch("/account/1", json={"remark": "updated"})
+    assert response.status_code == 200, response.text
+    assert _load_account(database).feishu_key == "saved-key"
+
+
+@pytest.mark.parametrize("custom", [True, False])
+def test_create_notification_clears_key_only_for_custom_code(account_client, custom) -> None:
+    client, database = account_client
+    code = "def notify(context): pass" if custom else DEFAULT_ACCOUNT_NOTIFICATION_CODE
+    response = client.post(
+        "/account/",
+        json=_account_payload() | {"is_started": False, "feishu_key": "new-key", "execution_notification_code": code},
+    )
+    assert response.status_code == 201, response.text
+    assert _load_account(database, response.json()["id"]).feishu_key == (None if custom else "new-key")
 
 
 @pytest.fixture
