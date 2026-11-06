@@ -979,14 +979,20 @@ def test_calculate_worker_keeps_script_and_prepare_error_channels(monkeypatch, m
     monkeypatch.setattr(worker.threading, "Thread", Watchdog)
     monkeypatch.setattr(worker, "_resolve_prepared_executor", prepare)
     monkeypatch.setattr(worker, "_finalize_with_orders", lambda actual, state: finalized.append(actual))
-    code = "def calculate_portfolio(context):\n    return {'x': 0.25}\n"
+    code = (
+        "def calculate_portfolio(context):\n"
+        "    return {'x': 0.25, 'long': context.settings.long_leverage,\n"
+        "            'short': context.settings.short_leverage, 'precision': context.settings.weight_precision}\n"
+    )
     if mode == "script_error":
         code = "def calculate_portfolio(context):\n    raise ValueError('broken script')\n"
     request = WorkerBackendRequest(
         request_id="portfolio",
         command="calculate_portfolio",
         execution_id=None,
-        account_payload=build_account(id=2).model_dump(mode="json"),
+        account_payload=build_account(id=2, long_leverage=2.0, short_leverage=0.5, weight_precision=0.001).model_dump(
+            mode="json"
+        ),
         payload={"code": code},
     )
     response = worker._handle_calculate_portfolio(request, _WorkerBackendState())
@@ -1002,7 +1008,10 @@ def test_calculate_worker_keeps_script_and_prepare_error_channels(monkeypatch, m
             assert isinstance(result, PortfolioFunctionError)
             assert result.error_line == 2 and result.error_type == "ValueError"
         else:
-            assert result == {"mode": "weight", "targets": {"x": 0.25}}
+            assert result == {
+                "mode": "weight",
+                "targets": {"x": 0.25, "long": 2.0, "short": 0.5, "precision": 0.001},
+            }
 
 
 def test_termination_cancellation_facts_survive_worker_response_and_manager():

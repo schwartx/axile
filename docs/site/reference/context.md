@@ -9,7 +9,7 @@ def calculate_portfolio(context):
     return {"rb2701": 0.4, "ag2612": -0.25}
 ```
 
-函数只能接收一个参数 `context`，返回 `dict[str, float]`。字典的键是字符串品种代码，值是有限数字，不能用布尔值。正数表示目标多头，负数表示目标空头，空字典表示目标空仓。
+函数只能接收一个参数 `context`，返回权重字典，或显式的 `{"mode": "quantity", "targets": {...}}`。标的映射的键是字符串品种代码，值是有限数字，不能用布尔值。正数表示目标多头，负数表示目标空头，空字典表示目标空仓。
 
 旧字典返回原始目标权重，之后应用账户杠杆和权重精度；显式数量模式直接给出目标数量，两种模式均保留执行控制。调用时机见[组合函数指南](/guide/functions#什么时候会调用函数)。
 
@@ -17,6 +17,7 @@ def calculate_portfolio(context):
 
 | 字段或方法 | 返回类型 | 含义 |
 | --- | --- | --- |
+| `settings` | `ContextSettings` | 只读执行配置：`long_leverage`、`short_leverage`、`weight_precision`；杠杆与执行层一致，已解析渠道默认值 |
 | `account` | `UnifiedAccountAssets` | 本次调用内缓存的账户资产快照 |
 | `positions` | `list[Position]` | `account.positions` 的便捷入口 |
 | `get_positions(symbol=None, direction=None)` | `list[Position]` | 按标的和方向筛选持仓 |
@@ -29,6 +30,8 @@ def calculate_portfolio(context):
 ![内置 Context API 的字段和方法说明](../assets/screenshots/08-reference/02-context-api.png)
 
 ## 常用模型字段
+
+`context.settings` 固定为本次计算的配置快照，不包含渠道凭据。无账户样例使用多空杠杆 `1.0`、权重精度 `0.01`。权重模式仍会在执行层应用对应方向的账户杠杆和权重精度；数量模式直接指定最终目标数量，跳过这两项缩放。
 
 | 模型 | 常用字段 |
 | --- | --- |
