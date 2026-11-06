@@ -28,7 +28,7 @@ pub(super) fn upgrade(connection: &Connection) -> Result<()> {
     // 0033 predates these names; reject collisions before replacing managed SQL.
     if let Some(object) = rows(
         connection,
-        "SELECT type,name FROM sqlite_schema WHERE (type='trigger' AND lower(name) GLOB 'business_facts_0034_*') OR (type='index' AND lower(name) IN ('ix_executerecord_account_time_id','ix_schedule_skip_account_time_id')) ORDER BY name LIMIT 1",
+        "SELECT type,name FROM sqlite_schema WHERE (type='trigger' AND lower(name) GLOB 'business_facts_0034_*') OR (type='index' AND lower(name) IN ('ix_executerecord_account_time_id','ix_schedule_skip_account_time_id','ix_target_weight_snapshot_account_portfolio_id')) ORDER BY name LIMIT 1",
         [],
     )?.first() {
         return Err(error(format!(
@@ -65,6 +65,10 @@ pub(super) fn upgrade(connection: &Connection) -> Result<()> {
 
 pub(super) fn downgrade(connection: &Connection) -> Result<()> {
     preflight_downgrade(connection)?;
+    execute(
+        connection,
+        "DROP INDEX IF EXISTS ix_target_weight_snapshot_account_portfolio_id",
+    )?;
     guards::drop_analysis(connection)?;
     let state = rows(
         connection,
@@ -83,6 +87,10 @@ pub(super) fn downgrade(connection: &Connection) -> Result<()> {
     }
     execute(connection, include_str!("structured/analysis_0033.sql"))?;
     requeue_analysis(connection, state, "retry_at")
+}
+
+pub(super) fn install_target_query_index(connection: &Connection) -> Result<()> {
+    execute(connection, "CREATE INDEX IF NOT EXISTS ix_target_weight_snapshot_account_portfolio_id ON target_weight_snapshot(account_id,portfolio_id,id) WHERE normalized_weights_kind NOT IN ('null','missing')")
 }
 
 fn requeue_analysis(connection: &Connection, state: Vec<Object>, retry: &str) -> Result<()> {
