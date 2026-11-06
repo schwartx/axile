@@ -40,6 +40,8 @@ export function Segmented<T extends string>({
   trailing,
   size = 'md',
   className = '',
+  ariaLabel,
+  panelId,
 }: {
   value: T
   options: SegmentedOption<T>[]
@@ -47,6 +49,9 @@ export function Segmented<T extends string>({
   trailing?: ReactNode
   size?: SegmentedSize
   className?: string
+  ariaLabel?: string
+  /** 关联面板时使用 tab 语义与方向键导航；面板由调用方渲染。 */
+  panelId?: string
 }): ReactElement {
   const sz = SIZE_CLASS[size]
   const trackRef = useRef<HTMLDivElement>(null)
@@ -80,6 +85,8 @@ export function Segmented<T extends string>({
   return (
     <div
       ref={trackRef}
+      role={panelId ? 'tablist' : undefined}
+      aria-label={ariaLabel}
       className={`relative inline-flex bg-fill ${sz.track} ${className}`}
     >
       <span
@@ -98,12 +105,32 @@ export function Segmented<T extends string>({
             btnRefs.current[i] = el
           }}
           type="button"
+          id={panelId ? `${panelId}-${o.value}` : undefined}
+          role={panelId ? 'tab' : undefined}
           disabled={o.disabled}
-          aria-pressed={o.value === value}
+          aria-pressed={panelId ? undefined : o.value === value}
+          aria-selected={panelId ? o.value === value : undefined}
+          aria-controls={panelId}
+          tabIndex={panelId ? (o.value === value ? 0 : -1) : undefined}
           className={`relative z-10 inline-flex items-center justify-center gap-1.5 cursor-pointer transition-colors disabled:cursor-default disabled:opacity-40 ${sz.button} ${
             o.value === value ? 'font-semibold text-ink-1' : 'text-ink-2'
           }`}
           onClick={() => onChange(o.value)}
+          onKeyDown={(event) => {
+            if (!panelId) return
+            const enabled = options.map((option, index) => option.disabled ? -1 : index).filter((index) => index >= 0)
+            const current = enabled.indexOf(i)
+            let next: number | undefined
+            if (event.key === 'ArrowRight') next = enabled[(current + 1) % enabled.length]
+            else if (event.key === 'ArrowLeft') next = enabled[(current + enabled.length - 1) % enabled.length]
+            else if (event.key === 'Home') next = enabled[0]
+            else if (event.key === 'End') next = enabled.at(-1)
+            else return
+            event.preventDefault()
+            if (next === undefined) return
+            onChange(options[next]!.value)
+            btnRefs.current[next]?.focus()
+          }}
         >
           {o.icon}{o.label}{o.badge}
         </button>

@@ -6,9 +6,7 @@ import type { AlgorithmRef } from '@/features/setup/algorithms'
 import { getChannelDescriptor } from '@/stores/channels'
 import type { TradeChannel } from '@/types/api'
 import {
-  defaultNightOn,
-  defaultScheduleRule,
-  DEFAULT_PRESET,
+  defaultTimerEditorState,
   type ScheduleKind,
   type GMSessions,
   type ScheduleRule,
@@ -61,18 +59,11 @@ export function defaultLeveragesForChannel(channel: TradeChannel) {
 }
 
 export function initialTimerForSchedule(schedule: ScheduleKind) {
-  const rule = defaultScheduleRule(schedule)
   return {
+    ...defaultTimerEditorState(schedule),
     autoOn: true,
-    presetIds: [DEFAULT_PRESET[schedule]] as string[],
-    nightOn: defaultNightOn(schedule),
     gm_sessions: null,
     supN: 2,
-    supM: 1,
-    rawCron: '',
-    timerTab: 'quick' as TimerTab,
-    scheduleRules: [rule],
-    selectedRuleId: rule.id,
   }
 }
 

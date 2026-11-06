@@ -12,6 +12,7 @@
 import { MacTimePicker } from '@/components/ui/MacTimePicker'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { Segmented } from '@/components/ui/Segmented'
+import { CronSetting } from '@/features/setup/CronSetting'
 import { MOTION_LAYOUT, useRemountFade } from '@/lib/viewTransition'
 import type { ScheduleKind } from '@/features/setup/cron'
 import {
@@ -369,8 +370,9 @@ export function TimerCustom({ rawCron, rawErr, onRawCron }: TimerCustomProps) {
   return (
     <div className="flex flex-col rounded-[14px] border border-line bg-surface px-5 py-5">
       {/* 不重复「自定义执行节奏」标题：tab 名与页首 synopsis 已表达，只留格式提示。 */}
-      <div className="text-xs text-ink-3">
-        北京时间 · 每条规则包含分、时、日、月、星期；多条使用 | 分隔
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink-3">
+        <span>北京时间 · 每条规则包含分、时、日、月、星期；多条使用 | 分隔</span>
+        <CronSetting value={rawCron} onConfirm={onRawCron} />
       </div>
       <textarea
         value={rawCron}
