@@ -12,6 +12,7 @@ const NUMBER_FORMAT = {
   minimumFractionDigits: 1,
   maximumFractionDigits: 1,
 }
+const COMPACT_NUMBER_FORMAT = { ...NUMBER_FORMAT, minimumFractionDigits: 0 }
 const FAST_STEP = 1
 
 interface LeverageInputProps {
@@ -21,6 +22,8 @@ interface LeverageInputProps {
   describedBy?: string
   invalid?: boolean
   limits?: LeverageLimits
+  /** 工作台行内使用小尺寸，省略 ±1 快步进按钮。 */
+  compact?: boolean
 }
 
 /** 可直接输入、亦可按渠道步进或 1 倍快步进调整的账户杠杆控件。 */
@@ -31,6 +34,7 @@ export function LeverageInput({
   describedBy,
   invalid = false,
   limits,
+  compact = false,
 }: LeverageInputProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [isEditing, setIsEditing] = useState(false)
@@ -79,17 +83,19 @@ export function LeverageInput({
   }
 
   const stepButtonBase =
-    'grid h-full w-9 flex-none place-items-center border-0 bg-transparent text-ink-3 transition-colors hover:bg-fill hover:text-ink-1 disabled:cursor-default disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-ink-3'
-  const stepButton = `${stepButtonBase} text-[19px]`
+    `grid h-full ${compact ? 'w-6' : 'w-9'} flex-none place-items-center border-0 bg-transparent text-ink-3 transition-colors hover:bg-fill hover:text-ink-1 disabled:cursor-default disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-ink-3`
+  const stepButton = `${stepButtonBase} ${compact ? 'text-[15px]' : 'text-[19px]'}`
   const fastStepButton = `${stepButtonBase} text-[13px]`
 
   return (
     <div
-      className={`flex h-10 overflow-hidden rounded-[9px] border bg-surface ${
-        invalid ? 'border-warn focus-within:border-warn' : 'border-ink-3/30 contrast:border-border-strong focus-within:border-ink-2'
+      className={`flex overflow-hidden border ${compact ? 'h-7 rounded-md bg-transparent' : 'h-10 rounded-[9px] bg-surface'} ${
+        invalid ? 'border-warn focus-within:border-warn' : compact
+          ? 'border-transparent hover:border-ink-3/25 contrast:border-border-strong focus-within:border-ink-2'
+          : 'border-ink-3/30 contrast:border-border-strong focus-within:border-ink-2'
       }`}
     >
-      <button
+      {!compact && <button
         type="button"
         aria-label="减少 1 倍杠杆"
         title="减少 1"
@@ -98,18 +104,18 @@ export function LeverageInput({
         onClick={() => applyStep(fastDecreaseValue)}
       >
         −1
-      </button>
+      </button>}
       <button
         type="button"
         aria-label={`减少 ${baseStep} 倍杠杆`}
         title={`减少 ${baseStep}`}
-        className={`${stepButton} border-r border-r-line`}
+        className={`${stepButton} ${compact ? '' : 'border-r border-r-line'}`}
         disabled={decreaseDisabled}
         onClick={() => applyStep(decreaseValue)}
       >
         −
       </button>
-      <div className="relative min-w-[78px] cursor-text px-2">
+      <div className={`relative cursor-text ${compact ? 'min-w-[52px] px-1' : 'min-w-[78px] px-2'}`}>
         <div
           aria-hidden="true"
           className={`pointer-events-none absolute inset-0 flex items-center justify-center gap-1 ${
@@ -119,8 +125,8 @@ export function LeverageInput({
           <NumberFlow
             value={lastValidValue.current}
             locales="zh-CN"
-            format={NUMBER_FORMAT}
-            className="num text-[16px] text-ink-1"
+            format={compact ? COMPACT_NUMBER_FORMAT : NUMBER_FORMAT}
+            className={`num text-ink-1 ${compact ? 'text-[13px]' : 'text-[16px]'}`}
             spinTiming={SPIN_TIMING}
             transformTiming={TRANSFORM_TIMING}
             opacityTiming={OPACITY_TIMING}
@@ -148,7 +154,7 @@ export function LeverageInput({
             aria-valuemax={limits?.max}
             aria-valuenow={validValue ?? undefined}
             inputMode="decimal"
-            className="num w-11 border-0 bg-transparent p-0 text-right text-[16px] text-ink-1 outline-none"
+            className={`num border-0 bg-transparent p-0 text-right text-ink-1 outline-none ${compact ? 'w-8 text-[13px]' : 'w-11 text-[16px]'}`}
             value={value}
             onChange={(event) => onChange(event.target.value)}
             onFocus={() => setIsEditing(true)}
@@ -162,13 +168,13 @@ export function LeverageInput({
         type="button"
         aria-label={`增加 ${baseStep} 倍杠杆`}
         title={`增加 ${baseStep}`}
-        className={`${stepButton} border-l border-l-line`}
+        className={`${stepButton} ${compact ? '' : 'border-l border-l-line'}`}
         disabled={increaseDisabled}
         onClick={() => applyStep(increaseValue)}
       >
         +
       </button>
-      <button
+      {!compact && <button
         type="button"
         aria-label="增加 1 倍杠杆"
         title="增加 1"
@@ -177,7 +183,7 @@ export function LeverageInput({
         onClick={() => applyStep(fastIncreaseValue)}
       >
         +1
-      </button>
+      </button>}
     </div>
   )
 }

@@ -297,6 +297,10 @@ class AccountDashboardItemPublic(Model):
         市场。
     trade_channel : TradeChannel
         交易渠道。
+    long_leverage : Optional[float]
+        配置的做多杠杆；未设置为 ``None``。
+    short_leverage : Optional[float]
+        配置的做空杠杆；未设置为 ``None``。
     is_started : bool
         是否已启动自动执行。
     portfolio_id : Optional[int]
@@ -343,6 +347,8 @@ class AccountDashboardItemPublic(Model):
     remark: Optional[str] = None
     market: str
     trade_channel: TradeChannel
+    long_leverage: Optional[float] = None
+    short_leverage: Optional[float] = None
     is_started: bool
     portfolio_id: Optional[int] = None
     is_scheduled: bool

@@ -1,9 +1,18 @@
-import type { ChannelCapability } from '@/types/api'
+import type { ChannelCapability, TradeChannel } from '@/types/api'
 
 export interface PortfolioMarketOption {
   value: string
   label: string
   exampleSymbols: string[]
+}
+
+/** 优先使用上下文账户的渠道单位；样例或缺少账户信息时按组合市场解析。 */
+export function portfolioQuantityUnit(
+  channels: ChannelCapability[], market: string | null | undefined, channel?: TradeChannel,
+): string {
+  const descriptor = channels.find((item) => item.channel === channel)
+    ?? channels.find((item) => item.market === market || item.portfolio.market_label === market)
+  return descriptor?.units.quantity_label ?? ''
 }
 
 /** 按渠道注册顺序生成去重后的组合市场目录。 */

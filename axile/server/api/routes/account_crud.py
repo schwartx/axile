@@ -541,6 +541,8 @@ async def account_dashboard(sched: SchedDep) -> AccountDashboardPublic:
                 remark=account["remark"],
                 market=account["market"],
                 trade_channel=account["trade_channel"],
+                long_leverage=account["long_leverage"],
+                short_leverage=account["short_leverage"],
                 is_started=account["is_started"],
                 portfolio_id=persisted["portfolio_id"],
                 is_scheduled=job is not None,

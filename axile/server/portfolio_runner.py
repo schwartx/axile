@@ -1,4 +1,4 @@
-"""在一次性子进程中执行样例组合函数."""
+"""在一次性子进程中执行无账户组合函数."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from multiprocessing import get_context
 from multiprocessing.connection import Connection
 
 from axile.executor.models.portfolio_target import PortfolioTarget
-from axile.server.context import build_sample_context
+from axile.server.context import Context, ContextSettings
 from axile.server.portfolio_function import (
     PortfolioFunctionError,
     _error_from_exception,
@@ -21,10 +21,10 @@ PORTFOLIO_FUNCTION_IPC_GRACE_SECONDS = 5.0
 """子进程返回结果和退出的通信余量."""
 
 
-def _run_sample_portfolio_child(connection: Connection, code: str) -> None:
-    """在子进程内构造样例 Context 并返回函数结果载荷."""
+def _run_sample_portfolio_child(connection: Connection, code: str, settings: ContextSettings) -> None:
+    """在子进程内构造无账户 Context 并返回函数结果载荷."""
     try:
-        result = calculate_portfolio_target(code, build_sample_context())
+        result = calculate_portfolio_target(code, Context(settings=settings))
         connection.send(result.model_dump())
     except BaseException as exc:  # noqa: BLE001 - 子进程边界统一回传结构化错误
         connection.send(exc if isinstance(exc, PortfolioFunctionError) else _error_from_exception(exc))
@@ -51,13 +51,14 @@ def calculate_sample_portfolio(
     code: str,
     *,
     timeout: float = PORTFOLIO_FUNCTION_TIMEOUT_SECONDS,
+    leverage_overrides: dict[str, float] | None = None,
 ) -> PortfolioTarget:
-    """在可强制终止的一次性子进程中执行样例组合函数."""
+    """在可强制终止的一次性子进程中执行无账户组合函数."""
     context = get_context("spawn")
     receive_connection, send_connection = context.Pipe(duplex=False)
     process = context.Process(
         target=_run_sample_portfolio_child,
-        args=(send_connection, code),
+        args=(send_connection, code, ContextSettings(**(leverage_overrides or {}))),
         name="axile-sample-portfolio-runner",
         daemon=True,
     )
@@ -71,7 +72,7 @@ def calculate_sample_portfolio(
             payload = receive_connection.recv()
         except (EOFError, OSError):
             process.join(timeout=0.1)
-            detail = f"样例组合函数子进程异常退出: exitcode={process.exitcode}"
+            detail = f"无账户组合函数子进程异常退出: exitcode={process.exitcode}"
             raise _error_from_exception(RuntimeError(detail))
         if isinstance(payload, PortfolioFunctionError):
             raise payload

@@ -9,7 +9,7 @@ import { Chip } from '@/components/ui/Card'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { InkRewrite } from '@/components/ui/InkRewrite'
-import { Select } from '@/components/ui/Select'
+import { OverflowText } from '@/components/ui/OverflowText'
 import { Segmented } from '@/components/ui/Segmented'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { ConfirmModal, type ConfirmSpec } from '@/components/ui/ConfirmModal'
@@ -20,13 +20,16 @@ import { PythonWorkbenchPane } from '@/components/ui/PythonWorkbenchPane'
 import { PythonRunPanel } from '@/components/ui/PythonRunPanel'
 import { WorkbenchPanel } from '@/components/ui/WorkbenchPanel'
 import { channelLabel } from '@/features/dashboard/display'
+import { describeLeverage } from '@/features/account/configSummary'
 import { WeightResult } from '@/features/portfolio/WeightResult'
 import { SnapshotResult } from '@/features/portfolio/SnapshotResult'
 import { BatchExecutionResults } from '@/features/portfolio/BatchExecutionResults'
 import type { BatchResult } from '@/features/portfolio/batchExecutionSnapshot'
 import { targetSnapshotText } from '@/features/portfolio/targetSnapshotDisplay'
 import { portfolioTargetSummary } from '@/features/portfolio/portfolioCardSummary'
+import { portfolioQuantityUnit } from '@/features/portfolio/portfolioMarkets'
 import { useCustomCalcValidation } from '@/features/portfolio/useCustomCalcValidation'
+import { PortfolioTrialAccounts } from '@/features/portfolio/PortfolioTrialAccounts'
 import { portfolioNameVtName } from '@/features/portfolio/viewTransition'
 import { usePolling } from '@/lib/hooks/usePolling'
 import { useTargetSnapshot } from '@/lib/hooks/useTargetSnapshot'
@@ -35,10 +38,10 @@ import {
   getPortfolioTargetSnapshot,
   refreshPortfolioTargetSnapshot,
   updatePortfolio,
-  runAndSavePortfolio,
 } from '@/lib/api/portfolios'
 import { triggerExecute } from '@/lib/api/executions'
 import { useDomainStore } from '@/stores/domain'
+import { useChannelCatalogStore } from '@/stores/channels'
 import { useLiveExecStore } from '@/stores/liveExec'
 import { useToastStore } from '@/stores/ui'
 
@@ -68,6 +71,7 @@ export function PortfolioEditPage() {
     intervalMs: 0,
   })
   const accounts = useDomainStore((state) => state.accounts)
+  const channels = useChannelCatalogStore((state) => state.channels)
   const refreshPortfolios = useDomainStore((state) => state.refreshPortfolios)
   const portfolios = useDomainStore((state) => state.portfolios)
   const pf = portfolio.data
@@ -132,7 +136,9 @@ export function PortfolioEditPage() {
   )
 
   // 试跑状态机（与初始化向导共用）：上下文选择、结果、stale、Ctrl+Enter 的回调目标。
-  const calc = useCustomCalcValidation(code)
+  const calc = useCustomCalcValidation(code, head?.market, portfolioId)
+  const quantityUnitForAccount = (accountId: number | null | undefined) =>
+    portfolioQuantityUnit(channels ?? [], head?.market, accounts?.find((account) => account.account_id === accountId)?.trade_channel)
 
   // 成功只展开返回值（左列）并切到试跑分段，失败只展开问题（右列贴代码）；两列是独立 split pane。
   useEffect(() => {
@@ -177,7 +183,7 @@ export function PortfolioEditPage() {
     accounts?.find((account) => account.account_id === weights.data?.context_account_id)?.name
     ?? (weights.data?.context_account_id != null ? `#${weights.data.context_account_id}` : null)
   const snapshotStatusText = weights.data?.calculated_at
-    ? `${weights.data.context_account_id == null ? '样例数据' : `账户 ${snapshotContextName}`} · 目标更新于 ${shanghaiLabel(weights.data.calculated_at).slice(11, 16)}`
+    ? `${weights.data.context_account_id == null ? '无账户' : `账户 ${snapshotContextName}`} · 目标更新于 ${shanghaiLabel(weights.data.calculated_at).slice(11, 16)}`
     : weights.error
       ? '目标不可用'
       : weights.loading
@@ -272,20 +278,6 @@ export function PortfolioEditPage() {
       setOriginal({ name: name.trim(), code })
       void refreshPortfolios()
     })
-  }
-
-  const runAndPublish = async () => {
-    if (saving) return
-    const submitted = { name: name.trim(), code }
-    const result = await calc.run((draft) => runAndSavePortfolio(portfolioId, {
-      name: submitted.name, custom_calc_py_code: draft, account_id: calc.accountId,
-    }))
-    if (result?.valid) {
-      setOriginal(submitted)
-      toast('组合与目标快照已保存')
-      void refreshPortfolios()
-      void weights.reloadSnapshot()
-    }
   }
 
   const restore = () => {
@@ -393,20 +385,20 @@ export function PortfolioEditPage() {
           )}
 
           <div className="flex-none">
-            <div className="mt-4 flex flex-col gap-1.5">
-                <Select<number | null>
-                  ariaLabel="试跑数据来源"
-                  value={calc.accountId}
-                  onChange={calc.setAccountId}
-                  options={calc.contextOptions}
-                  className="w-full justify-between px-2.5 py-1.5 text-[13.5px]"
+            <div className="flex flex-col gap-2">
+                <PortfolioTrialAccounts
+                  accounts={calc.accounts}
+                  accountId={calc.accountId}
+                  portfolioId={portfolioId}
+                  onSelect={calc.setAccountId}
+                  onLeverageChange={calc.setLeverageDraft}
+                  leverageEditing={calc.leverageEditing}
+                  disabled={calc.validating || saving}
                 />
-                {/* 来源警示：选真实账户才升琥珀（主动交易有真实委托）。
-                    样例来源不再加说明——Select 选项本身已写「不连接真实渠道」，此处零信号。 */}
                 {calc.accountId != null && (
                 <p className="border-l-2 border-warn pl-2 text-[12.5px] leading-5">
                   <InkRewrite
-                    text="真实数据 · 主动交易将产生真实委托"
+                    text="试跑不会自动下单；函数中调用交易接口仍可能产生真实委托。"
                     tone="label"
                     textClassName="text-warn"
                   />
@@ -415,16 +407,17 @@ export function PortfolioEditPage() {
                 <button
                   type="button"
                   className="inline-flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-[6px] border-0 bg-ink-1 px-3 py-1.5 text-[14px] font-[550] text-surface disabled:cursor-default disabled:opacity-45"
-                  onClick={() => void runAndPublish()}
-                  disabled={!calc.canRun || saving || !name.trim()}
+                  onClick={() => void calc.run()}
+                  disabled={!calc.canRun || saving}
                 >
                   <Play size={14} />
                   <InkRewrite
                     tone="label"
-                    text={calc.validating ? '试跑中…' : saving ? '保存中…' : '试跑并保存'}
+                    text={calc.validating ? '试跑中…' : saving ? '保存中…' : '试跑'}
                     textClassName="text-surface"
                   />
                 </button>
+                <InkRewrite text={calc.blockedReason ?? ''} tone="label" className="text-[12px] text-ink-3" />
             </div>
 
           </div>
@@ -458,8 +451,8 @@ export function PortfolioEditPage() {
               </div>
             )}
             statusOverride={targetTab === 'effective' ? snapshotStatus : undefined}
-            contentOverride={targetTab === 'effective' ? <SnapshotResult contextKey={portfolioId} weights={weights} /> : undefined}
-            resultContent={calc.result?.valid && calc.result.target ? <WeightResult target={calc.result.target} mode={calc.result.target_mode} /> : null}
+            contentOverride={targetTab === 'effective' ? <SnapshotResult contextKey={portfolioId} weights={weights} quantityUnit={quantityUnitForAccount(weights.data?.context_account_id)} /> : undefined}
+            resultContent={calc.result?.valid && calc.result.target ? <WeightResult target={calc.result.target} mode={calc.result.target_mode} quantityUnit={quantityUnitForAccount(calc.accountId)} /> : null}
           />
 
           <ResizeHandle
@@ -512,7 +505,14 @@ export function PortfolioEditPage() {
                         to={`/accounts/${account.account_id}`}
                         className="group flex items-center gap-2 rounded-[8px] px-2 py-1.5 hover:bg-fill"
                       >
-                        <span className="min-w-0 truncate text-[14px] text-ink-1">{account.name}</span>
+                        <OverflowText
+                          className="min-w-0 text-[14px] text-ink-1"
+                          text={`${account.name} · ${describeLeverage(
+                            account.long_leverage ?? null,
+                            account.short_leverage ?? null,
+                            channels?.find((channel) => channel.channel === account.trade_channel)?.ui.show_short_leverage ?? true,
+                          )}`}
+                        />
                         <span className="flex-none rounded-chip bg-fill px-1.5 py-px text-[11.5px] text-ink-2">
                           {channelLabel(account.trade_channel, account.market)}
                         </span>
@@ -546,6 +546,7 @@ export function PortfolioEditPage() {
             saveState.clearError()
           }}
           running={calc.validating}
+          runDisabled={!calc.canRun || saving}
           stale={calc.stale}
           result={calc.editorResult}
           onRun={() => void calc.run()}

@@ -1,11 +1,12 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { usePythonRun } from '@/components/ui/pythonWorkbenchState'
 import type { PythonValidationState } from '@/components/ui/PythonFunctionEditor'
-import type { SelectOption } from '@/components/ui/Select'
-import { channelLabel } from '@/features/dashboard/display'
 import { validateCustomCalc } from '@/lib/api/portfolios'
+import { useChannelCatalogStore } from '@/stores/channels'
 import { useDomainStore } from '@/stores/domain'
-import type { ValidateCustomCalcResult } from '@/types/api'
+import { useAccountConnection } from '@/stores/liveConnection'
+import { useConnectionOperation } from '@/stores/connectionOperations'
+import type { AccountDashboardItem, TrialLeverageOverrides, ValidateCustomCalcResult } from '@/types/api'
 
 export interface CustomCalcValidation {
   validating: boolean
@@ -17,7 +18,10 @@ export interface CustomCalcValidation {
   stale: boolean
   accountId: number | null
   setAccountId: (id: number | null) => void
-  contextOptions: SelectOption<number | null>[]
+  accounts: AccountDashboardItem[]
+  blockedReason: string | null
+  leverageEditing: boolean
+  setLeverageDraft: (accountId: number | null, overrides: TrialLeverageOverrides | null, invalid: boolean) => void
   canRun: boolean
   run: (execute?: (code: string) => Promise<ValidateCustomCalcResult>) => Promise<ValidateCustomCalcResult | null>
 }
@@ -27,12 +31,40 @@ export interface CustomCalcValidation {
  * 改代码不清空旧结果，仅降级 stale（清空收放会让打字中的代码跳）。
  * 工作台编辑页与初始化向导（console 布局）共用这一份逻辑。
  */
-export function useCustomCalcValidation(code: string): CustomCalcValidation {
-  const [accountId, setAccountId] = useState<number | null>(null)
+export function useCustomCalcValidation(code: string, market: string | null | undefined, portfolioId?: number): CustomCalcValidation {
+  const [selection, setSelection] = useState<{ portfolioId: number | undefined; accountId: number | null } | null>(null)
+  const [leverageDrafts, setLeverageDrafts] = useState<Record<string, { overrides: TrialLeverageOverrides | null; invalid: boolean }>>({})
+  const setLeverageDraft = useCallback((id: number | null, overrides: TrialLeverageOverrides | null, invalid: boolean) => {
+    setLeverageDrafts((previous) => ({ ...previous, [id ?? 'sample']: { overrides, invalid } }))
+  }, [])
   const accounts = useDomainStore((state) => state.accounts) ?? []
+  const channels = useChannelCatalogStore((state) => state.channels)
+  const marketId = (value: string) => channels?.find(
+    (channel) => channel.market === value || channel.portfolio.market_label === value,
+  )?.market ?? value
+  const matchingAccounts = accounts.filter((account) => market != null && marketId(account.market) === marketId(market))
+  const defaultAccountId = portfolioId == null ? null
+    : matchingAccounts.find((account) => account.portfolio_id === portfolioId)?.account_id ?? null
+  const accountId = selection && selection.portfolioId === portfolioId ? selection.accountId : defaultAccountId
+  const contextAccountId = matchingAccounts.some((account) => account.account_id === accountId) ? accountId : null
+  const selected = matchingAccounts.find((account) => account.account_id === contextAccountId)
+  const channel = selected ? channels?.find((item) => item.channel === selected.trade_channel) : undefined
+  const leverageDraft = leverageDrafts[contextAccountId ?? 'sample']
+  const overrides = leverageDraft?.overrides ?? null
+  const connection = useAccountConnection(contextAccountId ?? -1)
+  const operation = useConnectionOperation(contextAccountId ?? -1)
+  const blockedReason = leverageDraft?.invalid ? '杠杆参数有误，请先修正'
+    : contextAccountId === null ? null
+      : operation.pending !== null || connection.status === 'connecting' || connection.status === 'recovering' ? '账户连接操作中，请稍候'
+        : connection.status === 'ready' ? null
+          : connection.status === 'unknown' ? '正在确认账户连接状态'
+            : '请先连接账户，确认就绪后再试跑'
   const trial = usePythonRun<ValidateCustomCalcResult>({
-    code, contextKey: String(accountId),
-    execute: (draft) => validateCustomCalc({ custom_calc_py_code: draft, account_id: accountId }),
+    code, contextKey: JSON.stringify([contextAccountId,
+      overrides?.long_leverage ?? selected?.long_leverage ?? channel?.defaults.long_leverage ?? 1,
+      overrides?.short_leverage ?? selected?.short_leverage ?? channel?.defaults.short_leverage ?? 1]),
+    enabled: blockedReason === null,
+    execute: (draft) => validateCustomCalc({ custom_calc_py_code: draft, account_id: contextAccountId, leverage_overrides: overrides }),
     failed: (error) => {
       const message = error instanceof Error ? error.message : String(error)
       return { valid: false, target: null, error: message, traceback: null, error_line: null,
@@ -43,26 +75,17 @@ export function useCustomCalcValidation(code: string): CustomCalcValidation {
   })
   const { running: validating, result, editorResult, stale, run } = trial
 
-  // 选项自带说明：样例 = 安全沙箱（假数据、不连渠道）；账户 = 真实数据 + 真实副作用风险。
-  // 控件只说「样例上下文」会把这两级语义全吞掉。
-  const contextOptions: SelectOption<number | null>[] = [
-    { value: null, label: '样例数据', description: '固定样例资产，价格恒为 100，不连接真实渠道' },
-    ...accounts.map((account) => ({
-      value: account.account_id,
-      label: account.name,
-      description: '真实持仓与行情 · 主动交易会产生真实委托',
-      hint: channelLabel(account.trade_channel, account.market),
-    })),
-  ]
-
   return {
     validating,
     result,
     editorResult,
     stale,
-    accountId,
-    setAccountId,
-    contextOptions,
+    accountId: contextAccountId,
+    setAccountId: (accountId) => setSelection({ portfolioId, accountId }),
+    accounts: matchingAccounts,
+    blockedReason,
+    leverageEditing: !!(overrides || leverageDraft?.invalid),
+    setLeverageDraft,
     canRun: trial.canRun,
     run,
   }

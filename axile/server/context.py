@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import Protocol
 
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
@@ -40,7 +40,7 @@ class ContextSettings:
 
 
 class Context:
-    """向自定义组合函数提供统一模型与完整的常驻渠道执行器.
+    """向组合函数提供执行设置，并按需查询所选账户.
 
     Notes
     -----
@@ -48,12 +48,19 @@ class Context:
     全局状态的修改可能延续到后续成功请求；这是可信高级代码的既定能力。
     """
 
-    def __init__(self, executor: PortfolioExecutor, *, settings: ContextSettings | None = None) -> None:
+    def __init__(self, executor: PortfolioExecutor | None = None, *, settings: ContextSettings | None = None) -> None:
         """初始化组合上下文."""
-        self.executor: PortfolioExecutor = executor
+        self._executor = executor
         self._settings = settings if settings is not None else ContextSettings()
         self._account: UnifiedAccountAssets | None = None
         self._quotes: dict[str, UnifiedPriceData] = {}
+
+    @property
+    def executor(self) -> PortfolioExecutor:
+        """返回所选账户的执行器；无账户试跑不提供虚构数据。"""
+        if self._executor is None:
+            raise ValueError("读取账户、持仓、行情或订单数据需要先选择账户")
+        return self._executor
 
     @property
     def settings(self) -> ContextSettings:
@@ -115,50 +122,4 @@ class Context:
         return self.executor.query_trades(symbol, order_id)
 
 
-class SamplePortfolioExecutor:
-    """无真实账户试跑时使用的最小样例执行器."""
-
-    def get_account_assets(self) -> UnifiedAccountAssets:
-        """返回固定的合法统一账户快照."""
-        return UnifiedAccountAssets(
-            available_cash=800_000.0,
-            total_asset=1_000_000.0,
-            market_value=200_000.0,
-            positions=[],
-            extra={"channel_type": "sample"},
-        )
-
-    def get_market_data(self, symbols: list[str]) -> dict[str, UnifiedPriceData]:
-        """为任意标的生成固定行情，便于验证通用 Context API."""
-        return {
-            symbol: UnifiedPriceData(
-                symbol=symbol,
-                last_price=100.0,
-                bids=[(99.9, 100.0)],
-                asks=[(100.1, 100.0)],
-                volume=1_000.0,
-                turnover=100_000.0,
-                timestamp=1_700_000_000_000,
-                update_time="2023-11-14T22:13:20",
-                extra={"channel_type": "sample"},
-            )
-            for symbol in symbols
-        }
-
-    def get_pending_orders(self, symbol: str | None = None) -> list[UnifiedOrder]:
-        """样例账户没有未完成订单."""
-        del symbol
-        return []
-
-    def query_trades(self, symbol: str, order_id: str) -> list[TradeRecord]:
-        """样例账户没有成交记录."""
-        del symbol, order_id
-        return []
-
-
-def build_sample_context() -> Context:
-    """构造使用样例执行器的组合上下文."""
-    return Context(cast("PortfolioExecutor", SamplePortfolioExecutor()))
-
-
-__all__ = ["Context", "ContextSettings", "PortfolioExecutor", "SamplePortfolioExecutor", "build_sample_context"]
+__all__ = ["Context", "ContextSettings", "PortfolioExecutor"]

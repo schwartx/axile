@@ -10,7 +10,7 @@ from axile.executor.models.portfolio_target import PortfolioTarget
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.server._native import _core
 from axile.server.api.routes import account_execution
-from axile.server.context import build_sample_context
+from axile.server.context import Context
 from axile.server.execution import rebalance
 from axile.server.integrity import plan_executable_target
 from axile.server.portfolio_function import calculate_portfolio_target
@@ -23,7 +23,7 @@ CODE = "def calculate_portfolio(context):\n    return {'mode': 'quantity', 'targ
 
 @pytest.mark.parametrize("sample", [False, True])
 def test_quantity_function_preserves_signed_fractional_targets(sample):
-    target = calculate_sample_portfolio(CODE) if sample else calculate_portfolio_target(CODE, build_sample_context())
+    target = calculate_sample_portfolio(CODE) if sample else calculate_portfolio_target(CODE, Context())
     assert target.mode == "quantity"
     assert target.targets == {"XAUUSD": 0.015, "XAGUSD": -0.25}
 
