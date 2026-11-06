@@ -93,6 +93,7 @@ def _account_payload() -> dict[str, object]:
             "copied_from_account_id",
             "copied_from_account_name",
             "replay_config_version",
+            "channel_options",
         },
     )
 

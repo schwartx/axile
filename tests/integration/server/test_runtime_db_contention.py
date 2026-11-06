@@ -100,7 +100,7 @@ def test_worker_and_sdk_callbacks_keep_all_commits_and_latest_revision(tmp_path:
     require_native_store("save_order_submission")
 
     async def scenario() -> None:
-        async with runtime_database(tmp_path / "runtime.db") as database:
+        async with runtime_database(tmp_path / "runtime.db", wal=True) as database:
             started = Event()
 
             def sdk_callbacks() -> None:

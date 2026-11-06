@@ -62,7 +62,9 @@ def test_calendar_closed_cancels_before_submitting_any_intent(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        supplements, "calendar_context", lambda _channel: {"calendar_status_by_channel": {"ctp": "available_closed"}}
+        supplements,
+        "calendar_context",
+        lambda _channel, _sessions: {"calendar_status_by_channel": {"ctp": "available_closed"}},
     )
 
     asyncio.run(supplements.fire_step("s"))
@@ -78,6 +80,7 @@ def test_duplicate_group_receipt_does_not_schedule_or_fire(monkeypatch):
         portfolio_id=1,
         cron_expr="*/15 * * * *",
         trade_channel="ctp",
+        gm_sessions=None,
     )
     native = AsyncMock(return_value=None)
     fire = AsyncMock(side_effect=AssertionError("duplicate group must not fire"))

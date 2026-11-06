@@ -120,21 +120,22 @@ def choose_price(executor, params, direction, passive=False):
     tick = executor.get_tick_size()
     if quote is None or not quote.book_valid or not tick or tick <= 0:
         raise ValueError("缺少有效盘口或 tick")
-    price = quote.ask_price if direction == OrderDirection.BUY else quote.bid_price
+    bid, ask = quote.bids[0][0], quote.asks[0][0]
+    price = ask if direction == OrderDirection.BUY else bid
     if passive:
         lower = float(quote.extra.get("lower_limit_price", 0))
         upper = float(quote.extra.get("upper_limit_price", 0))
         if not 0 < lower < upper:
             raise ValueError("缺少涨跌停边界，不能构造合法挂单")
         if direction == OrderDirection.BUY:
-            price = max(lower, quote.bid_price - params.passive_ticks * tick)
+            price = max(lower, bid - params.passive_ticks * tick)
             price = math.ceil(price / tick - 1e-8) * tick
-            if price >= quote.ask_price:
+            if price >= ask:
                 raise ValueError("不能构造不立即成交的买单")
         else:
-            price = min(upper, quote.ask_price + params.passive_ticks * tick)
+            price = min(upper, ask + params.passive_ticks * tick)
             price = math.floor(price / tick + 1e-8) * tick
-            if price <= quote.bid_price:
+            if price <= bid:
                 raise ValueError("不能构造不立即成交的卖单")
     return float(price), quote
 

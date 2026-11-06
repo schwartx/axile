@@ -41,6 +41,7 @@ def test_bad_instrument_precedes_readiness_catalog_and_native_requests(value, en
         _market_api=Mock(),
         _trader_api=Mock(),
     )
+    executor._query_recent_orders_impl = CTPExecutor._query_recent_orders_impl.__get__(executor)
     with pytest.raises(CTPInputValidationError, match="合约代码格式"):
         if entry == "order":
             CTPExecutor._place_order_impl(executor, value, "buy", "limit", 1)

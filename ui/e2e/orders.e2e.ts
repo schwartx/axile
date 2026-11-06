@@ -369,7 +369,7 @@ for (const channel of ['ctp', 'tq', 'external'] as const) {
       external: { commission: 0, commission_asset: 'CNY', realized_pnl: -2.5, is_maker: false, position_side: 'SHORT' },
     }[channel]
     const labels = { ctp: ['开平', '交易日', '投机 / 套保'], tq: ['开平'], external: ['手续费', '手续费币种', '已实现盈亏', 'Maker/Taker', '持仓方向'] }[channel]
-    const values = { ctp: ['开仓', '2026-10-19', '套保'], tq: ['平今'], external: ['0', 'CNY', '-2.5', 'Taker', '空头'] }[channel]
+    const values = { ctp: ['开仓', '2026-10-19', '套保'], tq: ['平今'], external: ['0', '￥', '-2.5', 'Taker', '空头'] }[channel]
     const fill = { trade_id: 'channel-fill', order_id: 'channel-order', symbol: channel === 'external' ? 'rb2610' : 'rb2610', direction: 'BUY', offset: null, time: '2026-10-16T21:01:02+08:00', price: 100, volume: 1, value: 100 }
     await page.route('**/api/v1/account/1/orders/activity?**', route => route.fulfill({ json: {
       channel, orders: [], ended_orders: [], trades: [{ ...fill, ...extras }, { ...fill, trade_id: 'missing-fields' }], failures: [], scope: '', started_at: fill.time, sampled_at: fill.time, queried_at: fill.time, errors: [], symbols: [fill.symbol], limit: 100, truncated: false,

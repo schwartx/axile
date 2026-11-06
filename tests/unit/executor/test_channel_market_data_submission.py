@@ -40,6 +40,8 @@ def clock(monkeypatch):
 @pytest.fixture(autouse=True)
 def use_replayable_clock(monkeypatch):
     monkeypatch.setattr(clock_module, "_default_clock", ClockStub())
+    # SDK owner 使用真实线程；行情过期由测试主动推进，事件仍需让出线程等待。
+    monkeypatch.setattr(get_default_clock(), "event_wait", threading.Event.wait)
 
 
 def bind_session(monkeypatch, owner, consumed):
