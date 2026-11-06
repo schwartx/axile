@@ -1,5 +1,5 @@
 import { useId, useRef, useState } from 'react'
-import { Clock3 } from 'lucide-react'
+import { Clock3, Trash2 } from 'lucide-react'
 import { CenteredModal } from '@/components/ui/CenteredModal'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { Select } from '@/components/ui/Select'
@@ -103,7 +103,10 @@ export function CronSetting({ value, onConfirm }: { value: string; onConfirm: (v
                   {errors[index] && <span id={`${tabsId}-error-${rule.id}`} role="alert" className="mt-1 block text-xs leading-relaxed text-warn">{errors[index]}</span>}
                 </span>
               </button>
-              {rules.length > 1 && <button type="button" aria-label={`删除表达式 ${index + 1}`} onClick={() => removeRule(rule.id)} className="mt-0.5 shrink-0 px-1 py-0.5 text-xs text-ink-3 hover:text-bad hover:underline">删除</button>}
+              {rules.length > 1 && <button type="button" aria-label={`删除表达式 ${index + 1}`} onClick={() => removeRule(rule.id)}
+                className="inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-md text-ink-2 transition-colors hover:bg-warn/10 hover:text-warn focus-visible:bg-warn/10 focus-visible:text-warn focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-warn motion-reduce:transition-none">
+                <Trash2 size={16} aria-hidden="true" />
+              </button>}
             </div>)}
           </div>
         </section>
