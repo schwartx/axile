@@ -21,7 +21,7 @@ export interface CustomCalcValidation {
   accounts: AccountDashboardItem[]
   blockedReason: string | null
   leverageEditing: boolean
-  setLeverageDraft: (accountId: number, overrides: TrialLeverageOverrides | null, invalid: boolean) => void
+  setLeverageDraft: (accountId: number | null, overrides: TrialLeverageOverrides | null, invalid: boolean) => void
   canRun: boolean
   run: (execute?: (code: string) => Promise<ValidateCustomCalcResult>) => Promise<ValidateCustomCalcResult | null>
 }
@@ -33,9 +33,9 @@ export interface CustomCalcValidation {
  */
 export function useCustomCalcValidation(code: string, market: string | null | undefined): CustomCalcValidation {
   const [accountId, setAccountId] = useState<number | null>(null)
-  const [leverageDrafts, setLeverageDrafts] = useState<Record<number, { overrides: TrialLeverageOverrides | null; invalid: boolean }>>({})
-  const setLeverageDraft = useCallback((id: number, overrides: TrialLeverageOverrides | null, invalid: boolean) => {
-    setLeverageDrafts((previous) => ({ ...previous, [id]: { overrides, invalid } }))
+  const [leverageDrafts, setLeverageDrafts] = useState<Record<string, { overrides: TrialLeverageOverrides | null; invalid: boolean }>>({})
+  const setLeverageDraft = useCallback((id: number | null, overrides: TrialLeverageOverrides | null, invalid: boolean) => {
+    setLeverageDrafts((previous) => ({ ...previous, [id ?? 'sample']: { overrides, invalid } }))
   }, [])
   const accounts = useDomainStore((state) => state.accounts) ?? []
   const channels = useChannelCatalogStore((state) => state.channels)
@@ -46,20 +46,20 @@ export function useCustomCalcValidation(code: string, market: string | null | un
   const contextAccountId = matchingAccounts.some((account) => account.account_id === accountId) ? accountId : null
   const selected = matchingAccounts.find((account) => account.account_id === contextAccountId)
   const channel = selected ? channels?.find((item) => item.channel === selected.trade_channel) : undefined
-  const leverageDraft = leverageDrafts[contextAccountId ?? -1]
+  const leverageDraft = leverageDrafts[contextAccountId ?? 'sample']
   const overrides = leverageDraft?.overrides ?? null
   const connection = useAccountConnection(contextAccountId ?? -1)
   const operation = useConnectionOperation(contextAccountId ?? -1)
-  const blockedReason = contextAccountId === null ? null
-    : leverageDraft?.invalid ? '杠杆参数有误，请先修正'
+  const blockedReason = leverageDraft?.invalid ? '杠杆参数有误，请先修正'
+    : contextAccountId === null ? null
       : operation.pending !== null || connection.status === 'connecting' || connection.status === 'recovering' ? '账户连接操作中，请稍候'
         : connection.status === 'ready' ? null
           : connection.status === 'unknown' ? '正在确认账户连接状态'
             : '请先连接账户，确认就绪后再试跑'
   const trial = usePythonRun<ValidateCustomCalcResult>({
     code, contextKey: JSON.stringify([contextAccountId,
-      overrides?.long_leverage ?? selected?.long_leverage ?? channel?.defaults.long_leverage,
-      overrides?.short_leverage ?? selected?.short_leverage ?? channel?.defaults.short_leverage]),
+      overrides?.long_leverage ?? selected?.long_leverage ?? channel?.defaults.long_leverage ?? 1,
+      overrides?.short_leverage ?? selected?.short_leverage ?? channel?.defaults.short_leverage ?? 1]),
     enabled: blockedReason === null,
     execute: (draft) => validateCustomCalc({ custom_calc_py_code: draft, account_id: contextAccountId, leverage_overrides: overrides }),
     failed: (error) => {

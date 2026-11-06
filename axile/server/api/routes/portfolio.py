@@ -169,7 +169,11 @@ async def _run_custom_calc_validation(
     """在给定上下文中试跑自定义组合函数并返回结构化结果."""
     try:
         if account is None:
-            result = await asyncio.to_thread(calculate_sample_portfolio, custom_calc_py_code)
+            result = await asyncio.to_thread(
+                calculate_sample_portfolio,
+                custom_calc_py_code,
+                **({"leverage_overrides": leverage_overrides} if leverage_overrides else {}),
+            )
         else:
             result = await calculate_portfolio_for_account(
                 account,
@@ -196,8 +200,6 @@ async def validate_custom_calc(payload: ValidateCustomCalcRequest) -> ValidateCu
     """使用样例或真实账户上下文试跑自定义组合函数。"""
     account = None
     overrides = payload.leverage_overrides.model_dump(exclude_none=True) if payload.leverage_overrides else {}
-    if overrides and payload.account_id is None:
-        raise HTTPException(status_code=422, detail="临时杠杆需要选择账户")
     if payload.account_id is not None:
         value = await _portfolio_native(
             "portfolio_operation", {"op": "validation_context", "account_id": payload.account_id}

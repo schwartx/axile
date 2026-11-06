@@ -50,7 +50,8 @@ test('杠杆只写改动字段，重复点击不重复提交，取消和失败�
     } }));
     const { AccountLeverageControl } = await import(ui + 'features/portfolio/PortfolioTrialAccounts.tsx');
     const changes = [];
-    const render = () => { at = 0; return AccountLeverageControl({ account: domain.accounts[0], disabled: false, onLeverageChange: (id, value, invalid) => changes.push([id, value, invalid]) }) };
+    let selectedAccount = domain.accounts[0];
+    const render = () => { at = 0; return AccountLeverageControl({ account: selectedAccount === null ? null : domain.accounts[0], disabled: false, onLeverageChange: (id, value, invalid) => changes.push([id, value, invalid]) }) };
     function all(node) { return Array.isArray(node) ? node.flatMap(all) : node?.props ? [node, ...all(node.props.children), ...all(node.props.footer)] : [] }
     let nodes;
     const refresh = () => { nodes = all(render()) };
@@ -85,6 +86,16 @@ test('杠杆只写改动字段，重复点击不重复提交，取消和失败�
     expect(nodes.filter(n => n.type === 'LeverageInput')).toHaveLength(1);
     button('保存到账户').props.onClick(); finish(); await new Promise(setImmediate); refresh();
     expect(patches.at(-1)).toEqual({ long_leverage: 2 });
+    const savedCount = patches.length;
+    selectedAccount = null; channel.ui.show_short_leverage = true; refresh();
+    expect(input('-long').props.value).toBe('1'); expect(input('-short').props.value).toBe('1');
+    expect(button('保存到账户')).toBeUndefined();
+    input('-long').props.onChange('2.5'); refresh(); input('-short').props.onChange('0'); refresh();
+    expect(changes.at(-1)).toEqual([null, { long_leverage: 2.5, short_leverage: 0 }, false]);
+    button('还原').props.onClick(); refresh();
+    expect(input('-long').props.value).toBe('1'); expect(input('-short').props.value).toBe('1');
+    expect(changes.at(-1)).toEqual([null, null, false]);
+    expect(patches).toHaveLength(savedCount);
   `)
 })
 
@@ -122,6 +133,14 @@ test('连接和草稿状态约束全部试跑入口，连接就绪不自动运�
     trial.setLeverageDraft(7, null, true); trial = render();
     expect(trial.canRun).toBe(false); await trial.run(execute); expect(calls).toBe(1);
     trial.setAccountId(null); trial = render(); expect(trial.canRun).toBe(true);
+    trial.setLeverageDraft(null, { long_leverage: 2.5, short_leverage: 0 }, false); trial = render();
+    await trial.run(); trial = render();
+    expect(requests.at(-1).account_id).toBeNull();
+    expect(requests.at(-1).leverage_overrides).toEqual({ long_leverage: 2.5, short_leverage: 0 });
+    expect(trial.stale).toBe(false);
+    trial.setLeverageDraft(null, null, true); trial = render(); expect(trial.canRun).toBe(false);
+    trial.setLeverageDraft(null, null, false); trial = render(); expect(trial.canRun).toBe(true);
+    expect(trial.stale).toBe(true);
     trial.setAccountId(7); trial = render(); expect(trial.canRun).toBe(false);
     trial.setLeverageDraft(7, null, false); operation.pending = 'reconnect'; trial = render();
     expect(trial.canRun).toBe(false); await trial.run(execute); expect(calls).toBe(1);
@@ -129,7 +148,7 @@ test('连接和草稿状态约束全部试跑入口，连接就绪不自动运�
   `)
 })
 
-test('十五个候选账户只渲染当前账户摘要，样例不显示杠杆和连接操作', () => {
+test('候选账户不撑开列表，样例显示杠杆且没有账户保存和连接操作', () => {
   check(`
     import { mock, expect } from 'bun:test';
     import { createElement } from 'react';
@@ -175,7 +194,9 @@ test('十五个候选账户只渲染当前账户摘要，样例不显示杠杆�
     const sample = render(null);
     expect(sample).toContain('不连接真实渠道');
     expect(sample).not.toContain('role="switch"');
-    expect(sample).not.toContain('role="spinbutton"');
-    expect(sample.match(/<button/g)).toHaveLength(1);
+    expect(sample.match(/role="spinbutton"/g)).toHaveLength(2);
+    expect(sample.match(/aria-valuenow="1"/g)).toHaveLength(2);
+    expect(sample).not.toContain('保存到账户');
+    expect(sample).toContain('合约乘数 1');
   `)
 })

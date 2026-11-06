@@ -140,7 +140,8 @@ class SamplePortfolioExecutor:
                 turnover=100_000.0,
                 timestamp=1_700_000_000_000,
                 update_time="2023-11-14T22:13:20",
-                extra={"channel_type": "sample"},
+                # 样例乘数固定为 1，仅用于验证计算流程，不代表真实合约。
+                extra={"channel_type": "sample", "volume_multiple": 1.0},
             )
             for symbol in symbols
         }
@@ -156,9 +157,9 @@ class SamplePortfolioExecutor:
         return []
 
 
-def build_sample_context() -> Context:
+def build_sample_context(*, settings: ContextSettings | None = None) -> Context:
     """构造使用样例执行器的组合上下文."""
-    return Context(cast("PortfolioExecutor", SamplePortfolioExecutor()))
+    return Context(cast("PortfolioExecutor", SamplePortfolioExecutor()), settings=settings)
 
 
 __all__ = ["Context", "ContextSettings", "PortfolioExecutor", "SamplePortfolioExecutor", "build_sample_context"]

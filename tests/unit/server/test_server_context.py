@@ -89,3 +89,14 @@ def test_settings_are_read_only_and_do_not_fetch_assets(executor: _Executor) -> 
 
 def test_sample_settings_are_explicit_neutral_defaults() -> None:
     assert build_sample_context().settings == ContextSettings(1.0, 1.0, 0.01)
+
+
+def test_sample_settings_and_quote_multiplier_are_explicit() -> None:
+    settings = ContextSettings(long_leverage=2.5, short_leverage=0)
+    context = build_sample_context(settings=settings)
+    assert context.settings is settings
+    quote = context.get_quote("FG701")
+    assert quote.last_price == 100
+    assert quote.extra["volume_multiple"] == 1
+    assert quote.extra["channel_type"] == "sample"
+    assert build_sample_context().settings == ContextSettings(1.0, 1.0, 0.01)

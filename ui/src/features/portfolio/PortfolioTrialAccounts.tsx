@@ -20,21 +20,22 @@ import type { AccountDashboardItem, TrialLeverageOverrides } from '@/types/api'
 
 const textAction = 'min-w-0 cursor-pointer rounded px-1.5 py-1 text-left text-[12.5px] text-ink-2 hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default disabled:opacity-45'
 
-/** 原位编辑账户杠杆；仅显式保存实际修改的字段。 */
+/** 原位编辑试跑杠杆；真实账户可显式保存，样例只允许还原。 */
 export function AccountLeverageControl({ account, disabled, onLeverageChange }: {
-  account: AccountDashboardItem
+  account: AccountDashboardItem | null
   disabled: boolean
-  onLeverageChange: (id: number, overrides: TrialLeverageOverrides | null, invalid: boolean) => void
+  onLeverageChange: (id: number | null, overrides: TrialLeverageOverrides | null, invalid: boolean) => void
 }) {
-  const channel = useChannelDescriptor(account.trade_channel)
+  const channel = useChannelDescriptor(account?.trade_channel)
   const showShort = channel?.ui.show_short_leverage ?? true
+  const ownerId = account?.account_id ?? null
   const id = useId()
   const [draft, setDraft] = useState<{ long: string; short: string } | null>(null)
   const saveState = usePythonSave()
   const pendingDraft = useRef<{ long: string; short: string } | null>(null)
-  useEffect(() => () => onLeverageChange(account.account_id, null, false), [account.account_id, onLeverageChange])
-  const baselineLong = account.long_leverage ?? channel?.defaults.long_leverage
-  const baselineShort = account.short_leverage ?? channel?.defaults.short_leverage
+  useEffect(() => () => onLeverageChange(ownerId, null, false), [ownerId, onLeverageChange])
+  const baselineLong = account?.long_leverage ?? channel?.defaults.long_leverage ?? 1
+  const baselineShort = account?.short_leverage ?? channel?.defaults.short_leverage ?? 1
   const values = draft ?? { long: String(baselineLong ?? ''), short: String(baselineShort ?? '') }
   const longError = leverageError(values.long, channel?.leverage)
   const shortError = showShort ? leverageError(values.short, channel?.leverage) : null
@@ -47,8 +48,8 @@ export function AccountLeverageControl({ account, disabled, onLeverageChange }: 
     if (pendingDraft.current && changed(pendingDraft.current)) return
     pendingDraft.current = null
     setDraft(null)
-    onLeverageChange(account.account_id, null, false)
-  }, [changed, account.account_id, onLeverageChange])
+    onLeverageChange(ownerId, null, false)
+  }, [changed, ownerId, onLeverageChange])
   const change = (next: { long: string; short: string }) => {
     setDraft(next)
     saveState.clearError()
@@ -56,7 +57,7 @@ export function AccountLeverageControl({ account, disabled, onLeverageChange }: 
     const long = leverageValue(next.long, channel?.leverage)
     const short = showShort ? leverageValue(next.short, channel?.leverage) : null
     const invalid = long === null || (showShort && short === null)
-    onLeverageChange(account.account_id,
+    onLeverageChange(ownerId,
       !invalid && pendingDraft.current ? { long_leverage: long!, ...(showShort ? { short_leverage: short! } : {}) } : null, invalid)
   }
   const cancel = () => {
@@ -64,10 +65,10 @@ export function AccountLeverageControl({ account, disabled, onLeverageChange }: 
     pendingDraft.current = null
     setDraft(null)
     saveState.clearError()
-    onLeverageChange(account.account_id, null, false)
+    onLeverageChange(ownerId, null, false)
   }
   const save = async () => {
-    if (!dirty || !channel || longError || shortError) return
+    if (!account || !dirty || !channel || longError || shortError) return
     const long = leverageValue(values.long, channel.leverage)!
     const short = showShort ? leverageValue(values.short, channel.leverage)! : baselineShort
     const patch = {
@@ -82,12 +83,12 @@ export function AccountLeverageControl({ account, disabled, onLeverageChange }: 
       void useDomainStore.getState().refreshAccounts()
       pendingDraft.current = null
       setDraft(null)
-      onLeverageChange(account.account_id, null, false)
+      onLeverageChange(ownerId, null, false)
     })
   }
   return <div className="w-full min-w-0">
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-      <fieldset disabled={disabled || !channel || saveState.saving} className="flex flex-wrap gap-2 text-[12px] text-ink-2">
+      <fieldset disabled={disabled || (!!account && !channel) || saveState.saving} className="flex flex-wrap gap-2 text-[12px] text-ink-2">
         <div className="flex max-w-full items-center gap-1">
           <label htmlFor={`${id}-long`} title={channel?.ui.long_leverage_label}>{showShort ? '多' : '系数'}</label>
           <LeverageInput compact id={`${id}-long`} value={values.long} limits={channel?.leverage} invalid={!!longError}
@@ -103,8 +104,8 @@ export function AccountLeverageControl({ account, disabled, onLeverageChange }: 
         className={`ml-auto grid min-w-0 max-w-full shrink-0 transition-[grid-template-columns] duration-200 motion-reduce:transition-none ${dirty ? 'grid-cols-[1fr]' : 'grid-cols-[0fr]'}`}>
         <div className="min-w-0 overflow-hidden">
           <div className="flex h-7 items-center gap-1 whitespace-nowrap">
-            <button type="button" className={textAction} disabled={disabled || saveState.saving || !channel || !!longError || !!shortError}
-              onClick={() => void save()}><InkRewrite text={saveState.saving ? '保存中…' : '保存到账户'} tone="label" /></button>
+            {account && <button type="button" className={textAction} disabled={disabled || saveState.saving || !channel || !!longError || !!shortError}
+              onClick={() => void save()}><InkRewrite text={saveState.saving ? '保存中…' : '保存到账户'} tone="label" /></button>}
             <button type="button" className={textAction} disabled={disabled || saveState.saving} onClick={cancel}>还原</button>
           </div>
         </div>
@@ -126,7 +127,7 @@ export function PortfolioTrialAccounts({ accounts, accountId, portfolioId, onSel
   accountId: number | null
   portfolioId: number
   onSelect: (id: number | null) => void
-  onLeverageChange: (id: number, overrides: TrialLeverageOverrides | null, invalid: boolean) => void
+  onLeverageChange: (id: number | null, overrides: TrialLeverageOverrides | null, invalid: boolean) => void
   disabled: boolean
   leverageEditing?: boolean
 }) {
@@ -161,9 +162,9 @@ export function PortfolioTrialAccounts({ accounts, accountId, portfolioId, onSel
       </fieldset>}
     </div>
     <div className="mt-1 flex min-h-8 min-w-0 items-start">
-      {selected ? <AccountLeverageControl key={selected.account_id} account={selected} disabled={disabled} onLeverageChange={onLeverageChange} />
-        : <p className="px-1.5 text-[12px] leading-5 text-ink-3">固定样例资产 · 价格 100 · 不连接真实渠道</p>}
+      <AccountLeverageControl key={selected?.account_id ?? 'sample'} account={selected ?? null} disabled={disabled} onLeverageChange={onLeverageChange} />
     </div>
+    {!selected && <p className="px-1.5 text-[12px] leading-5 text-ink-3">样例价格 100 · 合约乘数 1 · 不连接真实渠道</p>}
     <ErrorNotice title="账户列表加载失败" intent="read" error={error} hasData={loaded} variant="compact" onRetry={refresh} />
     <ErrorNotice title="连接操作失败" intent="mutation" error={selected ? feedback.error : null} contextKey={accountId ?? 'sample'} variant="compact" networkFeedback="global-only" />
   </section>

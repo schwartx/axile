@@ -10,14 +10,14 @@ export const EXECUTION_TRIGGERS = [
 ]
 
 export const CONTEXT_MODES: ContextMode[] = [
-  { item: '账户与行情', sample: '固定样例资产，任意标的价格均为 100', real: '当前账户、持仓、行情和订单' },
+  { item: '账户与行情', sample: '固定样例资产，任意标的价格为 100、合约乘数为 1；均为样例值', real: '当前账户、持仓、行情和订单' },
   { item: 'executor', sample: '仅实现通用查询的样例 executor', real: '当前渠道完整的真实 executor' },
   { item: '运行位置', sample: '一次性子进程', real: '账户的常驻 worker' },
   { item: '渠道副作用', sample: '不连接真实渠道', real: '主动调用交易方法会立即作用于真实渠道' },
 ]
 
 export const CONTEXT_FIELDS: ContextField[] = [
-  { name: 'settings', type: 'ContextSettings', desc: '只读执行配置：long_leverage、short_leverage、weight_precision；杠杆已解析渠道默认值。工作台的临时杠杆只覆盖本次试跑，显式保存后才修改账户。无账户样例为 1、1、0.01；权重模式在执行层应用杠杆和精度，数量模式跳过这两项缩放' },
+  { name: 'settings', type: 'ContextSettings', desc: '只读执行配置：long_leverage、short_leverage、weight_precision；杠杆已解析渠道默认值。工作台的临时杠杆只覆盖本次试跑，显式保存后才修改账户。样例默认 1、1、0.01，多空杠杆可临时调整并还原，不保存到账户；权重模式在执行层应用杠杆和精度，数量模式跳过这两项缩放' },
   { name: 'account', type: 'UnifiedAccountAssets', desc: '本次计算内缓存的账户资产快照' },
   { name: 'positions', type: 'list[Position]', desc: 'account.positions 的便捷入口' },
   { name: 'get_positions(symbol=None, direction=None)', type: 'list[Position]', desc: '按标的和多空方向筛选持仓' },
