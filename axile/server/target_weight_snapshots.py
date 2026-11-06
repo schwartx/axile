@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from sqlalchemy import func
+from sqlalchemy import union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, desc, select
 
@@ -120,39 +120,32 @@ async def get_latest_account_target_snapshots_for_accounts(
 
     Notes
     -----
-    仪表盘按账户循环取目标会变成 N+1。这里用窗口函数一次取回，与执行记录
-    批量查询同一形状。
+    按精确账户组合对从索引倒序取第一条有效快照，再加载其余字段。
+    每批最多 100 对，避免扫描、排序全部历史和超过 SQLite 复合 SELECT 上限。
     """
     if not pairs:
         return {}
 
-    wanted = set(pairs)
-    account_ids = [account_id for account_id, _portfolio_id in pairs]
-    portfolio_ids = list({portfolio_id for _account_id, portfolio_id in pairs})
-    row_number = (
-        func.row_number().over(
-            partition_by=(col(TargetWeightSnapshot.account_id), col(TargetWeightSnapshot.portfolio_id)),
-            order_by=desc(col(TargetWeightSnapshot.id)),
-        )
-    ).label("rn")
-    ranked = (
-        select(TargetWeightSnapshot, row_number)
-        .where(
-            col(TargetWeightSnapshot.account_id).in_(account_ids),
-            col(TargetWeightSnapshot.portfolio_id).in_(portfolio_ids),
-            col(TargetWeightSnapshot.normalized_weights).is_not(None),
-        )
-        .subquery()
-    )
-    stmt = select(TargetWeightSnapshot).from_statement(select(ranked).where(ranked.c.rn <= 1))
-
     latest: dict[int, TargetWeightSnapshot] = {}
-    for snapshot in (await session.execute(stmt)).scalars().all():
-        if snapshot.account_id is None:
-            continue
-        if (snapshot.account_id, snapshot.portfolio_id) not in wanted:
-            continue
-        latest[snapshot.account_id] = snapshot
+    wanted = sorted(set(pairs))
+    for start in range(0, len(wanted), 100):
+        candidates = [
+            select(TargetWeightSnapshot.id)
+            .where(
+                TargetWeightSnapshot.account_id == account_id,
+                TargetWeightSnapshot.portfolio_id == portfolio_id,
+                col(TargetWeightSnapshot.normalized_weights).is_not(None),
+            )
+            .order_by(desc(TargetWeightSnapshot.id))
+            .limit(1)
+            .subquery()
+            for account_id, portfolio_id in wanted[start : start + 100]
+        ]
+        selected = union_all(*(select(candidate.c.id) for candidate in candidates))
+        stmt = select(TargetWeightSnapshot).where(col(TargetWeightSnapshot.id).in_(selected))
+        for snapshot in (await session.execute(stmt)).scalars().all():
+            if snapshot.account_id is not None:
+                latest[snapshot.account_id] = snapshot
     return latest
 
 

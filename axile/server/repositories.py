@@ -177,33 +177,31 @@ async def get_recent_execute_records_for_accounts(
 
     Notes
     -----
-    用窗口函数 ``ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY id DESC)``
-    一次取回所有账户的近端记录，替代「在账户循环里逐账户查询」的 N+1 写法，
-    使仪表盘的查询数不再随账户数线性增长。
+    先按账户从复合索引倒序限量读取 ID，再加载对应记录；不扫描、排序全部历史。
+    每批最多 100 个账户，避免超过 SQLite 复合 SELECT 数量上限。
 
     与逐账户版本语义一致：每账户各自取最近 ``limit`` 条，而非全局前 ``limit`` 条。
     """
-    if not account_ids:
+    if not account_ids or limit <= 0:
         return {}
 
-    row_number = (
-        func.row_number().over(partition_by=col(ExecuteRecord.account_id), order_by=desc(col(ExecuteRecord.id)))
-    ).label("rn")
-
-    # 先对索引键排名，避免 SQLite 排序时携带整份执行 JSON。
-    ranked = (
-        select(ExecuteRecord.id, ExecuteRecord.account_id, row_number)
-        .where(col(ExecuteRecord.account_id).in_(account_ids))
-        .subquery()
-    )
-    stmt = (
-        select(ExecuteRecord)
-        .join(ranked, col(ExecuteRecord.id) == ranked.c.id)
-        .where(ranked.c.rn <= limit)
-        .order_by(ranked.c.account_id, desc(ranked.c.id))
-    )
-
     grouped: Dict[int, List[ExecuteRecord]] = {}
-    for record in (await session.execute(stmt)).scalars().all():
-        grouped.setdefault(record.account_id, []).append(record)
+    ids = sorted(set(account_ids))
+    for start in range(0, len(ids), 100):
+        candidates = [
+            select(ExecuteRecord.id)
+            .where(ExecuteRecord.account_id == account_id)
+            .order_by(desc(ExecuteRecord.id))
+            .limit(limit)
+            .subquery()
+            for account_id in ids[start : start + 100]
+        ]
+        selected = union_all(*(select(candidate.c.id) for candidate in candidates))
+        stmt = (
+            select(ExecuteRecord)
+            .where(col(ExecuteRecord.id).in_(selected))
+            .order_by(ExecuteRecord.account_id, desc(ExecuteRecord.id))
+        )
+        for record in (await session.execute(stmt)).scalars().all():
+            grouped.setdefault(record.account_id, []).append(record)
     return grouped
