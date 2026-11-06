@@ -322,6 +322,13 @@ def test_nonempty_native_upgrade_matches_frozen_0034_rows(tmp_path: Path) -> Non
         seed_database(connection, data["seed"])
     assert initialize_native_database(path, revision="0034")["public"] == "0034"
     expected = data["expected"]
+    # 此冻结样本的旧五档全为空；独立断言后映射为空盘口，不改写原始材料。
+    for row in expected["execution_symbol_tick"]:
+        for side, target in (("bid", "bids"), ("ask", "asks")):
+            for suffix in ("", "_2", "_3", "_4", "_5"):
+                assert row.pop(f"{side}_price{suffix}") is None
+                assert row.pop(f"{side}_volume{suffix}") is None
+            row[target] = ["json", "null"]
     for row in expected["notification_event"]:
         if row["finished_at"] is not None:
             row["finished_at"] = "2026-10-01T00:00:00.123456Z"

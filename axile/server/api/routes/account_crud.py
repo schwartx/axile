@@ -353,6 +353,7 @@ async def copy_account(
                         "copied_from_account_id",
                         "copied_from_account_name",
                         "replay_config_version",
+                        "channel_options",
                     }
                 )
                 | {"name": request.name.strip(), "is_started": False, "replay_recording_enabled": False}

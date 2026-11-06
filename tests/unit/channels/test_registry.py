@@ -146,8 +146,8 @@ def test_plugins_default_to_process_and_reject_removed_thread_backend() -> None:
 
 
 def test_external_plugin_owns_its_schedule_configuration() -> None:
-    from axile.server.db.models.account import Account, AccountSnapshot
-    from axile.server.db.models.account_settings import AccountSettings, ScheduleSettings
+    from axile.channels.schedule_settings import normalize_schedule_options, validate_schedule_options
+    from axile.server.db.models.account import Account, AccountPublic, AccountSnapshot
 
     class VendorSchedule(BaseModel):
         model_config = ConfigDict(extra="forbid", frozen=True)
@@ -155,30 +155,26 @@ def test_external_plugin_owns_its_schedule_configuration() -> None:
 
     list_channels()
     register_channel(replace(_plugin(), schedule_settings_model=VendorSchedule))
-    settings = AccountSettings()
-    settings.apply_patch({"channel_options": {"vendor-demo": {"delay": 2}}})
-    assert settings.schedule.channel_options == {"vendor-demo": {"delay": 2}}
-    # 旧 GM 接口更新/清空只影响本渠道，不覆盖其他插件配置。
-    settings.apply_patch({"gm_sessions": {}})
-    settings.apply_patch({"gm_sessions": None})
-    assert settings.schedule.channel_options == {"vendor-demo": {"delay": 2}}
+    options = validate_schedule_options({"vendor-demo": {"delay": 2}})
+    for patch in ({"gm_sessions": {}}, {"gm_sessions": None}):
+        options = normalize_schedule_options(patch, current=options)["channel_options"]
+    assert options == {"vendor-demo": {"delay": 2}}
     account = Account(
         name="vendor",
         market="demo",
         trade_channel="vendor-demo",
         brokerage="demo",
-        settings=settings,
+        channel_options=options,
         algorithm={"method": "SINGLE-MAKER", "params": {}},
     )
-    snapshot = AccountSnapshot.model_validate_json(account.snapshot().model_dump_json())
+    snapshot = AccountSnapshot.model_validate_json(account.model_dump_json())
     assert snapshot.channel_options == {"vendor-demo": {"delay": 2}}
     snapshot.channel_options["vendor-demo"]["delay"] = 9
     assert account.channel_options["vendor-demo"]["delay"] == 2
-    assert "channel_options" not in account.model_dump()
-    with pytest.raises(ValidationError):
-        ScheduleSettings(channel_options={"vendor-demo": {"delay": 0}})
-    with pytest.raises(ValidationError):
-        ScheduleSettings(channel_options={"vendor-demo": {"delay": 2, "unknown": True}})
+    assert "channel_options" not in AccountPublic.model_fields
+    for invalid in ({"delay": 0}, {"delay": 2, "unknown": True}):
+        with pytest.raises(ValidationError):
+            validate_schedule_options({"vendor-demo": invalid})
     with pytest.raises(ValueError):
         replace(_plugin(), legacy_schedule_field="legacy")
 

@@ -51,6 +51,8 @@ def test_tracked_source_has_no_private_channel_terms() -> None:
         text = path.read_bytes().decode("utf-8", errors="ignore").casefold()
         # 浏览器标准随机标识 API 不属于渠道声明；只豁免这一明确的成员访问。
         text = re.sub(rf"\b{re.escape(forbidden[1])}(?=\.randomuuid\b)", "", text)
+        if relative == "ui/scripts/build-replay-heat.ts":
+            text = text.replace("from 'node:" + forbidden[1] + "'", "")
         if relative == "rust/storage/Cargo.lock":
             # 通用摘要算法依赖只按 Cargo 的完整包名或依赖项识别，其余文本继续扫描。
             digest_dependency = re.escape("cryp" + "to-common")
@@ -100,6 +102,19 @@ def test_tracked_source_has_no_channel_specific_asset_examples() -> None:
                 violations.append(f"{relative}:{line_number}: {match.group(0)}")
 
     assert not violations, "channel-specific asset examples found:\n" + "\n".join(violations)
+
+
+def test_node_digest_import_exception_does_not_allow_channel_names(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "ui/scripts/build-replay-heat.ts"
+    path.parent.mkdir(parents=True)
+    standard_module = "node:" + "cryp" + "to"
+    source = "import { createHash } from '" + standard_module + "'\n"
+    path.write_text(source)
+    monkeypatch.setattr(f"{__name__}._tracked_paths", lambda: (tmp_path, {path}))
+    test_tracked_source_has_no_private_channel_terms()
+    path.write_text(source + "const channel = 'bi" + "nance'\n")
+    with pytest.raises(AssertionError, match="private channel terms"):
+        test_tracked_source_has_no_private_channel_terms()
 
 
 def test_digest_dependency_exception_only_matches_exact_lock_identifiers(tmp_path, monkeypatch) -> None:
