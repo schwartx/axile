@@ -5,14 +5,17 @@ from __future__ import annotations
 from collections.abc import Callable
 from functools import lru_cache
 
-from axile.common.config import settings
+from axile.common.config import STARTUP_DIRECTORY, settings
 
 _initialized_databases: set[str] = set()
 
 
 def database_path() -> str:
-    """业务 SQLite 文件路径;原生读写操作按完整路径打开同一数据库."""
-    return str(settings.sqlalchemy_database_uri).replace("sqlite+aiosqlite:///", "", 1)
+    """按服务启动目录解析 SQLite 文件路径。"""
+    path = str(settings.sqlalchemy_database_uri).removeprefix("sqlite+aiosqlite:///")
+    if not path or path == ":memory:":
+        return path
+    return str(STARTUP_DIRECTORY / path)
 
 
 def initialize_database(migration_runner: Callable[[], None] | None = None) -> None:
