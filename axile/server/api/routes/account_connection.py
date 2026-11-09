@@ -7,7 +7,11 @@ from fastapi import APIRouter, HTTPException, Response
 from axile.channels import get_channel
 from axile.executor.connection_progress import ConnectionTable
 from axile.server.api.routes.account_crud import account_connection
-from axile.server.api.routes.account_support import _get_account_or_404, _get_account_snapshot_or_404
+from axile.server.api.routes.account_support import (
+    _get_account_or_404,
+    _get_account_snapshot_or_404,
+    ensure_account_current,
+)
 from axile.server.db.models.account import AccountContext
 from axile.server.db.models.account_connection import AccountConnectionDetail
 from axile.server.execution.registry import get_queued_execution_id, get_running_execution_id
@@ -35,6 +39,7 @@ async def _connection_operation(account_id: int, *, reconnect: bool, connect_acc
     async with account_runtime_lock(account_id):
         _check_idle(account_id)
         account = await _get_account_snapshot_or_404(account_id)
+        ensure_account_current(account)
         try:
             if connect_account:
                 plugin = get_channel(account.trade_channel)

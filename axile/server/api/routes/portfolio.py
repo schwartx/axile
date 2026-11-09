@@ -23,7 +23,12 @@ from axile.server.db.models.base import now_str
 from axile.server.db.models.portfolio import RunAndSavePortfolioRequest
 from axile.server.error_details import exception_details
 from axile.server.execution.rebalance import _normalize_rebalance_target
-from axile.server.execution.registry import clear_target_refresh, try_register_target_refresh
+from axile.server.execution.registry import (
+    clear_account_asset_refresh,
+    clear_target_refresh,
+    try_register_account_asset_refresh,
+    try_register_target_refresh,
+)
 from axile.server.native_store import native_operation
 from axile.server.portfolio_function import PortfolioFunctionError, _error_from_exception
 from axile.server.portfolio_runner import calculate_sample_portfolio
@@ -38,7 +43,13 @@ async def _portfolio_native(name: str, request: object) -> Any:
         return await native_operation(name, request)
     except _core.NativeError as exc:
         code, detail = exc.args
-        http_status = {"NOT_FOUND": 404, "CONFLICT": 422, "VALIDATION": 422}.get(code)
+        http_status = {
+            "NOT_FOUND": 404,
+            "CONFLICT": 422,
+            "VALIDATION": 422,
+            "ARCHIVED": 409,
+            "ACCOUNT_CONFLICT": 409,
+        }.get(code)
         if http_status is None:
             raise
         raise HTTPException(status_code=http_status, detail=detail) from exc
@@ -60,9 +71,14 @@ async def create_portfolio(portfolio: PortfolioCreate) -> Response:
 
 
 @router.get("/", response_model=PortfolioListPublic)
-async def list_portfolios() -> Response:
+async def list_portfolios(archived: bool = False, include_archived: bool = False) -> Response:
     """获取组合列表。"""
-    return Response(await _portfolio_native("portfolio_query_json", {"op": "list"}), media_type="application/json")
+    return Response(
+        await _portfolio_native(
+            "portfolio_query_json", {"op": "list", "archived": archived, "include_archived": include_archived}
+        ),
+        media_type="application/json",
+    )
 
 
 @router.get("/{portfolio_id:int}")
@@ -72,6 +88,36 @@ async def portfolio_info(portfolio_id: int) -> Response:
         await _portfolio_native("portfolio_query_json", {"op": "get", "portfolio_id": portfolio_id}),
         media_type="application/json",
     )
+
+
+async def _set_portfolio_archived(portfolio_id: int, *, archived: bool) -> Response:
+    """与组合试跑互斥，并在存储事务内校验现有绑定。"""
+    if not try_register_target_refresh(portfolio_id, None):
+        raise HTTPException(409, detail="组合正在刷新，请结束后再归档或恢复")
+    try:
+        value = await _portfolio_native(
+            "portfolio_operation_json",
+            {
+                "op": "archive" if archived else "restore",
+                "portfolio_id": portfolio_id,
+                "updated_at": now_str(),
+            },
+        )
+        return Response(value, media_type="application/json")
+    finally:
+        clear_target_refresh(portfolio_id, None)
+
+
+@router.post("/{portfolio_id:int}/archive")
+async def archive_portfolio(portfolio_id: int) -> Response:
+    """归档没有当前账户绑定的组合，保留源码和目标快照。"""
+    return await _set_portfolio_archived(portfolio_id, archived=True)
+
+
+@router.post("/{portfolio_id:int}/restore")
+async def restore_portfolio(portfolio_id: int) -> Response:
+    """恢复组合的可选状态，不启动绑定账户。"""
+    return await _set_portfolio_archived(portfolio_id, archived=False)
 
 
 @router.delete("/{portfolio_id:int}")
@@ -140,6 +186,10 @@ async def refresh_portfolio_target_snapshot(portfolio_id: int) -> TargetWeightSn
     if not try_register_target_refresh(portfolio_id, account_id):
         raise HTTPException(status_code=409, detail="组合或上下文账户正在执行或刷新，请稍后再试")
     try:
+        # 取得刷新槽后重读，避免等待期间组合已经归档。
+        context = await _portfolio_native("portfolio_operation", {"op": "context", "portfolio_id": portfolio_id})
+        portfolio = Portfolio.model_validate(context["portfolio"])
+        account = AccountSnapshot.model_validate(context["account"]) if context["account"] is not None else None
         raw_target = await resolve_portfolio_target(portfolio, account)
         raw_target = PortfolioTarget.from_result(raw_target)
         normalized_target = (
@@ -212,20 +262,31 @@ async def validate_custom_calc(payload: ValidateCustomCalcRequest) -> ValidateCu
                 raise HTTPException(
                     status_code=422, detail=f"{name} 需在 {limits.min:g}..{limits.max:g} 之间，步进 {limits.step:g}"
                 )
-    return await _run_custom_calc_validation(account, payload.custom_calc_py_code, leverage_overrides=overrides or None)
+    if payload.account_id is None:
+        return await _run_custom_calc_validation(
+            account, payload.custom_calc_py_code, leverage_overrides=overrides or None
+        )
+    if not try_register_account_asset_refresh(payload.account_id):
+        raise HTTPException(409, detail="账户正在执行或刷新，请稍后再试")
+    try:
+        return await _run_custom_calc_validation(
+            account, payload.custom_calc_py_code, leverage_overrides=overrides or None
+        )
+    finally:
+        clear_account_asset_refresh(payload.account_id)
 
 
 @router.post("/{portfolio_id:int}/run_and_save", response_model=ValidateCustomCalcResponse)
 async def run_and_save_portfolio(portfolio_id: int, payload: RunAndSavePortfolioRequest) -> ValidateCustomCalcResponse:
     """只执行一次草稿；通过后由 Rust 原子保存组合与原始快照。"""
-    context = await _portfolio_native(
-        "portfolio_operation", {"op": "context", "portfolio_id": portfolio_id, "account_id": payload.account_id}
-    )
     update = PortfolioUpdate(name=payload.name, custom_calc_py_code=payload.custom_calc_py_code)
-    account = AccountSnapshot.model_validate(context["account"]) if context["account"] is not None else None
     if not try_register_target_refresh(portfolio_id, payload.account_id):
         raise HTTPException(status_code=409, detail="组合或上下文账户正在执行或刷新，请稍后再试")
     try:
+        context = await _portfolio_native(
+            "portfolio_operation", {"op": "context", "portfolio_id": portfolio_id, "account_id": payload.account_id}
+        )
+        account = AccountSnapshot.model_validate(context["account"]) if context["account"] is not None else None
         result = await _run_custom_calc_validation(account, payload.custom_calc_py_code)
         if result.valid:
             now = now_str()

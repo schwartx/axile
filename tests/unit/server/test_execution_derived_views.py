@@ -183,7 +183,7 @@ def test_backup_cleanup_preserves_facts_and_rejects_private_restore(tmp_path, ed
         sql(path, "UPDATE executerecord SET error='edited after migration' WHERE execution_id='derived'")
     with pytest.raises(_core.NativeError, match="rollback is unavailable"):
         native_store_call(path, "migration_downgrade", downgrade)
-    assert native_store_call(path, "migration_current", {})["public"] == "0035"
+    assert native_store_call(path, "migration_current", {})["public"] == "0036"
     assert rows(path, "executerecord")[0]["error"] == ("edited after migration" if edit_fact else "保证金不足")
 
 
@@ -208,7 +208,7 @@ def test_downgrade_rejects_pending_worker_result(native_database):
     persist(native_database, stage_only=True)
     with pytest.raises(_core.NativeError, match="cannot be downgraded"):
         native_store_call(native_database, "migration_downgrade", {"public": "0033"})
-    assert native_store_call(native_database, "migration_current", {})["public"] == "0035"
+    assert native_store_call(native_database, "migration_current", {})["public"] == "0036"
 
 
 def test_read_view_uses_frozen_before_observation_and_keeps_unknowns():
@@ -256,7 +256,7 @@ def test_migration_removes_only_derivable_summary(tmp_path, conflict):
     else:
         receipt = native_store_call(path, "migration_upgrade", {})
         assert receipt["backup"]
-        assert native_store_call(path, "migration_current", {})["public"] == "0035"
+        assert native_store_call(path, "migration_current", {})["public"] == "0036"
         assert rows(path, "execution_artifact") == []
         assert "reconciliation" not in rows(path, "execution_extension")[0]
 

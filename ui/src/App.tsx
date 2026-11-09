@@ -1,3 +1,4 @@
+import { AccountEditGuard } from '@/features/account/AccountEditGuard'
 import { useEffect, useState } from 'react'
 import { createBrowserRouter, Navigate, Outlet, RouterProvider, ScrollRestoration } from 'react-router'
 import { AccountConnectionAlerts } from '@/features/account/AccountConnectionAlerts'
@@ -102,15 +103,17 @@ const router = createBrowserRouter([
         children: [
           { index: true, element: <DashboardPage /> },
           { path: 'accounts/:id', element: <AccountDetailPage /> },
-          { path: 'accounts/:id/edit', element: <AccountEditPage /> },
-          { path: 'accounts/:id/edit/connection', element: <AccountEditConnectionPage /> },
-          { path: 'accounts/:id/edit/leverage', element: <AccountEditPage section="leverage" /> },
-          { path: 'accounts/:id/edit/symbols', element: <AccountEditPage section="symbols" /> },
-          { path: 'accounts/:id/edit/portfolio', element: <AccountEditPage section="portfolio" /> },
-          { path: 'accounts/:id/edit/timer', element: <AccountEditTimerPage />, handle: { fullBleed: true } },
-          { path: 'accounts/:id/edit/algorithm', element: <AccountEditAlgorithmPage /> },
-          { path: 'accounts/:id/edit/notification', element: <AccountEditNotificationPage />, handle: { fullBleed: true } },
-          { path: 'accounts/:id/edit/control', element: <AccountEditControlPage /> },
+          { path: 'accounts/:id/edit', element: <AccountEditGuard />, children: [
+          { index: true, element: <AccountEditPage /> },
+          { path: 'connection', element: <AccountEditConnectionPage /> },
+          { path: 'leverage', element: <AccountEditPage section="leverage" /> },
+          { path: 'symbols', element: <AccountEditPage section="symbols" /> },
+          { path: 'portfolio', element: <AccountEditPage section="portfolio" /> },
+          { path: 'timer', element: <AccountEditTimerPage />, handle: { fullBleed: true } },
+          { path: 'algorithm', element: <AccountEditAlgorithmPage /> },
+          { path: 'notification', element: <AccountEditNotificationPage />, handle: { fullBleed: true } },
+          { path: 'control', element: <AccountEditControlPage /> },
+          ] },
           { path: 'accounts/:id/holdings', element: <AccountHoldingsPage /> },
           { path: 'accounts/:id/history', element: <AccountHistoryPage /> },
           { path: 'accounts/:id/executions', element: <AccountExecutionsPage /> },

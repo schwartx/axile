@@ -18,6 +18,61 @@ async function mockSnapshots(page: Page, fail = false) {
   return methods
 }
 
+async function mockAccount(page: Page) {
+  let account = {
+    id: 1, name: '测试账户', trade_channel: 'ctp', market: '期货', portfolio_id: 1,
+    execution_timeout: 180, write_empty_record: 0, long_leverage: 1, short_leverage: 1,
+    weight_precision: 0.01, execution_notification_code: null, execution_notification_status: 'none',
+  }
+  const patches: Record<string, unknown>[] = []
+  await page.route('**/api/v1/account/1', async (route) => {
+    if (route.request().method() === 'PATCH') {
+      const patch = route.request().postDataJSON()
+      patches.push(patch)
+      account = { ...account, ...patch }
+    }
+    await route.fulfill({ json: account })
+  })
+  await page.route('**/api/v1/account/dashboard*', (route) => route.fulfill({ json: { data: [] } }))
+  return patches
+}
+
+test('改绑复用卡片，设置在前，选择与解绑只在保存时提交，取消恢复原绑定', async ({ page }) => {
+  const methods = await mockSnapshots(page)
+  const patches = await mockAccount(page)
+  await page.goto('/e2e/portfolio-choice.html?edit')
+  const original = page.getByRole('button', { name: '选择组合：商品趋势', exact: true })
+  const alternative = page.getByRole('button', { name: '选择组合：备选组合', exact: true })
+  const writeEmpty = page.getByRole('button', { name: '空仓写记录', exact: true })
+  const timeout = page.locator('input[inputmode="numeric"]')
+  await expect(original).toHaveAttribute('aria-pressed', 'true')
+  await expect(original).toContainText('4 个目标品种')
+  expect((await writeEmpty.boundingBox())!.y).toBeLessThan((await original.boundingBox())!.y)
+  expect((await timeout.boundingBox())!.y).toBeLessThan((await original.boundingBox())!.y)
+  await expect(page.getByRole('button', { name: /新建组合/ })).toHaveCount(0)
+  await page.getByRole('button', { name: '预览代码：备选组合' }).click()
+  const dialog = page.getByRole('dialog', { name: '备选组合' })
+  await expect(dialog.locator('.cm-content')).toHaveAttribute('aria-readonly', 'true')
+  await dialog.getByRole('button', { name: '选择此组合' }).click()
+  await expect(alternative).toHaveAttribute('aria-pressed', 'true')
+  expect(patches).toHaveLength(0)
+  await page.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(original).toHaveAttribute('aria-pressed', 'true')
+  await alternative.click()
+  await page.getByRole('button', { name: '保存', exact: true }).click()
+  await expect.poll(() => patches.length).toBe(1)
+  expect(patches[0]).toEqual({ portfolio_id: 2 })
+  await expect(alternative).toHaveAttribute('aria-pressed', 'true')
+  await page.getByRole('button', { name: '不绑定组合', exact: true }).click()
+  await expect(alternative).toHaveAttribute('aria-pressed', 'false')
+  expect(patches).toHaveLength(1)
+  await page.getByRole('button', { name: '保存', exact: true }).click()
+  await expect.poll(() => patches.length).toBe(2)
+  expect(patches[1]).toEqual({ portfolio_id: null })
+  await expect(page.getByRole('button', { name: '不绑定组合', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  expect(methods.every((method) => method === 'GET')).toBe(true)
+})
+
 test('预览不改变选择，关闭归还焦点，弹窗内可以确认新选择', async ({ page }) => {
   const methods = await mockSnapshots(page)
   await page.goto('/e2e/portfolio-choice.html')

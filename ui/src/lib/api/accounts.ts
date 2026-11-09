@@ -157,8 +157,13 @@ export interface AccountActivityList {
 }
 
 /** 仪表盘聚合：一次拿到所有账户的舰队卡数据。 */
-export function getDashboard(signal?: AbortSignal): Promise<AccountDashboard> {
-  return apiGet<AccountDashboard>('/account/dashboard', signal)
+export function getDashboard(signal?: AbortSignal, archived = false): Promise<AccountDashboard> {
+  return apiGet<AccountDashboard>(archived ? '/account/dashboard?archived=true' : '/account/dashboard', signal)
+}
+
+/** 归档或恢复账户；恢复保持暂停。 */
+export function setAccountArchived(id: number, archived: boolean): Promise<Account> {
+  return apiSend<Account>('POST', `/account/${id}/${archived ? 'archive' : 'restore'}`)
 }
 
 /** 当前资产与目标快照下、由服务端按渠道规则计算的可执行持仓对照。 */

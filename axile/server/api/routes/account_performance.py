@@ -19,5 +19,5 @@ async def save_performance_settings(account_id: int, settings: PerformanceSettin
             {"account_id": account_id, "patch": settings.model_dump(mode="json"), "now": now_str()},
         )
     except _core.NativeError as error:
-        status = 404 if error.args[0] == "ACCOUNT_NOT_FOUND" else 503
+        status = {"ACCOUNT_NOT_FOUND": 404, "ACCOUNT_CONFLICT": 409}.get(error.args[0], 503)
         raise HTTPException(status, detail={"code": error.args[0], "message": error.args[1]}) from error

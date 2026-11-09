@@ -85,6 +85,7 @@ def test_account_identity_upgrade_and_downgrade_preserve_schema_and_data(tmp_pat
             definition = connection.execute("SELECT sql FROM sqlite_master WHERE name='account'").fetchone()[0]
             assert ("AUTOINCREMENT" in definition) is autoincrement
             assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    native_store_call(path, "migration_upgrade", {})
     created = native_store_call(
         path, "account_create", {"account": build_account(portfolio_id=None).model_dump(mode="json"), "now": _NOW}
     )["account"]
@@ -127,7 +128,7 @@ def test_account_identity_migration_failure_rolls_back_ddl_and_rows(tmp_path):
         _insert_0033_account(connection)
         connection.execute(
             "CREATE TRIGGER reject_identity_revision BEFORE UPDATE ON alembic_version "
-            "WHEN NEW.version_num='0035' BEGIN SELECT RAISE(ABORT,'identity rejected'); END"
+            "WHEN NEW.version_num='0036' BEGIN SELECT RAISE(ABORT,'identity rejected'); END"
         )
         schema = connection.execute("SELECT type,name,sql FROM sqlite_master ORDER BY type,name").fetchall()
         account = connection.execute("SELECT * FROM account").fetchall()

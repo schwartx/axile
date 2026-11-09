@@ -150,7 +150,9 @@ def test_portfolio_queries_forward_native_json_without_decoding(monkeypatch):
     response = asyncio.run(routes.list_portfolios())
     assert response.body == body
     assert response.media_type == "application/json"
-    native.assert_awaited_once_with("portfolio_query_json", {"op": "list"})
+    native.assert_awaited_once_with(
+        "portfolio_query_json", {"op": "list", "archived": False, "include_archived": False}
+    )
 
 
 def test_portfolio_write_receipts_keep_persisted_fields_status_and_errors(native_database, monkeypatch):

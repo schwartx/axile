@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import { Copy, Pencil, Trash2 } from 'lucide-react'
 import { TerminateDialog } from '@/features/account/TerminateDialog'
@@ -8,6 +9,7 @@ import { Tooltip } from '@/components/ui/Tooltip'
 
 interface AccountActionsProps {
   name: string
+  archiveAction?: (className: string) => ReactNode
   isStarted: boolean
   running: boolean
   hasPendingSupplement?: boolean
@@ -198,6 +200,7 @@ export function AccountActions(props: AccountActionsProps) {
               <Copy size={16} className="shrink-0" aria-hidden />
               <span>复制账户</span>
             </button>
+            {props.archiveAction?.(menuItem)}
             <div className="mx-1.5 my-1.5 h-px bg-line" />
             <button
               className={menuItemDanger}

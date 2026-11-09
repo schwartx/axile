@@ -372,7 +372,7 @@ mod tests {
         connection.execute_batch(
             "CREATE TABLE account(id INTEGER PRIMARY KEY,name TEXT,market TEXT,trade_channel TEXT,
              brokerage TEXT,remark TEXT,portfolio_id INTEGER,copied_from_account_id INTEGER,
-             copied_from_account_name TEXT,updated_at_us INTEGER NOT NULL,created_at_us INTEGER NOT NULL);
+             copied_from_account_name TEXT,updated_at_us INTEGER NOT NULL,created_at_us INTEGER NOT NULL,archived_at_us INTEGER);
              CREATE TABLE account_settings(account_id INTEGER,connection TEXT,execution TEXT,
              schedule TEXT,notification TEXT,backtest TEXT);
              CREATE TABLE portfolioaccount(id INTEGER PRIMARY KEY,account_id INTEGER,portfolio_id INTEGER);

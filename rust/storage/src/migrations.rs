@@ -8,13 +8,14 @@ use serde_json::{json, Value};
 
 use crate::error::AnalysisError;
 
+mod archival;
 mod error_patch;
 mod execution_views;
 mod private;
 mod quantity_targets;
 mod structured;
 
-pub const PUBLIC_HEAD: &str = "0035";
+pub const PUBLIC_HEAD: &str = "0036";
 pub const PRIVATE_HEAD: &str = "axon_0001";
 
 const PUBLIC_VERSION_TABLE: &str = "alembic_version";
@@ -22,7 +23,8 @@ const PRIVATE_VERSION_TABLE: &str = "axon_alembic_version";
 const PRIVATE_BACKUP_TABLE: &str = "axon_0001_error_backup";
 const BASELINE_REVISION: u32 = 33;
 const STRUCTURED_REVISION: u32 = 34;
-const PUBLIC_HEAD_NUMBER: u32 = 35;
+const QUANTITY_REVISION: u32 = 35;
+const PUBLIC_HEAD_NUMBER: u32 = 36;
 
 fn invalid(message: impl Into<String>) -> AnalysisError {
     AnalysisError::new("MIGRATION_VALUE", message)
@@ -93,7 +95,10 @@ impl<'a> Policy<'a> {
                 .filter(|n| {
                     matches!(
                         *n,
-                        BASELINE_REVISION | STRUCTURED_REVISION | PUBLIC_HEAD_NUMBER
+                        BASELINE_REVISION
+                            | STRUCTURED_REVISION
+                            | QUANTITY_REVISION
+                            | PUBLIC_HEAD_NUMBER
                     )
                 })
                 .ok_or_else(|| self.target_error())?,
@@ -115,9 +120,9 @@ impl<'a> Policy<'a> {
 
     fn target_error(&self) -> AnalysisError {
         if self.codes.is_some() {
-            invalid("supported targets: public 0033/0034/0035, private base/axon_0001")
+            invalid("supported targets: public 0033/0034/0035/0036, private base/axon_0001")
         } else {
-            invalid("supported targets: public 0033/0034/0035")
+            invalid("supported targets: public 0033/0034/0035/0036")
         }
     }
 }
@@ -284,8 +289,11 @@ fn state(connection: Option<&Connection>) -> Result<State, AnalysisError> {
             if number >= STRUCTURED_REVISION {
                 validate_final_schema(connection)?;
             }
-            if number == PUBLIC_HEAD_NUMBER {
+            if number >= QUANTITY_REVISION {
                 quantity_targets::validate(connection)?;
+            }
+            if number == PUBLIC_HEAD_NUMBER {
+                archival::validate(connection)?;
             }
             number
         }
@@ -385,12 +393,20 @@ fn move_public(
             }
             current.public = STRUCTURED_REVISION;
         }
-        if current.public == STRUCTURED_REVISION && target == PUBLIC_HEAD_NUMBER {
+        if current.public == STRUCTURED_REVISION && target >= QUANTITY_REVISION {
             quantity_targets::upgrade(connection)?;
+            current.public = QUANTITY_REVISION;
+        }
+        if current.public == QUANTITY_REVISION && target == PUBLIC_HEAD_NUMBER {
+            archival::upgrade(connection)?;
             current.public = PUBLIC_HEAD_NUMBER;
         }
     } else {
         if current.public == PUBLIC_HEAD_NUMBER && target < PUBLIC_HEAD_NUMBER {
+            archival::downgrade(connection)?;
+            current.public = QUANTITY_REVISION;
+        }
+        if current.public == QUANTITY_REVISION && target < QUANTITY_REVISION {
             quantity_targets::downgrade(connection)?;
             current.public = STRUCTURED_REVISION;
         }
@@ -401,7 +417,7 @@ fn move_public(
     }
     if current.public != target {
         return Err(invalid(
-            "supported migration paths: empty/0033/0034 to 0035, 0035 to 0034/0033",
+            "supported migration paths: empty/0033/0034/0035 to 0036, 0036 to 0035/0034/0033",
         ));
     }
     current.public = target;
@@ -474,6 +490,9 @@ fn scan(
     result: &mut Value,
 ) -> Result<(), AnalysisError> {
     if current.public == PUBLIC_HEAD_NUMBER && targets.public < PUBLIC_HEAD_NUMBER {
+        archival::preflight_downgrade(connection)?;
+    }
+    if current.public >= QUANTITY_REVISION && targets.public < QUANTITY_REVISION {
         quantity_targets::preflight_downgrade(connection)?;
     }
     if current.public > BASELINE_REVISION && targets.public <= BASELINE_REVISION {
@@ -503,7 +522,7 @@ pub fn migration_upgrade(path: &str, request: &Value) -> Result<Value, AnalysisE
         let current = state(connection)?;
         if current.public == 0 && targets.public < STRUCTURED_REVISION {
             return Err(invalid(
-                "empty databases can only be initialized at 0034/0035",
+                "empty databases can only be initialized at 0034/0035/0036",
             ));
         }
         if current.public == BASELINE_REVISION && targets.public >= STRUCTURED_REVISION {
@@ -713,7 +732,7 @@ mod tests {
         for _ in 0..2 {
             assert_eq!(
                 migration_upgrade(path.as_str(), &json!({})).unwrap()["public"],
-                "0035"
+                "0036"
             );
             assert_eq!(index_count(), 1);
         }
@@ -935,14 +954,14 @@ mod tests {
 
     #[test]
     fn targets_only_allow_the_published_baseline_and_final_revision() {
-        for target in ["0033", "0034", "0035", "head"] {
+        for target in ["0033", "0034", "0035", "0036", "head"] {
             let request = dual_request(target, "head");
             assert!(Policy::parse(&request)
                 .unwrap()
                 .targets(&request, true)
                 .is_ok());
         }
-        for target in ["base", "0001", "0032", "0036", "0039"] {
+        for target in ["base", "0001", "0032", "0037", "0039"] {
             let request = dual_request(target, "base");
             assert!(Policy::parse(&request)
                 .unwrap()

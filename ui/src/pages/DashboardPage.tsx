@@ -1,4 +1,12 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
+import { useSearchParams } from 'react-router'
+import { Segmented } from '@/components/ui/Segmented'
+import { Card } from '@/components/ui/Card'
+import { ArchiveAction } from '@/features/account/ArchiveAction'
+import { getDashboard } from '@/lib/api/accounts'
+import { usePolling } from '@/lib/hooks/usePolling'
+import { withViewTransition } from '@/lib/viewTransition'
+import { shanghaiLabel } from '@/features/history/costs'
 import { Plus } from 'lucide-react'
 import { Link } from '@/components/ui/nav'
 import { useDomainStore } from '@/stores/domain'
@@ -6,7 +14,7 @@ import { FleetView, FleetSkeleton } from '@/features/dashboard/FleetView'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 
 /** 所有账户列表：不论几个账户都是稳定的舰队着陆页，点卡片进入单账户详情。 */
-export function DashboardPage() {
+function CurrentAccounts() {
   const accounts = useDomainStore((s) => s.accounts)
   const portfolios = useDomainStore((s) => s.portfolios)
   const error = useDomainStore((s) => s.accountsError)
@@ -42,4 +50,31 @@ export function DashboardPage() {
   }
 
   return <FleetView items={accounts} portfolioNames={nameMap} />
+}
+
+
+/** 归档列表按需读取，不进入日常舰队的汇总和轮询。 */
+export function DashboardPage() {
+  const [params, setParams] = useSearchParams()
+  const archived = params.get('archived') === '1'
+  const refresh = useDomainStore(s => s.refreshAccounts)
+  const archive = usePolling(useCallback((signal: AbortSignal) => getDashboard(signal, true), []), {
+    queryKey: 'archived-accounts', intervalMs: 0, enabled: archived,
+  })
+  return <section>
+    <div className="mb-4"><Segmented value={archived ? 'archived' : 'current'} size="sm" ariaLabel="账户范围"
+      options={[{ value: 'current', label: '当前' }, { value: 'archived', label: '已归档' }]}
+      onChange={value => withViewTransition(() => { const next = new URLSearchParams(params); if (value === 'archived') next.set('archived', '1'); else next.delete('archived'); setParams(next) })} /></div>
+    {!archived ? <CurrentAccounts /> : <div className="space-y-3">
+      <ErrorNotice intent="read" title="已归档账户加载失败" error={archive.error} onRetry={archive.refresh} />
+      {archive.loading && <p className="text-sm text-ink-2">加载已归档账户…</p>}
+      {archive.data?.data.length === 0 && <p className="text-sm text-ink-2">没有已归档账户。</p>}
+      {archive.data?.data.map(account => <Card key={account.account_id} className="flex flex-wrap items-center justify-between gap-3 p-5">
+        <div><Link to={`/accounts/${account.account_id}`} className="font-semibold hover:text-accent">{account.name}</Link>
+          <p className="mt-1 text-sm text-ink-2">归档于 {shanghaiLabel(account.archived_at!)}</p></div>
+        <ArchiveAction kind="account" id={account.account_id} name={account.name} archivedAt={account.archived_at}
+          onChanged={async () => { await refresh(); await archive.refresh() }} />
+      </Card>)}
+    </div>}
+  </section>
 }

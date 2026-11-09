@@ -36,6 +36,12 @@ async def _get_account_snapshot_or_404(account_id: int) -> AccountContext:
     return account
 
 
+def ensure_account_current(account: AccountContext) -> None:
+    """拒绝对归档账户发起新的运行操作，历史读取仍可使用原查询。"""
+    if account.archived_at is not None:
+        raise HTTPException(status_code=409, detail="账户已归档，请先恢复")
+
+
 def _build_empty_positions_algorithm(
     algorithm_method: str | None = None,
     algorithm_params: str | None = None,
@@ -91,7 +97,10 @@ async def _apply_account_job(sched: SchedDep, account: AccountContext, latest_po
     account_id = cast("int", account.id)
     # 关「自动调仓」→ 空 cron：合法，表示仅手动；与 is_started / 组合绑定一并决定是否建 job。
     should_have_job = bool(
-        account.is_started and latest_portfolio_id is not None and not is_blank_cron_expr(account.cron_expr)
+        account.archived_at is None
+        and account.is_started
+        and latest_portfolio_id is not None
+        and not is_blank_cron_expr(account.cron_expr)
     )
     existing_job = sched.get_job(str(account_id))  # type: ignore[no-untyped-call]
 

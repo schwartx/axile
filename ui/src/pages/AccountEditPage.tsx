@@ -14,8 +14,7 @@ import { useCallback, useEffect, useState, type CSSProperties } from 'react'
 import { Check, ExternalLink, Eye, EyeOff } from 'lucide-react'
 import { useParams, useViewTransitionState } from 'react-router'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
-import { Skeleton } from '@/components/ui/Skeleton'
-import { Select } from '@/components/ui/Select'
+import { PortfolioChoiceList } from '@/features/portfolio/PortfolioChoiceList'
 import { SymbolTagInput } from '@/components/ui/SymbolTagInput'
 import { ExecutionTimeoutInput } from '@/features/account/ExecutionTimeoutInput'
 import { executionTimeoutError } from '@/features/account/executionTimeout'
@@ -169,7 +168,6 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
   const accounts = useDomainStore((s) => s.accounts)
   const portfolios = useDomainStore((s) => s.portfolios)
   const portfoliosError = useDomainStore((s) => s.portfoliosError)
-  const refreshPortfolios = useDomainStore((s) => s.refreshPortfolios)
   const channelCatalogLoading = useChannelCatalogStore((s) => s.loading)
   const channelCatalogError = useChannelCatalogStore((s) => s.error)
   const refreshAccounts = useDomainStore((s) => s.refreshAccounts)
@@ -264,9 +262,9 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
   const pageChrome = (
     <>
       <div className="flex flex-wrap items-center gap-3">{titleName}</div>
-      <div className="mt-3 border-l-2 border-warn/60 bg-warn-tint/50 py-2 pl-3 pr-2 text-[14px] text-ink-2">
+      {section !== 'portfolio' && <div className="mt-3 border-l-2 border-warn/60 bg-warn-tint/50 py-2 pl-3 pr-2 text-[14px] text-ink-2">
         修改不会立即下单，从下次调仓开始生效。
-      </div>
+      </div>}
       {section === 'leverage' && leverageSynopsis != null && (
         <EditSynopsis>
           <span
@@ -576,29 +574,8 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
 
       {section === 'portfolio' && (
         <Section label="组合执行">
-          <Row label="跟随组合" span>
-          <Select<number | null>
-            ariaLabel="跟随组合"
-            searchable
-            disabled={portfolios == null || Boolean(portfoliosError)}
-            className="w-full justify-between px-3 py-2 text-[15px]"
-            value={d.portfolioId ?? null}
-            onChange={(v) => set({ portfolioId: v })}
-            options={[
-              { value: null, label: '不绑定组合', description: '账户不跟随任何目标持仓' },
-              ...(portfolios ?? []).map((p) => ({
-                value: p.id ?? null,
-                label: p.name,
-                description: [p.market, p.description].filter(Boolean).join(' · '),
-                hint: p.id == null ? undefined : `#${p.id}`,
-              })),
-            ]}
-          />
-          {portfolios == null && !portfoliosError && <Skeleton className="mt-2 h-3 w-40" />}
-          <ErrorNotice intent="read" title="组合关系加载失败" error={portfoliosError} variant="compact" onRetry={refreshPortfolios} />
-        </Row>
         <Row label="空仓写记录" hint="审计留痕">
-          <Toggle on={d.writeEmpty} onClick={() => set({ writeEmpty: !d.writeEmpty })} />
+          <Toggle ariaLabel="空仓写记录" on={d.writeEmpty} onClick={() => set({ writeEmpty: !d.writeEmpty })} />
         </Row>
         <Row label="执行超时" hint="单次上限" top>
           <div className="flex flex-col gap-1">
@@ -612,6 +589,18 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
             </span>
           </div>
           </Row>
+          <div className="mt-3 min-w-0 md:col-span-2">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h2 className="text-[14px] text-ink-2">跟随组合</h2>
+              <button type="button" aria-pressed={d.portfolioId == null}
+                disabled={portfolios == null || Boolean(portfoliosError)}
+                onClick={() => set({ portfolioId: null })}
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[13px] text-ink-2 hover:bg-fill focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-45">
+                {d.portfolioId == null && <Check size={14} aria-hidden />}不绑定组合
+              </button>
+            </div>
+            <PortfolioChoiceList selectedId={d.portfolioId} onSelect={(portfolioId) => set({ portfolioId })} />
+          </div>
         </Section>
       )}
 

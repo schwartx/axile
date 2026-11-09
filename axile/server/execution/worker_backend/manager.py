@@ -688,6 +688,8 @@ class WorkerBackendManager:
     def _get_or_create_worker(
         self, account_id: int, request: WorkerBackendRequest | None = None
     ) -> _WorkerBackendHandle:
+        if request is not None:
+            self._check_worker_creation(request)
         with self._lock:
             handle = self._workers.get(account_id)
             if handle is not None and self._is_handle_healthy(handle):
@@ -700,20 +702,20 @@ class WorkerBackendManager:
                 finally:
                     self._finish_worker_retirement_locked(account_id, handle)
 
-            if request is not None:
-                self._check_worker_creation(request)
             handle = self._spawn_worker(account_id)
             self._workers[account_id] = handle
             return handle
 
     def _check_worker_creation(self, request: WorkerBackendRequest) -> None:
         """创建进程前检查主动断开意愿，后台准备和迟到的查询不能重新占用进程。"""
-        if not request.account_payload or (request.command == "prepare" and request.payload.get("force_reconnect")):
+        if not request.account_payload or request.command == "disconnect":
             return
         from axile.server.execution.resident_connection import AccountConnectionUnavailable
 
         account = AccountSnapshot.model_validate(request.account_payload)
-        if self._is_manually_disconnected(account):
+        if self._is_manually_disconnected(account) and not (
+            request.command == "prepare" and request.payload.get("force_reconnect")
+        ):
             raise AccountConnectionUnavailable("账户连接已主动断开，请显式重新连接")
 
     @staticmethod
@@ -723,6 +725,10 @@ class WorkerBackendManager:
         from axile.server.native_store import native_operation_sync
 
         current = native_operation_sync("account_get", {"account_id": _require_account_id(account)})
+        if current is not None and current.get("archived_at") is not None:
+            from axile.server.execution.resident_connection import AccountConnectionUnavailable
+
+            raise AccountConnectionUnavailable("账户已归档，请先恢复")
         state = current.get("connection_state") if current is not None else None
         return bool(
             state is not None

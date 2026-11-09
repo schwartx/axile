@@ -119,7 +119,7 @@ function AccountHistory({ accountId }: { accountId: number }) {
   const intervalCosts = usePolling(useCallback((s: AbortSignal) => getPerformanceCosts(accountId, { version: snapshot!.version, range: displayedRange, dimension: 'summary', ...JSON.parse(selectionKey) }, s), [accountId, snapshot?.version, displayedRange, selectionKey]), {
     queryKey: `performance-summary:${accountId}:${snapshot?.version}:${displayedRange}:${selectionKey}`, intervalMs: 0, enabled: !!snapshot?.version && selection?.kind === 'interval',
   })
-  const portfolios = usePolling(useCallback((s: AbortSignal) => getPortfolios(s), []), { queryKey: 'performance-portfolios', intervalMs: 0 })
+  const portfolios = usePolling(useCallback((s: AbortSignal) => getPortfolios(s, 'all'), []), { queryKey: 'performance-portfolios', intervalMs: 0 })
   const portfolioNames = useMemo(() => new Map(portfolios.data?.data.flatMap(p => p.id == null ? [] : [[p.id, p.name] as const]) ?? []), [portfolios.data])
   const settings = saved ?? account.data ?? data?.settings
   const mode = 'cs'
@@ -165,7 +165,7 @@ function AccountHistory({ accountId }: { accountId: number }) {
   const intervalEnd = selection?.kind === 'interval' ? selection.end : intervalOptions.at(-1)?.value
 
   const controls = <div data-testid="performance-controls" className="flex min-w-0 flex-wrap items-center gap-2 sm:ml-auto sm:justify-end">
-        <fieldset disabled={saving || !settings} className="flex min-w-0 flex-wrap items-center gap-2 disabled:opacity-60">
+        <fieldset disabled={saving || !settings || !!account.data?.archived_at} className="flex min-w-0 flex-wrap items-center gap-2 disabled:opacity-60">
           <FeeControl fee={fee} onChange={value => setDraft({ mode, fee: value })} onEditingChange={setEditingFee} />
         </fieldset>
         <div className="flex items-center gap-2">

@@ -16,8 +16,7 @@ import { WeightBars } from '@/components/viz/WeightBars'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { ConnectionField } from '@/components/ui/ConnectionField'
 import { CreatePortfolioModal } from '@/features/portfolio/CreatePortfolioModal'
-import { PortfolioCodePreview } from '@/features/portfolio/PortfolioCodePreview'
-import { PortfolioChoiceCard } from '@/features/setup/PortfolioChoiceCard'
+import { PortfolioChoiceList } from '@/features/portfolio/PortfolioChoiceList'
 import { DirectoryPicker } from '@/components/ui/DirectoryPicker'
 import type { ClipboardCandidate } from '@/components/ui/connectionFieldClipboard'
 import {
@@ -43,7 +42,6 @@ import {
   visibleChannelAccountConfig,
 } from '@/features/setup/channelAccountFields'
 import type {
-  PortfolioLite,
   ChannelAccountField,
   ChannelCapability,
 } from '@/types/api'
@@ -473,22 +471,13 @@ export function AcctPortfolio() {
   const portfolios = useDomainStore((s) => s.portfolios)
   const list = portfolios ?? []
   const [createOpen, setCreateOpen] = useState(false)
-  const [preview, setPreview] = useState<PortfolioLite | null>(null)
-  const error = useDomainStore((s) => s.portfoliosError)
-  const refresh = useDomainStore((s) => s.refreshPortfolios)
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex-1 overflow-y-auto">
         <WizardPage kicker="账户设置 · 3 / 6" title="用哪个组合？" lead="选择账户跟随的组合，可查看目标持仓和策略代码。">
-          <ErrorNotice intent="read" title="组合列表加载失败" error={error} onRetry={refresh} />
           <div className="grid grid-cols-1 gap-3">
-            {portfolios == null && !error && <p className="text-[15px] text-ink-2">加载组合…</p>}
-            {portfolios?.length === 0 && <p className="text-[15px] text-ink-2">还没有组合，可以先新建一个。</p>}
-            {list.map((p) => (
-              <PortfolioChoiceCard key={p.id} portfolio={p} selected={acct.portfolioId === p.id && p.id != null}
-                onSelect={() => setAcct({ portfolioId: p.id })} onPreview={() => setPreview(p)} />
-            ))}
+            <PortfolioChoiceList selectedId={acct.portfolioId} onSelect={(portfolioId) => setAcct({ portfolioId })} />
             <button
               type="button"
               onClick={() => setCreateOpen(true)}
@@ -504,8 +493,6 @@ export function AcctPortfolio() {
         </WizardPage>
       </div>
       <WizardNav prevTo="/setup/acct/connect" nextTo="/setup/acct/trade" nextDisabled={!list.some((p) => p.id != null && p.id === acct.portfolioId)} />
-      {preview && <PortfolioCodePreview portfolio={preview} selected={acct.portfolioId === preview.id && preview.id != null}
-        onClose={() => setPreview(null)} onSelect={() => { setAcct({ portfolioId: preview.id }); setPreview(null) }} />}
       <CreatePortfolioModal
         open={createOpen}
         onClose={() => setCreateOpen(false)}

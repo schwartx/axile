@@ -46,9 +46,11 @@ from axile.server.execution.account_runtime_sync import reconcile_account_runtim
 from axile.server.execution.ctp_channels import drop_account_worker
 from axile.server.execution.live import live_hub
 from axile.server.execution.registry import (
+    clear_account_asset_refresh,
     get_execution_task_state,
     get_queued_execution_id,
     get_running_execution_id,
+    try_register_account_asset_refresh,
 )
 from axile.server.execution.runtime_locks import account_runtime_lock
 from axile.server.execution.scheduler import delete_job
@@ -395,10 +397,13 @@ async def copy_account(
 
 
 @router.get("/", response_model=AccountListPublic)
-async def list_accounts() -> Response:
-    """获取所有账户列表."""
+async def list_accounts(archived: bool = False, include_archived: bool = False) -> Response:
+    """默认获取当前账户，可筛选已归档账户或读取全部。"""
     return Response(
-        content=await _account_operation("account_list_json", _account_read_request()), media_type="application/json"
+        content=await _account_operation(
+            "account_list_json", {**_account_read_request(), "archived": archived, "include_archived": include_archived}
+        ),
+        media_type="application/json",
     )
 
 
@@ -411,7 +416,9 @@ def _safe_total_asset(assets: dict[str, Any]) -> float:
 
 
 @router.get("/dashboard", response_model=AccountDashboardPublic)
-async def account_dashboard(sched: SchedDep) -> AccountDashboardPublic:
+async def account_dashboard(
+    sched: SchedDep, archived: bool = False, include_archived: bool = False
+) -> AccountDashboardPublic:
     """
     仪表盘聚合: 一次性返回每个账户的舰队卡所需数据.
 
@@ -433,7 +440,7 @@ async def account_dashboard(sched: SchedDep) -> AccountDashboardPublic:
     """
     context = await _account_operation(
         "account_dashboard_context",
-        {"live_sessions": public_session_views()},
+        {"live_sessions": public_session_views(), "archived": archived, "include_archived": include_archived},
     )
     inputs = context["inputs"]
     items: list[AccountDashboardItemPublic] = []
@@ -544,6 +551,7 @@ async def account_dashboard(sched: SchedDep) -> AccountDashboardPublic:
                 long_leverage=account["long_leverage"],
                 short_leverage=account["short_leverage"],
                 is_started=account["is_started"],
+                archived_at=account.get("archived_at"),
                 portfolio_id=persisted["portfolio_id"],
                 is_scheduled=job is not None,
                 next_run_time=next_run.isoformat() if next_run is not None else None,
@@ -569,6 +577,39 @@ async def account_dashboard(sched: SchedDep) -> AccountDashboardPublic:
         )
 
     return AccountDashboardPublic(data=items)
+
+
+async def _set_account_archived(
+    sched: SchedDep, account_id: int, response: Response, *, archived: bool
+) -> AccountPublic:
+    """持久化归档意愿后复用运行态同步；同步失败仍保留禁止运行的真源。"""
+    async with account_runtime_lock(account_id):
+        if not try_register_account_asset_refresh(account_id):
+            raise HTTPException(409, detail="账户正在执行或刷新，请结束后再归档或恢复")
+        try:
+            result = await _account_operation(
+                "account_archive", {"account_id": account_id, "archived": archived, "now": now_str()}
+            )
+        finally:
+            clear_account_asset_refresh(account_id)
+    sync = result.get("runtime_sync")
+    if sync is None or sync["status"] != "synchronized":
+        sync = await reconcile_account_runtime(account_id, sched)
+    if sync["status"] != "synchronized":
+        response.status_code = status.HTTP_202_ACCEPTED
+    return await _account_response(result, sync)
+
+
+@router.post("/{account_id}/archive", response_model=AccountPublic)
+async def archive_account(sched: SchedDep, account_id: int, response: Response) -> AccountPublic:
+    """归档已暂停且没有在途任务的账户，保留配置和历史。"""
+    return await _set_account_archived(sched, account_id, response, archived=True)
+
+
+@router.post("/{account_id}/restore", response_model=AccountPublic)
+async def restore_account(sched: SchedDep, account_id: int, response: Response) -> AccountPublic:
+    """恢复归档账户，保持暂停，不自动连接或交易。"""
+    return await _set_account_archived(sched, account_id, response, archived=False)
 
 
 @router.delete("/{account_id}")

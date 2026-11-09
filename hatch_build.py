@@ -24,8 +24,8 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 if getattr(module, 'ANALYSIS_FACT_SCHEMA', None) != 42:
     raise RuntimeError('Native extension requires analysis fact schema 42')
-if getattr(module, 'PUBLIC_HEAD', None) != '0035':
-    raise RuntimeError('Native extension requires public migration head 0035')
+if getattr(module, 'PUBLIC_HEAD', None) != '0036':
+    raise RuntimeError('Native extension requires public migration head 0036')
 if getattr(module, 'EXECUTION_REPLAY_SCHEMA', None) != 1:
     raise RuntimeError('Native extension requires execution replay schema 1')
 required = (
@@ -38,7 +38,7 @@ required = (
     'migration_current', 'migration_check', 'migration_upgrade', 'migration_downgrade',
     'execution_notification_context', 'normalize_execution_result', 'execution_result_view',
     'list_execution_events_json', 'list_execution_artifacts_json',
-    'account_public', 'connection_accounts', 'execution_read', 'supplement_has_execution_steps',
+    'account_public', 'account_archive', 'connection_accounts', 'execution_read', 'supplement_has_execution_steps',
     'account_runtime_sync_json', 'notifications_get_system_json',
     'AccountControlOverride', 'EffectiveAccountControlPolicy',
     'control_registry', 'resolve_control_policy',
