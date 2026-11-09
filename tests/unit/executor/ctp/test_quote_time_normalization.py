@@ -106,14 +106,14 @@ def test_zero_login_unsent_wrong_duplicate_and_invalid(broker):
     assert not executor._verify_connection()
 
 
-def emit(broker, clock="21:01:02", day="20260915", trading_day="20260915"):
+def emit(broker, clock="21:01:02", day="20260915", trading_day="20260915", millisec=123):
     broker.market_spi.OnRtnDepthMarketData(
         SimpleNamespace(
             InstrumentID="ag2612",
             TradingDay=trading_day,
             ActionDay=day,
             UpdateTime=clock,
-            UpdateMillisec=123,
+            UpdateMillisec=millisec,
             LastPrice=9000,
             BidPrice1=8999,
             AskPrice1=9001,
@@ -127,7 +127,7 @@ def emit(broker, clock="21:01:02", day="20260915", trading_day="20260915"):
 
 def test_zero_login_normalized_quote_passes_gates_and_preserves_newest(broker, monkeypatch):
     executor = broker.start()
-    now = datetime.fromisoformat("2026-09-14T21:01:02.124+08:00").timestamp()
+    now = datetime.fromisoformat("2026-09-14T21:01:01.123+08:00").timestamp()
     monkeypatch.setattr("axile.executor.ctp.ctp_execute.time.time", lambda: now)
     monkeypatch.setattr("axile.executor.ctp.ctp_execute.time.time_ns", lambda: round(now * 1_000_000) * 1000)
     executor.initialize_websocket(["ag2612"])
@@ -137,11 +137,15 @@ def test_zero_login_normalized_quote_passes_gates_and_preserves_newest(broker, m
     assert q.extra["event_date"] == "20260915"
     assert q.extra["event_millisec"] == 123
     assert q.update_time == "2026-09-14T21:01:02.123000+08:00"
+    assert executor.market_data_error(q, purpose="sizing") is None
     executor._call_trader_request(
         "ReqOrderInsert",
         SimpleNamespace(InstrumentID="ag2612", LimitPrice=9000, OrderPriceType=td.THOST_FTDC_OPT_LimitPrice),
     )
     broker.trader.ReqOrderInsert.assert_called_once()
+    emit(broker, millisec=124)
+    assert executor._quote_rejections["ag2612"]["reason"] == "stale_exchange_time"
+    assert executor._quotes["ag2612"] is q
     for clock in ("21:01:01", "21:00:00", "21:02:00", "invalid"):
         emit(broker, clock)
         assert executor._quotes["ag2612"] is q

@@ -93,6 +93,7 @@ from axile.executor.execution_engine import ExecutionEngine
 from axile.executor.futures_order_intent import is_close_intent, single_close_offset
 from axile.executor.instrument_catalog import catalog_deadline, catalog_remaining
 from axile.executor.instrument_catalog_records import Instrument, InstrumentRecord, from_ctp
+from axile.executor.market_data_validation import QUOTE_FUTURE_TOLERANCE_SECONDS
 from axile.executor.models.execution_result import AlgorithmResult, ExecutionStatus, TargetSizingDecision
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_callback import (
@@ -2286,7 +2287,8 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             q.extra["received_at"] = received_at
             error = self._snapshot_quote_error(q.symbol, q, now=received_at)
             previous = self._quotes.get(q.symbol)
-            out_of_order = previous is not None and q.timestamp <= previous.timestamp <= received_at * 1000
+            latest_allowed_time = received_at + QUOTE_FUTURE_TOLERANCE_SECONDS
+            out_of_order = previous is not None and q.timestamp <= previous.timestamp <= latest_allowed_time * 1000
             if not hasattr(self, "_quote_diagnostics"):
                 self._quote_diagnostics = QuoteDiagnostics()
             self._quote_diagnostics.observe(

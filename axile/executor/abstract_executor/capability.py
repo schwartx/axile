@@ -15,6 +15,7 @@ from axile.common.order_param_model import OrderParamModel
 from axile.executor.algorithms.utils.clock import get_default_clock
 from axile.executor.market_data_validation import (
     DEFAULT_QUOTE_MAX_AGE_SECONDS,
+    QUOTE_FUTURE_TOLERANCE_SECONDS,
     MarketDataPurpose,
     market_data_error,
 )
@@ -67,11 +68,14 @@ class AbstractExecutorCapabilityMixin:
         self, quote: UnifiedPriceData | None, *, purpose: MarketDataPurpose = "order", now: float | None = None
     ) -> str | None:
         """复用追价的默认时效；具体渠道可补充交易日和盘口约束。"""
+        # 无账户连接的回放执行器按回放时间校验，防止使用未来行情。
+        live_account = getattr(self, "account_config", None) is not None
         return market_data_error(
             quote,
             now=self.market_data_now() if now is None else now,
             max_age=DEFAULT_QUOTE_MAX_AGE_SECONDS,
             purpose=purpose,
+            future_tolerance=QUOTE_FUTURE_TOLERANCE_SECONDS if live_account else 0.0,
         )
 
     def get_all_symbols(
