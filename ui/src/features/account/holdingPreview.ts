@@ -1,5 +1,16 @@
 import type { RebalancePlan } from '@/lib/derive'
-import type { Position } from '@/types/api'
+import type { AccountRebalancePlan, Position } from '@/types/api'
+
+/** 到位结论读取完整计划，不能把缺少权重的数量行当成空仓。 */
+export function rebalanceHeadline(plan: AccountRebalancePlan | null, holdingsCount: number | null): string {
+  if (plan?.off_symbol_count == null) return '偏离尚未计算'
+  if (plan.off_symbol_count > 0) {
+    return holdingsCount === 0 && plan.rows.length > 0 && plan.rows.every(row => row.action === 'open')
+      ? `空仓 · ${plan.off_symbol_count} 只待建仓`
+      : `${plan.off_symbol_count} 只待调整`
+  }
+  return holdingsCount === 0 && plan.rows.length === 0 ? '空仓 · 与目标一致' : '已调仓到位'
+}
 
 export interface CurrentHoldingPreview {
   key: string

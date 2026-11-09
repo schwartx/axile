@@ -10,6 +10,7 @@ import { AccountControlSummary } from '@/features/account/ControlMonitor'
 import { CurrentOrdersButton, CurrentOrdersDialog } from '@/features/account/CurrentOrders'
 import { useCurrentOrders } from '@/features/account/useCurrentOrders'
 import { HoldingsPreviewTable } from '@/features/account/HoldingsPreviewTable'
+import { HoldingsView } from '@/features/account/HoldingsView'
 import { HoldingDetailDialog } from '@/features/account/HoldingDetailDialog'
 import { holdingPreviewRows } from '@/features/account/holdingDetailModel'
 import { NotificationIndicator } from '@/features/account/NotificationIndicator'
@@ -36,7 +37,7 @@ import { useExecutionRunner } from '@/features/account/useExecutionRunner'
 import { useTerminateAction } from '@/features/account/useTerminateAction'
 import { buildRecentActivity, recentRowText } from '@/features/account/recent'
 import { useServiceDisconnected } from '@/lib/errorPresentation'
-import { rebalanceTurnover } from '@/features/account/holdingPreview'
+import { rebalanceHeadline, rebalanceTurnover } from '@/features/account/holdingPreview'
 import { ScheduleSummary, ScheduleTimeline, ScheduleTimelineSkeleton } from '@/features/account/ScheduleTimeline'
 import {
   INTEGRITY_ICON,
@@ -82,6 +83,7 @@ import { useToastStore } from '@/stores/ui'
 import { useChannelDescriptor } from '@/stores/channels'
 import type { AccountDashboardItem } from '@/types/api'
 import { TargetSnapshotControl } from '@/features/portfolio/TargetSnapshotControl'
+import { portfolioTargetSummary } from '@/features/portfolio/portfolioCardSummary'
 
 interface AccountDetailProps {
   accountId: number
@@ -209,23 +211,17 @@ export function AccountDetail({
   const holdingsCount = positionsObserved ? snapshotPositions.length : null
   const comparisonLoading = comparison.data === null && comparison.loading
   const comparisonError = comparison.error
-  const comparisonReady = comparison.data?.off_symbol_count != null
+  const quantityTarget = (comparison.data?.target_mode ?? weights.data?.target_mode) === 'quantity'
   const showComparisonPanel = !comparisonLoading && (!!latestAssets || !!weights.data?.calculated_at)
   // 账户级偏离与逐品种动作均取服务端同一份可执行计划。
   const plan = rebalancePlanOfServer(comparison.data)
   const driftLevel: StatusLevel = plan.off > 0 ? 'warn' : 'ok'
   const driftHeadline =
-    latestAssets && positions.some((position) => position.market_value == null)
+    !quantityTarget && latestAssets && positions.some((position) => position.market_value == null)
       ? '暂无有效行情 · 偏离未计算'
-      : !comparisonReady
-        ? '偏离尚未计算'
-        : plan.rows.length === 0
-      ? '空仓 · 与目标一致'
-      : plan.off === 0
-        ? '已调仓到位'
-        : `${plan.off} 只待调整`
-  const targetCount = Object.values(weights.data?.account_weights ?? weights.data?.weights ?? {}).filter(weight => Math.abs(weight) > 1e-9).length
-  const turnover = rebalanceTurnover(plan)
+      : rebalanceHeadline(comparison.data, holdingsCount)
+  const targetCount = weights.data ? portfolioTargetSummary(weights.data).activeCount : 0
+  const turnover = quantityTarget ? null : rebalanceTurnover(plan)
   const currentHoldings = holdingPreviewRows(positions, observedTotalAsset(latestAssets, item.total_asset), weights.data, positionsObserved)
   const state = stateVerdict({ ...item, is_started: isStarted }, false)
   const gate = gateOf({ ...item, is_started: isStarted })
@@ -740,20 +736,25 @@ export function AccountDetail({
                     </div>
                     <div className="mt-4 flex items-baseline justify-between gap-3 text-[13.5px]">
                       <span className="text-ink-2">预计换手</span>
-                      <span className="num font-medium text-ink-1">{turnover.toFixed(1)}%</span>
+                      <span className="num font-medium text-ink-1">{turnover == null ? '暂不可计算' : `${turnover.toFixed(1)}%`}</span>
                     </div>
-                    <DriftBar rows={plan.rows} />
+                    {!quantityTarget && <DriftBar rows={plan.rows} />}
                   </>
                 )}
               </div>
               <div className="min-w-0 border-t border-line lg:border-t-0 lg:border-l lg:pl-5">
-                <HoldingsPreviewTable
+                {comparison.data?.target_mode === 'quantity' ? <div tabIndex={0}
+                  className="quiet-scrollbar h-48 overflow-auto overscroll-contain focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-line">
+                  <HoldingsView positions={positions} executablePlan={comparison.data} target={{}} equity={observedTotalAsset(latestAssets, item.total_asset)}
+                    assetLabel={positionValueLabel} quantityLabel={channelDescriptor?.units?.quantity_label}
+                    onSelect={(symbol, keyboardOpened) => { setHoldingSelection({ accountId, symbol, keyboardOpened }) }} />
+                </div> : <HoldingsPreviewTable
                   holdings={currentHoldings}
                   onSelect={(symbol, keyboardOpened) => { setHoldingSelection({ accountId, symbol, keyboardOpened }) }}
                   observed={positionsObserved}
                   currency={item.currency}
                   positionValueLabel={positionValueLabel}
-                />
+                />}
               </div>
             </div>
           ) : null}

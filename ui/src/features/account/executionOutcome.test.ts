@@ -136,7 +136,7 @@ test.each(['USD', 'EUR', 'JPY', 'CNY', ''])('币种原样保留：%s', currency 
 test('新休市跳过算成功，保留未观察的仓位，真实失败不会改成休市', () => {
   const closed = { status: 'NOOP', reason_code: 'COMMON.SESSION.CLOSED', orders: [], trades: [], final_volume: null }
   const raw = { status: 'NOOP', reason_code: 'COMMON.SESSION.CLOSED', outcome_reason: '1 个品种休市，已跳过', symbol_results: { A: closed } }
-  expect(executionRecordView(raw)).toMatchObject({ title: '休市跳过 · 本次无需执行', sessionScope: 'all', warning: false, reason: '1 个品种休市，已跳过' })
+  expect(executionRecordView(raw)).toMatchObject({ title: '非交易时段 · 本次已跳过', sessionScope: 'all', warning: false, reason: '1 个品种休市，已跳过' })
   expect(executionRecordView({ ...raw, status: 'SUCCEEDED', symbol_results: { A: closed, B: { status: 'SUCCEEDED' } } }))
     .toMatchObject({ title: '调仓完成', sessionScope: 'partial', warning: false })
   expect(executionRecordView({ ...raw, status: 'PARTIAL', symbol_results: { A: closed, B: { status: 'FAILED' } } }))

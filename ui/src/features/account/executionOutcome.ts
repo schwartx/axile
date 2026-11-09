@@ -87,7 +87,7 @@ export function executionRecordView(value: unknown, clear = false): OutcomeView 
     : `未执行${affectedCount ? ` · ${affectedCount} 个品种执行受阻` : ''}`
   const title = {
     SUCCEEDED: isClear ? '清仓完成' : '调仓完成',
-    NOOP: sessionScope === 'all' ? '休市跳过 · 本次无需执行' : isClear ? '无需清仓' : '无需调仓',
+    NOOP: sessionScope === 'all' ? '非交易时段 · 本次已跳过' : isClear ? '无需清仓' : '无需调仓',
     BLOCKED: blockedTitle,
     PARTIAL: sessionScope === 'partial' ? '部分品种休市 · 执行未全部完成' : '执行未全部完成',
     FAILED: '执行失败', TERMINATED: '执行已终止', UNKNOWN: '执行状态未知',
