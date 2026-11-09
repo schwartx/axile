@@ -67,18 +67,21 @@ async def prepare_china_channel_accounts(
 
 
 async def reconcile_china_channel_account(
-    account: AccountContext, *, reset: bool = False, last_execution: str = ""
-) -> None:
-    """对齐 CTP 或天勤账户的常驻 worker."""
+    account: AccountContext, *, reset: bool | Literal["when_idle"] = False, last_execution: str = ""
+) -> bool:
+    """对齐 CTP 或天勤账户的常驻 worker；盘前因忙跳过时返回 False。"""
     if account.id is None:
-        return
+        return True
     manager = get_worker_backend_manager()
     manager.configure_catalog_account(account, last_execution=last_execution)
-    if reset:
-        await manager.drop_account(int(account.id))
-    if account.trade_channel not in {TradeChannel.CTP, TradeChannel.TQ} or not account.is_started:
-        return
-    await manager.prepare_account(account)
+    if reset == "when_idle":
+        if not await manager.drop_idle_account(account.id):
+            return False
+    elif reset:
+        await manager.drop_account(account.id)
+    if account.trade_channel in {TradeChannel.CTP, TradeChannel.TQ} and account.is_started:
+        await manager.prepare_account(account)
+    return True
 
 
 async def drop_account_worker(account_id: int) -> None:
