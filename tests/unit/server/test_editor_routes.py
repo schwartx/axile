@@ -109,6 +109,11 @@ def test_external_source_supports_readonly_definition_navigation(client):
     source = Path(editor.__file__).resolve().parents[2] / "context.py"
     source_uri = source.as_uri()
     text = source.read_text(encoding="utf-8")
+    line, statement = next(
+        (index, statement)
+        for index, statement in enumerate(text.splitlines())
+        if statement.startswith("from axile.executor.models.unified_account_assets import ")
+    )
     with client.websocket_connect("/editor/lsp") as socket:
         session, _ = initialize(socket)
         open_document(socket, source_uri, text)
@@ -116,7 +121,10 @@ def test_external_source_supports_readonly_definition_navigation(client):
             socket,
             32,
             "textDocument/definition",
-            {"textDocument": {"uri": source_uri}, "position": {"line": 6, "character": 80}},
+            {
+                "textDocument": {"uri": source_uri},
+                "position": {"line": line, "character": statement.index("UnifiedAccountAssets")},
+            },
         )
         assert "unified_account_assets.py" in str(definition), definition
         with pytest.raises(ValueError, match="当前编辑会话"):

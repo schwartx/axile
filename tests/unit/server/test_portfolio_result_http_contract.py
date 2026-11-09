@@ -72,7 +72,7 @@ def test_refresh_script_failure_keeps_400_and_does_not_write_snapshot(monkeypatc
 
 @pytest.mark.parametrize("validation", [False, True])
 def test_sample_start_failure_preserves_500_vs_validation_response(monkeypatch, validation):
-    def failed_start(code):
+    def failed_start(code, *, leverage_overrides=None):
         raise RuntimeError("spawn start failed")
 
     monkeypatch.setattr(routes, "calculate_sample_portfolio", failed_start)
