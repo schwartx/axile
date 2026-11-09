@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from axile.channels.gm_sessions import SHANGHAI, GMSessionSettings, gm_session_context
+from axile.channels.gm_sessions import SHANGHAI, GMSessionSettings, check_gm_operation, gm_phase, gm_session_context
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
 from axile.server.core import db
@@ -96,7 +96,8 @@ def test_submit_intent_creates_queued_rebalance(monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.parametrize("cross_boundary", [False, True])
-def test_gm_intent_keeps_original_phase_and_settings(monkeypatch, cross_boundary):
+@pytest.mark.parametrize("trigger_source", ["scheduler", "manual"])
+def test_gm_intent_keeps_original_phase_and_settings(monkeypatch, cross_boundary, trigger_source):
     planned = datetime(2026, 9, 1, 9, 19, tzinfo=SHANGHAI)
     settings = GMSessionSettings(
         opening_cancelable={"enabled": True, "time": "09:15"},
@@ -118,10 +119,10 @@ def test_gm_intent_keeps_original_phase_and_settings(monkeypatch, cross_boundary
             )
             if cross_boundary:
                 with pytest.raises(ValueError, match="所属交易阶段已结束"):
-                    await submit_intent(1, ExecutionKind.REBALANCE, "scheduler", payload={"gm_session": context})
+                    await submit_intent(1, ExecutionKind.REBALANCE, trigger_source, payload={"gm_session": context})
                 assert get_queued_execution_id(1) is None
                 return
-            result = await submit_intent(1, ExecutionKind.REBALANCE, "scheduler", payload={"gm_session": context})
+            result = await submit_intent(1, ExecutionKind.REBALANCE, trigger_source, payload={"gm_session": context})
             await native_operation(
                 "account_update",
                 {"account_id": 1, "patch": {"gm_sessions": GMSessionSettings().model_dump()}, "now": now.isoformat()},
@@ -129,6 +130,90 @@ def test_gm_intent_keeps_original_phase_and_settings(monkeypatch, cross_boundary
             saved = await get_intent(result.execution_id)
             assert saved.payload["gm_session"] == context
             assert saved.payload["gm_session"]["sessions"]["opening_cancelable"]["enabled"] is True
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("clock", "enabled", "permitted"),
+    [
+        ("09:16", True, True),
+        ("09:22", True, True),
+        ("14:58", True, True),
+        ("09:16", False, False),
+        ("09:22", False, False),
+        ("09:26", True, False),
+        ("09:29", True, False),
+        ("12:00", True, False),
+        ("15:05", True, False),
+    ],
+)
+def test_manual_gm_intent_freezes_only_enabled_auction_permissions(monkeypatch, clock, enabled, permitted):
+    now = datetime.fromisoformat(f"2026-09-01T{clock}:00").replace(tzinfo=SHANGHAI)
+    settings = GMSessionSettings(
+        opening_cancelable={"enabled": enabled, "time": "09:15"},
+        opening_locked={"enabled": enabled, "time": "09:20"},
+        closing_auction={"enabled": enabled, "time": "14:57"},
+    )
+    monkeypatch.setattr("axile.executor.algorithms.utils.clock.clock_now", lambda **_: now)
+
+    async def run():
+        async with _intent_db(monkeypatch):
+            await native_operation(
+                "account_update",
+                {
+                    "account_id": 1,
+                    "patch": {"trade_channel": "gm", "gm_sessions": settings.model_dump(), "is_started": False},
+                    "now": now.isoformat(),
+                },
+            )
+            result = await submit_intent(1, ExecutionKind.REBALANCE, "manual")
+            saved = await get_intent(result.execution_id)
+            context = saved.payload.get("gm_session")
+            if permitted:
+                assert context == {
+                    "phase": gm_phase(now),
+                    "trading_day": "2026-09-01",
+                    "sessions": settings.model_dump(),
+                }
+                check_gm_operation(now, context=context)
+            else:
+                assert context is None
+                with pytest.raises(ValueError, match="不允许本次下单"):
+                    check_gm_operation(now, context=context)
+
+    asyncio.run(run())
+
+
+def test_coalesced_manual_gm_request_does_not_renew_original_phase(monkeypatch):
+    now = datetime(2026, 9, 1, 9, 19, tzinfo=SHANGHAI)
+    settings = GMSessionSettings(
+        opening_cancelable={"enabled": True, "time": "09:15"},
+        opening_locked={"enabled": True, "time": "09:20"},
+    )
+    original = gm_session_context(settings.model_dump(), now)
+    monkeypatch.setattr("axile.executor.algorithms.utils.clock.clock_now", lambda **_: now)
+
+    async def run():
+        nonlocal now
+        async with _intent_db(monkeypatch):
+            await native_operation(
+                "account_update",
+                {
+                    "account_id": 1,
+                    "patch": {"trade_channel": "gm", "gm_sessions": settings.model_dump()},
+                    "now": now.isoformat(),
+                },
+            )
+            first = await submit_intent(1, ExecutionKind.REBALANCE, "manual")
+            now = now.replace(minute=20)
+            second = await submit_intent(1, ExecutionKind.REBALANCE, "manual")
+            assert second.outcome == "coalesced"
+            assert second.execution_id == first.execution_id
+            saved = await get_intent(first.execution_id)
+            assert saved.payload["gm_session"] == original
+            with pytest.raises(ValueError, match="所属交易阶段已结束"):
+                check_gm_operation(now, context=saved.payload["gm_session"])
 
     asyncio.run(run())
 

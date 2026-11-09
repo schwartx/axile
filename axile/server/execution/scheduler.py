@@ -53,9 +53,10 @@ async def execute_scheduled_rebalance(account_id: int, scheduled_at: str | None 
     channel = account["trade_channel"]
 
     try:
-        decision = evaluate_channel_calendar_moment(
-            channel, triggered_at, windows=schedule_windows(channel, account.get("gm_sessions"))
+        sessions = (
+            GMSessionSettings.model_validate(account["gm_sessions"]) if account.get("gm_sessions") is not None else None
         )
+        decision = evaluate_channel_calendar_moment(channel, triggered_at, windows=schedule_windows(channel, sessions))
     except Exception:  # noqa: BLE001 - 调度层日历故障必须 fail-closed
         loguru.logger.bind(account_id=account_id, channel=str(channel)).exception("交易日历判断失败，跳过排程")
         decision = None
@@ -108,11 +109,7 @@ async def execute_scheduled_rebalance(account_id: int, scheduled_at: str | None 
         account_id,
         ExecutionKind.REBALANCE,
         "scheduler",
-        payload={
-            "gm_session": gm_session_context(
-                (GMSessionSettings.model_validate(account.get("gm_sessions") or {})).model_dump(), triggered_at
-            )
-        }
+        payload={"gm_session": gm_session_context((sessions or GMSessionSettings()).model_dump(), triggered_at)}
         if str(channel) == "gm"
         else None,
         on_conflict="skip",
