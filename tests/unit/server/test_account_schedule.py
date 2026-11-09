@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import date, datetime
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -26,7 +26,9 @@ from tests.unit.server._runtime_db_support import runtime_database, runtime_rows
 
 class _NativeContext:
     def __init__(self, account: SimpleNamespace | None = None) -> None:
-        self.account = vars(account) if account is not None else None
+        self.account = vars(account).copy() if account is not None else None
+        if self.account is not None and self.account.get("gm_sessions") is not None:
+            self.account["gm_sessions"] = self.account["gm_sessions"].model_dump(mode="json")
         self.added: list[SimpleNamespace] = []
         self.audit_error: Exception | None = None
 
@@ -343,6 +345,10 @@ def test_schedule_preview_returns_raw_cron_points_with_cursor(monkeypatch: pytes
         (9, 14, True, True, False),
         (9, 15, False, False, False),
         (9, 15, True, False, True),
+        (9, 20, True, False, True),
+        (9, 24, True, False, True),
+        (9, 25, True, False, False),
+        (9, 29, True, False, False),
         (9, 30, False, False, True),
         (11, 30, True, True, False),
         (15, 0, True, False, False),
@@ -357,7 +363,10 @@ def test_gm_schedule_preview_and_trigger_share_selected_phases(
     from axile.channels.gm_sessions import GMSessionSettings
     from axile.server import trading_calendar
 
-    sessions = GMSessionSettings(opening_cancelable={"enabled": auction, "time": "09:15"})
+    sessions = GMSessionSettings(
+        opening_cancelable={"enabled": auction, "time": "09:15"},
+        opening_locked={"enabled": auction, "time": "09:20"},
+    )
     moment = datetime(2026, 10, 9, hour, minute, tzinfo=SCHEDULER_TIMEZONE)
     monkeypatch.setattr(execution_scheduler, "clock_now", lambda **_kw: moment)
     day_decision = _decision(CalendarDecisionStatus.AVAILABLE_OPEN)
@@ -389,6 +398,32 @@ def test_gm_schedule_preview_and_trigger_share_selected_phases(
     assert preview.items[0].action == ("execute" if expected else "skip")
     if hour == 9 and minute == 15:
         assert preview.items[0].phase_label == "早盘集合竞价 · 可撤单"
+
+
+def test_gm_auction_with_supplements_uses_serialized_session_settings(monkeypatch):
+    from axile.channels.gm_sessions import GMSessionSettings
+    from axile.server import trading_calendar
+
+    moment = datetime(2026, 10, 9, 9, 20, tzinfo=SCHEDULER_TIMEZONE)
+    account = _account()
+    account.trade_channel = TradeChannel.GM
+    account.gm_sessions = GMSessionSettings(opening_locked={"enabled": True, "time": "09:20"})
+    account.supplement = {"count": 4, "interval_minutes": 1}
+    context = _NativeContext(account)
+    monkeypatch.setattr(execution_scheduler, "native_operation", context.call)
+    monkeypatch.setattr(execution_scheduler, "clock_now", lambda **_: moment)
+    monkeypatch.setattr(
+        trading_calendar,
+        "evaluate_channel_calendar_day",
+        lambda *_, **__: _decision(CalendarDecisionStatus.AVAILABLE_OPEN),
+    )
+    create_group = AsyncMock()
+    monkeypatch.setattr("axile.server.execution.supplements.create_group", create_group)
+
+    asyncio.run(execution_scheduler.execute_scheduled_rebalance(7, moment.isoformat()))
+
+    create_group.assert_awaited_once_with(7, moment)
+    assert context.added == []
 
 
 def test_gm_supplements_stop_at_each_phase_boundary(monkeypatch):

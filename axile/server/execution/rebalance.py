@@ -295,11 +295,11 @@ def _build_rebalance_standard_input(
         }
     )
     if account.trade_channel == TradeChannel.GM:
-        if trigger_source == "scheduler":
+        if gm_session is not None or trigger_source == "scheduler":
             from axile.channels.gm_sessions import GMSessionSettings
 
             sessions = getattr(account, "gm_sessions", None) or GMSessionSettings()
-            standard_input.extra["audit"]["gm_session"] = gm_session or gm_session_context(
+            cast("dict[str, Any]", standard_input.extra["audit"])["gm_session"] = gm_session or gm_session_context(
                 sessions.model_dump(), clock_now(tz=SHANGHAI)
             )
         return normalize_gm_standard_input(standard_input)
@@ -422,7 +422,7 @@ async def trade(
     last_target = await _load_last_target_snapshot(account)
     notification_snapshot = await load_notification_snapshot(account)
     gm_session = None
-    if execution_id and str(account.trade_channel) == "gm" and trigger_source == "scheduler":
+    if execution_id and str(account.trade_channel) == "gm":
         from axile.server.execution.intents import get_intent
 
         intent = await get_intent(execution_id)
