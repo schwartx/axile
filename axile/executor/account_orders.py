@@ -122,6 +122,12 @@ class AccountOrderBook:
                 raise ValueError("replay_interest_budget")
             return symbols
 
+    def terminal_order(self, symbol: str, order_id: str) -> UnifiedOrder | None:
+        """读取指定订单已观察到的终态。"""
+        with self._lock:
+            order = self._orders.get((symbol, order_id))
+            return order.model_copy(deep=True) if order is not None and order.is_completed() else None
+
     def remember_metadata(self, order_id: str, metadata: dict[str, Any]) -> None:
         """保留订单的执行归属，执行结束后的回报仍可关联原 execution。"""
         with self._lock:
