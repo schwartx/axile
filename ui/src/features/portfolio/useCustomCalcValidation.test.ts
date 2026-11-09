@@ -41,7 +41,7 @@ function optionsFor(long: number | null | undefined, short: number | null | unde
 test('期货组合只列出期货账户，兼容市场标识和显示名', () => {
   const otherAccounts = [
     { account_id: 8, name: 'ichika', market: 'ctp', trade_channel: 'ctp', long_leverage: 3, short_leverage: 3 },
-    { account_id: 9, name: 'crypto', market: 'crypto', trade_channel: 'binance' },
+    { account_id: 9, name: 'stock', market: 'stock', trade_channel: 'gm' },
   ] as AccountDashboardItem[]
   for (const market of ['ctp', '期货']) {
     const options = optionsFor(2, 2, { market, otherAccounts })

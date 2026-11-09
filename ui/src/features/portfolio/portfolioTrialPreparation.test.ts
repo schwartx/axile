@@ -166,7 +166,7 @@ test('默认使用同市场绑定账户，异步加载后生效且保留用户�
     const render = () => { at = 0; return useCustomCalcValidation('return {}', market, portfolioId) };
     let trial = render(); expect(trial.accountId).toBeNull();
     domain.accounts = [
-      { account_id: 6, market: 'crypto', trade_channel: 'binance', portfolio_id: 9 },
+      { account_id: 6, market: 'stock', trade_channel: 'gm', portfolio_id: 9 },
       { account_id: 7, market: '期货', trade_channel: 'ctp', portfolio_id: null },
       { account_id: 8, market: 'ctp', trade_channel: 'ctp', portfolio_id: 9 },
       { account_id: 9, market: '期货', trade_channel: 'ctp', portfolio_id: 9 },

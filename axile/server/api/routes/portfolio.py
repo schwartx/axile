@@ -172,13 +172,13 @@ async def _run_custom_calc_validation(
             result = await asyncio.to_thread(
                 calculate_sample_portfolio,
                 custom_calc_py_code,
-                **({"leverage_overrides": leverage_overrides} if leverage_overrides else {}),
+                leverage_overrides=leverage_overrides,
             )
         else:
             result = await calculate_portfolio_for_account(
                 account,
                 custom_calc_py_code,
-                **({"leverage_overrides": leverage_overrides} if leverage_overrides else {}),
+                leverage_overrides=leverage_overrides,
             )
     except BaseException as exc:  # noqa: BLE001 - 校验接口统一返回执行器与 IPC 错误
         error = exc if isinstance(exc, PortfolioFunctionError) else _error_from_exception(exc)
@@ -212,9 +212,7 @@ async def validate_custom_calc(payload: ValidateCustomCalcRequest) -> ValidateCu
                 raise HTTPException(
                     status_code=422, detail=f"{name} 需在 {limits.min:g}..{limits.max:g} 之间，步进 {limits.step:g}"
                 )
-    return await _run_custom_calc_validation(
-        account, payload.custom_calc_py_code, **({"leverage_overrides": overrides} if overrides else {})
-    )
+    return await _run_custom_calc_validation(account, payload.custom_calc_py_code, leverage_overrides=overrides or None)
 
 
 @router.post("/{portfolio_id:int}/run_and_save", response_model=ValidateCustomCalcResponse)
