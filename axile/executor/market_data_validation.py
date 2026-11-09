@@ -9,6 +9,8 @@ MarketDataPurpose = Literal["sizing", "order"]
 DEFAULT_QUOTE_MAX_AGE_SECONDS = 5.0
 """沿用 OrderTracker 的默认五秒时效；渠道已有配置时覆盖此默认值。"""
 
+QUOTE_FUTURE_TOLERANCE_SECONDS = 1.0
+
 
 class MarketDataUnavailableError(ValueError):
     """行情不足以支持新增交易，查询与撤单不受影响。"""
@@ -20,23 +22,38 @@ class MarketDataUnavailableError(ValueError):
         super().__init__(self.execution_error)
 
 
+def quote_time_error(
+    timestamp_ms: int,
+    *,
+    now: float,
+    max_age: float,
+    future_tolerance: float = QUOTE_FUTURE_TOLERANCE_SECONDS,
+) -> str | None:
+    """按校验时钟判断行情事件时间是否在允许范围内。"""
+    if not math.isfinite(now) or timestamp_ms <= 0:
+        return "行情时间无效"
+    age = now - timestamp_ms / 1000
+    if age < -future_tolerance:
+        return "行情时间超前"
+    if age > max_age:
+        return "行情已过期"
+    return None
+
+
 def market_data_error(
     quote: UnifiedPriceData | None,
     *,
     now: float,
     max_age: float,
     purpose: MarketDataPurpose,
+    future_tolerance: float = QUOTE_FUTURE_TOLERANCE_SECONDS,
 ) -> str | None:
     """定量只要求参考价；下单要求真实且未交叉的可用盘口。"""
     if quote is None:
         return "行情未就绪"
-    if not math.isfinite(now) or quote.timestamp <= 0:
-        return "行情时间无效"
-    age = now - quote.timestamp / 1000
-    if age < 0:
-        return "行情时间超前"
-    if age > max_age:
-        return "行情已过期"
+    time_error = quote_time_error(quote.timestamp, now=now, max_age=max_age, future_tolerance=future_tolerance)
+    if time_error is not None:
+        return time_error
     if purpose == "sizing":
         return None if math.isfinite(quote.last_price) and quote.last_price > 0 else "参考价格无效"
     if not quote.book_valid:
