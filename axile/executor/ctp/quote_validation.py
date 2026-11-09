@@ -2,6 +2,7 @@
 
 import math
 
+from axile.executor.market_data_validation import quote_time_error
 from axile.executor.models.unified_price import UnifiedPriceData
 
 
@@ -21,7 +22,7 @@ def quote_error(
     received = quote.extra.get("received_at", 0)
     if not isinstance(received, (int, float)) or not math.isfinite(received):
         return "invalid_receive_time"
-    if quote.timestamp <= 0 or not 0 <= now - quote.timestamp / 1000 <= max_age:
+    if quote_time_error(quote.timestamp, now=now, max_age=max_age) is not None:
         return "stale_exchange_time"
     if received <= 0 or not 0 <= now - received <= max_age:
         return "stale_receive_time"
@@ -74,7 +75,7 @@ def fresh_valuation_quote_error(
     received = quote.extra.get("received_at", 0)
     if not isinstance(received, (int, float)) or not math.isfinite(received):
         return "invalid_receive_time"
-    if quote.timestamp <= 0 or not 0 <= now - quote.timestamp / 1000 <= max_age:
+    if quote_time_error(quote.timestamp, now=now, max_age=max_age) is not None:
         return "stale_exchange_time"
     if received <= 0 or not 0 <= now - received <= max_age:
         return "stale_receive_time"

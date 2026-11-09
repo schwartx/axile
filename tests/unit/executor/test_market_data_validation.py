@@ -43,7 +43,7 @@ def quote(now=1000.0, **changes):
     "changes,reason",
     [
         ({"timestamp": 0}, "时间无效"),
-        ({"timestamp": 1001000}, "时间超前"),
+        ({"timestamp": 1001001}, "时间超前"),
         ({"timestamp": 994000}, "已过期"),
         ({"last_price": float("nan")}, "参考价格无效"),
         ({"last_price": float("inf")}, "参考价格无效"),
@@ -51,6 +51,15 @@ def quote(now=1000.0, **changes):
 )
 def test_invalid_sizing_quote(changes, reason):
     assert reason in market_data_error(quote(**changes), now=1000, max_age=5, purpose="sizing")
+
+
+@pytest.mark.parametrize("purpose", ["sizing", "order"])
+@pytest.mark.parametrize("connected", [True, False])
+def test_future_tolerance_requires_a_live_account(purpose, connected):
+    owner = Owner(quote(1001))
+    owner.account_config = object() if connected else None
+    expected = None if connected else "行情时间超前"
+    assert owner.market_data_error(owner.quote, purpose=purpose, now=1000) == expected
 
 
 def test_sizing_does_not_require_order_book():
