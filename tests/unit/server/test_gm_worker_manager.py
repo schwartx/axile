@@ -840,6 +840,28 @@ def test_calculate_portfolio_drops_worker_after_invalid_result(
     assert dropped == [2]
 
 
+@pytest.mark.parametrize("busy", [None, "queued", "running", "ipc"])
+def test_drop_idle_account_only_retires_an_idle_worker(monkeypatch: pytest.MonkeyPatch, busy) -> None:
+    from axile.server.execution import registry
+
+    monkeypatch.setattr(registry, "get_queued_execution_id", lambda _: "execution" if busy == "queued" else None)
+    monkeypatch.setattr(registry, "get_running_execution_id", lambda _: "execution" if busy == "running" else None)
+    manager = WorkerBackendManager()
+    handle = _FakeHandle()
+    manager._workers[2] = handle
+    if busy == "ipc":
+        handle.request_lock.acquire()
+    try:
+        dropped = asyncio.run(manager.drop_idle_account(2))
+    finally:
+        if busy == "ipc":
+            handle.request_lock.release()
+
+    assert dropped is (busy is None)
+    assert manager._workers == ({} if dropped else {2: handle})
+    assert handle.connection.sent_commands == (["shutdown"] if dropped else [])
+
+
 def test_drop_account_disposes_registered_worker(monkeypatch: pytest.MonkeyPatch) -> None:
     manager = WorkerBackendManager()
     handle = _FakeHandle()

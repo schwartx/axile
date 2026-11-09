@@ -99,7 +99,9 @@ async def _prepare_runtime_target(
     mode: Literal["startup", "day", "night"] | None,
 ) -> tuple[Literal["pending", "synchronized", "failed"], str | None]:
     """仅在渠道准备边界识别明确的柜台未初始化；scheduler 错误不能降级。"""
-    reset = target.reset_worker or (target.account.trade_channel == TradeChannel.TQ and mode in {"day", "night"})
+    reset: bool | Literal["when_idle"] = target.reset_worker
+    if mode in {"day", "night"}:
+        reset = "when_idle" if target.account.trade_channel == TradeChannel.CTP else True
     try:
         if target.account.archived_at is not None:
             from axile.server.connection_runtime import forget_session
@@ -112,7 +114,11 @@ async def _prepare_runtime_target(
             await manager.drop_account(account_id)
             forget_session(account_id)
             return "synchronized", None
-        await reconcile_china_channel_account(target.account, reset=reset, last_execution=target.last_execution)
+        prepared = await reconcile_china_channel_account(
+            target.account, reset=reset, last_execution=target.last_execution
+        )
+        if prepared is False:
+            return "pending", None
     except WorkerBackendExecutionError as exc:
         if target.account.trade_channel != TradeChannel.CTP or exc.reason_code != "CTP_NOT_INITIALIZED":
             raise
@@ -158,7 +164,7 @@ async def reconcile_scheduled_account(
     sched: Scheduler,
     mode: Literal["startup", "day", "night"],
 ) -> dict[str, Any] | None:
-    """盘前准备复用完整对齐，锁内重新验证候选并保留天勤盘前重建语义。"""
+    """盘前准备复用完整对齐，锁内重新验证候选，空闲账户盘前重连。"""
     async with account_runtime_lock(account_id):
         try:
             return await _reconcile_locked(account_id, sched, mode)

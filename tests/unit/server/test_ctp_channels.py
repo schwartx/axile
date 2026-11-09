@@ -27,15 +27,25 @@ def test_register_china_channel_jobs_uses_fixed_session_windows() -> None:
     assert all(call.kwargs["max_instances"] == 1 for call in calls)
 
 
-def test_prepare_china_accounts_isolates_account_failures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(("mode", "busy"), [("startup", False), ("day", False), ("night", False), ("night", True)])
+def test_prepare_china_accounts_isolates_account_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode, busy
+) -> None:
     accounts = [1, 2]
+    dropped: list[int] = []
     prepared: list[tuple[int | None, str | None]] = []
 
     class Manager:
         configure_catalog_account = MagicMock()
 
+        async def drop_idle_account(self, account_id: int) -> bool:
+            dropped.append(account_id)
+            return not (busy and account_id == 2)
+
         async def prepare_account(self, account: object, expected: str | None = None) -> dict[str, object]:
             account_id = getattr(account, "id")
+            if mode != "startup":
+                assert account_id in dropped
             prepared.append((account_id, expected))
             if account_id == 1:
                 raise RuntimeError("offline")
@@ -49,11 +59,12 @@ def test_prepare_china_accounts_isolates_account_failures(tmp_path: Path, monkey
     async def scenario():
         async with runtime_database(tmp_path / "runtime.db"):
             monkeypatch.setattr(ctp_channels, "get_worker_backend_manager", Manager)
-            await ctp_channels.prepare_china_channel_accounts("night")
+            await ctp_channels.prepare_china_channel_accounts(mode)
 
     asyncio.run(scenario())
 
-    assert sorted(prepared) == [(1, None), (2, None)]
+    assert sorted(dropped) == ([] if mode == "startup" else [1, 2])
+    assert sorted(prepared) == ([(1, None)] if busy else [(1, None), (2, None)])
 
 
 def test_started_china_scan_filters_disabled_and_other_channels(tmp_path: Path) -> None:
