@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TypeVar, cast, override
@@ -2271,7 +2271,21 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             q = quote_to_unified(row)
             if q.symbol not in self._subscriptions:
                 return
-            if q.extra.get("trading_day") != self._trading_day:
+            quote_day = q.extra["trading_day"]
+            if quote_day != self._trading_day:
+                try:
+                    rollover = quote_day.isdigit() and date.fromisoformat(quote_day) > date.fromisoformat(
+                        self._trading_day
+                    )
+                except ValueError:
+                    rollover = False
+                if not rollover:
+                    self._quote_rejections[q.symbol] = {
+                        "reason": "trading_day_mismatch",
+                        "session_trading_day": self._trading_day,
+                        **self._quote_time_evidence(q, received_at),
+                    }
+                    return
                 self._invalidate_connection(
                     "行情交易日变化，请重建 CTP 会话",
                     connection_failure=True,
@@ -2279,7 +2293,13 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                     presentation=lambda: self._session_problem(
                         "交易日已变化",
                         "已订阅行情的交易日发生变化，当前会话已失效。",
-                        {"会话交易日": self._trading_day, "行情交易日": q.extra.get("trading_day")},
+                        {
+                            "会话交易日": self._trading_day,
+                            "行情交易日": quote_day,
+                            "触发合约": q.symbol,
+                            "交易所": q.extra["exchange_id"],
+                            "行情时间": q.update_time,
+                        },
                     ),
                 )
                 return
