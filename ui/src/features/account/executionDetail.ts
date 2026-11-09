@@ -1,4 +1,5 @@
 import { shanghaiLabel } from '@/features/history/costs'
+import { algorithmTimeLabel } from '@/features/account/algorithmSchedule'
 import { catalogEvidence } from '@/features/history/executionErrorAdapter'
 import { executionOutcome, isSessionClosedSkip, outcomeOf, type OutcomeView } from '@/features/account/executionOutcome'
 import { isDegradedSnapshotSource } from '@/features/account/accountSnapshot'
@@ -107,6 +108,7 @@ export interface TargetChange {
   rows: { symbol: string; last: number | null; curr: number; strategy: number | null }[]
   algorithm: string | null
   algoParams: string | null
+  algorithmSelection: string | null
   forbidden: string[]
   risk: string[]
 }
@@ -430,12 +432,17 @@ function buildTargetChange(artifacts: ExecutionArtifact[]): TargetChange | null 
     strategy: strategy ? asNum(strategy[symbol]) : null,
   }))
   const algo = asDict(stdInput?.algorithm)
+  const selection = asDict(asDict(stdInput?.extra)?.algorithm_selection)
+  const start = asStr(selection?.start), end = asStr(selection?.end)
   const forbidden = Array.isArray(stdInput?.forbidden_symbols) ? (stdInput.forbidden_symbols as string[]) : []
   const risk = Array.isArray(stdInput?.risk_symbols) ? (stdInput.risk_symbols as string[]) : []
   return {
     rows,
     algorithm: asStr(algo?.method) || null,
     algoParams: algoParamsText(asDict(algo?.params)),
+    algorithmSelection: selection
+      ? (start && end ? `命中 ${algorithmTimeLabel(start, end)}（北京时间）` : '使用平时的算法')
+      : null,
     forbidden,
     risk,
   }

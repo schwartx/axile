@@ -84,7 +84,7 @@ def _stub_intent_promotion(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, i
     """执行票状态机由 test_execution_intents.py 专门守护；分发层测试只记录 promote 调用。"""
     calls: list[tuple[str, int]] = []
 
-    async def fake_promote(execution_id: str, account_id: int) -> None:
+    async def fake_promote(execution_id: str, account_id: int, *, algorithm: str | None = None) -> None:
         calls.append((execution_id, account_id))
 
     monkeypatch.setattr(execution_intents, "promote_intent_to_running", fake_promote)
@@ -253,6 +253,41 @@ def test_trade_builds_model_before_execute_and_persists_dict(
     assert raw_input["curr_target"] == {"ag2612": 0.1}
     assert raw_input["feishu_key"] == "secret-feishu-key"
     assert "account_config" in raw_input
+
+
+def test_trade_freezes_one_algorithm_for_worker_audit_record_and_running_state(monkeypatch):
+    from axile.server.execution import execution_algorithms
+
+    account = build_account(
+        algorithm_schedule=[
+            {
+                "start": "09:30",
+                "end": "10:00",
+                "algorithm": {"method": "TWAP", "params": {"slices": 4}},
+            }
+        ]
+    )
+    selected_at = datetime(2026, 11, 9, 9, 59, tzinfo=SHANGHAI)
+    monkeypatch.setattr(execution_algorithms, "clock_now", lambda **_: selected_at)
+    manager = FakeWorkerBackendManager()
+    record = AsyncMock(return_value={"record_id": 1, "is_success": 1})
+    promote = AsyncMock()
+    monkeypatch.setattr(rebalance_execution, "get_worker_backend_manager", lambda: manager)
+    monkeypatch.setattr(rebalance_execution, "append_execute_record_from_output", record)
+    monkeypatch.setattr(execution_intents, "promote_intent_to_running", promote)
+    asyncio.run(rebalance_execution.trade(account, {"ag2612": 0.1}, execution_id="time-rule"))
+
+    call = manager.trade_calls[0]
+    selected = call["account"].algorithm
+    inputs = call["standard_input_dict"]
+    assert selected == {"method": "TWAP", "params": {"slices": 4}}
+    assert inputs["algorithm"] == selected
+    assert call["audit_input"]["algorithm"] == selected
+    assert inputs["extra"]["audit"]["algorithm"] == "TWAP"
+    assert inputs["extra"]["algorithm_selection"]["selected_at"] == selected_at.isoformat()
+    assert record.await_args.kwargs["raw_input"]["algorithm"] == selected
+    promote.assert_awaited_once_with("time-rule", 1, algorithm="TWAP")
+    assert account.algorithm["method"] == "SINGLE-MAKER"
 
 
 def test_trade_uses_gm_channel_default_leverages_when_unset(
@@ -537,7 +572,7 @@ def test_account_rebalance_persists_same_normalized_target_used_by_trade(
     original_trade = rebalance_execution.trade
     blocked = execution_intents.IntentNotRunnable("账户渠道锁占用中", retry=True)
 
-    async def promote(_execution_id: str, _account_id: int) -> None:
+    async def promote(_execution_id: str, _account_id: int, *, algorithm: str | None = None) -> None:
         order.append("claim")
         if retry_before_claim and order.count("claim") == 1:
             raise blocked

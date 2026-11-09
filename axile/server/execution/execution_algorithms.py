@@ -1,8 +1,34 @@
 """执行编排使用的杠杆与算法解析辅助函数."""
 
+from copy import deepcopy
+
 from axile.channels import get_channel
+from axile.channels.schedule_clock import is_within_schedule_windows
 from axile.domain.execution import ExecutionKind
+from axile.executor.algorithms.utils.clock import clock_now
+from axile.server.cron import SCHEDULER_TIMEZONE
 from axile.server.db.models.account import AccountContext
+
+
+def select_rebalance_algorithm(account: AccountContext) -> tuple[AccountContext, dict[str, object]]:
+    """开跑前选定一次算法，只修改本次快照，完整参数与选择时刻一起冻结。"""
+    selected_at = clock_now(tz=SCHEDULER_TIMEZONE)
+    matched = next(
+        (
+            rule
+            for rule in account.algorithm_schedule
+            if is_within_schedule_windows(selected_at, [(rule.start, rule.end)])
+        ),
+        None,
+    )
+    algorithm = deepcopy(matched.algorithm if matched is not None else account.algorithm)
+    selection: dict[str, object] = {
+        "selected_at": selected_at.isoformat(),
+        "timezone": str(SCHEDULER_TIMEZONE),
+        "start": matched.start if matched is not None else None,
+        "end": matched.end if matched is not None else None,
+    }
+    return account.model_copy(update={"algorithm": algorithm}), selection
 
 
 def resolve_account_leverages(account: AccountContext) -> tuple[float, float]:

@@ -226,6 +226,7 @@ function TargetChangeView({ m }: { m: ExecutionDetailModel }) {
           {[tc.algorithm, tc.algoParams].filter(Boolean).join(' · ')}
         </div>
       )}
+      {tc.algorithmSelection && <p className="mt-1 text-[13px] text-ink-3">{tc.algorithmSelection}</p>}
       {(tc.forbidden.length > 0 || tc.risk.length > 0) && (
         <div className="mt-1 text-[13px] text-warn">
           {tc.forbidden.length > 0 && <span>禁止 {tc.forbidden.join('/')} </span>}

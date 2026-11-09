@@ -31,6 +31,7 @@ const EXECUTION: &[&str] = &[
     "long_leverage",
     "short_leverage",
     "algorithm",
+    "algorithm_schedule",
     "empty_positions_algorithm",
     "trade_rules",
     "futures_close_policy",
@@ -1058,6 +1059,32 @@ mod tests {
             "forbidden_symbols":null,"risk_symbols":null,"write_empty_record":null,"execution_timeout":120,
             "is_started":false,"cron_expr":"","supplement":null,"feishu_key":"webhook",
             "execution_notification_code":null,"backtest_weight_type":"ts","backtest_fee_rate":0})
+    }
+
+    #[test]
+    fn algorithm_schedule_roundtrips_and_can_be_cleared_without_changing_default() {
+        let connection = database();
+        let mut input = account();
+        input["algorithm_schedule"] = json!([{ "start":"21:00", "end":"02:30",
+            "algorithm":{"method":"TWAP","params":{"slices":4}} }]);
+        let id = insert_on(&connection, &input, "2026-11-09T09:00:00").unwrap();
+        let saved = snapshot_on(&connection, id).unwrap().unwrap();
+        assert_eq!(saved["algorithm_schedule"], input["algorithm_schedule"]);
+        let copied = insert_on(&connection, &saved, "2026-11-09T09:01:00").unwrap();
+        assert_eq!(
+            snapshot_on(&connection, copied).unwrap().unwrap()["algorithm_schedule"],
+            input["algorithm_schedule"]
+        );
+        patch_on(
+            &connection,
+            id,
+            json!({"algorithm_schedule":[]}).as_object().unwrap(),
+            "2026-11-09T09:02:00",
+        )
+        .unwrap();
+        let saved = snapshot_on(&connection, id).unwrap().unwrap();
+        assert_eq!(saved["algorithm_schedule"], json!([]));
+        assert_eq!(saved["algorithm"], input["algorithm"]);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
 
-test('录制设置在主交易算法前，取消还原，保存独立提交开关', () => {
+test('录制和时段共用保存取消，提交只包含修改字段', () => {
   const script = `
     import { mock } from 'bun:test';
     const ui = ${JSON.stringify(new URL('../', import.meta.url).pathname)};
@@ -36,6 +36,7 @@ test('录制设置在主交易算法前，取消还原，保存独立提交开�
       ['features/account/pageHead.tsx', ['AccountPageTitle']], ['features/setup/AlgorithmEditor.tsx', ['AlgorithmEditor']],
       ['features/account/FuturesClosePolicyEditor.tsx', ['FuturesClosePolicyEditor']], ['components/ui/Tooltip.tsx', ['Tooltip']],
       ['features/account/RuntimeSyncStatus.tsx', ['RuntimeSyncStatus']], ['features/replay/ReplayRecordingStatus.tsx', ['ReplayRecordingStatus']],
+      ['features/account/AlgorithmScheduleEditor.tsx', ['AlgorithmScheduleEditor', 'EditableAlgorithm']],
     ]) mock.module(ui + path, () => Object.fromEntries(names.map(name => [name, name])));
     const { AccountEditAlgorithmPage } = await import(ui + 'pages/AccountEditAlgorithmPage.tsx');
     const form = AccountEditAlgorithmPage();
@@ -55,10 +56,23 @@ test('录制设置在主交易算法前，取消还原，保存独立提交开�
     const saved = toggle().props.on === true && bar().props.changes.length === 0;
     toggle().props.onClick(); nodes = all(render());
     bar().props.onSave(); await new Promise(resolve => setImmediate(resolve));
-    console.log(JSON.stringify({ before, pending, cancelled, saved, patches }));
+    nodes = all(render());
+    const schedule = () => nodes.find(n => n.type === 'AlgorithmScheduleEditor');
+    const rule = { key: 'draft-only', start: '09:30', end: '10:00', algorithm: { method: 'TWAP', params: { slices: 4 } } };
+    schedule().props.onChange([rule]); nodes = all(render());
+    const schedulePending = bar().props.changes;
+    bar().props.onCancel(); nodes = all(render());
+    const scheduleCancelled = schedule().props.value.length === 0 && bar().props.changes.length === 0;
+    schedule().props.onChange([rule]); nodes = all(render());
+    bar().props.onSave(); await new Promise(resolve => setImmediate(resolve)); nodes = all(render());
+    const scheduleSaved = schedule().props.value.length === 1 && bar().props.changes.length === 0;
+    console.log(JSON.stringify({ before, pending, cancelled, saved, schedulePending, scheduleCancelled, scheduleSaved, patches }));
   `
   const result = spawnSync(process.execPath, ['-e', script], { cwd: new URL('../../', import.meta.url), encoding: 'utf8', timeout: 10_000 })
   if (result.status !== 0) throw Error(result.stderr || String(result.error))
   expect(JSON.parse(result.stdout)).toEqual({ before: true, pending: ['执行回放录制：开启'], cancelled: true, saved: true,
-    patches: [{ replay_recording_enabled: true }, { replay_recording_enabled: false }] })
+    schedulePending: ['交易时段已改'], scheduleCancelled: true, scheduleSaved: true,
+    patches: [{ replay_recording_enabled: true }, { replay_recording_enabled: false }, {
+      algorithm_schedule: [{ start: '09:30', end: '10:00', algorithm: { method: 'TWAP', params: { slices: 4 } } }],
+    }] })
 })

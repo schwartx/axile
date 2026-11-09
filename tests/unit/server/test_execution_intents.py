@@ -95,6 +95,32 @@ def test_submit_intent_creates_queued_rebalance(monkeypatch: pytest.MonkeyPatch)
     assert queued_id == result.execution_id
 
 
+def test_scheduled_algorithm_is_pending_until_running_then_matches_memory_and_database(monkeypatch):
+    async def run():
+        async with _intent_db(monkeypatch):
+            await native_operation(
+                "account_update",
+                {
+                    "account_id": 1,
+                    "patch": {
+                        "algorithm_schedule": [
+                            {"start": "09:30", "end": "10:00", "algorithm": {"method": "TWAP", "params": {"slices": 4}}}
+                        ]
+                    },
+                    "now": "2026-11-09T09:00:00+08:00",
+                },
+            )
+            submitted = await submit_intent(1, ExecutionKind.REBALANCE, "manual")
+            queued = await get_intent(submitted.execution_id)
+            assert queued.algorithm is None
+            await intents_module.promote_intent_to_running(queued.execution_id, 1, algorithm="TWAP")
+            running = await get_intent(queued.execution_id)
+            assert running.algorithm == "TWAP"
+            assert get_execution_task_state(queued.execution_id).algorithm == "TWAP"
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("cross_boundary", [False, True])
 @pytest.mark.parametrize("trigger_source", ["scheduler", "manual"])
 def test_gm_intent_keeps_original_phase_and_settings(monkeypatch, cross_boundary, trigger_source):

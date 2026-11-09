@@ -310,6 +310,16 @@ describe('formatOrderTradeCounts', () => {
 })
 
 describe('buildExecutionDetail · 目标变化', () => {
+  it('解释本次命中的时段，历史记录不按当前配置推算', () => {
+    const { events, artifacts, summary } = baseFixture()
+    const standardInput = artifacts.find(artifact => artifact.artifact_type === 'standard_input')!
+    const input = standardInput.content.input as Record<string, unknown>
+    input.algorithm = { method: 'TWAP', params: { slices: 4 } }
+    input.extra = { algorithm_selection: { start: '21:00', end: '02:30', timezone: 'Asia/Shanghai' } }
+    const tc = buildExecutionDetail(events, artifacts, null, summary).targetChange
+    expect(tc?.algorithm).toBe('TWAP')
+    expect(tc?.algorithmSelection).toBe('命中 21:00 至 次日 02:30（北京时间）')
+  })
   it('展示目标持仓算法的开平仓订单类型', () => {
     const { events, artifacts, summary } = baseFixture()
     const standardInput = artifacts.find(artifact => artifact.artifact_type === 'standard_input')!

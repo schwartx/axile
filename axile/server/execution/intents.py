@@ -318,6 +318,8 @@ async def _insert_intent(
         kind,
         algorithm_override=payload if kind == ExecutionKind.CLEAR_POSITIONS and payload else None,
     )
+    if kind == ExecutionKind.REBALANCE and account.algorithm_schedule:
+        algorithm = None  # 等待阶段尚未选定，不能把默认算法显示成实际算法。
     row = await _intent_operation(
         "intent_insert",
         {
@@ -520,7 +522,7 @@ def _wake(account_id: int) -> None:
     wake_account_dispatcher(account_id)
 
 
-async def promote_intent_to_running(execution_id: str, account_id: int) -> None:
+async def promote_intent_to_running(execution_id: str, account_id: int, *, algorithm: str | None = None) -> None:
     """取消和开跑共享账户锁，防止失效补发越过准入。"""
     from axile.server.execution.supplement_notifications import validate_execution_requests
     from axile.server.execution.supplements import account_lock
@@ -530,10 +532,10 @@ async def promote_intent_to_running(execution_id: str, account_id: int) -> None:
             await mark_intent_finished(execution_id, ExecutionTaskStatus.TERMINATED)
             clear_queued_execution(account_id, execution_id)
             raise IntentNotRunnable("补发需求已取消或过期")
-        await _promote_intent_to_running(execution_id, account_id)
+        await _promote_intent_to_running(execution_id, account_id, algorithm=algorithm)
 
 
-async def _promote_intent_to_running(execution_id: str, account_id: int) -> None:
+async def _promote_intent_to_running(execution_id: str, account_id: int, *, algorithm: str | None = None) -> None:
     """在真正下单前把 QUEUED 推进 RUNNING，并占用渠道锁.
 
     Parameters
@@ -542,6 +544,9 @@ async def _promote_intent_to_running(execution_id: str, account_id: int) -> None
         当前执行票。
     account_id : int
         账户 ID。
+
+    algorithm : str | None, optional
+        本次选定的算法名，与 RUNNING 状态一起持久化并同步内存；省略则保留原值。
 
     Raises
     ------
@@ -575,6 +580,7 @@ async def _promote_intent_to_running(execution_id: str, account_id: int) -> None
             ExecutionTaskStatus.QUEUED,
             ExecutionTaskStatus.RUNNING,
             started_at=started_at,
+            **({"algorithm": algorithm} if algorithm is not None else {}),
         )
     except BaseException as exc:
         clear_running_execution(account_id, execution_id)
@@ -589,7 +595,9 @@ async def _promote_intent_to_running(execution_id: str, account_id: int) -> None
     from axile.server.execution.registry import transition_execution_task_to_running
 
     transition_execution_task_to_running(execution_id)
-    update_execution_task_state(execution_id, started_at=started_at)
+    update_execution_task_state(
+        execution_id, started_at=started_at, **({"algorithm": algorithm} if algorithm is not None else {})
+    )
     sync_account_live(account_id)
 
 

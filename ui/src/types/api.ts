@@ -239,6 +239,7 @@ export interface Account {
   long_leverage: number | null
   short_leverage: number | null
   algorithm: Record<string, unknown>
+  algorithm_schedule?: AlgorithmTimeRule[]
   empty_positions_algorithm: Record<string, unknown> | null
   trade_rules: Record<string, unknown> | null
   futures_close_policy?: FuturesClosePolicy
@@ -727,6 +728,12 @@ export interface ExecutionInputFacts {
   futures_close_policy?: Record<string, unknown> | null
   extra?: Record<string, unknown> | null
   [key: string]: unknown
+}
+
+export interface AlgorithmTimeRule {
+  start: string
+  end: string
+  algorithm: AlgorithmRef
 }
 
 /** 原生订单观测；身份、数量、价格和时间不在前端补值。 */
