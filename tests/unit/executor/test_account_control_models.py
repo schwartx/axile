@@ -72,6 +72,14 @@ def test_account_control_operation_models_accept_shorthand_scope_map() -> None:
     assert policy.account.per_day.on_trigger.value == "block"
 
 
+@pytest.mark.parametrize("preset_key", ["default", "ctp"])
+def test_account_control_preset_daily_order_limit(preset_key: str) -> None:
+    per_day = resolve_account_control_policy(preset_key).operations["place_order"].account.per_day
+    assert per_day is not None
+    assert per_day.limit == 5000
+    assert per_day.on_trigger.value == "block"
+
+
 def test_ctp_account_control_preset_uses_ctp_specific_limits() -> None:
     """CTP preset 应声明渠道兼容性与专属限流阈值。"""
     preset = get_account_control_preset("ctp")
@@ -85,7 +93,6 @@ def test_ctp_account_control_preset_uses_ctp_specific_limits() -> None:
     assert preset.policy.operations["query_order"].account.min_interval_ms.limit == 1500
     assert policy.operations["query_order"].priority == 100
     assert preset.policy.operations["place_order"].account.per_minute.limit == 30
-    assert preset.policy.operations["place_order"].account.per_day.limit == 500
     assert preset.policy.operations["place_order"].account.min_interval_ms.limit == 500
     assert policy.operations["place_order"].priority == 10
     assert preset.policy.operations["cancel_order"].account.per_minute.limit == 60
