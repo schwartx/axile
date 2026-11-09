@@ -25,8 +25,12 @@ export function splitDuration(value: string, showHours: boolean): DurationParts 
 }
 
 /** 摘要省略零单位，接口仍使用总秒数。 */
-export function formatDuration(total: number): string {
-  const { hours, minutes, seconds } = splitDuration(String(total), true)
-  return [Number(hours) ? `${hours} 时` : '', Number(minutes) ? `${minutes} 分` : '',
-    Number(seconds) || total === 0 ? `${seconds} 秒` : ''].filter(Boolean).join(' ')
+export function formatDuration(total: number, fractionDigits = 0): string {
+  if (!Number.isFinite(total) || total < 0) return '—'
+  const rounded = Number(total.toFixed(fractionDigits))
+  const hours = Math.floor(rounded / 3600)
+  const minutes = Math.floor(rounded / 60) % 60
+  const seconds = Number((rounded % 60).toFixed(fractionDigits))
+  return [hours ? `${hours} 时` : '', minutes ? `${minutes} 分` : '',
+    seconds || rounded === 0 ? `${seconds.toFixed(fractionDigits)} 秒` : ''].filter(Boolean).join(' ')
 }

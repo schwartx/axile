@@ -1,5 +1,7 @@
 import { useId, useState } from 'react'
 import { ChevronDown } from 'lucide-react'
+import { InkRewrite } from '@/components/ui/InkRewrite'
+import { NumberTicker } from '@/components/ui/NumberTicker'
 import type { TimeCheckSnapshot } from '@/lib/api/timeCheck'
 import { MOTION_LAYOUT } from '@/lib/viewTransition'
 import { offsetText } from './display'
@@ -24,13 +26,15 @@ export function TimeCheckResult({ snapshot }: { snapshot: TimeCheckSnapshot | nu
   return <section aria-label="检查结果" aria-live="polite" className="min-w-0 space-y-6">
     <div className="space-y-4">
       <div className="space-y-2">
-        <p className="text-[14px] text-ink-2">{headline}</p>
+        <p className="text-[14px] text-ink-2"><InkRewrite text={headline} /></p>
         {offset != null && <p className={`num flex flex-wrap items-baseline gap-x-2 ${exceeded ? 'text-warn' : 'text-ink-1'}`}>
-          <span className="text-[40px] font-medium leading-tight tracking-tight">{Math.abs(offset).toFixed(2)}</span>
+          <NumberTicker value={Math.abs(offset)} animated={!running}
+            format={{ useGrouping: false, minimumFractionDigits: 2, maximumFractionDigits: 2 }}
+            className="text-[40px] font-medium leading-tight tracking-tight" />
           <span className="text-[15px] text-ink-3">ms</span>
         </p>}
         {offset != null && <p className={`text-[13px] ${exceeded ? 'text-warn' : 'text-ink-2'}`}>
-          {exceeded ? '偏差超过阈值' : '偏差在阈值内'} · 允许 {result?.settings.threshold_ms} ms
+          <InkRewrite text={exceeded ? '偏差超过阈值' : '偏差在阈值内'} /> · 允许 {result?.settings.threshold_ms} ms
         </p>}
         {running && result && <p className="text-xs text-ink-3">正在重新检查，以上为上次结果</p>}
       </div>

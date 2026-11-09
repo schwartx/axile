@@ -1,20 +1,26 @@
 import { Tooltip } from '@/components/ui/Tooltip'
+import { NumberTicker } from '@/components/ui/NumberTicker'
+import { formatDuration } from '@/components/ui/duration'
+import type { ReactNode } from 'react'
 import type { ControlFrame, ControlRule } from '@/stores/liveControl'
 import { useControlQuotaWarnings } from '@/features/account/useControlQuotaWarnings'
 import { quotaStageName } from '@/features/account/controlWarnings'
 
-function usageText(rules: ControlRule[], live: boolean): string {
-  const parts: string[] = []
+function usageContent(rules: ControlRule[], live: boolean, animated: boolean): ReactNode {
+  const parts: ReactNode[] = []
   for (const [key, label] of [['per_minute', '分钟'], ['per_day', '今日']] as const) {
     const rule = rules.find((item) => item.rule === key)
     if (!rule || (key === 'per_minute' && rule.limit == null)) continue
-    if (rule.value == null) { parts.push(`${label}用量未知`); continue }
-    parts.push(`${label}已用 ${rule.value}${rule.limit == null ? '' : `/${rule.limit}`}`)
-    if (key === 'per_day' && rule.remaining != null) parts.push(`剩余 ${rule.remaining}`)
+    if (rule.value == null) { parts.push(<span key={key}>{parts.length > 0 && ' · '}{label}用量未知</span>); continue }
+    parts.push(<span key={key}>{parts.length > 0 && ' · '}{label}已用 {animated ? <NumberTicker value={rule.value} /> : rule.value}{rule.limit == null ? '' : `/${rule.limit}`}
+      {key === 'per_day' && rule.remaining != null && <> · 剩余 {animated ? <NumberTicker value={rule.remaining} /> : rule.remaining}</>}
+    </span>)
   }
   const interval = rules.find((item) => item.rule === 'min_interval_ms')
-  if (live && interval && interval.estimated_wait_ms > 0) parts.push(`预计等待 ${interval.estimated_wait_ms} 毫秒`)
-  return parts.join(' · ')
+  if (live && interval && interval.estimated_wait_ms > 0)
+    parts.push(<span key="interval">{parts.length > 0 && ' · '}预计等待 {interval.estimated_wait_ms < 60_000
+      ? `${interval.estimated_wait_ms} 毫秒` : formatDuration(interval.estimated_wait_ms / 1000, 3)}</span>)
+  return parts
 }
 
 /** 只展示对应范围的用量，不把合约或外层／原生操作相加。 */
@@ -33,9 +39,11 @@ export function ControlScopeUsage({ frame, operation, scope = 'account', symbol 
     return request.hits.some((hit) => scope === 'group' ? hit.scope_key === operation : hit.scope_type === scope)
       || (scope === 'account' && request.kind === 'queue')
   }).length ?? 0
+  const live = frame?.status === 'running'
+  const animated = live && !frame.stale && !frame.incomplete && scope !== 'symbol'
   return <span className="mt-1 block text-[12px] font-normal leading-5 text-ink-3">
-    {rules.length ? usageText(rules, frame?.status === 'running') : '用量未知'}
-    {waiting > 0 && <span className="ml-2 text-warn">{waiting} 个请求等待</span>}
+    {rules.length ? usageContent(rules, live, animated) : '用量未知'}
+    {waiting > 0 && <span className="ml-2 text-warn">{animated ? <NumberTicker value={waiting} /> : waiting} 个请求等待</span>}
     {warning && <span className="ml-2 font-medium text-warn">{quotaStageName(warning.stage)}{warning.stale ? ' · 数据待更新' : ''}</span>}
   </span>
 }

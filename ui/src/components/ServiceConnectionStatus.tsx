@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { ErrorDetailsModal } from '@/components/ui/ErrorDetailsModal'
 import { Tooltip } from '@/components/ui/Tooltip'
+import { InkRewrite } from '@/components/ui/InkRewrite'
 import { errorInfo, isConnectionError, shortErrorReason, type ErrorInfo } from '@/lib/errorInfo'
 import { timeAgo } from '@/lib/format'
 import { useDomainStore } from '@/stores/domain'
@@ -40,14 +41,19 @@ export function ServiceConnectionStatus() {
   const connecting = updatedAt == null && error == null
   const title = isConnectionError(error) ? '与服务器失联' : '账户数据刷新失败'
   const text = error ? isConnectionError(error) ? title : `${title} · ${shortErrorReason(error)}`
-    : connecting ? '正在连接' : syncInterrupted ? '实时同步中断' : `数据 ${timeAgo(updatedAt)} · 服务正常`
+    : connecting ? '正在连接' : syncInterrupted ? '实时同步中断' : '服务正常'
   return <>
     <span role="status" className="flex min-w-0 items-center gap-1.5 text-[14px] text-ink-2">
       <span aria-hidden className={`h-2 w-2 flex-none rounded-full ${error || syncInterrupted
         ? 'bg-warn shadow-[0_0_0_3px_var(--color-warn-soft)]'
         : `bg-accent shadow-[0_0_0_3px_var(--color-accent-soft)]${connecting ? ' animate-pulse motion-reduce:animate-none' : ''}`}`} />
-      {error ? <button type="button" aria-label="查看服务连接错误详情" className="cursor-pointer text-left hover:text-ink-1"
-        onClick={() => setSelection({ title, info: errorInfo(error) })}>{text}</button> : text}
+      <span className="relative min-w-0">
+        <InkRewrite text={text} overflow />
+        {error && <button type="button" aria-label="查看服务连接错误详情"
+          className="absolute inset-0 cursor-pointer rounded focus-visible:outline-2 focus-visible:outline-accent"
+          onClick={() => setSelection({ title, info: errorInfo(error) })}><span className="sr-only">{text}</span></button>}
+      </span>
+      {!error && !connecting && !syncInterrupted && <span className="whitespace-nowrap">· 数据 {timeAgo(updatedAt)}</span>}
     </span>
     {error && <Tooltip content={`${shortErrorReason(error)}；点击重试`}>
       <button type="button" aria-label="重试连接服务器" className="cursor-pointer text-ink-3 hover:text-warn" onClick={() => void refresh()}>

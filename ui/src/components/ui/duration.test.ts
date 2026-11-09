@@ -32,8 +32,17 @@ test('空段、非法输入、小数秒、负数及不安全整数不能变成�
 })
 
 test('摘要省略零单位，保留整数秒精度', () => {
-  expect([0, 1, 60, 210, 1000, 3600, 4830, 86400].map(formatDuration))
+  expect([0, 1, 60, 210, 1000, 3600, 4830, 86400].map(value => formatDuration(value)))
     .toEqual(['0 秒', '1 秒', '1 分', '3 分 30 秒', '16 分 40 秒', '1 时', '1 时 20 分 30 秒', '24 时'])
+})
+
+test('等待时长保留小数秒，舍入跨分钟或小时会正确进位', () => {
+  expect(formatDuration(90.125, 1)).toBe('1 分 30.1 秒')
+  expect(formatDuration(90.125, 3)).toBe('1 分 30.125 秒')
+  expect(formatDuration(0.001, 3)).toBe('0.001 秒')
+  expect(formatDuration(59.96, 1)).toBe('1 分')
+  expect(formatDuration(3599.96, 1)).toBe('1 时')
+  for (const value of [-1, NaN, Infinity]) expect(formatDuration(value, 1)).toBe('—')
 })
 
 test('紧凑输入按范围固定分段，保留真实输入、帮助关联、边界禁用与 NumberFlow', () => {

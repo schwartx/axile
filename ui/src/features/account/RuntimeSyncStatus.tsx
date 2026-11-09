@@ -1,5 +1,6 @@
 import { useRef } from 'react'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
+import { InkRewrite } from '@/components/ui/InkRewrite'
 import { useAccountRuntimeSync } from '@/features/account/useAccountRuntimeSync'
 import { ApiError } from '@/lib/api/client'
 import { useErrorPresentation } from '@/lib/errorPresentation'
@@ -17,7 +18,7 @@ export function RuntimeSyncStatus({ runtime, saved = false, disabled = false, ac
   const failure = sync?.last_error ? new ApiError(202, sync.last_error, { body: sync }) : null
   return <div>
     {(unresolved || saved || observed.current.unresolved) && <div className="mt-2 text-[13px] text-ink-2" aria-live="polite">
-      <span>{sync?.status === 'synchronized' ? '配置已保存，运行态已同步' : sync?.status === 'failed' ? '配置已保存，运行态同步失败' : '配置已保存，运行态待同步'}</span>
+      <InkRewrite text={sync?.status === 'synchronized' ? '配置已保存，运行态已同步' : sync?.status === 'failed' ? '配置已保存，运行态同步失败' : '配置已保存，运行态待同步'} />
       {sync && <span className="ml-2 text-ink-3">revision {sync.revision} · 尝试 {sync.attempts} 次</span>}
     </div>}
     <ErrorNotice intent="read" evidence={[{ label: '账户', value: String(accountId) }]} title="运行态同步未完成" error={unresolved ? failure : null} contextKey={accountId} />
