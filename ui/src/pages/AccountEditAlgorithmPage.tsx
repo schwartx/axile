@@ -2,7 +2,7 @@ import { shortErrorReason } from '@/lib/errorInfo'
 /**
  * 账户执行算法子页 /accounts/:id/edit/algorithm。
  *
- * 主交易 + 清仓算法完整编辑器；保存只 PATCH 改动字段，保存与取消都不离开本页。
+ * 编辑主交易、清仓及时段算法和账户公共执行设置；只 PATCH 改动字段，保存与取消都不离开本页。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -34,6 +34,8 @@ import { RuntimeSyncStatus } from '@/features/account/RuntimeSyncStatus'
 import { runtimeSyncMessage, useAccountRuntimeSync } from '@/features/account/useAccountRuntimeSync'
 import { AlgorithmWorkbench } from '@/features/account/AlgorithmWorkbench'
 import { algorithmScheduleDraft, algorithmScheduleValue, algorithmScheduleErrors } from '@/features/account/algorithmSchedule'
+import { ExecutionTimeoutInput } from '@/features/account/ExecutionTimeoutInput'
+import { executionTimeoutError } from '@/features/account/executionTimeout'
 import {
   EditError,
   EditLoading,
@@ -101,6 +103,7 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
   const [schedule, setSchedule] = useState(() => algorithmScheduleDraft(accountPreview?.algorithm_schedule ?? []))
   const [closePolicy, setClosePolicy] = useState(accountPreview?.futures_close_policy ?? defaultClosePolicy())
   const [replayRecording, setReplayRecording] = useState(accountPreview?.replay_recording_enabled ?? false)
+  const [executionTimeout, setExecutionTimeout] = useState(() => String(accountPreview?.execution_timeout ?? ''))
   const [saving, setSaving] = useState(false)
   const [editorErrors, setEditorErrors] = useState<Record<string, string | null>>({})
   const setEditorError = useCallback((key: string, error: string | null) => {
@@ -108,7 +111,7 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
   }, [])
   const [saveError, setSaveError] = useState<Error | null>(null)
 
-  /** 草稿重置为服务端当前算法引用；数据未就绪时返回 false（供首帧初始化门控）。 */
+  /** 草稿重置为服务端当前设置；数据未就绪时返回 false（供首帧初始化门控）。 */
   const resetAlgorithms = useCallback(() => {
     if (!acc || !descriptor) return false
     setTrade(structuredClone(algorithmRefOf(acc.algorithm) ?? descriptor.defaults.trade_algorithm))
@@ -117,6 +120,7 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
     setSchedule(previous => algorithmScheduleDraft(acc.algorithm_schedule ?? [], previous))
     setClosePolicy(acc.futures_close_policy ?? defaultClosePolicy())
     setReplayRecording(acc.replay_recording_enabled ?? false)
+    setExecutionTimeout(String(acc.execution_timeout ?? ''))
     setSaveError(null)
     return true
   }, [acc, descriptor])
@@ -155,12 +159,15 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
   const closeChanged = norm(closePolicy) !== norm(acc.futures_close_policy ?? defaultClosePolicy())
   const recordingPatch = replayRecordingPatch(replayRecording, acc.replay_recording_enabled)
   const recordingChanged = recordingPatch.replay_recording_enabled !== undefined
-  const dirty = tradeChanged || emptyChanged || scheduleChanged || closeChanged || recordingChanged
+  const timeoutErr = executionTimeoutError(executionTimeout, { allowEmpty: true })
+  const timeoutChanged = executionTimeout.trim() !== '' && Number(executionTimeout) !== acc.execution_timeout
+  const dirty = tradeChanged || emptyChanged || scheduleChanged || closeChanged || recordingChanged || timeoutChanged
 
-  const err = ['trade', 'empty', ...schedule.map(rule => rule.key)].map(key => editorErrors[key]).find(Boolean)
+  const err = timeoutErr ?? ['trade', 'empty', ...schedule.map(rule => rule.key)].map(key => editorErrors[key]).find(Boolean)
     ?? algorithmScheduleErrors(schedule).find(Boolean) ?? algoParamError(trade) ?? algoParamError(empty)
   const changes: string[] = []
   if (recordingChanged) changes.push(`执行回放录制：${replayRecording ? '开启' : '关闭'}`)
+  if (timeoutChanged) changes.push(timeoutErr ? '执行超时有误' : `执行超时 ${acc.execution_timeout}s→${Number(executionTimeout)}s`)
   if (closeChanged) changes.push('平仓规则已改')
   if (tradeChanged) changes.push('主交易算法已改')
   if (emptyChanged) changes.push(empty ? '清仓算法已改' : '清仓算法已清除')
@@ -171,6 +178,7 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
     if (err) return toast(err)
     if (!dirty) return toast('没有改动')
     const patch: Partial<Account> = { ...recordingPatch }
+    if (timeoutChanged) patch.execution_timeout = Number(executionTimeout)
     if (tradeChanged) patch.algorithm = trade as unknown as Record<string, unknown>
     if (scheduleChanged) patch.algorithm_schedule = scheduleValue
     if (emptyChanged) {
@@ -194,12 +202,13 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
       setEditorErrors({})
       setClosePolicy(updated.futures_close_policy ?? defaultClosePolicy())
       setReplayRecording(updated.replay_recording_enabled ?? false)
+      setExecutionTimeout(String(updated.execution_timeout ?? ''))
       runtime.acceptSaved(updated.runtime_sync)
       // 保存响应直接写摘要缓存：返回详情时 hero「算法」值首帧即新值，FLIP 落地同文。
       writeAccountConfigSummary(accountId, updated, {
         showShortLeverage: descriptor.ui.show_short_leverage,
       })
-      toast(tradeChanged || emptyChanged || closeChanged || scheduleChanged
+      toast(tradeChanged || emptyChanged || closeChanged || scheduleChanged || timeoutChanged
         ? `已保存，后续调仓生效。${shortErrorReason(runtimeSyncMessage(updated.runtime_sync))}`
         : '录制设置已保存，实际状态请看录制开关旁的提示。')
       void refreshAccounts()
@@ -214,7 +223,7 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
   }
 
   return (
-    <section aria-label="执行算法设置" className="grid h-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] gap-y-2 px-4 pt-4 md:px-5">
+    <section aria-label="执行算法设置" className="grid h-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] gap-y-2 px-4 pt-4 md:px-5">
       <header>
         {title}
         <RuntimeSyncStatus runtime={runtime} disabled={saving} accountId={accountId} />
@@ -228,34 +237,46 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
           onEmptyChange={value => { setSaveError(null); setEmpty(value) }}
           onScheduleChange={value => { setSaveError(null); setSchedule(value) }}
           errors={editorErrors} onValidationError={setEditorError}
-          footer={<div className="space-y-2 pb-1">
+          saveBar={<EditSaveBar layout="inline" changes={changes} blocked={Boolean(err)}
+            onCancel={() => { if (!saving) resetAlgorithms() }} onSave={() => void save()}
+            saving={saving} error={saveError} />}
+          footer={<div className="space-y-1 pb-1">
             {descriptor.futures_close && <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 border-t border-line pt-2">
               <span className="shrink-0 text-xs text-ink-3">平仓规则</span>
               <FuturesClosePolicyEditor value={closePolicy} capability={descriptor.futures_close}
                 onChange={value => { setSaveError(null); setClosePolicy(value) }} />
             </div>}
-            <div className="border-t border-line pt-2" role="group" aria-label="执行回放录制">
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex min-w-0 flex-wrap items-center gap-1 text-sm">
-                  <span>回放录制</span>
-                  <Tooltip content="记录行情、委托和成交，方便之后回看执行过程。保存后开始记录，之前的数据不会补录。">
-                    <button type="button" aria-label="执行回放录制说明" className="inline-flex size-6 items-center justify-center rounded-chip text-ink-3 hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent">
-                      <Info size={14} aria-hidden />
-                    </button>
-                  </Tooltip>
-                  {recordingChanged && <span className="text-xs text-ink-3">待保存</span>}
-                  <ReplayRecordingStatus accountId={accountId} savedEnabled={acc.replay_recording_enabled ?? false} />
-                </div>
+            <div className="border-t border-line pt-1" role="group" aria-label="执行超时">
+              <div className="flex min-h-8 items-center justify-between gap-2">
+                <label htmlFor="algorithm-execution-timeout" className="shrink-0 text-sm">执行超时</label>
+                <ExecutionTimeoutInput size="sm" id="algorithm-execution-timeout" describedBy="algorithm-execution-timeout-help"
+                  value={executionTimeout} invalid={Boolean(timeoutErr)}
+                  onChange={value => { setSaveError(null); setExecutionTimeout(value) }} />
+              </div>
+              <p id="algorithm-execution-timeout-help" role={timeoutErr ? 'alert' : undefined}
+                className={timeoutErr ? 'text-xs text-warn' : 'sr-only'}>
+                {timeoutErr ?? '单次执行总上限，各时段共用。'}
+              </p>
+            </div>
+            <div className="grid min-h-9 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 border-t border-line pt-1" role="group" aria-label="执行回放录制">
+              <div className="col-start-1 row-start-1 flex min-h-8 items-center gap-1 whitespace-nowrap text-sm">
+                <span>回放录制</span>
+                {recordingChanged && <span className="text-xs text-ink-3">待保存</span>}
+              </div>
+              <ReplayRecordingStatus accountId={accountId} savedEnabled={acc.replay_recording_enabled ?? false} />
+              <div className="col-start-3 row-start-1 flex items-center gap-1.5">
                 <Toggle on={replayRecording} onClick={() => { setSaveError(null); setReplayRecording(!replayRecording) }} ariaLabel="记录执行回放" />
+                <Tooltip arrow content="记录行情、委托和成交，方便之后回看执行过程。保存后开始记录，之前的数据不会补录。">
+                  <button type="button" aria-label="执行回放录制说明" className="inline-flex size-6 shrink-0 items-center justify-center rounded-chip text-ink-3 hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent">
+                    <Info size={14} aria-hidden />
+                  </button>
+                </Tooltip>
               </div>
             </div>
           </div>}
         />
       </fieldset>
 
-      <EditSaveBar layout="inline" changes={changes} blocked={Boolean(err)}
-        onCancel={() => { if (!saving) resetAlgorithms() }} onSave={() => void save()}
-        saving={saving} error={saveError} />
     </section>
   )
 }

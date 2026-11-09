@@ -3,11 +3,27 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { createElement } from 'react'
 import { AlgorithmWorkbench } from '@/features/account/AlgorithmWorkbench'
 import {
-  algorithmScheduleDraft, algorithmScheduleErrors, algorithmScheduleValue, algorithmTimeLabel,
+  algorithmScheduleDraft, algorithmScheduleErrors, algorithmScheduleValue, algorithmStartChange, algorithmTimeLabel,
 } from '@/features/account/algorithmSchedule'
 import type { AlgorithmTimeRule } from '@/types/api'
 
 const rule = (start = '09:30', end = '10:00'): AlgorithmTimeRule => ({ start, end, algorithm: { method: 'TWAP', params: { total_duration: 120, slices: 4 } } })
+
+test('未设置的结束时间补开始后一分，自动值跟随调整，手动值和已保存值保留', () => {
+  let draft = { ...rule('', ''), key: 'new-rule' }
+  draft = { ...draft, ...algorithmStartChange(draft, '09:59') }
+  expect(draft).toMatchObject({ start: '09:59', end: '10:00', autoEnd: true })
+  draft = { ...draft, ...algorithmStartChange(draft, '23:59') }
+  expect(draft).toMatchObject({ start: '23:59', end: '00:00', autoEnd: true })
+  expect(algorithmScheduleErrors([draft])).toEqual([null])
+  expect(algorithmStartChange({ ...draft, autoEnd: false }, '22:00')).toEqual({ start: '22:00' })
+  expect(algorithmStartChange({ ...rule(), key: 'existing' }, '09:31')).toEqual({ start: '09:31' })
+  const value = algorithmScheduleValue([draft])
+  expect(Object.keys(value[0]).sort()).toEqual(['algorithm', 'end', 'start'])
+  const saved = algorithmScheduleDraft(value, [draft])[0]
+  expect(saved.key).toBe(draft.key)
+  expect(algorithmStartChange(saved, '23:58')).toEqual({ start: '23:58' })
+})
 
 test('时段校验允许相邻和午夜，指出跨日冲突', () => {
   expect(algorithmScheduleErrors([rule(), rule('10:00', '11:00')])).toEqual([null, null])
@@ -29,7 +45,8 @@ test('草稿独立于已保存配置，提交只包含 API 字段并按时间排
 test('工作区提供默认、时段和清仓入口，未选中的表单保留并禁止聚焦', () => {
   const html = renderToStaticMarkup(createElement(AlgorithmWorkbench, {
     channel: 'ctp', trade: rule().algorithm, empty: null, schedule: algorithmScheduleDraft([rule()]),
-    errors: {}, footer: null, onTradeChange() {}, onEmptyChange() {}, onScheduleChange() {}, onValidationError() {},
+    errors: {}, footer: createElement('div', null, '左栏公共设置'), saveBar: createElement('button', null, '保存修改'),
+    onTradeChange() {}, onEmptyChange() {}, onScheduleChange() {}, onValidationError() {},
   }))
   expect(html).toContain('编辑默认算法')
   expect(html).toContain('编辑09:30 至 10:00')
@@ -38,12 +55,16 @@ test('工作区提供默认、时段和清仓入口，未选中的表单保留�
   expect(html).toContain('时段参数 1')
   expect(html).toContain('清仓算法参数')
   expect(html).toContain('inert=""')
+  const right = html.slice(html.indexOf('<section aria-label="当前算法编辑区"'))
+  expect(right).toContain('保存修改')
+  expect(right).not.toContain('左栏公共设置')
+  expect(html.match(/保存修改/g)).toHaveLength(1)
 })
 
 test('当日与跨日保留摘要和编辑区的次日节点，收起时对辅助技术隐藏', () => {
   const render = (end: string) => renderToStaticMarkup(createElement(AlgorithmWorkbench, {
     channel: 'binance', trade: rule().algorithm, empty: null, schedule: algorithmScheduleDraft([rule('09:30', end)]),
-    errors: {}, footer: null, onTradeChange() {}, onEmptyChange() {}, onScheduleChange() {}, onValidationError() {},
+    errors: {}, footer: null, saveBar: null, onTradeChange() {}, onEmptyChange() {}, onScheduleChange() {}, onValidationError() {},
   }))
   for (const [end, nextDay] of [['09:00', true], ['10:00', false], ['09:30', false], ['', false]] as const) {
     const html = render(end)

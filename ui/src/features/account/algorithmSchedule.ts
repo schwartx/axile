@@ -1,7 +1,16 @@
 import { describeAlgorithmRef, validateAlgorithmRef } from '@/features/setup/algorithms'
 import type { AlgorithmRef, AlgorithmTimeRule } from '@/types/api'
 
-export type AlgorithmRuleDraft = AlgorithmTimeRule & { key: string }
+export type AlgorithmRuleDraft = AlgorithmTimeRule & { key: string; autoEnd?: boolean }
+
+/** 自动补齐的结束时间跟随开始时间；用户手动选择或保存后保留已设置的结束时间。 */
+export function algorithmStartChange(rule: AlgorithmRuleDraft, start: string): Partial<AlgorithmRuleDraft> {
+  if (rule.end && !rule.autoEnd) return { start }
+  const [hour, minute] = start.split(':').map(Number)
+  const next = (hour * 60 + minute + 1) % (24 * 60)
+  const end = `${String(Math.floor(next / 60)).padStart(2, '0')}:${String(next % 60).padStart(2, '0')}`
+  return { start, end, autoEnd: true }
+}
 
 export function algorithmScheduleDraft(rules: AlgorithmTimeRule[], previous: AlgorithmRuleDraft[] = []): AlgorithmRuleDraft[] {
   return rules.toSorted((a, b) => a.start.localeCompare(b.start))

@@ -7,7 +7,7 @@ import { NumberTicker } from '@/components/ui/NumberTicker'
 import { Select } from '@/components/ui/Select'
 import { AlgorithmEditor } from '@/features/setup/AlgorithmEditor'
 import { describeAlgorithmRef } from '@/features/setup/algorithms'
-import { algorithmScheduleErrors, algorithmTimeLabel, type AlgorithmRuleDraft } from '@/features/account/algorithmSchedule'
+import { algorithmScheduleErrors, algorithmStartChange, algorithmTimeLabel, type AlgorithmRuleDraft } from '@/features/account/algorithmSchedule'
 import { useScrollEdges } from '@/hooks/useScrollEdges'
 import { withViewTransition } from '@/lib/viewTransition'
 import type { AlgorithmRef, AlgorithmSlot, TradeChannel } from '@/types/api'
@@ -26,6 +26,7 @@ interface Props {
   tradeNameVt?: string
   emptyNameVt?: string
   footer: ReactNode
+  saveBar: ReactNode
 }
 
 function AlgorithmPanel({ active, label, children }: { active: boolean; label: string; children: ReactNode }) {
@@ -78,7 +79,7 @@ function AlgorithmItem({ itemKey, label, time, algorithm, selected, error, onSel
 
 /** 左栏选择配置，右栏保留各自表单实例与滚动位置，切换不丢未完成的参数草稿。 */
 export function AlgorithmWorkbench({ channel, trade, empty, schedule, onTradeChange, onEmptyChange,
-  onScheduleChange, errors, onValidationError, initialSlot = 'trade', tradeNameVt, emptyNameVt, footer }: Props) {
+  onScheduleChange, errors, onValidationError, initialSlot = 'trade', tradeNameVt, emptyNameVt, footer, saveBar }: Props) {
   const [selection, setSelection] = useState<string>(initialSlot)
   const listRef = useRef<HTMLDivElement>(null)
   const active = selection === 'trade' || selection === 'empty' || schedule.some(rule => rule.key === selection) ? selection : 'trade'
@@ -96,7 +97,7 @@ export function AlgorithmWorkbench({ channel, trade, empty, schedule, onTradeCha
   const item = (key: string, label: string, algorithm: AlgorithmRef | null, error = errors[key]) =>
     <AlgorithmItem key={key} itemKey={key} label={label} algorithm={algorithm} selected={active === key} error={error} onSelect={() => select(key)} />
 
-  return <div aria-label="算法配置工作区" className="grid h-full min-h-0 min-w-0 grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto] gap-x-5 min-[900px]:grid-cols-[clamp(240px,26%,300px)_minmax(0,1fr)] min-[900px]:grid-rows-[auto_auto_minmax(0,1fr)_auto]">
+  return <div aria-label="算法配置工作区" className="grid h-full min-h-0 min-w-0 grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto_auto] gap-x-5 min-[900px]:grid-cols-[clamp(240px,26%,300px)_minmax(0,1fr)] min-[900px]:grid-rows-[auto_auto_minmax(0,1fr)_auto]">
     <div className="col-start-1 row-start-1 flex items-center gap-2 pb-3 min-[900px]:hidden">
       <Select ariaLabel="选择算法配置" value={active} onChange={select} className="min-w-0 flex-1"
         options={[{ value: 'trade', label: '默认算法' }, ...schedule.map(rule => ({ value: rule.key, label: algorithmTimeLabel(rule.start, rule.end) })), { value: 'empty', label: '清仓算法' }]} />
@@ -121,36 +122,39 @@ export function AlgorithmWorkbench({ channel, trade, empty, schedule, onTradeCha
       {footer}
     </div>
 
-    <section aria-label="当前算法编辑区" className="algorithm-config-editor col-start-1 row-start-2 min-h-0 min-w-0 overflow-hidden border-line bg-bg min-[900px]:col-start-2 min-[900px]:row-span-4 min-[900px]:row-start-1 min-[900px]:border-l min-[900px]:pl-5">
-      <AlgorithmPanel active={active === 'trade'} label="默认算法参数">
-        <h2 className="mb-1 text-base font-semibold">默认算法</h2>
-        <p className="mb-4 text-xs text-ink-3">未覆盖的时间使用这套配置。</p>
-        <AlgorithmEditor slot="trade" channel={channel} value={trade} onChange={value => { if (value) onTradeChange(value) }}
-          onValidationError={error => onValidationError('trade', error)} nameVtName={tradeNameVt} />
-        {errors.trade && <p role="alert" className="py-2 text-sm text-warn">{errors.trade}</p>}
-      </AlgorithmPanel>
-      {schedule.map((rule, index) => <AlgorithmPanel key={rule.key} active={active === rule.key} label={`时段参数 ${index + 1}`}>
-        <div className="mb-2 flex flex-wrap items-center gap-3">
-          <span className="text-sm text-ink-2">从</span>
-          <MacTimePicker value={rule.start} onChange={start => update(rule.key, { start })} ariaLabel="开始时间" />
-          <span className="inline-flex items-baseline whitespace-nowrap text-sm text-ink-2">至<NextDayMarker active={!!rule.end && rule.end < rule.start} /></span>
-          <MacTimePicker value={rule.end} onChange={end => update(rule.key, { end })} ariaLabel="结束时间" />
-          <span className="text-xs text-ink-3">北京时间</span>
-          <button type="button" className="ml-auto inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-chip border border-line bg-fill/40 px-2.5 py-1.5 text-xs text-ink-1 transition-colors duration-150 hover:border-warn/50 hover:bg-warn/5 hover:text-warn active:bg-warn/10 focus-visible:outline-2 focus-visible:outline-accent motion-reduce:transition-none"
-            onClick={() => withViewTransition(() => { onScheduleChange(schedule.filter(item => item.key !== rule.key)); setSelection('trade') }, 'algorithm-config')}><Trash2 size={14} aria-hidden />删除时段</button>
-        </div>
-        <p className="mb-4 text-xs text-ink-3">按调仓开始时间选择，执行期间保持不变。</p>
-        {timeErrors[index] && <p role="alert" className="mb-3 text-sm text-warn">{timeErrors[index]}</p>}
-        <AlgorithmEditor slot="trade" channel={channel} value={rule.algorithm} onChange={value => { if (value) update(rule.key, { algorithm: value }) }}
-          onValidationError={error => onValidationError(rule.key, error)} />
-        {errors[rule.key] && <p role="alert" className="py-2 text-sm text-warn">{errors[rule.key]}</p>}
-      </AlgorithmPanel>)}
-      <AlgorithmPanel active={active === 'empty'} label="清仓算法参数">
-        <h2 className="mb-4 text-base font-semibold">清仓算法</h2>
-        <AlgorithmEditor slot="empty" channel={channel} value={empty} allowClear onChange={onEmptyChange}
-          onValidationError={error => onValidationError('empty', error)} nameVtName={emptyNameVt} />
-        {errors.empty && <p role="alert" className="py-2 text-sm text-warn">{errors.empty}</p>}
-      </AlgorithmPanel>
+    <section aria-label="当前算法编辑区" className="contents min-[900px]:col-start-2 min-[900px]:row-span-4 min-[900px]:row-start-1 min-[900px]:grid min-[900px]:min-h-0 min-[900px]:min-w-0 min-[900px]:grid-rows-[minmax(0,1fr)_auto] min-[900px]:border-l min-[900px]:border-line min-[900px]:pl-5">
+      <div className="algorithm-config-editor col-start-1 row-start-2 min-h-0 min-w-0 overflow-hidden bg-bg min-[900px]:row-start-1">
+        <AlgorithmPanel active={active === 'trade'} label="默认算法参数">
+          <h2 className="mb-1 text-base font-semibold">默认算法</h2>
+          <p className="mb-4 text-xs text-ink-3">未覆盖的时间使用这套配置。</p>
+          <AlgorithmEditor slot="trade" channel={channel} value={trade} onChange={value => { if (value) onTradeChange(value) }}
+            onValidationError={error => onValidationError('trade', error)} nameVtName={tradeNameVt} />
+          {errors.trade && <p role="alert" className="py-2 text-sm text-warn">{errors.trade}</p>}
+        </AlgorithmPanel>
+        {schedule.map((rule, index) => <AlgorithmPanel key={rule.key} active={active === rule.key} label={`时段参数 ${index + 1}`}>
+          <div className="mb-2 flex flex-wrap items-center gap-3">
+            <span className="text-sm text-ink-2">从</span>
+            <MacTimePicker value={rule.start} onChange={start => update(rule.key, algorithmStartChange(rule, start))} ariaLabel="开始时间" />
+            <span className="inline-flex items-baseline whitespace-nowrap text-sm text-ink-2">至<NextDayMarker active={!!rule.end && rule.end < rule.start} /></span>
+            <MacTimePicker value={rule.end} onChange={end => update(rule.key, { end, autoEnd: false })} ariaLabel="结束时间" />
+            <span className="text-xs text-ink-3">北京时间</span>
+            <button type="button" className="ml-auto inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-chip border border-line bg-fill/40 px-2.5 py-1.5 text-xs text-ink-1 transition-colors duration-150 hover:border-warn/50 hover:bg-warn/5 hover:text-warn active:bg-warn/10 focus-visible:outline-2 focus-visible:outline-accent motion-reduce:transition-none"
+              onClick={() => withViewTransition(() => { onScheduleChange(schedule.filter(item => item.key !== rule.key)); setSelection('trade') }, 'algorithm-config')}><Trash2 size={14} aria-hidden />删除时段</button>
+          </div>
+          <p className="mb-4 text-xs text-ink-3">按调仓开始时间选择，执行期间保持不变。</p>
+          {timeErrors[index] && <p role="alert" className="mb-3 text-sm text-warn">{timeErrors[index]}</p>}
+          <AlgorithmEditor slot="trade" channel={channel} value={rule.algorithm} onChange={value => { if (value) update(rule.key, { algorithm: value }) }}
+            onValidationError={error => onValidationError(rule.key, error)} />
+          {errors[rule.key] && <p role="alert" className="py-2 text-sm text-warn">{errors[rule.key]}</p>}
+        </AlgorithmPanel>)}
+        <AlgorithmPanel active={active === 'empty'} label="清仓算法参数">
+          <h2 className="mb-4 text-base font-semibold">清仓算法</h2>
+          <AlgorithmEditor slot="empty" channel={channel} value={empty} allowClear onChange={onEmptyChange}
+            onValidationError={error => onValidationError('empty', error)} nameVtName={emptyNameVt} />
+          {errors.empty && <p role="alert" className="py-2 text-sm text-warn">{errors.empty}</p>}
+        </AlgorithmPanel>
+      </div>
+      <div className="col-start-1 row-start-4 min-w-0 min-[900px]:row-start-2">{saveBar}</div>
     </section>
   </div>
 }

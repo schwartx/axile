@@ -12,9 +12,14 @@ export function ReplayRecordingStatus({ accountId, savedEnabled }: { accountId: 
   const result = usePolling(fetcher, { queryKey: `replay:status:${accountId}:${savedEnabled}`, intervalMs: 2500, enabled: Number.isSafeInteger(accountId) && accountId > 0 })
   const state = result.data
   const pending = state && state.effective_version !== state.config_version
-  return <div className="text-[12px] leading-5 text-ink-2">
-    <span role="status">{state ? labels[state.state] ?? '状态未知' : result.loading ? '正在读取实际状态…' : '实际状态未知'}{pending ? ' · 设置尚待生效' : ''}</span>
-    {(state?.reason || state?.error) && <p className="text-warn">{reasons[state.reason ?? state.error ?? ''] ?? state.reason ?? state.error}</p>}
-    <ErrorNotice intent="read" variant="compact" title="录制状态读取失败" error={result.error} contextKey={accountId} onRetry={result.refresh} />
+  const label = state ? labels[state.state] ?? '状态未知' : result.loading ? '正在读取实际状态…' : '实际状态未知'
+  const detail = `${label}${pending ? ' · 设置尚待生效' : ''}`
+  const warning = state?.state === 'error' || state?.state === 'unsupported'
+  return <div className="contents text-[12px] leading-5 text-ink-2">
+    <span role="status" className={warning ? 'col-span-full text-warn' : 'sr-only'}>{detail}</span>
+    {(state?.reason || state?.error) && <p className="col-span-full text-warn">{reasons[state.reason ?? state.error ?? ''] ?? state.reason ?? state.error}</p>}
+    <div className="col-span-full">
+      <ErrorNotice intent="read" variant="compact" title="录制状态读取失败" error={result.error} contextKey={accountId} onRetry={result.refresh} />
+    </div>
   </div>
 }

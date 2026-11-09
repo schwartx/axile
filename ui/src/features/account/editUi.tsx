@@ -337,7 +337,7 @@ export function EditSaveBar({
         aria-hidden={layout === 'fixed' && !open}
       >
         <div className={layout === 'inline' ? 'w-full' : 'mx-auto w-full max-w-[2176px] px-10'}>
-          <div className="flex items-center gap-4 py-3">
+          <div className={`flex items-center gap-4 ${layout === 'inline' ? 'py-2' : 'py-3'}`}>
             <div className={`min-w-0 flex-1 ${layout === 'inline' ? 'min-h-10' : ''}`}>
               <div className="text-[12px] font-semibold tracking-wide text-ink-3">
                 {layout === 'inline' ? <InkRewrite text={statusText} /> : statusText}{blocked && <span className="text-warn"> · 有错误</span>}

@@ -9,6 +9,7 @@ interface ExecutionTimeoutInputProps {
   onChange: (value: string) => void
   describedBy?: string
   invalid?: boolean
+  size?: 'sm' | 'md'
 }
 
 /**
@@ -22,6 +23,7 @@ export function ExecutionTimeoutInput({
   onChange,
   describedBy,
   invalid = false,
+  size,
 }: ExecutionTimeoutInputProps) {
   const parsedValue = Number(value)
   const validValue =
@@ -34,6 +36,7 @@ export function ExecutionTimeoutInput({
   return (
     <div className="flex items-center gap-1.5">
       <StepperNumberInput
+        size={size}
         id={id}
         value={value}
         onChange={onChange}
