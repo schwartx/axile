@@ -55,8 +55,8 @@ def _sample_assets() -> UnifiedAccountAssets:
     )
 
 
-def test_custom_notification_uses_saved_key_without_saving(monkeypatch) -> None:
-    """通用函数无需飞书凭证；省略凭证字段时继续使用账户保存值。"""
+def test_custom_notification_preview_does_not_inherit_account_key(monkeypatch) -> None:
+    """试跑自定义通知不会注入账户凭据，也不会更改账户配置。"""
     account = build_account()
     captured = []
     monkeypatch.setattr(account_feishu, "_get_account_or_404", AsyncMock(return_value=account))
@@ -77,6 +77,18 @@ def test_custom_notification_uses_saved_key_without_saving(monkeypatch) -> None:
             )
         )
         assert result.ok is True
-        assert captured[-1]["feishu_key"] == key
+        assert captured[-1]["feishu_key"] is None
         assert account.feishu_key == key
         assert account.execution_notification_code is None
+
+    result = asyncio.run(
+        account_feishu.test_account_notification_function(
+            SimpleNamespace(close=AsyncMock()),
+            1,
+            account_feishu.AccountNotificationFunctionTestRequest(
+                code=account_feishu.DEFAULT_ACCOUNT_NOTIFICATION_CODE
+            ),
+        )
+    )
+    assert result.ok is True
+    assert captured[-1]["feishu_key"] == "saved-key"

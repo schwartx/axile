@@ -561,23 +561,29 @@ def test_real_process_session_reuse_disconnect_and_reconnect_without_broker(data
 
     async def run():
         await manager.prepare_account(snapshot)
-        first = manager._workers[1].process.pid
+        process = manager._workers[1].process
+        first = process.pid
         assert status().status == "ready"
         await manager.get_account_assets(snapshot)
         assert manager._workers[1].process.pid == first
         assert status().last_success_at is not None
         await manager.disconnect_account(snapshot)
         assert status().status == "disconnected" and status().manually_disconnected
-        await manager.drop_account(1)
+        assert not process.is_alive() and not manager._workers
+        await manager.disconnect_account(snapshot)
+        assert not manager._workers
         # 模拟服务重启：新的 worker 仍须继承数据库中保存的主动断开意愿。
         from axile.server.connection_runtime import clear_sessions
 
         clear_sessions()
         with pytest.raises(AccountConnectionUnavailable, match="请先连接账户"):
             await manager.get_account_assets(snapshot)
+        with pytest.raises(AccountConnectionUnavailable, match="显式重新连接"):
+            await manager.prepare_account(snapshot)
         assert not manager._workers
         assert status().status == "disconnected"
         await manager.prepare_account(snapshot, force_reconnect=True)
+        assert manager._workers[1].process.pid != first
         assert status().status == "ready" and not status().manually_disconnected
         await manager.drop_account(1)
         assert status().status == "disconnected"

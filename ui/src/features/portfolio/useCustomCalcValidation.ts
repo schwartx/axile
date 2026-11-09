@@ -4,6 +4,7 @@ import type { PythonValidationState } from '@/components/ui/PythonFunctionEditor
 import type { SelectOption } from '@/components/ui/Select'
 import { channelLabel } from '@/features/dashboard/display'
 import { validateCustomCalc } from '@/lib/api/portfolios'
+import { useChannelCatalogStore } from '@/stores/channels'
 import { useDomainStore } from '@/stores/domain'
 import type { ValidateCustomCalcResult } from '@/types/api'
 
@@ -27,9 +28,16 @@ export interface CustomCalcValidation {
  * 改代码不清空旧结果，仅降级 stale（清空收放会让打字中的代码跳）。
  * 工作台编辑页与初始化向导（console 布局）共用这一份逻辑。
  */
-export function useCustomCalcValidation(code: string): CustomCalcValidation {
-  const [accountId, setAccountId] = useState<number | null>(null)
+export function useCustomCalcValidation(code: string, market: string | undefined): CustomCalcValidation {
+  const [selectedAccountId, setAccountId] = useState<number | null>(null)
   const accounts = useDomainStore((state) => state.accounts) ?? []
+  const channels = useChannelCatalogStore((state) => state.channels)
+  const marketId = (value: string) => channels?.find(
+    (channel) => channel.market === value || channel.portfolio.market_label === value,
+  )?.market ?? value
+  const portfolioMarket = market === undefined ? undefined : marketId(market)
+  const matchingAccounts = accounts.filter((account) => marketId(account.market) === portfolioMarket)
+  const accountId = matchingAccounts.some((account) => account.account_id === selectedAccountId) ? selectedAccountId : null
   const trial = usePythonRun<ValidateCustomCalcResult>({
     code, contextKey: String(accountId),
     execute: (draft) => validateCustomCalc({ custom_calc_py_code: draft, account_id: accountId }),
@@ -47,7 +55,7 @@ export function useCustomCalcValidation(code: string): CustomCalcValidation {
   // 控件只说「样例上下文」会把这两级语义全吞掉。
   const contextOptions: SelectOption<number | null>[] = [
     { value: null, label: '样例数据', description: '固定样例资产，价格恒为 100，不连接真实渠道' },
-    ...accounts.map((account) => ({
+    ...matchingAccounts.map((account) => ({
       value: account.account_id,
       label: account.name,
       description: '真实持仓与行情 · 主动交易会产生真实委托',

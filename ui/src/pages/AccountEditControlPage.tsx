@@ -497,7 +497,8 @@ function ControlOperationRow({
         </div>
       </button>
       <div inert={!open} className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-        <div className="min-h-0 overflow-hidden">
+        {/* 展开时焦点或滚动到控件不能移动裁剪层，否则控件会在点击过程中移位。 */}
+        <div className="min-h-0 overflow-clip">
           <div className="border-t border-line px-4 pb-3">
             <ControlPriorityField preset={preset.priority} custom={custom?.priority} onChange={setPriority} />
             <div className="grid grid-cols-1 gap-x-10 md:grid-cols-2">

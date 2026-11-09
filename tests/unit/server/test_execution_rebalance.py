@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from typing import cast
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -232,10 +233,10 @@ def test_trade_builds_model_before_execute_and_persists_dict(
     assert "account_config" in raw_input
 
 
-def test_trade_defaults_gm_ashare_short_leverage_to_zero_when_unset(
+def test_trade_defaults_gm_position_sizing_to_one_times_when_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """GM+A股 且未显式配置 short_leverage 时，应默认按 long-only 处理负目标。"""
+    """未显式配置杠杆时，正负目标均按 1 倍规范化。"""
     monkeypatch.setattr(
         rebalance_execution, "clock_now", lambda **kwargs: datetime(2026, 11, 3, 10, 0, tzinfo=SHANGHAI)
     )
@@ -293,7 +294,7 @@ def test_trade_defaults_gm_ashare_short_leverage_to_zero_when_unset(
     standard_input = cast(UnifiedStandardInput, manager.trade_calls[0]["standard_input"])
     assert standard_input.curr_target == {
         "600000.SH": 0.13,
-        "588000.SH": 0.0,
+        "588000.SH": -0.09,
     }
 
 
@@ -350,6 +351,12 @@ def test_trade_routes_gm_account_to_worker_manager(
         "get_latest_success_execute_record_by_account_id",
         fake_get_latest_success_execute_record_by_account_id,
     )
+    context = gm_session_context(
+        GMSessionSettings(opening_cancelable={"enabled": True, "time": "09:15"}).model_dump(),
+        datetime(2026, 9, 1, 9, 19, tzinfo=SHANGHAI),
+    )
+    get_intent = AsyncMock(return_value=SimpleNamespace(payload={"gm_session": context}))
+    monkeypatch.setattr(execution_intents, "get_intent", get_intent)
     monkeypatch.setattr(worker_state, "create_executor_instance", unexpected_create_executor_instance)
     monkeypatch.setattr(execution_backend, "get_worker_backend_manager", lambda: manager)
     monkeypatch.setattr(execution_backend, "append_execution_event", unexpected_append_execution_event)
@@ -371,6 +378,9 @@ def test_trade_routes_gm_account_to_worker_manager(
     assert cast("dict[str, object]", trade_call["audit_input"])["curr_target"] == {"600000.SH": 0.12}
     assert trade_call["execution_id"] == "exec-gm-worker-trade-1"
     assert trade_call["trigger_source"] == "manual"
+    get_intent.assert_awaited_once_with("exec-gm-worker-trade-1")
+    for key in ("standard_input_dict", "audit_input"):
+        assert trade_call[key]["extra"]["audit"]["gm_session"] == context
     assert trade_call["cleanup"] is True
     assert captured["raw_input"] == cast(dict[str, object], trade_call["standard_input_dict"])
     assert captured["execution_id"] == "exec-gm-worker-trade-1"
@@ -1051,7 +1061,8 @@ def test_trade_binds_account_control_guard(
     assert fake_executor.account_control_guard is None
 
 
-def test_standard_input_accepts_database_trade_channel_string() -> None:
+@pytest.mark.parametrize("trigger_source", ["scheduler", "manual"])
+def test_standard_input_accepts_database_trade_channel_string(trigger_source) -> None:
     """Text 列读回普通 str 时，调仓输入仍应能正常构造。"""
     account = build_account(
         account_config={
@@ -1072,7 +1083,7 @@ def test_standard_input_accepts_database_trade_channel_string() -> None:
         curr_target={"SHSE.600000": 0.1},
         last_target={"SZSE.000001": 0.2},
         execution_id="exec-db-channel-1",
-        trigger_source="scheduler",
+        trigger_source=trigger_source,
         gm_session=context,
     )
 

@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
-from axile.channels.gm_sessions import SHANGHAI, GMSessionSettings, gm_session_context
+from axile.channels.gm_sessions import SHANGHAI, GMSessionSettings, check_gm_operation, gm_session_context
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
 from axile.server.db.models import Account
@@ -94,7 +94,8 @@ def test_submit_intent_creates_queued_rebalance(monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.parametrize("cross_boundary", [False, True])
-def test_gm_intent_keeps_original_phase_and_settings(monkeypatch, cross_boundary):
+@pytest.mark.parametrize("trigger_source", ["scheduler", "manual"])
+def test_gm_intent_keeps_original_phase_and_settings(monkeypatch, cross_boundary, trigger_source):
     planned = datetime(2026, 9, 1, 9, 19, tzinfo=SHANGHAI)
     settings = GMSessionSettings(
         opening_cancelable={"enabled": True, "time": "09:15"},
@@ -112,10 +113,10 @@ def test_gm_intent_keeps_original_phase_and_settings(monkeypatch, cross_boundary
                 await session.commit()
             if cross_boundary:
                 with pytest.raises(ValueError, match="所属交易阶段已结束"):
-                    await submit_intent(1, ExecutionKind.REBALANCE, "scheduler", payload={"gm_session": context})
+                    await submit_intent(1, ExecutionKind.REBALANCE, trigger_source, payload={"gm_session": context})
                 assert get_queued_execution_id(1) is None
                 return
-            result = await submit_intent(1, ExecutionKind.REBALANCE, "scheduler", payload={"gm_session": context})
+            result = await submit_intent(1, ExecutionKind.REBALANCE, trigger_source, payload={"gm_session": context})
             async with factory() as session:
                 account = await session.get(Account, 1)
                 account.sqlmodel_update({"gm_sessions": GMSessionSettings()})
@@ -123,6 +124,40 @@ def test_gm_intent_keeps_original_phase_and_settings(monkeypatch, cross_boundary
             saved = await get_intent(result.execution_id)
             assert saved.payload["gm_session"] == context
             assert saved.payload["gm_session"]["sessions"]["opening_cancelable"]["enabled"] is True
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_manual_gm_intent_freezes_only_enabled_auction_before_coalescing(monkeypatch, enabled):
+    now = datetime(2026, 9, 1, 9, 19, tzinfo=SHANGHAI)
+    sessions = GMSessionSettings(opening_cancelable={"enabled": enabled, "time": "09:15"})
+    monkeypatch.setattr("axile.executor.algorithms.utils.clock.clock_now", lambda **_: now)
+
+    async def run():
+        nonlocal now
+        async with _intent_db(monkeypatch) as factory:
+            async with factory() as session:
+                account = await session.get(Account, 1)
+                account.sqlmodel_update({"trade_channel": TradeChannel.GM, "gm_sessions": sessions})
+                await session.commit()
+            first = await submit_intent(1, ExecutionKind.REBALANCE, "manual")
+            intent = await get_intent(first.execution_id)
+            context = intent.payload.get("gm_session")
+            if not enabled:
+                assert context is None
+                with pytest.raises(ValueError, match="不允许本次下单"):
+                    check_gm_operation(now, context=context)
+                return
+            assert context == gm_session_context(sessions.model_dump(), now)
+            now = now.replace(minute=20)
+            second = await submit_intent(1, ExecutionKind.REBALANCE, "manual")
+            assert second.outcome == "coalesced"
+            assert second.execution_id == first.execution_id
+            intent = await get_intent(first.execution_id)
+            assert intent.payload["gm_session"] == context
+            with pytest.raises(ValueError, match="所属交易阶段已结束"):
+                check_gm_operation(now, context=intent.payload["gm_session"])
 
     asyncio.run(run())
 

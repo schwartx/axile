@@ -9,12 +9,12 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
 from sqlalchemy import func
-from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
 from axile.common.config import settings
 from axile.executor.order_submissions import OrderSubmissionFact, OrderSubmissionRecorder
+from axile.server.core.db import sqlite_url_at_startup
 from axile.server.db.models.order_submission import OrderSubmission
 
 
@@ -34,7 +34,7 @@ def create_order_submission_recorder(account_id: int, *, source: str = "script")
 
 def submission_database() -> str:
     """返回共用服务数据库；不允许静默写入另一份临时数据库。"""
-    url = make_url(str(settings.sqlalchemy_database_uri))
+    url = sqlite_url_at_startup(str(settings.sqlalchemy_database_uri))
     if url.get_backend_name() != "sqlite" or not url.database or url.database == ":memory:":
         raise ValueError("原生报单记录需要持久化 SQLite 服务数据库")
     return url.database

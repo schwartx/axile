@@ -6,8 +6,8 @@ from typing import Literal
 from axile.executor.models.unified_price import UnifiedPriceData
 
 MarketDataPurpose = Literal["sizing", "order"]
-DEFAULT_QUOTE_MAX_AGE_SECONDS = 5.0
-"""沿用 OrderTracker 的默认五秒时效；渠道已有配置时覆盖此默认值。"""
+DEFAULT_QUOTE_MAX_AGE_SECONDS = 10.0
+"""与 OrderTracker 共用默认十秒时效；渠道已有配置时覆盖此默认值。"""
 
 QUOTE_FUTURE_TOLERANCE_SECONDS = 1.0
 

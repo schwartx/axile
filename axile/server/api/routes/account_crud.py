@@ -233,7 +233,15 @@ async def _create_account_record(
     if code is None and account.feishu_key and "execution_notification_code" not in account.model_fields_set:
         code = DEFAULT_ACCOUNT_NOTIFICATION_CODE
     db_account = Account.model_validate(
-        account.model_copy(update={"account_config": account_config, "execution_notification_code": code})
+        account.model_copy(
+            update={
+                "account_config": account_config,
+                "execution_notification_code": code,
+                "feishu_key": None
+                if code and code.strip() != DEFAULT_ACCOUNT_NOTIFICATION_CODE.strip()
+                else account.feishu_key,
+            }
+        )
     )
     session.add(db_account)
     await session.flush()
@@ -813,6 +821,11 @@ async def _update_account(
         next_notification_code = data.get("execution_notification_code", db_account.execution_notification_code)
         if next_notification_code:
             validate_notification_function(str(next_notification_code))
+            if (
+                "execution_notification_code" in data
+                and str(next_notification_code).strip() != DEFAULT_ACCOUNT_NOTIFICATION_CODE.strip()
+            ):
+                data["feishu_key"] = None
         if account.account_config is not None or account.trade_channel is not None:
             data["account_config"] = normalized_account_config
         # 调度开关只改变后续触发；保留登录会话，避免停启或重复保存导致 SDK 重登录。

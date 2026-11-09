@@ -27,6 +27,9 @@ from pydantic_settings import (
 PROJECT_NAME = "AXILE"
 API_V1_STR = "/api/v1"
 
+# GM 等渠道 SDK 可能在账户进程内切换工作目录。
+STARTUP_DIRECTORY = Path.cwd()
+
 # 配置文件环境变量：仅指定「读取哪个 TOML 文件」的启动期指针，**不承载任何配置值本身**。
 # 默认 ``./config.toml``（由初始化 / 系统配置向导生成、维护，用户不应手改）；外部启动器可用它
 # 指向另一份独立配置而不污染默认文件。

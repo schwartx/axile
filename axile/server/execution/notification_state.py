@@ -7,6 +7,7 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlmodel import col
 
 from axile.common.config import settings
+from axile.server.core.db import sqlite_url_at_startup
 from axile.server.db.models.account_notification import AccountNotificationState
 from axile.server.db.models.system_notification import SystemNotificationState, SystemNotificationStatePublic
 
@@ -14,7 +15,7 @@ from axile.server.db.models.system_notification import SystemNotificationState, 
 @lru_cache(maxsize=1)
 def _notification_engine() -> Engine:
     """线程与 worker 各自创建连接池，不复用 asyncio session。"""
-    engine = create_engine(str(settings.sqlalchemy_database_uri).replace("sqlite+aiosqlite:", "sqlite:"))
+    engine = create_engine(sqlite_url_at_startup(str(settings.sqlalchemy_database_uri)).set(drivername="sqlite"))
 
     @event.listens_for(engine, "connect")
     def configure_connection(connection, _record) -> None:

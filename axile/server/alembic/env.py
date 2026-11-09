@@ -8,6 +8,7 @@ from sqlalchemy import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from axile.common.config import settings
+from axile.server.core.db import sqlite_url_at_startup
 from axile.server.db.models import SQLModel
 
 # 这是 Alembic 的配置对象，可提供
@@ -33,7 +34,7 @@ target_metadata = SQLModel.metadata
 
 def get_url() -> str:
     """返回已配置的 SQLAlchemy 数据库 URL."""
-    return str(settings.sqlalchemy_database_uri)
+    return str(sqlite_url_at_startup(str(settings.sqlalchemy_database_uri)))
 
 
 def run_migrations_offline() -> None:

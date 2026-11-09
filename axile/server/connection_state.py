@@ -24,6 +24,7 @@ from axile.executor.connection_state import (
     connection_observer_scope,
     current_connection_observer,
 )
+from axile.server.core.db import sqlite_url_at_startup
 from axile.server.db.models.account_connection import (
     AccountConnectionDetail,
     AccountConnectionPublic,
@@ -40,7 +41,7 @@ def connection_config_key(channel: object, config: object) -> str:
 @lru_cache(maxsize=1)
 def connection_engine() -> Engine:
     """为主服务后台线程提供独立同步连接，不复用请求事务。"""
-    engine = create_engine(str(settings.sqlalchemy_database_uri).replace("sqlite+aiosqlite:", "sqlite:"))
+    engine = create_engine(sqlite_url_at_startup(str(settings.sqlalchemy_database_uri)).set(drivername="sqlite"))
 
     @event.listens_for(engine, "connect")
     def configure(connection, _record) -> None:
@@ -72,6 +73,13 @@ def _saved_key(session: Session, account_id: int) -> str | None:
         .where(col(Account.id) == account_id)
     ).first()
     return connection_config_key(*row) if row is not None else None
+
+
+def is_manually_disconnected(account_id: int, config_key: str) -> bool:
+    """读取当前配置持久化的主动断开意愿。"""
+    with Session(connection_engine()) as session:
+        state = session.get(AccountConnectionState, account_id)
+        return state is not None and state.config_key == config_key and state.manually_disconnected
 
 
 def begin_connection_instance(account: object) -> ConnectionBinding | None:
