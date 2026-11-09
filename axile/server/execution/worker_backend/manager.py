@@ -766,6 +766,28 @@ class WorkerBackendManager:
             raise WorkerBackendExecutionError.from_payload(response.error, "账户通道准备失败")
         return response.output_payload
 
+    async def drop_idle_account(self, account_id: int) -> bool:
+        """盘前回收空闲账户的 worker；有在途请求或调仓时跳过。"""
+        return await asyncio.to_thread(self._drop_idle_account_blocking, account_id)
+
+    def _drop_idle_account_blocking(self, account_id: int) -> bool:
+        from axile.server.execution.registry import get_queued_execution_id, get_running_execution_id
+
+        with self._lock:
+            if get_queued_execution_id(account_id) or get_running_execution_id(account_id):
+                return False
+            handle = self._workers.get(account_id)
+            if handle is None:
+                return True
+            if not handle.request_lock.acquire(blocking=False):
+                return False
+            handle.retired = True
+            handle.request_lock.release()
+            # 旧会话先退出，防止同一账户在关闭期间另起连接。
+            self._workers.pop(account_id)
+            self._dispose_handle(handle)
+        return True
+
     async def drop_account(self, account_id: int) -> None:
         """关闭并移除指定账户的常驻 Worker。"""
         await asyncio.to_thread(self._drop_account_blocking, account_id)

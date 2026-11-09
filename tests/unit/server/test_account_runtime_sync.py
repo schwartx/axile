@@ -259,7 +259,7 @@ def test_uninitialized_waits_and_session_prepare_updates_sync(tmp_path, monkeypa
             assert bool(sync.synchronized_at) is (mode == "success")
             assert [attempt.succeeded for attempt in attempts] == [False, mode == "success"]
             assert reason in attempts[0].error
-            assert resets == [True, True]
+            assert resets == [True, "when_idle"]
 
     sink = logger.add(lambda message: records.append(message.record))
     try:
