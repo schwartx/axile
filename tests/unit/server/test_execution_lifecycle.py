@@ -858,7 +858,9 @@ def test_direct_worker_entry_preserves_promotion_and_termination_boundaries(monk
             else clear_positions._run_clear_positions(account, execution_id="boundary")
         )
     assert raised.value is error
-    promote.assert_awaited_once_with("boundary", account.id)
+    promote.assert_awaited_once_with(
+        "boundary", account.id, **({"algorithm": "SINGLE-MAKER"} if kind == ExecutionKind.REBALANCE else {})
+    )
     assert dispatch.await_count == (0 if phase == "promotion" else 1)
     failed.assert_not_awaited()
     archived.assert_not_awaited()

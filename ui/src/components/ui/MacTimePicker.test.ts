@@ -10,10 +10,10 @@ test('时间范围钳住回显并固定小时，默认仍保留完整时分选�
   for (const [value, minute] of [['08:00', '20'], ['09:22', '22'], ['10:00', '24'], ['', '––']]) {
     const html = render(value)
     expect(html).toMatch(/aria-label="时" disabled=""/)
-    expect(html).toContain(`>${minute}</button>`)
+    expect(html).toContain(minute === '––' ? '>––</button>' : `aria-label="${minute}"`)
   }
   const full = render('23:59', false)
   expect(full).not.toContain('disabled=')
-  expect(full).toContain('>23</button>')
-  expect(full).toContain('>59</button>')
+  expect(full).toContain('aria-label="23"')
+  expect(full).toContain('aria-label="59"')
 })

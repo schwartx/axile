@@ -39,7 +39,11 @@ function MethodParamsStage({ method, children }: { method: string; children: Rea
 
   // 换 method：先淡出 → 换内容 → 淡入。
   useEffect(() => {
-    if (method === methodRef.current) return
+    if (method === methodRef.current) {
+      // 快速切回仍在显示的算法时，撤销尚未完成的淡出。
+      setOpaque(true)
+      return
+    }
 
     const reduced =
       typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -218,7 +222,7 @@ function NumericSchemaField({ field, value, onChange, describedBy }: {
     lastEmitted.current = value
   }, [value, external])
   const parsed = draft.trim() === '' ? Number.NaN : Number(draft)
-  const raw = parsed / display.scale
+  const raw = draft.trim() === '' && spec.nullable ? null : parsed / display.scale
   const schema = { type: 'object', properties: { [field.name]: spec }, required: [field.name] }
   const error = validateAlgorithmSchemaParams({ [field.name]: raw }, schema)
   const mode = spec['x-control'] === 'presets' || spec['x-control'] === 'slider' || spec['x-control'] === 'numberflow' ? spec['x-control'] : 'stepper'
@@ -226,12 +230,13 @@ function NumericSchemaField({ field, value, onChange, describedBy }: {
   const min = display.min
   const max = display.max
   return <ParameterNumberInput label={spec.title || field.name} value={draft} unit={display.suffix}
+    duration={spec.type === 'integer' && display.suffix === '秒' && !spec.nullable}
     step={display.step} min={min} max={max} exclusiveMin={spec.exclusiveMinimum !== undefined} exclusiveMax={spec.exclusiveMaximum !== undefined} decimal={spec.type === 'number'} mode={mode}
     presets={spec['x-presets']?.map((item) => item * display.scale)}
     sliderMin={spec['x-slider-min']} sliderMax={spec['x-slider-max']} describedBy={describedBy}
     error={error ?? undefined} onChange={(next) => {
       setDraft(next)
-      const nextValue = next.trim() === '' ? Number.NaN : Number(next) / display.scale
+      const nextValue = next.trim() === '' ? (spec.nullable ? null : Number.NaN) : Number(next) / display.scale
       lastEmitted.current = nextValue
       onChange(nextValue)
     }} />
@@ -246,6 +251,9 @@ export function SchemaFieldRow({ field, value, onChange }: {
   const spec = field.schema
   const label = spec.title || field.name
   const hint = spec.description
+  const error = validateAlgorithmSchemaParams({ [field.name]: value }, {
+    type: 'object', properties: { [field.name]: spec }, required: field.required ? [field.name] : [],
+  })
   const heading = <span className="min-w-0 text-[15px]">{label}{hint && <span id={hintId} className={HINT}>{hint}</span>}</span>
   const options = algorithmFieldOptions(spec)
   if (options && (spec['x-control'] === 'choice' || spec['x-control'] === 'cards')) return (
@@ -265,11 +273,16 @@ export function SchemaFieldRow({ field, value, onChange }: {
         onChange={(next) => onChange(spec.enum?.find((item) => String(item) === next) ?? next)} />
     </div>
   )
+  if (spec.type === 'boolean' && spec.nullable) return (
+    <div className={ROW}>{heading}<Select ariaLabel={label} value={value == null ? '' : String(value)}
+      options={[{ value: '', label: '未设置' }, { value: 'true', label: '开启' }, { value: 'false', label: '关闭' }]}
+      onChange={(next) => onChange(next === '' ? null : next === 'true')} /></div>
+  )
   if (spec.type === 'boolean') return (
     <div className={ROW}>{heading}<Toggle on={value === true} ariaLabel={label} onClick={() => onChange(value !== true)} /></div>
   )
-  if (spec.type === 'integer' || spec.type === 'number') {
-    if (['stepper', 'numberflow', 'presets', 'slider'].includes(spec['x-control'] ?? '')) return (
+  if (!spec.decimal && (spec.type === 'integer' || spec.type === 'number')) {
+    if ((spec.type === 'integer' && spec['x-unit'] === '秒') || spec.nullable || ['stepper', 'numberflow', 'presets', 'slider'].includes(spec['x-control'] ?? '')) return (
       <div className={ROW}>{heading}<NumericSchemaField field={field} value={value} onChange={onChange} describedBy={hint ? hintId : undefined} /></div>
     )
     const display = algorithmNumericDisplay(spec, value)
@@ -277,7 +290,10 @@ export function SchemaFieldRow({ field, value, onChange }: {
   }
   return (
     <div className={ROW}>{heading}<input className={VALUE_FIELD} aria-label={label}
-      value={typeof value === 'string' ? value : ''} onChange={(event) => onChange(event.target.value)} /></div>
+      aria-describedby={hint ? hintId : undefined} aria-invalid={!!error || undefined} inputMode={spec.decimal ? 'decimal' : undefined}
+      placeholder={spec.nullable ? '未设置' : undefined}
+      value={typeof value === 'string' || (spec.decimal && typeof value === 'number') ? String(value) : ''}
+      onChange={(event) => onChange(event.target.value === '' && spec.nullable ? null : event.target.value)} /></div>
   )
 }
 

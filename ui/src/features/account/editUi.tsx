@@ -8,6 +8,7 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Link } from '@/components/ui/nav'
 import { OverflowText } from '@/components/ui/OverflowText'
+import { InkRewrite } from '@/components/ui/InkRewrite'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { MOTION_LAYOUT } from '@/lib/viewTransition'
@@ -287,10 +288,10 @@ export function EditWorktopBar({
 }
 
 /**
- * 子页底栏：常挂载；有改动时仅 opacity 到位（不 slide，方向 α）。
+ * 子页底栏：固定模式有改动时仅 opacity 到位；inline 模式常驻占位，避免编辑区随脏状态变高。
  *
  * 取消与保存都不离开本页：取消就地重置草稿，保存成功后 dirty 收敛、
- * 底栏自行淡出（与 SettingsSaveBar 语义一致）。
+ * 固定模式底栏自行淡出（与 SettingsSaveBar 语义一致）。
  */
 export function EditSaveBar({
   changes,
@@ -299,6 +300,7 @@ export function EditSaveBar({
   onSave,
   saving,
   error = null,
+  layout = 'fixed',
 }: {
   changes: string[]
   blocked?: boolean
@@ -306,12 +308,15 @@ export function EditSaveBar({
   onSave: () => void
   saving?: boolean
   error?: unknown | null
+  layout?: 'fixed' | 'inline'
 }) {
   const open = changes.length > 0
+  const statusText = open ? `待保存 · ${changes.length} 项` : '没有未保存的修改'
   const barRef = useRef<HTMLDivElement>(null)
   const [barHeight, setBarHeight] = useState(0)
 
   useLayoutEffect(() => {
+    if (layout === 'inline') return
     const bar = barRef.current
     if (!bar) return
     const updateHeight = () => setBarHeight(bar.offsetHeight)
@@ -319,42 +324,45 @@ export function EditSaveBar({
     const observer = new ResizeObserver(updateHeight)
     observer.observe(bar)
     return () => observer.disconnect()
-  }, [])
+  }, [layout])
 
   return (
     <>
-      <div aria-hidden className="shrink-0" style={{ height: open ? barHeight : 0 }} />
+      {layout === 'fixed' && <div aria-hidden className="shrink-0" style={{ height: open ? barHeight : 0 }} />}
       <div
         ref={barRef}
-        className={`fixed right-0 bottom-0 left-[218px] z-30 border-t border-line bg-surface/85 backdrop-blur-md transition-opacity ${MOTION_LAYOUT} ${
+        className={layout === 'inline' ? 'shrink-0 border-t border-line' : `fixed right-0 bottom-0 left-[218px] z-30 border-t border-line bg-surface/85 backdrop-blur-md transition-opacity ${MOTION_LAYOUT} ${
           open ? 'opacity-100' : 'pointer-events-none opacity-0'
         }`}
-        aria-hidden={!open}
+        aria-hidden={layout === 'fixed' && !open}
       >
-        <div className="mx-auto w-full max-w-[2176px] px-10">
-          <div className="flex items-center gap-4 py-3">
-            <div className="min-w-0 flex-1">
+        <div className={layout === 'inline' ? 'w-full' : 'mx-auto w-full max-w-[2176px] px-10'}>
+          <div className={`flex items-center gap-4 ${layout === 'inline' ? 'py-2' : 'py-3'}`}>
+            <div className={`min-w-0 flex-1 ${layout === 'inline' ? 'min-h-10' : ''}`}>
               <div className="text-[12px] font-semibold tracking-wide text-ink-3">
-                待保存 · {changes.length} 项{blocked && <span className="text-warn"> · 有错误</span>}
+                {layout === 'inline' ? <InkRewrite text={statusText} /> : statusText}{blocked && <span className="text-warn"> · 有错误</span>}
               </div>
-              <OverflowText className="num text-[14px] text-ink-1" text={changes.join('  ·  ')} />
+              {layout === 'inline'
+                ? <InkRewrite className="num w-full text-[14px] text-ink-1" text={changes.join('  ·  ')} overflow />
+                : <OverflowText className="num text-[14px] text-ink-1" text={changes.join('  ·  ')} />}
             </div>
             <button
               type="button"
               className="flex-none cursor-pointer text-[14px] text-ink-2 hover:text-ink-1"
               onClick={onCancel}
-              tabIndex={open ? 0 : -1}
+              disabled={layout === 'inline' && (saving || !open)}
+              tabIndex={open || layout === 'inline' ? 0 : -1}
             >
               取消
             </button>
             <button
               type="button"
-              className="flex-none cursor-pointer rounded-[9px] border-0 bg-ink-1 px-5 py-2 text-[14.5px] font-semibold text-surface disabled:opacity-45"
+              className={`flex-none cursor-pointer rounded-[9px] border-0 bg-ink-1 ${layout === 'inline' ? 'w-24 px-4' : 'px-5'} py-2 text-[14.5px] font-semibold text-surface disabled:opacity-45`}
               onClick={onSave}
               disabled={blocked || saving || !open}
-              tabIndex={open ? 0 : -1}
+              tabIndex={open || layout === 'inline' ? 0 : -1}
             >
-              {saving ? '保存中…' : '保存'}
+              {layout === 'inline' ? <InkRewrite text={saving ? '保存中…' : '保存'} /> : saving ? '保存中…' : '保存'}
             </button>
           </div>
           <ErrorNotice intent="mutation" title="保存失败" error={error} variant="mutation" onRetry={onSave} />

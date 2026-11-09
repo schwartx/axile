@@ -13,7 +13,8 @@ use crate::writer_scope::{immediate, open_writer};
 const COLUMNS: &str = "execution_id,account_id,kind,trigger_source,status,channel,algorithm,payload,created_at_us,started_at_us,finished_at_us,error,cancel_requested_at_us,cancel_reason,terminate_mode";
 const TERMINAL: [&str; 5] = ["TERMINATED", "SUCCEEDED", "FAILED", "SKIPPED", "PARTIAL"];
 const PROCESS_INTERRUPTED_REASON: &str = "上次执行中断，未自动续跑";
-const FIELDS: [&str; 6] = [
+const FIELDS: [&str; 7] = [
+    "algorithm",
     "started_at",
     "finished_at",
     "error",

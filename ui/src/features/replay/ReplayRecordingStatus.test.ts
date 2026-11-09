@@ -22,6 +22,7 @@ it('控制确认未知时只报状态异常和待生效，不声称录制已停�
   expect(html).toContain('录制状态异常')
   expect(html).toContain('设置尚待生效')
   expect(html).toContain('录制控制状态待确认；交易连接未改变')
+  expect(html).toContain('class="col-span-full text-warn"')
   expect(html).not.toContain('记录已中断')
   expect(html).not.toContain('已关闭')
 })
@@ -69,4 +70,15 @@ it('设置行保留实际状态，不展示冗长的录制段编号', () => {
     recording_id: 'recording-internal-identifier' })
   expect(html).toContain('正在记录')
   expect(html).not.toContain('recording-internal-identifier')
+})
+
+it('常规录制状态不占用布局，异常仍显示完整提示', () => {
+  const html = renderStatus({ desired: true, state: 'waiting_connection', config_version: 3, effective_version: null })
+  expect(html).toContain('role="status" class="sr-only">已开启，等待账户正常连接 · 设置尚待生效</span>')
+  expect(html).not.toContain('待连接 · 待生效')
+  expect(html).not.toContain('tabindex=')
+  const pending = renderStatus({ desired: true, state: 'starting', config_version: 3, effective_version: null })
+  expect(pending).toContain('role="status" class="sr-only">录制设置待生效')
+  const error = renderStatus({ desired: true, state: 'error', config_version: 3, effective_version: 3 })
+  expect(error).toContain('role="status" class="col-span-full text-warn">录制状态异常</span>')
 })

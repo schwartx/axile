@@ -13,8 +13,10 @@ import {
   useRef,
   useState,
   type ReactElement,
+  type RefObject,
 } from 'react'
 import { createPortal } from 'react-dom'
+import { NumberTicker } from '@/components/ui/NumberTicker'
 
 function pad2(n: number): string {
   return String(n).padStart(2, '0')
@@ -34,6 +36,40 @@ type Part = 'h' | 'm'
 const ITEM_H = 36
 const VISIBLE = 5
 const GAP = 8
+const PART_FORMAT = { minimumIntegerDigits: 2, maximumFractionDigits: 0, useGrouping: false } as const
+
+/** 大幅滚动只走一格，触控板细小位移累计后步进；不排队，避免停手后继续跳。 */
+function useWheelStep(ref: RefObject<HTMLDivElement | null>, onStep: (direction: number) => void, enabled = true) {
+  const latest = useRef(onStep)
+  useLayoutEffect(() => { latest.current = onStep }, [onStep])
+  useEffect(() => {
+    const element = ref.current
+    if (!element || !enabled) return
+    let accumulated = 0
+    let direction = 0
+    let lastEvent = -Infinity
+    let lastStep = -Infinity
+    const wheel = (event: WheelEvent) => {
+      if (event.ctrlKey || event.metaKey || !event.deltaY || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return
+      event.preventDefault()
+      const now = performance.now()
+      const nextDirection = Math.sign(event.deltaY)
+      if (now - lastEvent > 200 || nextDirection !== direction) {
+        accumulated = 0
+        lastStep = -Infinity
+      }
+      direction = nextDirection
+      lastEvent = now
+      accumulated += event.deltaY * (event.deltaMode === 0 ? 1 : 32)
+      if (Math.abs(accumulated) < 32 || now - lastStep < 80) return
+      accumulated = 0
+      lastStep = now
+      latest.current(direction)
+    }
+    element.addEventListener('wheel', wheel, { passive: false })
+    return () => element.removeEventListener('wheel', wheel)
+  }, [ref, enabled])
+}
 
 interface MenuPos {
   top: number
@@ -61,27 +97,37 @@ function WheelColumn({
 }) {
   const itemHeight = compact ? 32 : ITEM_H
   const scrollerRef = useRef<HTMLDivElement>(null)
-  const suppress = useRef(false)
+  const scrollTarget = useRef<number | null>(null)
+  const scrolledValue = useRef<number | null>(null)
+  const initialized = useRef(false)
   const drag = useRef<{ y: number; top: number } | null>(null)
   const dragged = useRef(false)
 
+  useWheelStep(scrollerRef, direction => {
+    onChange(Math.max(min, Math.min(max, value + direction)))
+  })
+
   useEffect(() => {
     const el = scrollerRef.current
-    if (!el || drag.current) return
+    const fromScroll = scrolledValue.current === value
+    scrolledValue.current = null
+    if (!el || drag.current || fromScroll) return
     const top = (value - min) * itemHeight
-    if (Math.abs(el.scrollTop - top) > 1) el.scrollTop = top
+    const smooth = initialized.current && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    initialized.current = true
+    if (Math.abs(el.scrollTop - top) > 1) {
+      scrollTarget.current = top
+      el.scrollTo({ top, behavior: smooth ? 'smooth' : 'instant' })
+    }
   }, [value, min, itemHeight])
 
   const settle = () => {
     const el = scrollerRef.current
     if (!el) return
     const idx = Math.max(min, Math.min(max, min + Math.round(el.scrollTop / itemHeight)))
-    suppress.current = true
-    el.scrollTo({ top: (idx - min) * itemHeight, behavior: 'smooth' })
+    scrollTarget.current = (idx - min) * itemHeight
+    el.scrollTo({ top: scrollTarget.current, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' })
     if (idx !== value) onChange(idx)
-    window.setTimeout(() => {
-      suppress.current = false
-    }, 120)
   }
 
   const visible = compact ? 3 : VISIBLE
@@ -109,12 +155,13 @@ function WheelColumn({
         className="relative cursor-grab select-none overflow-y-auto overscroll-contain active:cursor-grabbing [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         onPointerDown={(event) => {
           dragged.current = false
+          scrollTarget.current = null
+          event.currentTarget.scrollTo({ top: event.currentTarget.scrollTop, behavior: 'instant' })
           if (event.pointerType !== 'mouse' || event.button !== 0) return
           const target = event.target as HTMLElement
           event.preventDefault()
           event.currentTarget.focus({ preventScroll: true })
           drag.current = { y: event.clientY, top: event.currentTarget.scrollTop }
-          suppress.current = false
           target.setPointerCapture(event.pointerId)
         }}
         onPointerMove={(event) => {
@@ -129,13 +176,18 @@ function WheelColumn({
           event.preventDefault()
           event.stopPropagation()
         }}
-        onWheel={() => { suppress.current = false }}
         onScroll={() => {
-          if (suppress.current) return
           const el = scrollerRef.current
           if (!el) return
+          if (scrollTarget.current !== null) {
+            if (Math.abs(el.scrollTop - scrollTarget.current) < 1) scrollTarget.current = null
+            return
+          }
           const idx = Math.max(min, Math.min(max, min + Math.round(el.scrollTop / itemHeight)))
-          if (idx !== value) onChange(idx)
+          if (idx !== value) {
+            scrolledValue.current = idx
+            onChange(idx)
+          }
         }}
         onKeyDown={(e) => {
           if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
@@ -239,6 +291,13 @@ export function MacTimePicker({
       commit(h, minMinute + (m - minMinute + delta + count) % count)
     }
   }
+
+  useWheelStep(triggerRef, direction => {
+    commit(
+      part === 'h' ? Math.max(minHour, Math.min(maxHour, h + direction)) : h,
+      part === 'm' ? Math.max(minMinute, Math.min(maxMinute, m + direction)) : m,
+    )
+  }, !open)
 
   const place = useCallback(() => {
     const el = triggerRef.current
@@ -361,7 +420,7 @@ export function MacTimePicker({
         aria-label={ariaLabel}
         aria-expanded={open}
         tabIndex={0}
-        className={`inline-flex overflow-hidden ${compact ? 'rounded-[9px]' : 'rounded-[12px]'} bg-fill outline-none focus-visible:shadow-[0_0_0_2px_var(--color-accent)]`}
+        className={`inline-flex overflow-hidden ${compact ? 'h-9 rounded-[9px]' : 'h-16 rounded-[12px]'} bg-fill outline-none focus-visible:shadow-[0_0_0_2px_var(--color-accent)]`}
         onKeyDown={(e) => {
           if (e.key === 'ArrowUp') {
             e.preventDefault()
@@ -385,12 +444,6 @@ export function MacTimePicker({
             setOpen(false)
           }
         }}
-        onWheel={(e) => {
-          if (open) return
-          if (Math.abs(e.deltaY) < 1) return
-          e.preventDefault()
-          bump(e.deltaY > 0 ? -1 : 1)
-        }}
       >
         <button
           type="button"
@@ -398,18 +451,18 @@ export function MacTimePicker({
           disabled={minHour === maxHour}
           aria-pressed={part === 'h'}
           onClick={() => openMenu('h')}
-          className={`${compact ? 'min-h-8 min-w-9 px-2.5 py-1.5 text-[14px]' : 'min-w-[3.4rem] px-3.5 py-2.5 text-[29px]'} font-mono font-[640] leading-none tabular-nums tracking-tight transition-colors ${segClass('h')}`}
+          className={`flex items-center justify-center ${compact ? 'min-w-9 px-2.5 text-[14px]' : 'min-w-[3.4rem] px-3.5 text-[29px]'} font-mono font-[640] leading-none tabular-nums tracking-tight transition-colors ${segClass('h')}`}
         >
-          {empty && !open ? '––' : pad2(h)}
+          {empty && !open ? '––' : <NumberTicker className="block" value={h} format={PART_FORMAT} />}
         </button>
         <button
           type="button"
           aria-label="分"
           aria-pressed={part === 'm'}
           onClick={() => openMenu('m')}
-          className={`${compact ? 'min-h-8 min-w-9 px-2.5 py-1.5 text-[14px]' : 'min-w-[3.4rem] px-3.5 py-2.5 text-[29px]'} font-mono font-[640] leading-none tabular-nums tracking-tight transition-colors ${segClass('m')}`}
+          className={`flex items-center justify-center ${compact ? 'min-w-9 px-2.5 text-[14px]' : 'min-w-[3.4rem] px-3.5 text-[29px]'} font-mono font-[640] leading-none tabular-nums tracking-tight transition-colors ${segClass('m')}`}
         >
-          {empty && !open ? '––' : pad2(m)}
+          {empty && !open ? '––' : <NumberTicker className="block" value={m} format={PART_FORMAT} />}
         </button>
       </div>
       {menu}

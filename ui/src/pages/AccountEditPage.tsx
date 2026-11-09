@@ -16,8 +16,6 @@ import { useParams, useViewTransitionState } from 'react-router'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { PortfolioChoiceList } from '@/features/portfolio/PortfolioChoiceList'
 import { SymbolTagInput } from '@/components/ui/SymbolTagInput'
-import { ExecutionTimeoutInput } from '@/features/account/ExecutionTimeoutInput'
-import { executionTimeoutError } from '@/features/account/executionTimeout'
 import { LeverageInput } from '@/features/account/LeverageInput'
 import { leverageError } from '@/features/account/leverage'
 import { AccountPageTitle } from '@/features/account/pageHead'
@@ -60,7 +58,6 @@ interface Draft {
   forbidden: string[]
   risk: string[]
   weightPrecision: string
-  executionTimeout: string
   writeEmpty: boolean
 }
 
@@ -81,7 +78,6 @@ function draftOf(acc: Account): Draft {
     forbidden: acc.forbidden_symbols ?? [],
     risk: acc.risk_symbols ?? [],
     weightPrecision: String(acc.weight_precision ?? ''),
-    executionTimeout: String(acc.execution_timeout ?? ''),
     writeEmpty: Boolean(acc.write_empty_record),
   }
 }
@@ -109,11 +105,6 @@ function buildPatch(draft: Draft, acc: Account, showShortLeverage: boolean, defa
     const wp = Number(draft.weightPrecision)
     if (Number.isFinite(wp) && wp !== acc.weight_precision) patch.weight_precision = wp
   }
-  if (executionTimeoutError(draft.executionTimeout, { allowEmpty: true }) === null && draft.executionTimeout.trim() !== '') {
-    // 复用同一条规则，避免两处口径漂移；非法值不进 patch，免得提交后被 422 打回。
-    const et = Number(draft.executionTimeout)
-    if (et !== acc.execution_timeout) patch.execution_timeout = et
-  }
   const we = draft.writeEmpty ? 1 : 0
   if (we !== (acc.write_empty_record ?? 0)) patch.write_empty_record = we
 
@@ -127,7 +118,6 @@ const FIELD_LABEL: Record<string, string> = {
   long_leverage: '做多杠杆',
   short_leverage: '做空杠杆',
   weight_precision: '权重精度',
-  execution_timeout: '执行超时',
   portfolio_id: '跟随组合',
   forbidden_symbols: '禁投',
   risk_symbols: '风险品种',
@@ -142,7 +132,6 @@ function summarize(patch: Partial<Account>, acc: Account, portfolios: PortfolioL
     if (k === 'long_leverage') out.push(`做多杠杆 ${acc.long_leverage ?? 0}→${patch.long_leverage}`)
     else if (k === 'short_leverage') out.push(`做空杠杆 ${acc.short_leverage ?? 0}→${patch.short_leverage}`)
     else if (k === 'weight_precision') out.push(`权重精度 ${acc.weight_precision}→${patch.weight_precision}`)
-    else if (k === 'execution_timeout') out.push(`执行超时 ${acc.execution_timeout}s→${patch.execution_timeout}s`)
     else if (k === 'portfolio_id') out.push(`组合 ${pname(acc.portfolio_id)}→${pname(patch.portfolio_id)}`)
     else if (k === 'write_empty_record')
       out.push(`空仓记录 ${acc.write_empty_record ? '开' : '关'}→${patch.write_empty_record ? '开' : '关'}`)
@@ -320,8 +309,6 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
   const leverageOptions = { ...channelDescriptor?.leverage, allowEmpty: true }
   const longLevErr = leverageError(d.longLev, leverageOptions)
   const shortLevErr = showShortLeverage ? leverageError(d.shortLev, leverageOptions) : null
-  // 执行总超时必须是正整数（服务端 >= 1）：这道兜底不允许按账户关掉。
-  const timeoutErr = executionTimeoutError(d.executionTimeout, { allowEmpty: true })
   const weightPrecisionErr = weightPrecisionError(d.weightPrecision, { allowEmpty: true })
   const levErr = longLevErr ?? shortLevErr
 
@@ -348,13 +335,12 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
   }
   const dirty = changes.length > 0
   const blocked = Boolean(
-    levErr || timeoutErr || weightPrecisionErr || portfolios == null || portfoliosError || channelCatalogError,
+    levErr || weightPrecisionErr || portfolios == null || portfoliosError || channelCatalogError,
   )
 
   const save = async () => {
     if (saving || resetting) return
     if (levErr) return toast(`杠杆有误：${levErr}`)
-    if (timeoutErr) return toast(`执行超时有误：${timeoutErr}`)
     if (weightPrecisionErr) return toast(`权重精度有误：${weightPrecisionErr}`)
     if (!dirty) return toast('没有改动')
     setSaveError(null)
@@ -577,18 +563,6 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
         <Row label="空仓写记录" hint="审计留痕">
           <Toggle ariaLabel="空仓写记录" on={d.writeEmpty} onClick={() => set({ writeEmpty: !d.writeEmpty })} />
         </Row>
-        <Row label="执行超时" hint="单次上限" top>
-          <div className="flex flex-col gap-1">
-            <ExecutionTimeoutInput
-              invalid={Boolean(timeoutErr)}
-              value={d.executionTimeout}
-              onChange={(executionTimeout) => set({ executionTimeout })}
-            />
-            <span className={`text-[12px] ${timeoutErr ? 'text-warn' : 'text-ink-3'}`}>
-              {timeoutErr ?? '超时后停止开新单'}
-            </span>
-          </div>
-          </Row>
           <div className="mt-3 min-w-0 md:col-span-2">
             <div className="mb-3 flex items-center justify-between gap-3">
               <h2 className="text-[14px] text-ink-2">跟随组合</h2>

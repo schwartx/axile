@@ -77,6 +77,7 @@ started_at_ms finished_at_ms source source_before source_after account_assets ac
 available_cash total_asset market_value positions available_volume volume frozen_volume direction
 update_time currency broker_timestamp quantity_kind quantity_label quantity_max_decimals price_label
 notional_label method params algorithm_name algorithm_params trade_rules symbol_algorithms
+algorithm_selection selected_at start end
 curr_target last_target strategy_target account_target sizing_context long_leverage short_leverage
 weight_precision forbidden_symbols risk_symbols market brokerage algorithm_method success
 execution_time symbol_results target_volume final_volume first_tick target_sizing memory

@@ -6,6 +6,7 @@ import { useNavigate } from '@/components/ui/nav'
 import { ConnectionValidationAside } from '@/features/account/connectionValidation/ConnectionValidationAside'
 import { ExecutionTimeoutInput } from '@/features/account/ExecutionTimeoutInput'
 import { executionTimeoutError } from '@/features/account/executionTimeout'
+import { formatDuration } from '@/components/ui/duration'
 import { LeverageInput } from '@/features/account/LeverageInput'
 import { leverageError } from '@/features/account/leverage'
 import { WizardHeading, WizardPage, WizardNav } from '@/features/setup/WizardNav'
@@ -804,7 +805,7 @@ export function AcctConfirm() {
             {acct.autoOn ? '自动' : '手动'}调仓，杠杆 <b className="font-[680]">{levText}</b>。
           </div>
           <div className="mt-2 text-xs text-ink-3">
-            自动执行：{scheduleText} · 执行超时 {acct.executionTimeout} 秒
+            自动执行：{scheduleText} · 执行超时 {formatDuration(Number(acct.executionTimeout))}
           </div>
           {scheduleFires.length > 0 && (
             <div className="mt-1 text-xs text-ink-3">

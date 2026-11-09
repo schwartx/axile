@@ -50,23 +50,6 @@ def _validate_leverage(value: Optional[float]) -> Optional[float]:
     return value
 
 
-_MAX_EXECUTION_TIMEOUT = 540
-"""账户级执行总超时的上界（秒）。.
-
-Notes
------
-上界的存在不是为了限制业务节奏，而是要挡住一个**顺序反转**：多进程 worker 后端
-（当前为 GM 渠道）按账户总超时再加 60 秒 IPC 余量等待响应，超时后直接强杀 worker
-进程。若不给内部 deadline 留返回窗口，执行会被记成通信失败而非 ``TERMINATED``，
-审计里既看不到 ``trigger=timeout``，也拿不到本次执行的终止快照。账户上界取 540，
-故 GM 调仓的 worker 外层等待最长为 600 秒。
-
-下界取 ``1`` 而非 ``0``：``0`` 在执行器层是「不启用 deadline」的语义，而这道兜底防的是
-「一次执行无限挂住账户运行占位」，允许按账户关掉就等于留了一个改一次便永久失效、且没有
-任何告警的开关。仿真不受影响——仿真执行器在自己那层整体关闭 deadline。
-"""
-
-
 def _validate_cron_expr(value: Optional[str]) -> Optional[str]:
     """
     校验定时表达式可被解析.

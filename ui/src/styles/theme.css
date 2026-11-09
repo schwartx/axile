@@ -307,17 +307,25 @@
    * 操作（hover / 键盘 focus）时才显示位置提示。滚动本身就是唯一连续性。
    */
   .quiet-scrollbar {
-    scrollbar-color: transparent transparent;
+    scrollbar-width: auto;
+    scrollbar-color: auto;
   }
-  .quiet-scrollbar:hover,
-  .quiet-scrollbar:focus-visible,
-  .quiet-scrollbar:focus-within {
-    scrollbar-color: rgba(26, 36, 48, 0.28) transparent;
-  }
-  .dark .quiet-scrollbar:hover,
-  .dark .quiet-scrollbar:focus-visible,
-  .dark .quiet-scrollbar:focus-within {
-    scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
+  /* Chromium 的非 auto 标准属性会覆盖下面的无箭头样式。 */
+  @supports not selector(::-webkit-scrollbar) {
+    .quiet-scrollbar {
+      scrollbar-width: thin;
+      scrollbar-color: transparent transparent;
+    }
+    .quiet-scrollbar:hover,
+    .quiet-scrollbar:focus-visible,
+    .quiet-scrollbar:focus-within {
+      scrollbar-color: rgba(26, 36, 48, 0.28) transparent;
+    }
+    .dark .quiet-scrollbar:hover,
+    .dark .quiet-scrollbar:focus-visible,
+    .dark .quiet-scrollbar:focus-within {
+      scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
+    }
   }
   .quiet-scrollbar::-webkit-scrollbar {
     width: 8px;
@@ -449,6 +457,35 @@
   ::view-transition-group(app-nav-selection) {
     animation-duration: 200ms;
     animation-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
+  /* 算法配置页内交接：框架静止，条目与光标位移；固定参数槽只换画面。 */
+  :root:active-view-transition-type(algorithm-config) .app-workspace {
+    view-transition-name: none;
+  }
+  :root:active-view-transition-type(algorithm-config) .algorithm-config-item {
+    view-transition-name: var(--algorithm-item-name);
+  }
+  :root:active-view-transition-type(algorithm-config) .algorithm-config-selection {
+    view-transition-name: algorithm-config-selection;
+  }
+  :root:active-view-transition-type(algorithm-config) .algorithm-config-editor {
+    view-transition-name: algorithm-parameters;
+  }
+  :root:active-view-transition-type(algorithm-config)::view-transition-group(*) {
+    animation-duration: 200ms;
+    animation-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  :root:active-view-transition-type(algorithm-config)::view-transition-group(algorithm-parameters),
+  :root:active-view-transition-type(algorithm-config)::view-transition-old(algorithm-parameters) {
+    animation: none;
+  }
+  :root:active-view-transition-type(algorithm-config)::view-transition-old(algorithm-parameters),
+  :root:active-view-transition-type(algorithm-config)::view-transition-new(algorithm-parameters) {
+    mix-blend-mode: normal;
+  }
+  :root:active-view-transition-type(algorithm-config)::view-transition-new(algorithm-parameters) {
+    animation: app-workspace-new 150ms cubic-bezier(0.4, 0, 0.2, 1) both;
   }
 }
 

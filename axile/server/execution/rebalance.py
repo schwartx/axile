@@ -22,7 +22,11 @@ from axile.server.core.log_config import execution_log_context
 from axile.server.db.models import Portfolio
 from axile.server.db.models.account import AccountContext, AccountSnapshot
 from axile.server.error_details import exception_details
-from axile.server.execution.execution_algorithms import resolve_account_leverages, resolve_execution_algorithm_name
+from axile.server.execution.execution_algorithms import (
+    resolve_account_leverages,
+    resolve_execution_algorithm_name,
+    select_rebalance_algorithm,
+)
 from axile.server.execution.input_persistence import sanitize_execution_input
 from axile.server.execution.notification_assets import load_notification_snapshot
 from axile.server.execution.records import append_error_execute_record, append_execute_record_from_output
@@ -427,8 +431,15 @@ async def trade(
 
         intent = await get_intent(execution_id)
         gm_session = intent.payload.get("gm_session") if intent else None
+    is_supplement_step = bool(
+        execution_id
+        and account.supplement
+        and await native_operation("supplement_has_execution_steps", {"execution_id": execution_id})
+    )
     # 审计输入、执行器输入与回传给调用方的 curr_target 必须共享同一份
     # 规范化结果，避免回放执行时出现“显示目标”和“实际下单目标”不一致。
+    # 目标和通知准备可能跨时段，直到即将开跑才选择；worker 与审计共用这份账户快照。
+    account, algorithm_selection = select_rebalance_algorithm(account)
     standard_input = _build_rebalance_standard_input(
         account=account,
         curr_target=normalized_target,
@@ -438,10 +449,10 @@ async def trade(
         gm_session=gm_session,
         target_mode=target_mode,
     )
-    if execution_id and account.supplement:
-        if await native_operation("supplement_has_execution_steps", {"execution_id": execution_id}):
-            standard_input.execution_notification_code = None
-            standard_input.extra = {**standard_input.extra, "server_notification": True}
+    standard_input.extra = {**standard_input.extra, "algorithm_selection": algorithm_selection}
+    if is_supplement_step:
+        standard_input.execution_notification_code = None
+        standard_input.extra = {**standard_input.extra, "server_notification": True}
     long_leverage, short_leverage = resolve_account_leverages(account)
     standard_input_dict = standard_input.to_dict()
     audit_input = sanitize_execution_input(standard_input_dict)
@@ -454,7 +465,11 @@ async def trade(
     if execution_id is not None:
         from axile.server.execution.intents import promote_intent_to_running
 
-        await promote_intent_to_running(execution_id, cast("int", account.id))
+        await promote_intent_to_running(
+            execution_id,
+            cast("int", account.id),
+            algorithm=resolve_execution_algorithm_name(account, ExecutionKind.REBALANCE),
+        )
     try:
         if portfolio_id is not None:
             await append_target_weight_snapshot(

@@ -1,4 +1,5 @@
 import { ArchiveAction } from '@/features/account/ArchiveAction'
+import { algorithmScheduleSummary } from '@/features/account/algorithmSchedule'
 import { shanghaiLabel } from '@/features/history/costs'
 import { useAccountConnection } from '@/stores/liveConnection'
 import { useConnectedAssets } from '@/features/account/useConnectedAssets'
@@ -298,7 +299,7 @@ export function AccountDetail({
     : (cachedConfig?.symbols ?? null)
   // 算法摘要不收短：TARGET-POS-TASK 等直接给完整参数句，配置带里整项分组 + 截断兜底。
   const algorithmText = acc
-    ? describeAlgorithmRef(algorithmRefOf(acc.algorithm))
+    ? algorithmScheduleSummary(algorithmRefOf(acc.algorithm), acc.algorithm_schedule?.length ?? 0)
     : (cachedConfig?.algorithm ?? null)
   const emptyAlgorithmText = acc
     ? describeAlgorithmRef(algorithmRefOf(acc.empty_positions_algorithm))
@@ -667,7 +668,7 @@ export function AccountDetail({
               to={`/accounts/${accountId}/edit/algorithm`}
               title="执行算法"
               value={configLoading ? null : (algorithmText ?? '—')}
-              vtName={tEditAlgorithm && algorithmTransitionSlot(accountId) === 'trade' && algorithmRefOf(acc?.algorithm) ? accountConfigVtName(accountId, 'algorithm') : undefined}
+              vtName={tEditAlgorithm && algorithmTransitionSlot(accountId) === 'trade' && !acc?.algorithm_schedule?.length && algorithmRefOf(acc?.algorithm) ? accountConfigVtName(accountId, 'algorithm') : undefined}
               onActivate={(event) => activateAlgorithm('trade', event)}
             />
             {acc && <Tooltip content={acc.replay_recording_enabled ? '执行回放录制已开启，点击设置' : '执行回放录制已关闭，点击设置'}>

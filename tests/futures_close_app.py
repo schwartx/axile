@@ -56,6 +56,13 @@ def runtime_sync(account_id: int):
     return sync()
 
 
+@app.get("/api/v1/account/{account_id}/replay/status")
+def replay_status(account_id: int):
+    """只读内存录制意愿，不创建连接或录制任务。"""
+    enabled = _accounts[account_id].replay_recording_enabled
+    return {"state": "waiting_connection" if enabled else "disabled", "config_version": 1, "effective_version": 1}
+
+
 @app.get("/api/v1/account/{account_id}")
 def account_info(account_id: int):
     """真实公开响应模型必须保留平仓规则。"""

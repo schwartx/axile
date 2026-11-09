@@ -30,12 +30,12 @@ from axile.server.db.models.account_notification import AccountNotificationState
 from axile.server.db.models.account_runtime_sync import AccountRuntimeSyncPublic
 from axile.server.db.models.account_settings import SupplementSettings
 from axile.server.db.models.account_validation import (
-    _MAX_EXECUTION_TIMEOUT,
     _validate_algorithm_config,
     _validate_cron_expr,
     _validate_leverage,
     _validate_weight_precision,
 )
+from axile.server.db.models.algorithm_schedule import AlgorithmSchedule
 from axile.server.db.models.base import Model, now_str
 from axile.server.db.models.performance import FeeRate, WeightType
 
@@ -72,6 +72,7 @@ class AccountBase(BaseModel):
     long_leverage: Optional[float] = Field(default=None, description="做多杠杆")
     short_leverage: Optional[float] = Field(default=None, description="做空杠杆")
     algorithm: Dict[str, Any] = Field(description="下单算法,必填")
+    algorithm_schedule: AlgorithmSchedule = Field(default_factory=list)
     empty_positions_algorithm: Optional[Dict[str, Any]] = Field(
         default=None, description="清仓算法, 非必填; null 时由执行逻辑回退到默认值"
     )
@@ -91,8 +92,7 @@ class AccountBase(BaseModel):
     execution_timeout: int = Field(
         default=DEFAULT_EXECUTION_TIMEOUT_SECONDS,
         ge=1,
-        le=_MAX_EXECUTION_TIMEOUT,
-        description=f"执行层总超时（秒）, 必填, 取值 1..{_MAX_EXECUTION_TIMEOUT}, 默认 {DEFAULT_EXECUTION_TIMEOUT_SECONDS}; 到点直接中断本次执行, 不等撤单",
+        description=f"执行层总超时（秒）, 必须为正整数, 默认 {DEFAULT_EXECUTION_TIMEOUT_SECONDS}; 到点直接中断本次执行, 不等撤单",
     )
 
     _check_weight_precision = field_validator("weight_precision")(_validate_weight_precision)
@@ -119,6 +119,15 @@ class AccountBase(BaseModel):
     def _check_empty_positions_algorithm_field(cls, value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """按注册表校验清仓算法参数是否越界."""
         return _validate_algorithm_config(value, "清仓算法")
+
+    @model_validator(mode="after")
+    def validate_scheduled_algorithm_channels(self) -> "AccountBase":
+        """创建、复制和局部更新后的完整账户统一校验时段算法渠道。"""
+        from axile.server.db.models.account_validation import _check_algorithm_channel_compat
+
+        for rule in self.algorithm_schedule:
+            _check_algorithm_channel_compat(rule.algorithm, str(self.trade_channel), "时段算法")
+        return self
 
 
 class AccountCreate(AccountBase):
@@ -222,6 +231,7 @@ class AccountPublic(Model):
     long_leverage: Optional[float] = None
     short_leverage: Optional[float] = None
     algorithm: Dict[str, Any]
+    algorithm_schedule: AlgorithmSchedule = Field(default_factory=list)
     empty_positions_algorithm: Optional[Dict[str, Any]] = None
     trade_rules: Optional[Dict[str, Any]] = None
     futures_close_policy: FuturesClosePolicy = Field(default_factory=FuturesClosePolicy)
@@ -432,6 +442,7 @@ class AccountUpdate(Model):
     long_leverage: Optional[float] = None
     short_leverage: Optional[float] = None
     algorithm: Optional[Dict[str, Any]] = None
+    algorithm_schedule: AlgorithmSchedule = Field(default_factory=list)
     empty_positions_algorithm: Optional[Dict[str, Any]] = None
     trade_rules: Optional[Dict[str, Any]] = None
     futures_close_policy: FuturesClosePolicy | None = None
@@ -442,7 +453,7 @@ class AccountUpdate(Model):
     portfolio_id: Optional[int] = None
     write_empty_record: Optional[int] = None
     replay_recording_enabled: StrictBool = False
-    execution_timeout: Optional[int] = Field(default=None, ge=1, le=_MAX_EXECUTION_TIMEOUT)
+    execution_timeout: Optional[int] = Field(default=None, ge=1)
 
     _check_weight_precision = field_validator("weight_precision")(_validate_weight_precision)
 

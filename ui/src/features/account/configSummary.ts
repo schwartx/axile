@@ -10,6 +10,7 @@
  */
 import type { Account } from '@/types/api'
 import { algorithmRefOf, describeAlgorithmRef } from '@/features/setup/algorithms'
+import { algorithmScheduleSummary } from '@/features/account/algorithmSchedule'
 
 /** 参与 FLIP 的配置项种类；与 hero 配置带四件套一一对应。 */
 export type AccountConfigKind = 'leverage' | 'symbols' | 'algorithm' | 'empty'
@@ -86,7 +87,7 @@ export function writeAccountConfigSummary(
   cache.set(accountId, {
     leverage: describeLeverage(acc.long_leverage, acc.short_leverage, showShortLeverage),
     symbols: describeSymbolControl(acc.forbidden_symbols, acc.risk_symbols),
-    algorithm: describeAlgorithmRef(algorithmRefOf(acc.algorithm)),
+    algorithm: algorithmScheduleSummary(algorithmRefOf(acc.algorithm), acc.algorithm_schedule?.length ?? 0),
     emptyAlgorithm: describeAlgorithmRef(algorithmRefOf(acc.empty_positions_algorithm)),
   })
 }

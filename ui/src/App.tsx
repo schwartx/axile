@@ -110,7 +110,7 @@ const router = createBrowserRouter([
           { path: 'symbols', element: <AccountEditPage section="symbols" /> },
           { path: 'portfolio', element: <AccountEditPage section="portfolio" /> },
           { path: 'timer', element: <AccountEditTimerPage />, handle: { fullBleed: true } },
-          { path: 'algorithm', element: <AccountEditAlgorithmPage /> },
+          { path: 'algorithm', element: <AccountEditAlgorithmPage />, handle: { fullBleed: true } },
           { path: 'notification', element: <AccountEditNotificationPage />, handle: { fullBleed: true } },
           { path: 'control', element: <AccountEditControlPage /> },
           ] },

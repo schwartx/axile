@@ -9,6 +9,9 @@ export interface AlgorithmParamSchema {
   exclusiveMinimum?: number
   exclusiveMaximum?: number
   multipleOf?: number
+  pattern?: string
+  nullable?: boolean
+  decimal?: boolean
   'x-enum-labels'?: Record<string, string>
   'x-control'?: 'choice' | 'cards' | 'numberflow' | 'stepper' | 'presets' | 'slider'
   'x-option-descriptions'?: Record<string, string>
@@ -33,12 +36,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function parseParamSchema(value: unknown): AlgorithmParamSchema | null {
   if (!isRecord(value)) return null
+  if (Array.isArray(value.anyOf)) {
+    const variants = value.anyOf.filter((item) => !isRecord(item) || item.type !== 'null')
+    const nullable = variants.length !== value.anyOf.length
+    let parsed: AlgorithmParamSchema | null = null
+    if (variants.length === 1) parsed = parseParamSchema(variants[0])
+    if (variants.length === 2) {
+      const number = variants.find((item) => isRecord(item) && item.type === 'number')
+      const string = variants.find((item) => isRecord(item) && item.type === 'string')
+      // shortcut: 仅识别 Pydantic Decimal 的标准模式，其他联合类型保留 JSON 编辑。
+      if (isRecord(number) && isRecord(string) && string.pattern === '^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$') {
+        parsed = { ...number, pattern: string.pattern, type: 'number', decimal: true }
+      }
+    }
+    if (!parsed || (nullable && parsed.enum)) return null
+    return { ...parsed, ...value, type: parsed.type, nullable: nullable || parsed.nullable, decimal: parsed.decimal }
+  }
   if (!['string', 'integer', 'number', 'boolean'].includes(String(value.type))) return null
   if (value.enum !== undefined && !Array.isArray(value.enum)) return null
   return value as unknown as AlgorithmParamSchema
 }
 
-/** 将 Pydantic 生成的扁平 JSON Schema 解析为可结构化编辑的字段。 */
+/** 解析 Pydantic 的基础字段、Decimal 及可空字段；复杂结构保留 JSON 编辑。 */
 export function algorithmSchemaFields(schema: Record<string, unknown>): AlgorithmSchemaField[] | null {
   if (schema.type !== 'object' || !isRecord(schema.properties)) return null
   const required = new Set(Array.isArray(schema.required) ? schema.required.filter((key): key is string => typeof key === 'string') : [])
@@ -58,6 +77,55 @@ export function algorithmSchemaDefaults(fields: AlgorithmSchemaField[]): Record<
   )
 }
 
+/** Decimal 字符串按相同小数位对齐成整数，避免校验时吞掉最后几位小数。 */
+function decimalOperands(value: string | number, bound: number): [bigint, bigint] {
+  const parts = (item: string | number) => {
+    const [mantissa, exponent = '0'] = String(item).trim().split(/[eE]/)
+    return { units: BigInt(mantissa.replace('.', '')), scale: (mantissa.split('.')[1]?.length ?? 0) - Number(exponent) }
+  }
+  const left = parts(value)
+  const right = parts(bound)
+  const scale = Math.max(left.scale, right.scale)
+  return [left.units * 10n ** BigInt(scale - left.scale), right.units * 10n ** BigInt(scale - right.scale)]
+}
+
+function isMultipleOf(value: string | number, step: number, decimal: boolean | undefined): boolean {
+  if (decimal) {
+    const [units, divisor] = decimalOperands(value, step)
+    return units % divisor === 0n
+  }
+  const ratio = Number(value) / step
+  return Math.abs(ratio - Math.round(ratio)) <= 1e-9
+}
+
+function validateNumericParam(value: number | string, spec: AlgorithmParamSchema, label: string): string | null {
+  const compare = (bound: number) => {
+    if (!spec.decimal) return Number(value) - bound
+    const [left, right] = decimalOperands(value, bound)
+    return left < right ? -1 : left > right ? 1 : 0
+  }
+  if (spec.minimum !== undefined && compare(spec.minimum) < 0) return `${label}不能小于 ${spec.minimum}`
+  if (spec.maximum !== undefined && compare(spec.maximum) > 0) return `${label}不能大于 ${spec.maximum}`
+  if (spec.exclusiveMinimum !== undefined && compare(spec.exclusiveMinimum) <= 0) return `${label}必须大于 ${spec.exclusiveMinimum}`
+  if (spec.exclusiveMaximum !== undefined && compare(spec.exclusiveMaximum) >= 0) return `${label}必须小于 ${spec.exclusiveMaximum}`
+  if (spec.multipleOf !== undefined && !isMultipleOf(value, spec.multipleOf, spec.decimal)) return `${label}必须按 ${spec.multipleOf} 递增`
+  return null
+}
+
+function validateParamValue(value: unknown, spec: AlgorithmParamSchema, label: string): string | null {
+  switch (spec.type) {
+    case 'boolean': return typeof value === 'boolean' ? null : `${label}必须是布尔值`
+    case 'string': return typeof value === 'string' ? null : `${label}必须是字符串`
+    case 'integer':
+      return typeof value === 'number' && Number.isInteger(value) ? validateNumericParam(value, spec, label) : `${label}必须是整数`
+    case 'number': {
+      const decimalString = spec.decimal && typeof value === 'string' && new RegExp(spec.pattern!).test(value.trim())
+      if (decimalString || (typeof value === 'number' && Number.isFinite(value))) return validateNumericParam(value as number | string, spec, label)
+      return `${label}必须是数字`
+    }
+  }
+}
+
 /** 按 JSON Schema 的 primitive 约束校验算法参数。 */
 export function validateAlgorithmSchemaParams(
   params: Record<string, unknown>,
@@ -72,27 +140,10 @@ export function validateAlgorithmSchemaParams(
       continue
     }
     const label = field.schema.title || field.name
-    if (field.schema.type === 'boolean' && typeof value !== 'boolean') return `${label}必须是布尔值`
-    if (field.schema.type === 'string' && typeof value !== 'string') return `${label}必须是字符串`
-    if (field.schema.type === 'integer' && (typeof value !== 'number' || !Number.isInteger(value))) {
-      return `${label}必须是整数`
-    }
-    if (field.schema.type === 'number' && (typeof value !== 'number' || !Number.isFinite(value))) {
-      return `${label}必须是数字`
-    }
+    if (value === null && field.schema.nullable) continue
+    const error = validateParamValue(value, field.schema, label)
+    if (error) return error
     if (field.schema.enum && !field.schema.enum.includes(value)) return `${label}不在可选范围内`
-    if (typeof value !== 'number') continue
-    if (field.schema.minimum !== undefined && value < field.schema.minimum) return `${label}不能小于 ${field.schema.minimum}`
-    if (field.schema.maximum !== undefined && value > field.schema.maximum) return `${label}不能大于 ${field.schema.maximum}`
-    if (field.schema.exclusiveMinimum !== undefined && value <= field.schema.exclusiveMinimum) {
-      return `${label}必须大于 ${field.schema.exclusiveMinimum}`
-    }
-    if (field.schema.exclusiveMaximum !== undefined && value >= field.schema.exclusiveMaximum) {
-      return `${label}必须小于 ${field.schema.exclusiveMaximum}`
-    }
-    if (field.schema.multipleOf !== undefined && Math.abs(value / field.schema.multipleOf - Math.round(value / field.schema.multipleOf)) > 1e-9) {
-      return `${label}必须按 ${field.schema.multipleOf} 递增`
-    }
   }
   return null
 }

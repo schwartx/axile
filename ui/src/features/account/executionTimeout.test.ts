@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 
-import { defaultExecutionTimeoutForChannel, executionTimeoutError, stepExecutionTimeout } from './executionTimeout'
+import { defaultExecutionTimeoutForChannel, executionTimeoutError } from './executionTimeout'
 import { getChannelForMarket, useChannelCatalogStore } from '@/stores/channels'
 
 describe('defaultExecutionTimeoutForChannel', () => {
@@ -38,40 +38,23 @@ describe('defaultExecutionTimeoutForChannel', () => {
 })
 
 describe('executionTimeoutError', () => {
-  it('接受服务端合法边界内的整数秒', () => {
+  it('接受正整数秒，包括超过原上限的小时及天级时长', () => {
     expect(executionTimeoutError('1')).toBeNull()
     expect(executionTimeoutError('300')).toBeNull()
     expect(executionTimeoutError('540')).toBeNull()
+    expect(executionTimeoutError('541')).toBeNull()
+    expect(executionTimeoutError('3600')).toBeNull()
+    expect(executionTimeoutError('86400')).toBeNull()
   })
 
-  it('拒绝空值、小数和越界值', () => {
+  it('拒绝空值、小数和非正数', () => {
     expect(executionTimeoutError('')).toBe('请输入整数秒')
     expect(executionTimeoutError('1.5')).toBe('需为整数秒')
     expect(executionTimeoutError('0')).toContain('≥ 1')
-    expect(executionTimeoutError('541')).toContain('≤ 540')
+    expect(executionTimeoutError('-1')).toContain('≥ 1')
   })
 
   it('编辑页可把空值解释为不修改', () => {
     expect(executionTimeoutError('', { allowEmpty: true })).toBeNull()
-  })
-})
-
-describe('stepExecutionTimeout', () => {
-  it('每次前后调整 30 秒', () => {
-    expect(stepExecutionTimeout('180', 1)).toBe('210')
-    expect(stepExecutionTimeout('180', -1)).toBe('150')
-  })
-
-  it('在 1..540 边界内夹取', () => {
-    expect(stepExecutionTimeout('1', -1)).toBe('1')
-    expect(stepExecutionTimeout('20', -1)).toBe('1')
-    expect(stepExecutionTimeout('530', 1)).toBe('540')
-    expect(stepExecutionTimeout('540', 1)).toBe('540')
-  })
-
-  it('非法输入保持原值，交由用户直接修正', () => {
-    expect(stepExecutionTimeout('', 1)).toBe('')
-    expect(stepExecutionTimeout('1.5', 1)).toBe('1.5')
-    expect(stepExecutionTimeout('541', -1)).toBe('541')
   })
 })

@@ -271,7 +271,7 @@ def test_execute_trade_drops_ctp_worker_after_session_recovery_without_replay(
     assert output.extra["worker_error"]["type"] == "ctp_session_recovery_required"
 
 
-@pytest.mark.parametrize("execution_timeout", [0, 180])
+@pytest.mark.parametrize("execution_timeout", [0, 180, 3600, 86400])
 def test_gm_worker_receive_timeout_uses_configured_budget(monkeypatch, execution_timeout):
     manager = WorkerBackendManager(execute_recv_timeout=600)
     account = build_account(id=2, trade_channel=TradeChannel.GM)
@@ -307,7 +307,9 @@ def test_gm_worker_receive_timeout_uses_configured_budget(monkeypatch, execution
             trigger_source="scheduler",
         )
     )
-    expected = 600 if execution_timeout == 0 else 180 + worker_manager_module._EXECUTION_TIMEOUT_GRACE_SECONDS
+    expected = (
+        600 if execution_timeout == 0 else execution_timeout + worker_manager_module._EXECUTION_TIMEOUT_GRACE_SECONDS
+    )
     assert received_timeouts == [expected]
 
 
