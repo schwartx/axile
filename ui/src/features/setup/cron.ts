@@ -2,7 +2,7 @@
  * 定时任务 → crontab 编译（从原型移植为纯函数）。
  *
  * 第一性原理：执行时刻 = 账户节奏 ∩ 渠道市场钟（左闭右开可报单窗）。
- * 每段开盘先打一枪，再按频率走；收盘点不能下单则钳到最后一分钟。
+ * 每段开盘先打一枪，再按频率走；A 股不补临收点，期货保留收盘对齐。
  * 前台只给频率/补发，时刻从市场钟推出来再编成 crontab（北京时间）。
  * 多条规则用 ``|`` 拼接（后端 `parse_cron_expr` 支持）。
  */
@@ -123,7 +123,7 @@ function barWindows(kind: ScheduleKind, windows: SessionWindow[]): SessionWindow
   return windows.map((window) => (window.start === '13:00' && window.end === '15:15' ? { start: window.start, end: '15:00' } : window))
 }
 
-function rhythmTimes(windows: SessionWindow[], freq: number, clock: SessionWindow[] = windows): string[] {
+function rhythmTimes(kind: ScheduleKind, windows: SessionWindow[], freq: number, clock: SessionWindow[] = windows): string[] {
   const seen: string[] = []
   const known = new Set<string>()
   for (const window of windows) {
@@ -135,7 +135,7 @@ function rhythmTimes(windows: SessionWindow[], freq: number, clock: SessionWindo
       bases.push(step)
       step += freq
     }
-    if (step === span) {
+    if (kind === 'cn_futures' && step === span) {
       const boundary = fromMinutes(begin + span)
       bases.push(hhmmInWindows(boundary, clock) ? span : span - 1)
     }
@@ -167,6 +167,7 @@ function applyOffsets(times: string[], windows: SessionWindow[], offs: number[])
 function sessionTimes(kind: Exclude<ScheduleKind, 'continuous'>, freq: 15 | 30 | 60 | 120): string[] {
   const clock = CLOCK_WINDOWS[kind]
   return rhythmTimes(
+    kind,
     barWindows(kind, clock).filter((window) => !isOvernight(window)),
     freq,
     clock,

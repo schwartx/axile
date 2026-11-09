@@ -223,33 +223,38 @@ test('高级编辑的时间滚轮保留完整的小时和分钟范围', async ({
   await expect(menu).toHaveCount(0)
 })
 
-test('A股 30 分快捷节奏在编辑页和弹窗可选，预览与保存保持半小时', async ({ page }) => {
-  await page.emulateMedia({ reducedMotion: 'reduce' })
-  await page.route('**/api/v1/**', route => route.abort())
-  const mock = await mockPreview(page)
-  const expected = '0 10,11,13,14 * * * | 29 11 * * * | 30 9,10,13,14 * * *'
-  let saved: { cron_expr?: string } | null = null
-  await page.route('**/api/v1/account/1', async route => {
-    saved = route.request().postDataJSON()
-    await route.fulfill({ json: { id: 1 } })
+for (const [minutes, expected] of [
+  [15, '0 10,11,13,14 * * * | 15 10,11,13,14 * * * | 30 9,10,13,14 * * * | 45 9,10,13,14 * * *'],
+  [30, '0 10,11,13,14 * * * | 30 9,10,13,14 * * *'],
+  [60, '0 13,14 * * * | 30 9,10 * * *'],
+] as const) {
+  test(`A股 ${minutes} 分快捷节奏在编辑页和弹窗可选，预览与保存不补临收点`, async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.route('**/api/v1/**', route => route.abort())
+    const mock = await mockPreview(page)
+    let saved: { cron_expr?: string } | null = null
+    await page.route('**/api/v1/account/1', async route => {
+      saved = route.request().postDataJSON()
+      await route.fulfill({ json: { id: 1 } })
+    })
+    for (const modal of [false, true]) {
+      mock.requests.length = 0
+      await page.setViewportSize({ width: modal ? 520 : 1440, height: 900 })
+      await page.goto(`/e2e/${modal ? 'control' : 'timer'}.html?channel=gm`)
+      if (modal) {
+        await page.getByRole('button', { name: '调整自动执行' }).click()
+        await page.getByRole('switch', { name: '自动调仓', exact: true }).click()
+      } else {
+        await page.getByText('快捷', { exact: true }).click()
+      }
+      const preset = page.getByRole('button', { name: `盘中每 ${minutes} 分`, exact: true })
+      await preset.click()
+      await expect(preset).toHaveAttribute('aria-pressed', 'true')
+      await expect.poll(() => mock.requests.some(request => request.cron_expr === expected)).toBe(true)
+      if (modal) {
+        await page.getByRole('button', { name: '保存', exact: true }).click()
+        await expect.poll(() => saved?.cron_expr).toBe(expected)
+      }
+    }
   })
-  for (const modal of [false, true]) {
-    mock.requests.length = 0
-    await page.setViewportSize({ width: modal ? 520 : 1440, height: 900 })
-    await page.goto(`/e2e/${modal ? 'control' : 'timer'}.html?channel=gm`)
-    if (modal) {
-      await page.getByRole('button', { name: '调整自动执行' }).click()
-      await page.getByRole('switch', { name: '自动调仓', exact: true }).click()
-    } else {
-      await page.getByText('快捷', { exact: true }).click()
-    }
-    const preset = page.getByRole('button', { name: '盘中每 30 分', exact: true })
-    await preset.click()
-    await expect(preset).toHaveAttribute('aria-pressed', 'true')
-    await expect.poll(() => mock.requests.some(request => request.cron_expr === expected)).toBe(true)
-    if (modal) {
-      await page.getByRole('button', { name: '保存', exact: true }).click()
-      await expect.poll(() => saved?.cron_expr).toBe(expected)
-    }
-  }
-})
+}
