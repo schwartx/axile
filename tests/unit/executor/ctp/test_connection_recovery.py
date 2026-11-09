@@ -155,7 +155,7 @@ class ScriptedBroker:
         self.market_spi.OnRtnDepthMarketData(
             SimpleNamespace(
                 InstrumentID="ag2612",
-                TradingDay=day or self.day,
+                TradingDay=self.day if day is None else day,
                 ActionDay=now.strftime("%Y%m%d"),
                 UpdateTime=now.strftime("%H:%M:%S"),
                 UpdateMillisec=now.microsecond // 1000,
@@ -351,6 +351,23 @@ def test_trading_day_change_in_quote_invalidates_entire_instance(broker):
 
     assert not executor._verify_connection()
     assert executor._quotes == {}
+
+
+@pytest.mark.parametrize("day", ["20260908", "", "unknown", "20261301"])
+def test_bad_quote_trading_day_only_rejects_tick(broker, day):
+    executor = broker.start()
+    executor.initialize_websocket(["ag2612"])
+    broker.quote(day=day)
+
+    assert executor._verify_connection()
+    assert executor._quotes == {}
+    assert executor._quote_diagnostic("ag2612")["last_rejection"]["reason"] == "trading_day_mismatch"
+
+    broker.quote()
+    quote = executor.get_market_data(["ag2612"])["ag2612"]
+    broker.quote(day=day)
+
+    assert executor.get_market_data(["ag2612"])["ag2612"] is quote
 
 
 def test_quote_without_subscription_ack_cannot_allow_native_submit(broker):
