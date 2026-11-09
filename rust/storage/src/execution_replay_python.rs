@@ -70,15 +70,21 @@ impl ExecutionReplayWriter {
     }
 }
 
-#[pyfunction]
+#[pyfunction(signature = (root, account_id, execution_id, execution_end_us=None))]
 fn execution_replay_manifest(
     py: Python<'_>,
     root: &str,
     account_id: u64,
     execution_id: &str,
+    execution_end_us: Option<u64>,
 ) -> PyResult<String> {
     py.detach(|| {
-        crate::execution_replay_reader::manifest(Path::new(root), account_id, execution_id)
+        crate::execution_replay_reader::manifest(
+            Path::new(root),
+            account_id,
+            execution_id,
+            execution_end_us,
+        )
     })
     .map(|value| value.to_string())
     .map_err(crate::python::raise)

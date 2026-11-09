@@ -71,7 +71,6 @@ async def replay_status(account_id: int) -> dict[str, object]:
 async def replay_manifest(execution_id: str) -> dict[str, object]:
     """读取历史录制段与覆盖原因，不调用当前渠道解释旧数据。"""
     account_id = await _execution_account(execution_id)
-    result = await _read(service.replay_manifest, account_id, execution_id)
     intent = await get_intent(execution_id)
     start_us = None
     end_us = None
@@ -83,6 +82,8 @@ async def replay_manifest(execution_id: str) -> dict[str, object]:
     if intent is not None and intent.finished_at is not None:
         delta = datetime.fromisoformat(intent.finished_at) - datetime(1970, 1, 1, tzinfo=UTC)
         end_us = (delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds
+    cutoff_us = end_us if end_us is not None and 0 <= end_us <= _SAFE_INTEGER else None
+    result = await _read(service.replay_manifest, account_id, execution_id, cutoff_us)
     return {**result, "execution_start_us": start_us, "execution_end_us": end_us}
 
 
