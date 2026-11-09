@@ -111,7 +111,7 @@ ACCOUNT_CONTROL_PRESETS: dict[str, AccountControlPresetDefinition] = {
                     "place_order": {
                         "account": {
                             "per_minute": _rule(20, "wait"),
-                            "per_day": _rule(500, "block"),
+                            "per_day": _rule(5000, "block"),
                             "min_interval_ms": _rule(300, "wait"),
                         },
                         "symbol": {
@@ -170,7 +170,7 @@ ACCOUNT_CONTROL_PRESETS: dict[str, AccountControlPresetDefinition] = {
                         "priority": 10,
                         "account": {
                             "per_minute": _rule(30, "wait"),
-                            "per_day": _rule(500, "block"),
+                            "per_day": _rule(5000, "block"),
                             "min_interval_ms": _rule(500, "wait"),
                         },
                         "symbol": {
