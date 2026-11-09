@@ -13,7 +13,7 @@ use crate::execution_replay::{
     child_file, day_directory, digest, failure, identifier, io_error, read_bounded,
     read_mcap_summary, validate_committed_records, Catalog, CatalogRecording, PartDescriptor,
     RecoveryPartMeta, ReplayResult, CATALOG_LIMIT, PART_FILE_LIMIT, RECOVERY_METADATA_LIMIT,
-    RECOVERY_METADATA_NAME, SCAN_FILES,
+    RECOVERY_METADATA_NAME, JS_SAFE, SCAN_FILES,
 };
 use crate::execution_replay_block::read_block;
 use crate::execution_replay_index::BlockIndex;
@@ -31,6 +31,7 @@ pub(crate) struct ReadIndex {
 pub(crate) fn load_read_index(
     account: &Path,
     execution: &str,
+    execution_end_us: Option<u64>,
     budget: &mut Budget,
 ) -> ReplayResult<ReadIndex> {
     budget.charge(0, 0)?;
@@ -40,7 +41,12 @@ pub(crate) fn load_read_index(
     let index_path = child_file(account, ".replay-index.sqlite")?;
     if index_path.exists() {
         budget.indexed = true;
-        return load_sqlite_index(account, execution, &BlockIndex::open(&index_path)?);
+        return load_sqlite_index(
+            account,
+            execution,
+            execution_end_us,
+            &BlockIndex::open(&index_path)?,
+        );
     }
     let mut days = Vec::new();
     for entry in fs::read_dir(account).map_err(io_error)? {
@@ -71,6 +77,7 @@ pub(crate) fn load_read_index(
 fn load_sqlite_index(
     account: &Path,
     execution: &str,
+    execution_end_us: Option<u64>,
     sqlite: &BlockIndex,
 ) -> ReplayResult<ReadIndex> {
     let recordings = sqlite.recording_metadata(execution)?;
@@ -90,7 +97,15 @@ fn load_sqlite_index(
     }
     let mut index = ReadIndex::default();
     let mut days: BTreeMap<String, Vec<PartDescriptor>> = BTreeMap::new();
-    let files = sqlite.files(execution)?;
+    let is_later_unassociated = |metadata: &CatalogRecording| {
+        metadata.executions.is_empty()
+            && metadata
+                .unsealed_start_us
+                .zip(execution_end_us)
+                .is_some_and(|(start_us, end_us)| start_us <= JS_SAFE && start_us > end_us)
+    };
+    let mut files = sqlite.files(execution)?;
+    files.retain(|(recording, ..)| !recordings.get(recording).is_some_and(is_later_unassociated));
     let recorded: BTreeSet<_> = files.iter().map(|(recording, _, _)| recording).collect();
     for recording in recorded {
         for reference in sqlite.fragment_references(recording)? {
@@ -150,7 +165,7 @@ fn load_sqlite_index(
         index.partial_parts.push((recording, day, part));
     }
     for (recording, metadata) in &recordings {
-        if metadata.unsealed_start_us.is_some() {
+        if metadata.unsealed_start_us.is_some() && !is_later_unassociated(metadata) {
             index.partial_recordings.insert(recording.clone());
         }
     }
@@ -656,7 +671,7 @@ mod tests {
             )
         }
         fn assert_replay(&self) {
-            let before = manifest(&self.0, 1, "7").unwrap();
+            let before = manifest(&self.0, 1, "7", None).unwrap();
             assert_eq!(before["recordings"][0]["recording_id"], "recovery-A");
             assert_eq!(
                 before["recordings"][0]["coverage"],
@@ -689,7 +704,7 @@ mod tests {
         assert!(!catalog.exists());
         fixture.assert_replay();
         fs::write(&sealed, &original[..original.len() - 8]).unwrap();
-        let result = manifest(&fixture.0, 1, "7").unwrap();
+        let result = manifest(&fixture.0, 1, "7", None).unwrap();
         assert_eq!(result["availability"], "partial");
         assert!(window(
             &fixture.0,
@@ -717,7 +732,7 @@ mod tests {
         file.write_all(&[byte[0] ^ 0x80]).unwrap();
         drop(file);
         assert_eq!(
-            manifest(&fixture.0, 1, "7").unwrap_err().code,
+            manifest(&fixture.0, 1, "7", None).unwrap_err().code,
             "REPLAY_CORRUPT"
         );
     }
@@ -731,7 +746,7 @@ mod tests {
         fs::write(&catalog, forged).unwrap();
         fixture.assert_replay();
         assert_eq!(
-            manifest(&fixture.0, 1, "forged").unwrap()["availability"],
+            manifest(&fixture.0, 1, "forged", None).unwrap()["availability"],
             "not_recorded"
         );
         assert_eq!(fs::read(&catalog).unwrap(), forged);
@@ -766,7 +781,7 @@ mod tests {
             db.execute("UPDATE identity SET version=?1", [version])
                 .unwrap();
             assert_eq!(
-                manifest(&fixture.0, 1, "7").unwrap_err().code,
+                manifest(&fixture.0, 1, "7", None).unwrap_err().code,
                 "REPLAY_CORRUPT"
             );
         }
@@ -779,7 +794,7 @@ mod tests {
         let (_, sealed) = fixture.write_part();
         let original = fs::read(&sealed).unwrap();
         fs::remove_file(fixture.0.join("account-1/.replay-index.sqlite")).unwrap();
-        assert!(manifest(&fixture.0, 1, "7").is_err());
+        assert!(manifest(&fixture.0, 1, "7", None).is_err());
         let error = match ExecutionReplayWriter::new(
             &fixture.0,
             1,
@@ -799,7 +814,7 @@ mod tests {
         let fixture = Fixture::new();
         let absent = fixture.0.join("absent");
         for root in [&absent, &fixture.0] {
-            let response = manifest(root, 1, "7").unwrap();
+            let response = manifest(root, 1, "7", None).unwrap();
             assert_eq!(response["availability"], "not_recorded");
             assert_eq!(response["recordings"], json!([]));
             assert!(!root.join("account-1").exists());
@@ -815,7 +830,7 @@ mod tests {
         let partial = directory.join("recording-pending-000001.mcap.partial");
         fs::write(&partial, b"not a readable MCAP").unwrap();
         assert_eq!(
-            manifest(&fixture.0, 1, "7").unwrap_err().code,
+            manifest(&fixture.0, 1, "7", Some(100)).unwrap_err().code,
             "REPLAY_INCOMPLETE"
         );
         assert_eq!(fs::read(partial).unwrap(), b"not a readable MCAP");

@@ -2451,7 +2451,7 @@ mod tests {
             ))
             .unwrap();
         writer.commit_active().unwrap();
-        let manifest = crate::execution_replay_reader::manifest(&directory.0, 7, "E").unwrap();
+        let manifest = crate::execution_replay_reader::manifest(&directory.0, 7, "E", None).unwrap();
         assert_eq!(
             manifest["recordings"][0]["coverage"],
             json!([{"start_us":time,"end_us":time+1}])
@@ -2492,7 +2492,7 @@ mod tests {
         writer.active.as_mut().unwrap().last_watermark =
             Instant::now() - std::time::Duration::from_secs(2);
         writer.poll(time + 5_000_000).unwrap();
-        let manifest = crate::execution_replay_reader::manifest(&directory.0, 7, "E").unwrap();
+        let manifest = crate::execution_replay_reader::manifest(&directory.0, 7, "E", None).unwrap();
         assert_eq!(
             manifest["recordings"][0]["coverage"],
             json!([{"start_us":time,"end_us":time+5_000_000}])
@@ -3204,7 +3204,7 @@ mod tests {
         .is_err());
         fs::remove_file(fragment).unwrap();
         assert_eq!(
-            crate::execution_replay_reader::manifest(&directory.0, 7, "E")
+            crate::execution_replay_reader::manifest(&directory.0, 7, "E", None)
                 .unwrap_err()
                 .code,
             "REPLAY_INCOMPLETE"
@@ -3309,7 +3309,7 @@ mod tests {
                     .collect();
                 assert_eq!(files.len(), 3);
                 let original =
-                    crate::execution_replay_reader::manifest(&directory.0, 7, "E").unwrap();
+                    crate::execution_replay_reader::manifest(&directory.0, 7, "E", None).unwrap();
                 assert_eq!(
                     original["recordings"][0]["coverage"],
                     json!([{"start_us":time,"end_us":time+2*minute+1}])
@@ -3326,7 +3326,7 @@ mod tests {
                     fs::write(&files[damaged], bytes).unwrap();
                 }
                 let manifest =
-                    crate::execution_replay_reader::manifest(&directory.0, 7, "E").unwrap();
+                    crate::execution_replay_reader::manifest(&directory.0, 7, "E", None).unwrap();
                 let recording = &manifest["recordings"][0];
                 assert_eq!(manifest["availability"], "partial");
                 assert_eq!(recording["availability"], "partial");
@@ -3409,7 +3409,7 @@ mod tests {
                     .join(first.file_name()),
             )
             .unwrap();
-            let manifest = crate::execution_replay_reader::manifest(&directory.0, 7, "E").unwrap();
+            let manifest = crate::execution_replay_reader::manifest(&directory.0, 7, "E", None).unwrap();
             assert_eq!(
                 manifest["recordings"][0]["coverage"],
                 json!([{"start_us":time+1,"end_us":time+11}])
@@ -3474,7 +3474,7 @@ mod tests {
                 db.execute("DELETE FROM files WHERE recording='recA' AND part=2", [])
                     .unwrap();
             }
-            let manifest = crate::execution_replay_reader::manifest(&directory.0, 7, "E").unwrap();
+            let manifest = crate::execution_replay_reader::manifest(&directory.0, 7, "E", None).unwrap();
             assert_eq!(
                 manifest["recordings"][0]["coverage"],
                 json!([{"start_us":time-10,"end_us":time},{"start_us":time+1,"end_us":time+11}])
@@ -3567,7 +3567,7 @@ mod tests {
             .all(|part| part.size_bytes <= PART_FILE_LIMIT));
         for sequence in [1, 1_100] {
             let manifest =
-                crate::execution_replay_reader::manifest(&directory.0, 7, &execution(sequence))
+                crate::execution_replay_reader::manifest(&directory.0, 7, &execution(sequence), None)
                     .unwrap();
             assert_eq!(manifest["availability"], "available");
             assert_eq!(manifest["recordings"][0]["recording_id"], "recA");
@@ -3622,7 +3622,7 @@ mod tests {
                 json!({"execution_id":"E","phase":"started"}),
             ))
             .unwrap();
-        let manifest = crate::execution_replay_reader::manifest(&directory.0, 7, "E").unwrap();
+        let manifest = crate::execution_replay_reader::manifest(&directory.0, 7, "E", None).unwrap();
         assert_eq!(manifest["availability"], "partial");
         assert_eq!(manifest["recordings"][0]["recording_id"], "recA");
         assert!(manifest["recordings"][0]["parts"]
@@ -3635,7 +3635,7 @@ mod tests {
             .iter()
             .any(|gap| gap["reason"] == "unsealed"));
         drop(writer);
-        let manifest = crate::execution_replay_reader::manifest(&directory.0, 7, "E").unwrap();
+        let manifest = crate::execution_replay_reader::manifest(&directory.0, 7, "E", None).unwrap();
         assert_eq!(manifest["availability"], "partial");
     }
 
@@ -3666,7 +3666,7 @@ mod tests {
         );
         assert_eq!(writer.status()["state"], "error");
         drop(writer);
-        let manifest = crate::execution_replay_reader::manifest(&directory.0, 7, "E").unwrap();
+        let manifest = crate::execution_replay_reader::manifest(&directory.0, 7, "E", None).unwrap();
         assert!(manifest["recordings"][0]["parts"]
             .as_array()
             .unwrap()
@@ -3804,7 +3804,7 @@ mod tests {
             ))
             .unwrap();
         writer.finish().unwrap();
-        let manifest = crate::execution_replay_reader::manifest(&directory.0, 7, "E").unwrap();
+        let manifest = crate::execution_replay_reader::manifest(&directory.0, 7, "E", None).unwrap();
         assert_eq!(
             manifest["recordings"][0]["symbols"],
             json!(["A", "LEGACY", "P", "Q", "SCOPED", "X"])
@@ -3825,7 +3825,7 @@ mod tests {
             .join(&writer.sealed[0].day)
             .join("catalog.json");
         assert!(!catalog.exists());
-        let recovered = crate::execution_replay_reader::manifest(&directory.0, 7, "E").unwrap();
+        let recovered = crate::execution_replay_reader::manifest(&directory.0, 7, "E", None).unwrap();
         assert_eq!(
             recovered["recordings"][0]["symbols"],
             json!(["A", "LEGACY", "P", "Q", "SCOPED", "X"])

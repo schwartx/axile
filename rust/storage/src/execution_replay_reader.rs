@@ -685,9 +685,10 @@ fn prefix_descriptor(
 fn recording_views(
     account: &Path,
     execution: &str,
+    execution_end_us: Option<u64>,
     budget: &mut Budget,
 ) -> ReplayResult<RecordingIndex> {
-    let index = load_read_index(account, execution, budget)?;
+    let index = load_read_index(account, execution, execution_end_us, budget)?;
     let mut recordings: BTreeMap<String, RecordingView> = BTreeMap::new();
     for catalog in index.catalogs {
         for (identity, mut metadata) in catalog.recordings {
@@ -943,7 +944,12 @@ fn manifest_recording(
         "availability":if missing || !gaps.is_empty() || view.parts.is_empty() {"partial"} else {"available"}})
 }
 
-pub(crate) fn manifest(root: &Path, account_id: u64, execution: &str) -> ReplayResult<Value> {
+pub(crate) fn manifest(
+    root: &Path,
+    account_id: u64,
+    execution: &str,
+    execution_end_us: Option<u64>,
+) -> ReplayResult<Value> {
     execution_id(execution)?;
     if account_id == 0 || account_id > JS_SAFE {
         return Err(failure("INVALID_REQUEST", "invalid account identity"));
@@ -957,7 +963,7 @@ pub(crate) fn manifest(root: &Path, account_id: u64, execution: &str) -> ReplayR
     let account = account_directory(root, account_id, false)?;
     let mut budget = Budget::default();
     budget.charge(0, 0)?;
-    let index = recording_views(&account, execution, &mut budget)?;
+    let index = recording_views(&account, execution, execution_end_us, &mut budget)?;
     let views = index.views;
     let selected: BTreeSet<String> = views
         .iter()
@@ -1496,7 +1502,7 @@ pub(crate) fn window(
     let account = account_directory(root, account_id, false)?;
     let mut budget = Budget::default();
     budget.charge(0, 0)?;
-    let index = recording_views(&account, execution, &mut budget)?;
+    let index = recording_views(&account, execution, None, &mut budget)?;
     let views = index.views;
     if index.partial_recordings.contains(&request.recording_id)
         && views
@@ -2066,7 +2072,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(checkpoint.seq, 10_000);
-        let index = recording_views(&account, "E", &mut Budget::default()).unwrap();
+        let index = recording_views(&account, "E", None, &mut Budget::default()).unwrap();
         let view = &index.views["checkpoint"];
         let part = &view.parts[0];
         let context = &view.metadata.as_ref().unwrap().context;
@@ -2247,7 +2253,7 @@ mod tests {
         assert_eq!(before["messages"], json!([]));
         assert_eq!(before["complete"], true);
 
-        let advertised = manifest(&root, 1, "7").unwrap();
+        let advertised = manifest(&root, 1, "7", None).unwrap();
         assert_eq!(
             advertised["recordings"][0]["coverage"],
             json!([{"start_us":100,"end_us":120_000_101}])
@@ -2564,7 +2570,7 @@ mod tests {
         }
         writer.finish().unwrap();
         fs::remove_file(root.join("account-1/1970-01-01/recording-legacy-000001.mcap")).unwrap();
-        let result = manifest(&root, 1, "E").unwrap();
+        let result = manifest(&root, 1, "E", None).unwrap();
         assert_eq!(result["availability"], "partial");
         assert_eq!(result["recordings"][0]["symbols"], json!(["A"]));
         assert_eq!(result["recordings"][0]["symbols_complete"], true);

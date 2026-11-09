@@ -3,6 +3,7 @@
 import asyncio
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI, Response
@@ -47,6 +48,7 @@ def test_manifest_rejects_foreign_catalog_without_account_or_channel_queries(mon
         return {"account_id": 7}
 
     monkeypatch.setattr(execution_replay, "get_execution_status", status)
+    monkeypatch.setattr(execution_replay, "get_intent", AsyncMock(return_value=None))
     monkeypatch.setattr(execution_replay.service, "replay_manifest", lambda *args: {"account_id": 8})
     app = FastAPI()
     app.include_router(execution_replay.router, prefix="/account")
@@ -62,6 +64,7 @@ def test_native_budget_failure_has_actionable_code_without_local_path(monkeypatc
         raise _core.NativeError("REPLAY_BUDGET", "/private/account/secret recording exceeds scan budget")
 
     monkeypatch.setattr(execution_replay, "get_execution_status", status)
+    monkeypatch.setattr(execution_replay, "get_intent", AsyncMock(return_value=None))
     monkeypatch.setattr(execution_replay.service, "replay_manifest", read)
     app = FastAPI()
     app.include_router(execution_replay.router, prefix="/account")
@@ -70,6 +73,58 @@ def test_native_budget_failure_has_actionable_code_without_local_path(monkeypatc
         assert response.status_code == 413
         assert response.json()["detail"]["code"] == "REPLAY_BUDGET"
         assert "/private/" not in response.text
+
+
+def test_manifest_ignores_later_unassociated_partial(monkeypatch, tmp_path):
+    from tests.conftest import require_native_store
+
+    core = require_native_store("ExecutionReplayWriter", "execution_replay_manifest")
+    writer = core.ExecutionReplayWriter(str(tmp_path), 7, "current", '{"schema_version":1}')
+    writer.append(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "recording_id": "current",
+                "capture_seq": 1,
+                "time_us": 100,
+                "topic": "/execution",
+                "data": {"execution_id": "recorded", "phase": "started"},
+            }
+        )
+    )
+
+    async def status(_):
+        return {"account_id": 7}
+
+    async def intent(execution_id):
+        finished_at = {
+            "earlier": "1970-01-01T00:00:00.000099Z",
+            "same-time": "1970-01-01T00:00:00.000100Z",
+            "unknown-time": None,
+            "recorded": "1970-01-01T00:00:00.000099Z",
+        }[execution_id]
+        return SimpleNamespace(account_id=7, started_at=None, finished_at=finished_at)
+
+    monkeypatch.setattr(execution_replay, "get_execution_status", status)
+    monkeypatch.setattr(execution_replay, "get_intent", intent)
+    monkeypatch.setattr(execution_replay, "replay_root", lambda: tmp_path)
+    app = FastAPI()
+    app.include_router(execution_replay.router, prefix="/account")
+    with TestClient(app) as client:
+        path = "/account/executions/{}/replay"
+        earlier = client.get(path.format("earlier"))
+        assert earlier.status_code == 200, earlier.text
+        assert earlier.json()["availability"] == "not_recorded"
+        assert earlier.json()["recordings"] == []
+        for execution_id in ("same-time", "unknown-time"):
+            ambiguous = client.get(path.format(execution_id))
+            assert ambiguous.status_code == 409, ambiguous.text
+            assert ambiguous.json()["detail"]["code"] == "REPLAY_INCOMPLETE"
+        recorded = client.get(path.format("recorded"))
+        assert recorded.status_code == 200, recorded.text
+        assert recorded.json()["availability"] == "partial"
+        assert [item["recording_id"] for item in recorded.json()["recordings"]] == ["current"]
+    writer.finish()
 
 
 @pytest.mark.parametrize("acknowledged", [True, False])

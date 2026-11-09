@@ -19,7 +19,9 @@ def native_writer(root: str, account_id: int, recording_id: str, context_json: s
         raise
 
 
-def _read(name: str, root: str | Path, account_id: int, execution_id: str, *args: str) -> dict[str, object]:
+def _read(
+    name: str, root: str | Path, account_id: int, execution_id: str, *args: str | int | None
+) -> dict[str, object]:
     if isinstance(account_id, bool) or not isinstance(account_id, int) or account_id <= 0:
         raise ValueError("invalid_replay_account")
     if not execution_id or len(execution_id) > 256:
@@ -32,9 +34,11 @@ def _read(name: str, root: str | Path, account_id: int, execution_id: str, *args
     return result
 
 
-def replay_manifest(root: str | Path, account_id: int, execution_id: str) -> dict[str, object]:
+def replay_manifest(
+    root: str | Path, account_id: int, execution_id: str, execution_end_us: int | None = None
+) -> dict[str, object]:
     """读取已封口 recording 清单，不触发 seal 或账户操作。"""
-    return _read("execution_replay_manifest", root, account_id, execution_id)
+    return _read("execution_replay_manifest", root, account_id, execution_id, execution_end_us)
 
 
 def replay_window(
