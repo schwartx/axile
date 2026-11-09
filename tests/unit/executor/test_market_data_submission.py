@@ -53,12 +53,12 @@ def test_submission_revalidates_consumed_quote_after_real_guard_wait(monkeypatch
         policy=resolve_account_control_policy(
             "default",
             AccountControlOverride.model_validate(
-                {"operations": {"place_order": {"account": {"min_interval_ms": {"limit": 6000}}}}}
+                {"operations": {"place_order": {"account": {"min_interval_ms": {"limit": 11000}}}}}
             ),
         ),
         baseline=AccountControlCounterSnapshot(),
         wait_clock=clock,
-        wait_poll_interval_ms=6000,
+        wait_poll_interval_ms=11000,
     )
     guard.begin_operation("place_order", symbol="other").record_outcome("submitted")
     monkeypatch.setattr(owner, "get_account_control_guard", lambda: guard)
@@ -71,7 +71,7 @@ def test_submission_revalidates_consumed_quote_after_real_guard_wait(monkeypatch
     guard._sleep = sleep
     with pytest.raises(MarketDataUnavailableError, match="已过期"):
         session.place_order(OrderDirection.BUY, OrderType.LIMIT, 1, consumed.bids[0][0])
-    assert clock.time() >= 1006
+    assert clock.time() >= 1011
     assert submitted == []
     failure = owner.account_orders.activity.snapshot()["failures"][-1]
     assert failure["outcome"] == "blocked"
@@ -88,7 +88,7 @@ def test_callback_in_other_thread_cannot_replace_consumed_quote(monkeypatch):
     session = ExecutionSession(owner, "600584.SH")
     session.get_market_data()
     session.register_price_callback(lambda q: session.place_order(OrderDirection.BUY, OrderType.LIMIT, 1, q.bids[0][0]))
-    now[0] += 6
+    now[0] += 11
     with ThreadPoolExecutor(max_workers=1) as pool:
         pool.submit(owner.callbacks[0], quote(now[0])).result(timeout=2)
     with pytest.raises(MarketDataUnavailableError, match="已过期"):
@@ -100,7 +100,7 @@ def test_callback_in_other_thread_cannot_replace_consumed_quote(monkeypatch):
     ("order_type", "changes", "reason"),
     [
         (OrderType.LIMIT, {"timestamp": 0}, "时间无效"),
-        (OrderType.LIMIT, {"timestamp": 994000}, "已过期"),
+        (OrderType.LIMIT, {"timestamp": 989000}, "已过期"),
         (OrderType.LIMIT, {"bids": [], "asks": []}, "缺少真实盘口"),
         (OrderType.MARKET, {"last_price": 0}, "参考价格无效"),
     ],
@@ -126,8 +126,8 @@ def test_direct_facade_freezes_quote_and_preserves_audit_context(monkeypatch):
 
     def send(*args, **kwargs):
         seen.append((get_order_submission_context(), kwargs))
-        consumed.timestamp = 1_006_000
-        now[0] += 6
+        consumed.timestamp = 1_011_000
+        now[0] += 11
         validate_order_submission()
 
     monkeypatch.setattr(owner, "_place_order_impl", send)
