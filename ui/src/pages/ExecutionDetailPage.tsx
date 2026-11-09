@@ -6,6 +6,7 @@ import { useLocation, useParams } from 'react-router'
 import { Card } from '@/components/ui/Card'
 import { SkeletonLines } from '@/components/ui/Skeleton'
 import { NumberTicker } from '@/components/ui/NumberTicker'
+import { formatDuration } from '@/components/ui/duration'
 import { ExecutionErrorEvidence } from '@/features/history/ExecutionErrorEvidence'
 import { readEvidencePages, type EvidencePage } from '@/features/history/executionErrorAdapter'
 import { ErrorCopyButton } from '@/components/ui/ErrorDetailsContent'
@@ -508,7 +509,7 @@ function Evidence({
           />
         </div>
       )}
-      {b.timeoutSec != null && <div className="mt-1 text-[13px] text-ink-3">冻结输入 · 执行超时 {b.timeoutSec}s</div>}
+      {b.timeoutSec != null && <div className="mt-1 text-[13px] text-ink-3">冻结输入 · 执行超时 {formatDuration(b.timeoutSec)}</div>}
     </div>
   )
 }

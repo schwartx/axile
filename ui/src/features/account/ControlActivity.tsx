@@ -1,4 +1,6 @@
 import { useId, useState } from 'react'
+import { NumberTicker } from '@/components/ui/NumberTicker'
+import { formatDuration } from '@/components/ui/duration'
 import type { ControlFrame } from '@/stores/liveControl'
 
 const OUTCOME: Record<string, string> = {
@@ -27,7 +29,8 @@ export function ControlWaitingSection({ frame, operationNames }: { frame: Contro
   const id = useId()
   return <div className="mt-4">
     <button type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-controls={id} className="flex w-full cursor-pointer items-center gap-3 border-0 bg-transparent py-2 text-left">
-      <span className={`text-[13px] font-semibold ${frame?.waiting_total ? 'text-warn' : 'text-ink-2'}`}>等待请求({unknown ? '未知' : frame?.waiting_total})</span>
+      <span className={`text-[13px] font-semibold ${frame?.waiting_total ? 'text-warn' : 'text-ink-2'}`}>等待请求({unknown ? '未知' : frame?.status === 'running' && !frame.stale && !frame.incomplete
+        ? <NumberTicker value={frame.waiting_total} /> : frame?.waiting_total})</span>
       <span className="h-px flex-1 bg-line" /><span className="text-[13px] text-ink-3" aria-hidden>{open ? '⌄' : '›'}</span>
     </button>
     <div inert={!open} aria-hidden={!open} className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
@@ -50,9 +53,9 @@ export function ControlWaitingList({ frame, operationNames }: { frame: ControlFr
         <span className="font-semibold text-ink-1">{operationNames[request.operation] ?? '其他操作'}</span>
         <span className="text-ink-2">{request.symbol ?? '账户'}</span>
         <span className="text-warn">{request.kind === 'quota' ? '额度等待' : '排队等待'}</span>
-        <span className="num text-ink-3">已等待 {(request.waited_ms / 1000).toFixed(1)} 秒</span>
+        <span className="num text-ink-3">已等待 {formatDuration(request.waited_ms / 1000, 1)}</span>
         <span className="text-ink-3">{priority(request.priority)}</span>
-        {request.estimated_wait_ms != null && <span className="num text-ink-3">预计再等 {(request.estimated_wait_ms / 1000).toFixed(1)} 秒</span>}
+        {request.estimated_wait_ms != null && <span className="num text-ink-3">预计再等 {formatDuration(request.estimated_wait_ms / 1000, 1)}</span>}
       </div>
       {request.hits.length > 0 && <p className="mt-1 break-words text-[12px] leading-5 text-ink-3">{request.hits.map(hitMessage).filter(Boolean).join('；')}</p>}
     </div>)}

@@ -19,6 +19,7 @@ import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 import { useControlQuotaWarnings } from '@/features/account/useControlQuotaWarnings'
 import { quotaOperationName, quotaStageName } from '@/features/account/controlWarnings'
 import { InkRewrite } from '@/components/ui/InkRewrite'
+import { NumberTicker } from '@/components/ui/NumberTicker'
 import { SubmissionMonitor } from '@/features/account/SubmissionMonitor'
 import { ControlUsageNotice } from '@/features/account/ControlUsage'
 
@@ -26,10 +27,10 @@ function metricRules(frame: ControlFrame | undefined): ControlRule[] {
   // 旧数据只提供每日摘要时保留兼容；新快照从规则取固定分钟用量。
   return [...(frame?.metrics ?? []), ...(frame?.rules ?? [])]
 }
-function controlValue(rule: ControlRule | undefined): string {
+function controlValue(rule: ControlRule | undefined, live: boolean) {
   if (!rule || rule.value == null) return '未知'
-  if (rule.limit === 0) return `${rule.value}/0（禁用）`
-  return rule.limit == null ? `${rule.value}（无限制）` : `${rule.value}/${rule.limit}`
+  return <>{live ? <NumberTicker value={rule.value} /> : rule.value}{rule.limit === 0 ? '/0（禁用）'
+    : rule.limit == null ? '（无限制）' : `/${rule.limit}`}</>
 }
 
 function ControlDialog({ open, frame, accountId, accountName, selected, draft, onDraftChange, onSave, onClose, model, loading, failed, retry, names }: {
@@ -186,6 +187,7 @@ function AccountControlSummaryContent({ accountId }: { accountId: number }) {
   const names = { ...OPERATIONS, ...Object.fromEntries((model?.operations ?? []).map((operation) => [operation.key, operation.display_name])) }
 
   const rules = metricRules(frame)
+  const live = frame?.status === 'running' && !frame.stale && !frame.incomplete
   const stale = Boolean(frame?.stale && !frame.waiting_total && !frame.incomplete)
   const updatedAt = frame?.sampled_at_ms != null
     ? new Date(frame.sampled_at_ms).toLocaleTimeString('zh-CN', { timeZone: frame.timezone ?? 'Asia/Shanghai', hour12: false })
@@ -212,7 +214,7 @@ function AccountControlSummaryContent({ accountId }: { accountId: number }) {
           className={`h-1.5 w-1.5 flex-none rounded-full ${stale ? 'bg-warn' : 'bg-transparent'}`} />
       </span>
       <span data-config-value className="num min-w-0 font-medium text-ink-1 group-hover:underline">
-        {selected.map((id) => `${metricLabel(id, true, names)} ${controlValue(rules.find((rule) => rule.id === id))}`).join(' · ')}
+        {selected.map((id, index) => <span key={id}>{index > 0 && ' · '}{metricLabel(id, true, names)} {controlValue(rules.find((rule) => rule.id === id), live)}</span>)}
       </span>
       {warnings.length > 0 && <span className="min-w-0 text-warn"><InkRewrite overflow text={warnings.map(warning => `${quotaOperationName(warning.operation)}${quotaStageName(warning.stage)}${warning.stale ? '（待更新）' : ''}`).join(' · ')} /></span>}
       {submissionWarnings.length > 0 && <span className="min-w-0 text-warn"><InkRewrite overflow text={submissionWarnings.map(metric => `${metric.metric === 'order_calls' ? '报单调用' : '报撤合计'}已达阈值${frame?.stale ? '（待更新）' : ''}`).join(' · ')} /></span>}

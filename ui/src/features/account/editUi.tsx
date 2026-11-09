@@ -340,11 +340,9 @@ export function EditSaveBar({
           <div className={`flex items-center gap-4 ${layout === 'inline' ? 'py-2' : 'py-3'}`}>
             <div className={`min-w-0 flex-1 ${layout === 'inline' ? 'min-h-10' : ''}`}>
               <div className="text-[12px] font-semibold tracking-wide text-ink-3">
-                {layout === 'inline' ? <InkRewrite text={statusText} /> : statusText}{blocked && <span className="text-warn"> · 有错误</span>}
+                <InkRewrite text={statusText} />{blocked && <span className="text-warn"> · 有错误</span>}
               </div>
-              {layout === 'inline'
-                ? <InkRewrite className="num w-full text-[14px] text-ink-1" text={changes.join('  ·  ')} overflow />
-                : <OverflowText className="num text-[14px] text-ink-1" text={changes.join('  ·  ')} />}
+              <InkRewrite className="num w-full text-[14px] text-ink-1" text={changes.join('  ·  ')} overflow />
             </div>
             <button
               type="button"
@@ -357,12 +355,12 @@ export function EditSaveBar({
             </button>
             <button
               type="button"
-              className={`flex-none cursor-pointer rounded-[9px] border-0 bg-ink-1 ${layout === 'inline' ? 'w-24 px-4' : 'px-5'} py-2 text-[14.5px] font-semibold text-surface disabled:opacity-45`}
+              className="w-24 flex-none cursor-pointer rounded-[9px] border-0 bg-ink-1 px-4 py-2 text-[14.5px] font-semibold text-surface disabled:opacity-45"
               onClick={onSave}
               disabled={blocked || saving || !open}
               tabIndex={open || layout === 'inline' ? 0 : -1}
             >
-              {layout === 'inline' ? <InkRewrite text={saving ? '保存中…' : '保存'} /> : saving ? '保存中…' : '保存'}
+              <InkRewrite text={saving ? '保存中…' : '保存'} />
             </button>
           </div>
           <ErrorNotice intent="mutation" title="保存失败" error={error} variant="mutation" onRetry={onSave} />
