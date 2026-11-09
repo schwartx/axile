@@ -6,9 +6,10 @@ import json
 from typing import Any
 
 from sqlalchemy import NullPool, event
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
-from axile.common.config import settings
+from axile.common.config import STARTUP_DIRECTORY, settings
 
 # aiosqlite 默认忙等待只有 5 秒；启动恢复等写并发密集的窗口里不够。
 SQLITE_BUSY_TIMEOUT_MS = 30_000
@@ -41,8 +42,17 @@ def register_sqlite_concurrency_pragmas(target_engine: AsyncEngine) -> None:
             cursor.close()
 
 
+def sqlite_url_at_startup(uri: str) -> URL:
+    """用启动目录解析普通 SQLite 文件名，保留内存库和 SQLite URI 参数。"""
+    url = make_url(uri)
+    database = url.database
+    if not database or database == ":memory:" or (database.startswith("file:") and url.query.get("uri")):
+        return url
+    return url.set(database=str(STARTUP_DIRECTORY / database))
+
+
 engine = create_async_engine(
-    str(settings.sqlalchemy_database_uri),
+    sqlite_url_at_startup(str(settings.sqlalchemy_database_uri)),
     echo=False,
     poolclass=NullPool,
     json_serializer=lambda obj: json.dumps(obj, ensure_ascii=False),  # type: ignore[arg-type]

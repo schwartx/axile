@@ -211,8 +211,8 @@ def _ctp_plugin() -> ChannelPlugin:
             ),
             defaults=ChannelDefaults(
                 account_control_preset="ctp",
-                long_leverage=3,
-                short_leverage=3,
+                long_leverage=1,
+                short_leverage=1,
                 execution_timeout=180,
                 trade_algorithm=AlgorithmReference(method="TARGET-POS-TASK", params={}),
                 empty_positions_algorithm=AlgorithmReference(method="TARGET-POS-TASK", params={}),
@@ -314,7 +314,7 @@ def _gm_plugin() -> ChannelPlugin:
             defaults=ChannelDefaults(
                 account_control_preset="default",
                 long_leverage=1,
-                short_leverage=0,
+                short_leverage=1,
                 execution_timeout=180,
                 trade_algorithm=_SINGLE_MAKER,
                 empty_positions_algorithm=_SINGLE_MAKER,
@@ -425,8 +425,8 @@ def _tq_plugin() -> ChannelPlugin:
             ),
             defaults=ChannelDefaults(
                 account_control_preset="default",
-                long_leverage=3,
-                short_leverage=3,
+                long_leverage=1,
+                short_leverage=1,
                 execution_timeout=180,
                 trade_algorithm=AlgorithmReference(method="TARGET-POS-TASK", params={}),
                 empty_positions_algorithm=AlgorithmReference(method="TARGET-POS-TASK", params={}),

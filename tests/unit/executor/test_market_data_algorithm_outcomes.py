@@ -155,7 +155,7 @@ def _expire_before_submit(
     def place_order(direction, order_type, volume, price=0, **kwargs):
         attempted_types.append(order_type)
         # 读行情与算法 deadline 检查都已完成；只推进时钟，不替换校验或伪造异常。
-        clock.now += 6
+        clock.now += 11
         return real_place_order(direction, order_type, volume, price, **kwargs)
 
     monkeypatch.setattr(session, "place_order", place_order)
@@ -181,7 +181,7 @@ def test_uncaught_market_data_error_keeps_blocked_reason_and_market_family(
 
     def uncaught_failure(real_session, algorithm_input):
         quote = real_session.get_market_data()
-        clock.now += 6
+        clock.now += 11
         real_session.place_order(OrderDirection.BUY, OrderType.LIMIT, 1, quote.bid_price)
         pytest.fail("过期行情不得提交")
 
@@ -267,7 +267,7 @@ def test_market_block_then_final_position_query_failure_is_plain_failure(
 
     def submit(*args, **kwargs):
         if not progress or owner.submissions:
-            clock.now += 6
+            clock.now += 11
             monkeypatch.setattr(owner, "get_account_assets", fail_final_query)
         return place(*args, **kwargs)
 
@@ -334,7 +334,7 @@ def test_split_submission_keeps_evidence_when_later_child_is_blocked(
 
     def submit(*args, **kwargs):
         if owner.submissions:
-            clock.now += 6
+            clock.now += 11
         return place(*args, **kwargs)
 
     monkeypatch.setattr(session, "place_order", submit)
@@ -457,7 +457,7 @@ def test_engine_preserves_order_trade_or_position_evidence(
 
     def caught_failure(real_session, algorithm_input):
         real_session.get_market_data()
-        clock.now += 6
+        clock.now += 11
         with pytest.raises(MarketDataUnavailableError) as caught:
             real_session.place_order(OrderDirection.BUY, OrderType.LIMIT, 1, 101)
         return AlgorithmResult(
@@ -495,7 +495,7 @@ def test_successful_resubmission_has_no_session_failure_side_channel(
 
     def recover(real_session, algorithm_input):
         real_session.get_market_data()
-        clock.now += 6
+        clock.now += 11
         with pytest.raises(MarketDataUnavailableError):
             real_session.place_order(OrderDirection.BUY, OrderType.LIMIT, 1, 101)
         assert owner.submissions == []

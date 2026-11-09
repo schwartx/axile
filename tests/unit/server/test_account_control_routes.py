@@ -390,6 +390,31 @@ def test_create_account_persists_normalized_channel_config(monkeypatch: pytest.M
     }
 
 
+@pytest.mark.parametrize("method", ["create", "update"])
+def test_saving_custom_notification_clears_account_webhook(monkeypatch, method) -> None:
+    monkeypatch.setattr(account_crud_routes, "parse_cron_expr", lambda _expr: ["fake-trigger"])
+    monkeypatch.setattr(account_crud_routes, "add_record_portfolio_account", _noop_async)
+    monkeypatch.setattr(account_crud_routes, "enqueue_account_runtime_sync", _noop_async)
+    monkeypatch.setattr(account_crud_routes, "reconcile_account_runtime", _synchronized_runtime_sync)
+    code = "def notify(context): pass"
+    account = _build_account() if method == "update" else None
+    session = _RouteSession(account)
+    client = TestClient(_build_app(session))
+
+    if account is None:
+        response = client.post(
+            "/account/", json={**_account_payload(), "feishu_key": "saved-key", "execution_notification_code": code}
+        )
+        assert response.status_code == 201
+    else:
+        account.feishu_key = "saved-key"
+        response = client.patch("/account/1", json={"execution_notification_code": code})
+        assert response.status_code == 200
+    assert session.account.feishu_key is None
+    assert session.account.execution_notification_code == code
+    assert response.json()["feishu_configured"] is False
+
+
 def test_update_account_persists_normalized_channel_config(monkeypatch: pytest.MonkeyPatch) -> None:
     """更新账户与创建使用同一规范化落库路径。"""
     monkeypatch.setattr(account_crud_routes, "enqueue_account_runtime_sync", _noop_async)

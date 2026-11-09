@@ -130,7 +130,7 @@ export function PortfolioEditPage() {
   )
 
   // 试跑状态机（与初始化向导共用）：上下文选择、结果、stale、Ctrl+Enter 的回调目标。
-  const calc = useCustomCalcValidation(code)
+  const calc = useCustomCalcValidation(code, head?.market)
 
   // 成功只展开返回值（左列）并切到试跑分段，失败只展开问题（右列贴代码）；两列是独立 split pane。
   useEffect(() => {

@@ -117,7 +117,7 @@ def test_quote_expires_between_read_and_place_order(now):
     owner = Owner(quote())
     session = ExecutionSession(owner, "600584.SH")
     session.get_market_data()
-    now[0] += 6
+    now[0] += 11
     with pytest.raises(MarketDataUnavailableError, match="已过期"):
         session.place_order(OrderDirection.BUY, OrderType.LIMIT, 100, 9.9)
     assert owner.orders == []
@@ -140,7 +140,7 @@ def test_subscription_evidence_is_scoped_to_callback_and_unregisters(now, callba
             raise RuntimeError("callback failed")
 
     session.register_price_callback(callback)
-    now[0] += 6
+    now[0] += 11
     fresh = quote(now[0], bid_price=8.9, ask_price=9.1)
     if callback_raises:
         with pytest.raises(RuntimeError, match="callback failed"):
@@ -165,8 +165,15 @@ def test_new_session_does_not_reuse_previous_execution_quote(now):
     assert not owner.orders
 
 
+@pytest.mark.parametrize("purpose", ["sizing", "order"])
+@pytest.mark.parametrize("age,expected", [(6, None), (10, None), (10.001, "行情已过期")])
+def test_default_quote_age_boundary(purpose, age, expected):
+    owner = Owner(quote())
+    assert owner.market_data_error(owner.quote, purpose=purpose, now=1000 + age) == expected
+
+
 def test_stale_first_quote_is_rejected(now):
-    owner = Owner(quote(990))
+    owner = Owner(quote(989))
     with pytest.raises(MarketDataUnavailableError):
         ExecutionSession(owner, "600584.SH").get_market_data()
     assert not owner.orders
@@ -208,4 +215,4 @@ def test_tq_cached_quote_is_not_permanently_fresh():
 
     executor = object.__new__(TQExecutor)
     assert executor.market_data_error(quote(), purpose="sizing", now=1000) is None
-    assert executor.market_data_error(quote(990), purpose="sizing", now=1000) == "行情已过期"
+    assert executor.market_data_error(quote(989), purpose="sizing", now=1000) == "行情已过期"

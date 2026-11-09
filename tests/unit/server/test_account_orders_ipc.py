@@ -28,7 +28,7 @@ def test_orders_channel_works_while_business_request_lock_is_held(monkeypatch):
     busy.acquire()
     manager = WorkerBackendManager()
     monkeypatch.setattr(manager, "_check_read_session", lambda _: None)
-    monkeypatch.setattr(manager, "_get_or_create_worker", lambda _: SimpleNamespace(orders=channel, request_lock=busy))
+    monkeypatch.setattr(manager, "_get_or_create_worker", lambda *_: SimpleNamespace(orders=channel, request_lock=busy))
 
     def bind(_handle, request):
         request.connection_binding = {"account_id": 1, "config_key": "current-config", "instance_id": "current-worker"}

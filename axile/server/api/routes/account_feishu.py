@@ -362,8 +362,11 @@ async def test_account_notification_function(
     """复用最近一次执行的真实快照，在独立进程中运行页面草稿函数。"""
     account = await _get_account_or_404(session, account_id)
     key = payload.feishu_key if "feishu_key" in payload.model_fields_set else account.feishu_key
-    if payload.code.strip() == DEFAULT_ACCOUNT_NOTIFICATION_CODE.strip() and not key:
-        return AccountFeishuTestResult(ok=False, message="请返回基本信息页配置飞书 Webhook")
+    if payload.code.strip() == DEFAULT_ACCOUNT_NOTIFICATION_CODE.strip():
+        if not key:
+            return AccountFeishuTestResult(ok=False, message="请返回基本信息页配置飞书 Webhook")
+    else:
+        key = None
     try:
         context = await _load_notification_preview_context(session, account)
     except ValueError as exc:

@@ -1,4 +1,4 @@
-"""天勤常驻连接内的订单终态审计与原执行归属。"""
+"""常驻连接内的订单终态审计与原执行归属。"""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ from dataclasses import dataclass
 from queue import Queue
 from typing import TYPE_CHECKING
 
-from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
 from axile.executor.abstract_executor.support import _coerce_int
 
 if TYPE_CHECKING:
     from loguru import Logger
 
+    from axile.common.trade_channel import TradeChannel
     from axile.executor.audit import ExecutionAuditSink
     from axile.executor.execution_runtime import ExecutionRuntime
     from axile.executor.models.unified_order import UnifiedOrder
@@ -29,13 +29,15 @@ class _OrderOrigin:
     algorithm: str
     sink: ExecutionAuditSink
     next_seq: Callable[[], int]
+    symbol: str | None
 
 
-class TQOrderTerminalAudit:
+class OrderTerminalAudit:
     """在回报与主动对账之间共享订单归属，成功写入后原子消费一次。"""
 
-    def __init__(self, logger: Logger) -> None:
+    def __init__(self, logger: Logger, channel: TradeChannel) -> None:
         self._logger = logger
+        self._channel = channel
         self._lock = threading.Lock()
         self._origins: dict[str, _OrderOrigin] = {}
         self._pending: set[str] = set()
@@ -45,22 +47,29 @@ class TQOrderTerminalAudit:
         self._closed = False
 
     def register(
-        self, order_id: str, runtime: ExecutionRuntime | None, audit_context: dict[str, object] | None = None
-    ) -> None:
-        """在调用 SDK 报单前保存原执行信息，覆盖同步早到的终态回报。"""
+        self,
+        order_id: str,
+        runtime: ExecutionRuntime | None,
+        audit_context: dict[str, object] | None = None,
+        *,
+        symbol: str | None = None,
+    ) -> bool:
+        """将已知订单标识绑定到原执行。"""
         if runtime is None:
-            return
+            return False
         context = audit_context or runtime.audit_context
         execution_id = context.get("execution_id")
         account_id = _coerce_int(context.get("account_id"))
         algorithm = context.get("algorithm")
         sink = runtime.audit_sink
         if not execution_id or account_id is None or not algorithm or sink is None:
-            return
-        origin = _OrderOrigin(str(execution_id), account_id, str(algorithm), sink, runtime.next_audit_seq)
+            return False
+        origin = _OrderOrigin(str(execution_id), account_id, str(algorithm), sink, runtime.next_audit_seq, symbol)
         with self._lock:
-            if not self._closed:
-                self._origins[order_id] = origin
+            if self._closed:
+                return False
+            self._origins[order_id] = origin
+            return True
 
     def discard(self, order_id: str) -> None:
         """仅当确定没有报单时丢弃预注册的归属。"""
@@ -72,10 +81,18 @@ class TQOrderTerminalAudit:
         if not order.order_id or not order.is_completed():
             return False
         with self._lock:
-            if self._closed or order.order_id not in self._origins or order.order_id in self._pending:
+            origin = self._origins.get(order.order_id)
+            if (
+                self._closed
+                or origin is None
+                or origin.symbol not in {None, order.symbol}
+                or order.order_id in self._pending
+            ):
                 return False
             if self._worker is None:
-                self._worker = threading.Thread(target=self._run, name="tq-terminal-audit", daemon=True)
+                self._worker = threading.Thread(
+                    target=self._run, name=f"{self._channel.value}-terminal-audit", daemon=True
+                )
                 self._worker.start()
             self._pending.add(order.order_id)
             self._queue.put(order.model_copy(deep=True))
@@ -116,7 +133,7 @@ class TQOrderTerminalAudit:
             written = origin.sink.append_event(
                 execution_id=origin.execution_id,
                 account_id=origin.account_id,
-                channel=TradeChannel.TQ,
+                channel=self._channel,
                 algorithm=origin.algorithm,
                 event_type=ExecutionEventType.ORDER_TERMINAL,
                 status=ExecutionEventStatus.SUCCESS,
@@ -145,8 +162,8 @@ class TQOrderTerminalAudit:
                 },
             )
         except Exception:
-            self._logger.exception("天勤订单终态审计写入失败 order_id={}", order.order_id)
+            self._logger.exception("{} 订单终态审计写入失败 order_id={}", self._channel.value, order.order_id)
             return False
         if not written:
-            self._logger.warning("天勤订单终态审计未写入，保留对账重试 order_id={}", order.order_id)
+            self._logger.warning("{} 订单终态审计未写入，保留对账重试 order_id={}", self._channel.value, order.order_id)
         return written

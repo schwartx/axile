@@ -74,7 +74,8 @@ from axile.executor.models.unified_order import OrderDirection, OrderType, Trade
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.models.unified_price import UnifiedPriceData
 from axile.executor.order_cancellation import CancelNotAllowedError
-from axile.executor.order_submission_context import get_order_submission_validator
+from axile.executor.order_submission_context import get_order_submission_context, get_order_submission_validator
+from axile.executor.order_terminal_audit import OrderTerminalAudit
 from axile.executor.position_attributes import native_position_attributes
 
 __all__ = [
@@ -169,6 +170,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         self._subscribe_symbols: list[str] = []
 
         super().__init__(TradeChannel.GM)
+        self._terminal_audit = OrderTerminalAudit(self.logger, TradeChannel.GM)
         self.account_config = account_config
         self._gm_config = account_config
         self.account_id = account_config.account_id
@@ -449,7 +451,10 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
     def stop(self) -> None:
         """停止回调客户端并清理资源."""
         connection_monitor(self).close()
-        self.stop_callback_monitoring()
+        try:
+            self.stop_callback_monitoring()
+        finally:
+            self._terminal_audit.close()
         self._callback_dispatcher.clear_all_callbacks()
         logger.info("执行器已停止")
 
@@ -761,9 +766,15 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         bridge = self.get_execution_query_runtime_bridge()
         self._callback_dispatcher.register_order_observer(self.account_orders.apply)
         self._callback_dispatcher.register_order_observer(bridge.observe_order_update)
+        self._callback_dispatcher.register_order_observer(self._audit_terminal_order)
         self._callback_dispatcher.register_trade_observer(bridge.observe_trade_record)
         self._callback_dispatcher.register_trade_observer(self.account_orders.activity.observe_trade)
         self._execution_query_runtime_observers_registered = True
+
+    def _audit_terminal_order(self, order: UnifiedOrder) -> None:
+        """只记录当前账户已登记委托的真实终态。"""
+        if self.account_id and order.extra.get("account_id") == self.account_id:
+            self._terminal_audit.emit(order)
 
     @property
     def connection_recovery_in_progress(self) -> bool:
@@ -802,23 +813,22 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             f"side={'买开' if side is GMOrderSide.BUY else '卖平'}, order_type={order_type}, 价格={order_price}"
         )
 
-        try:
-            order_result = self._call_bridge(
-                OrderVolumeRequest(
-                    symbol=GM_SYMBOL_RESOLVER.to_gm(symbol),
-                    volume=gm_volume,
-                    side=side,
-                    order_type=gm_order_type,
-                    position_effect=position_effect,
-                    price=order_price,
-                    account=self.account_id,
-                    session=context,
-                    submission_validator=get_order_submission_validator(),
-                ),
-                timeout=10.0,
-            )
-        except Exception:
-            raise
+        execution_runtime = self.get_active_execution_runtime()
+        audit_context = get_order_submission_context()
+        order_result = self._call_bridge(
+            OrderVolumeRequest(
+                symbol=GM_SYMBOL_RESOLVER.to_gm(symbol),
+                volume=gm_volume,
+                side=side,
+                order_type=gm_order_type,
+                position_effect=position_effect,
+                price=order_price,
+                account=self.account_id,
+                session=context,
+                submission_validator=get_order_submission_validator(),
+            ),
+            timeout=10.0,
+        )
 
         provisional_order = self._build_provisional_order_from_submit_result(
             result=order_result,
@@ -828,6 +838,12 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             volume=volume,
             price=order_price,
         )
+        order_id = provisional_order.order_id
+        if self._terminal_audit.register(order_id, execution_runtime, audit_context, symbol=symbol):
+            # GM 可能在返回委托 ID 前推送终态，登记后再读取账本中的回报。
+            early_terminal = self.account_orders.terminal_order(symbol, order_id)
+            if early_terminal is not None:
+                self._audit_terminal_order(early_terminal)
         logger.info(
             f"委托已提交，返回临时订单视图: "
             f"order_id={provisional_order.order_id}, symbol={symbol}, status={provisional_order.status}"
@@ -872,14 +888,11 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
 
     def reconcile_terminal_order(self, symbol: str, order_id: str) -> UnifiedOrder | None:
         """按完整订单身份核实实际终态，不以挂单列表缺失代替撤单回报。"""
-        return next(
-            (
-                order
-                for order in self._query_order_records()
-                if order.order_id == order_id and order.symbol == symbol and order.is_completed()
-            ),
-            None,
-        )
+        for order in self._query_order_records():
+            if order.order_id == order_id and order.symbol == symbol and order.is_completed():
+                self._audit_terminal_order(order)
+                return order
+        return None
 
     def _get_pending_orders_impl(self, symbol: str | None = None) -> list[UnifiedOrder]:
         """获取未完成订单."""

@@ -271,7 +271,13 @@ async function warningEditor(page: import('@playwright/test').Page, initial: Acc
   } }))
   await page.goto('/e2e/control.html?warning-editor')
   await expect(page.getByRole('heading', { name: /执行流控/ })).toBeVisible()
-  await page.getByRole('button', { name: /^报单 排队优先/ }).click()
+  const operation = page.getByRole('button', { name: /^报单 排队优先/ })
+  const clippedContent = operation.locator('xpath=following-sibling::div/div')
+  expect(await clippedContent.evaluate((node) => {
+    node.scrollTop = 1
+    return node.scrollTop
+  })).toBe(0)
+  await operation.click()
   return writes
 }
 

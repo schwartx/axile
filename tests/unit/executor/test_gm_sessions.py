@@ -1,12 +1,19 @@
 """GM 最后一道 SDK 门控以及执行参数限制。"""
 
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
 from axile.channels.gm_sessions import SHANGHAI, GMSessionSettings, gm_session_context
+from axile.common.trade_channel import TradeChannel
+from axile.domain.execution import ExecutionEventType
 from axile.executor.abstract_executor import AbstractExecutor
+from axile.executor.algorithms.utils.clock import get_default_clock
+from axile.executor.constants.order_status import OrderStatus
+from axile.executor.execution_session import ExecutionSession
+from axile.executor.gm.common import convert_gm_order_to_unified
 from axile.executor.gm.core import api_bridge
 from axile.executor.gm.core.api_bridge import (
     GetCashRequest,
@@ -19,8 +26,10 @@ from axile.executor.gm.core.api_bridge import (
 )
 from axile.executor.gm.gm_execute import GMExecutor
 from axile.executor.models.unified_input import GMAccountConfig, UnifiedStandardInput
+from axile.executor.models.unified_order import OrderDirection, OrderType
 from axile.executor.order_cancellation import CancelNotAllowedError
 from axile.executor.termination import ExecutionTerminated
+from tests.unit.executor.test_market_data_validation import quote
 
 
 def test_sdk_dequeue_rechecks_clock_for_both_order_and_cancel(monkeypatch):
@@ -125,3 +134,77 @@ def test_execution_always_releases_phase_context(monkeypatch, cleanup, retain_ru
     with pytest.raises(ValueError, match="已结束"):
         GMApiBridge.execute_request(request)
     sdk.assert_not_called()
+
+
+@pytest.mark.parametrize("first_observation", ["early_callback", "late_callback", "reconcile"])
+def test_gm_terminal_audit_keeps_original_execution_and_writes_once(monkeypatch, first_observation):
+    now = datetime(2026, 9, 1, 10, tzinfo=SHANGHAI)
+    monkeypatch.setattr(get_default_clock(), "time", now.timestamp)
+    monkeypatch.setattr("axile.executor.gm.gm_execute.clock_now", lambda **_: now)
+    instance = GMExecutor(
+        GMAccountConfig(connection_mode="service", account_id="test", token="test", serv_addr="127.0.0.1:7001"),
+        connect=False,
+    )
+    events = []
+    sink = SimpleNamespace(append_event=lambda **event: events.append(event) or True)
+    context = {"execution_id": "original", "account_id": 2, "algorithm": "SINGLE-MAKER"}
+    instance.set_audit_context(context)
+    instance.set_audit_sink(sink)
+    instance.prepare_execution_runtime()
+    session = ExecutionSession(instance, "600000.SH")
+    session.set_audit_context({**context, "algorithm": "symbol-maker"})
+    consumed = quote(now.timestamp(), symbol=session.symbol)
+    row = {
+        "account_id": "test",
+        "cl_ord_id": "gm-order",
+        "symbol": "SHSE.600000",
+        "side": 1,
+        "order_type": 1,
+        "volume": 100,
+        "status": 3,
+        "filled_volume": 100,
+        "filled_vwap": 10,
+    }
+    terminal = convert_gm_order_to_unified(row)
+    dispatch = instance._callback_dispatcher.dispatch_order_update
+
+    def submit(request, **_kwargs):
+        assert isinstance(request, OrderVolumeRequest)
+        if first_observation == "early_callback":
+            dispatch(terminal)
+        return [{"cl_ord_id": "gm-order"}]
+
+    monkeypatch.setattr(instance, "_call_bridge", submit)
+    monkeypatch.setattr(instance, "_query_order_records", lambda: [terminal])
+    try:
+        order = session.place_order(OrderDirection.BUY, OrderType.LIMIT, 100, 10, market_data=consumed)
+        assert order.status == OrderStatus.SUBMITTED
+        instance.clear_execution_runtime()
+        instance.set_audit_context({**context, "execution_id": "next"})
+        instance.prepare_execution_runtime()
+        if first_observation != "early_callback":
+            dispatch(convert_gm_order_to_unified({**row, "account_id": "other"}))
+            dispatch(convert_gm_order_to_unified({**row, "symbol": "SHSE.600001"}))
+            dispatch(convert_gm_order_to_unified({**row, "status": 1, "filled_volume": 0}))
+            dispatch(convert_gm_order_to_unified({**row, "cl_ord_id": "unrelated"}))
+            assert instance._terminal_audit.flush()
+            assert not events
+            if first_observation == "late_callback":
+                dispatch(terminal)
+            else:
+                assert instance.reconcile_terminal_order(order.symbol, order.order_id) == terminal
+
+        assert instance._terminal_audit.flush()
+        dispatch(terminal)
+        assert instance.reconcile_terminal_order(order.symbol, order.order_id) == terminal
+        assert instance._terminal_audit.flush()
+        (event,) = events
+        assert event["event_type"] == ExecutionEventType.ORDER_TERMINAL
+        assert event["channel"] == TradeChannel.GM
+        assert event["execution_id"] == "original"
+        assert event["algorithm"] == "symbol-maker"
+        assert event["order_id"] == order.order_id
+        assert event["details"]["order"]["terminal_status"] == OrderStatus.FILLED
+        assert event["details"]["order"]["filled_volume"] == 100
+    finally:
+        instance.stop()

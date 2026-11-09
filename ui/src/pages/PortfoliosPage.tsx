@@ -126,7 +126,7 @@ export function PortfoliosPage() {
       </div>
 
       {portfolios == null && !portfoliosError && (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(360px,1fr))] gap-4">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,360px),1fr))] gap-4">
           {Array.from({ length: 2 }, (_, index) => (
             <Card key={index} className="border px-6 py-4" aria-busy="true">
               <div className="flex items-center gap-3">
@@ -166,7 +166,7 @@ export function PortfoliosPage() {
       )}
 
       {list.length > 0 && (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(360px,1fr))] gap-4">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,360px),1fr))] gap-4">
           {list.map((p, index) => (
             <PortfolioCard key={p.id} p={p} targetState={targetStates[index]} targetFetch={p.id == null ? undefined : targetFetches[p.id]} followers={followersOf(p.id)} accountsReady={accounts != null} accountsError={accountsError} onDelete={askDelete} />
           ))}
