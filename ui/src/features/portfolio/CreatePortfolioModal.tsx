@@ -6,11 +6,11 @@ import {
   portfolioTemplate,
   type PortfolioMarketOption,
 } from '@/features/portfolio/portfolioMarkets'
-import { createPortfolio } from '@/lib/api/portfolios'
+import { createPortfolio, createPortfolioCopy } from '@/lib/api/portfolios'
 import { useChannelCatalogStore } from '@/stores/channels'
 import { useDomainStore } from '@/stores/domain'
 import { useToastStore } from '@/stores/ui'
-import type { Portfolio } from '@/types/api'
+import type { Portfolio, PortfolioLite } from '@/types/api'
 
 /** 市场选择卡片：创建时一次定死，此后在编辑器里只读展示。 */
 function MarketChoiceGroup({
@@ -54,16 +54,19 @@ function MarketChoiceGroup({
  * 新建组合弹层：只定「组合是什么」（名称 + 市场），确认即以市场模板落库；
  * 代码是迭代物，留给编辑器工作台。市场是目标函数的定义域（模板、示例品种、
  * 试跑上下文都由它派生），因此创建后固定不可改。
+ * 复制时沿用原市场，并在提交时读取最新保存的组合定义。
  */
 export function CreatePortfolioModal({
   open,
   onClose,
   onCreated,
+  duplicateFrom = null,
 }: {
   open: boolean
   onClose: () => void
   /** 已创建的组合；由调用方决定去向（进编辑器 / 选入账户向导）。 */
   onCreated: (created: Portfolio) => void
+  duplicateFrom?: PortfolioLite | null
 }) {
   const channels = useChannelCatalogStore((state) => state.channels)
   const loading = useChannelCatalogStore((state) => state.loading)
@@ -81,19 +84,19 @@ export function CreatePortfolioModal({
   const nameRef = useRef<HTMLInputElement>(null)
 
   const selected = markets.find((option) => option.value === market) ?? null
-  const canCreate = Boolean(name.trim()) && selected != null && !submitting
+  const canCreate = Boolean(name.trim()) && (duplicateFrom ? duplicateFrom.id != null : selected != null) && !submitting
 
-  // 打开时回到空白草稿、聚焦名称、归还焦点给触发者；市场目录就绪后缺省选第一个。
+  // 打开时初始化名称、聚焦输入框，并在关闭后归还焦点。
   useEffect(() => {
     if (!open) return
-    setName('')
+    setName(duplicateFrom ? `${duplicateFrom.name} 副本` : '')
     setMarket('')
     setCreateError(null)
     setSubmitting(false)
     const trigger = document.activeElement as HTMLElement | null
     nameRef.current?.focus({ preventScroll: true })
     return () => trigger?.focus?.({ preventScroll: true })
-  }, [open])
+  }, [open, duplicateFrom])
 
   useEffect(() => {
     if (open && market === '' && markets.length > 0) setMarket(markets[0]!.value)
@@ -129,16 +132,18 @@ export function CreatePortfolioModal({
   }, [open, submitting, onClose])
 
   const doCreate = async () => {
-    if (!canCreate || !selected) return
+    if (!canCreate || (!duplicateFrom && !selected)) return
     setSubmitting(true)
     setCreateError(null)
     try {
-      const created = await createPortfolio({
-        name: name.trim(),
-        market: selected.label,
-        custom_calc_py_code: portfolioTemplate(selected),
-      })
-      toast('组合已创建')
+      const created = duplicateFrom
+        ? await createPortfolioCopy(duplicateFrom.id!, name.trim())
+        : await createPortfolio({
+            name: name.trim(),
+            market: selected!.label,
+            custom_calc_py_code: portfolioTemplate(selected!),
+          })
+      toast(duplicateFrom ? '组合已复制' : '组合已创建')
       void refreshPortfolios()
       onCreated(created)
     } catch (error) {
@@ -159,7 +164,7 @@ export function CreatePortfolioModal({
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
-        aria-label="新建组合"
+        aria-label={duplicateFrom ? '复制组合' : '新建组合'}
         className={`fixed left-1/2 top-1/2 z-[36] w-[560px] max-w-[92vw] -translate-x-1/2 rounded-[18px] bg-surface shadow-[0_24px_60px_rgba(0,0,0,0.24)] transition-all duration-150 ${
           open ? '-translate-y-1/2 opacity-100' : 'pointer-events-none -translate-y-[46%] opacity-0'
         }`}
@@ -171,9 +176,11 @@ export function CreatePortfolioModal({
               void doCreate()
             }}
           >
-            <div className="px-[22px] pt-5 pb-1 text-[18px] font-[640]">新建组合</div>
+            <div className="px-[22px] pt-5 pb-1 text-[18px] font-[640]">{duplicateFrom ? '复制组合' : '新建组合'}</div>
             <div className="px-[22px] pb-4 text-[14px] leading-relaxed text-ink-2">
-              定好名称与市场即可创建；目标代码在编辑器里写，从市场模板起步。
+              {duplicateFrom
+                ? `从「${duplicateFrom.name}」复制最新保存的组合定义；账户绑定和目标快照不会复制。`
+                : '定好名称与市场即可创建；目标代码在编辑器里写，从市场模板起步。'}
             </div>
             <div className="max-h-[70vh] overflow-y-auto px-[22px]">
               <label className="mb-1.5 block text-[14px] text-ink-2" htmlFor="create-portfolio-name">
@@ -192,20 +199,26 @@ export function CreatePortfolioModal({
                 disabled={submitting}
               />
               <div className="mb-1.5 mt-5 flex items-baseline justify-between">
-                <label className="block text-[14px] text-ink-2">市场</label>
+                <span className="block text-[14px] text-ink-2">市场</span>
                 <span className="text-[12.5px] text-ink-3">创建后固定，不可更改</span>
               </div>
-              <MarketChoiceGroup
-                value={market}
-                options={markets}
-                onChange={(value) => {
-                  setMarket(value)
-                  setCreateError(null)
-                }}
-              />
-              {loading && markets.length === 0 && <p className="mt-2 text-[14px] text-ink-2">加载市场…</p>}
-              <ErrorNotice intent="read" embedded title="市场目录加载失败" error={markets.length === 0 ? catalogError : null} onRetry={refreshCatalog} />
-              <ErrorNotice intent="mutation" embedded title="创建组合失败" error={createError} variant="mutation" onRetry={() => void doCreate()} />
+              {duplicateFrom ? (
+                <div className="rounded-[11px] border border-line bg-bg-subtle px-3.5 py-3 text-[15px]">{duplicateFrom.market}</div>
+              ) : (
+                <>
+                  <MarketChoiceGroup
+                    value={market}
+                    options={markets}
+                    onChange={(value) => {
+                      setMarket(value)
+                      setCreateError(null)
+                    }}
+                  />
+                  {loading && markets.length === 0 && <p className="mt-2 text-[14px] text-ink-2">加载市场…</p>}
+                  <ErrorNotice intent="read" embedded title="市场目录加载失败" error={markets.length === 0 ? catalogError : null} onRetry={refreshCatalog} />
+                </>
+              )}
+              <ErrorNotice intent="mutation" embedded title={duplicateFrom ? '复制组合失败' : '创建组合失败'} error={createError} variant="mutation" onRetry={() => void doCreate()} />
             </div>
             <div className="mt-4 flex justify-end gap-2.5 border-t border-line px-5 py-3.5">
               <button
@@ -221,7 +234,7 @@ export function CreatePortfolioModal({
                 className="inline-flex cursor-pointer items-center rounded-[9px] border-0 bg-ink-1 px-[18px] py-2 text-sm font-[550] text-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/55 focus-visible:ring-offset-2 focus-visible:ring-offset-surface disabled:cursor-default disabled:opacity-45"
                 disabled={!canCreate}
               >
-                {submitting ? '创建中…' : '创建并编辑'}
+                {submitting ? (duplicateFrom ? '复制中…' : '创建中…') : (duplicateFrom ? '复制并编辑' : '创建并编辑')}
               </button>
             </div>
           </form>
