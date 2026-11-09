@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams, useViewTransitionState } from 'react-router'
-import { LoaderCircle, Pencil, Play, Plus, Trash2 } from 'lucide-react'
+import { Copy, LoaderCircle, Pencil, Play, Plus, Trash2 } from 'lucide-react'
 import { Link, useNavigate } from '@/components/ui/nav'
 import { Card, Chip } from '@/components/ui/Card'
 import { Skeleton } from '@/components/ui/Skeleton'
@@ -38,12 +38,12 @@ export function PortfoliosPage() {
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null)
   const [deleteError, setDeleteError] = useState<Error | null>(null)
   const [searchParams, setSearchParams] = useSearchParams()
-  const [createOpen, setCreateOpen] = useState(false)
+  const [createMode, setCreateMode] = useState<'new' | PortfolioLite | null>(null)
 
   // 「新建组合」深链（侧栏 / 设置首页）：弹层打开后立即抹掉 ?new=1，不把弹层态留在历史里。
   useEffect(() => {
     if (searchParams.get('new') === '1') {
-      setCreateOpen(true)
+      setCreateMode('new')
       setSearchParams({}, { replace: true })
     }
   }, [searchParams, setSearchParams])
@@ -118,7 +118,7 @@ export function PortfoliosPage() {
         </span>
         <button
           type="button"
-          onClick={() => setCreateOpen(true)}
+          onClick={() => setCreateMode('new')}
           className="inline-flex cursor-pointer items-center gap-1.5 rounded-chip border border-line px-3 py-1.5 text-[13px] text-ink-2 transition-colors duration-150 hover:border-border-strong hover:text-ink-1 motion-reduce:transition-none"
         >
           <Plus size={14} aria-hidden />新建组合
@@ -157,7 +157,7 @@ export function PortfoliosPage() {
           <p className="mt-2 text-[15px] text-ink-2">组合是「交易什么」的来源，可被多个账户复用。</p>
           <button
             type="button"
-            onClick={() => setCreateOpen(true)}
+            onClick={() => setCreateMode('new')}
             className="mt-6 inline-flex cursor-pointer items-center gap-1.5 rounded-chip bg-accent px-4 py-2 text-[14px] font-medium text-white transition-colors duration-150 hover:brightness-110 motion-reduce:transition-none"
           >
             <Plus size={14} aria-hidden />新建组合
@@ -168,16 +168,17 @@ export function PortfoliosPage() {
       {list.length > 0 && (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,360px),1fr))] gap-4">
           {list.map((p, index) => (
-            <PortfolioCard key={p.id} p={p} targetState={targetStates[index]} targetFetch={p.id == null ? undefined : targetFetches[p.id]} followers={followersOf(p.id)} accountsReady={accounts != null} accountsError={accountsError} onDelete={askDelete} />
+            <PortfolioCard key={p.id} p={p} targetState={targetStates[index]} targetFetch={p.id == null ? undefined : targetFetches[p.id]} followers={followersOf(p.id)} accountsReady={accounts != null} accountsError={accountsError} onDelete={askDelete} onDuplicate={setCreateMode} />
           ))}
         </div>
       )}
 
       <CreatePortfolioModal
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
+        open={createMode != null}
+        duplicateFrom={createMode === 'new' ? null : createMode}
+        onClose={() => setCreateMode(null)}
         onCreated={(created) => {
-          setCreateOpen(false)
+          setCreateMode(null)
           if (created.id != null) navigate(`/portfolios/${created.id}/edit`)
         }}
       />
@@ -195,6 +196,7 @@ function PortfolioCard({
   accountsReady,
   accountsError,
   onDelete,
+  onDuplicate,
 }: {
   p: PortfolioLite
   targetState: PortfolioTargetState
@@ -203,6 +205,7 @@ function PortfolioCard({
   accountsReady: boolean
   accountsError: Error | null
   onDelete: (p: PortfolioLite) => void
+  onDuplicate: (p: PortfolioLite) => void
 }) {
   const navigate = useNavigate()
   const toast = useToastStore((s) => s.toast)
@@ -233,7 +236,7 @@ function PortfolioCard({
       className="flex h-full min-w-0 flex-col border px-6 py-4 transition-transform hover:-translate-y-px"
       onClick={() => navigate(to)}
     >
-      <div className="flex min-w-0 items-center gap-3">
+      <div className="flex min-w-0 flex-wrap items-center gap-3">
         <IdentityHover name={p.name} id={p.id} kind="组合" createdAt={p.created_at}>
           <div
             tabIndex={0}
@@ -268,6 +271,17 @@ function PortfolioCard({
               onClick={() => navigate(to)}
             >
               <Pencil size={14} aria-hidden />
+            </button>
+          </Tooltip>
+          <Tooltip content="复制组合">
+            <button
+              type="button"
+              aria-label={`复制组合：${p.name}`}
+              disabled={p.id == null}
+              className="grid h-8 w-8 cursor-pointer place-items-center rounded-lg border border-line text-ink-2 enabled:hover:border-ink-3/40 enabled:hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-45"
+              onClick={() => onDuplicate(p)}
+            >
+              <Copy size={14} aria-hidden />
             </button>
           </Tooltip>
           <Tooltip content={accountsReady && !accountsError ? '删除组合' : '绑定关系确认后才能删除'}>

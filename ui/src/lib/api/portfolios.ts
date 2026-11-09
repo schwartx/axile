@@ -60,6 +60,19 @@ export function createPortfolio(body: {
   })
 }
 
+/** 读取最新保存的定义并创建独立副本，不继承绑定或运行记录。 */
+export async function createPortfolioCopy(sourceId: number, name: string): Promise<Portfolio> {
+  const source = await getPortfolio(sourceId)
+  return createPortfolio({
+    name,
+    market: source.market,
+    description: source.description,
+    custom_calc_py_code: source.custom_calc_py_code,
+    status: source.status,
+    tag: source.tag,
+  })
+}
+
 /** 更新组合（局部）。 */
 export function updatePortfolio(
   id: number,
