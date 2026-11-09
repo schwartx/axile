@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { Trash2 } from 'lucide-react'
 import { EdgeScrollHint } from '@/components/ui/EdgeScrollHint'
 import { MacTimePicker } from '@/components/ui/MacTimePicker'
 import { OverflowText } from '@/components/ui/OverflowText'
@@ -128,8 +129,8 @@ export function AlgorithmWorkbench({ channel, trade, empty, schedule, onTradeCha
           <span className="text-sm text-ink-2">至{rule.end && rule.end < rule.start ? '次日' : ''}</span>
           <MacTimePicker value={rule.end} onChange={end => update(rule.key, { end })} ariaLabel="结束时间" />
           <span className="text-xs text-ink-3">北京时间</span>
-          <button type="button" className="ml-auto shrink-0 cursor-pointer rounded-chip px-2 py-1 text-sm text-ink-2 hover:text-warn focus-visible:outline-2 focus-visible:outline-accent"
-            onClick={() => withViewTransition(() => { onScheduleChange(schedule.filter(item => item.key !== rule.key)); setSelection('trade') }, 'algorithm-config')}>删除时段</button>
+          <button type="button" className="ml-auto inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-chip border border-line bg-fill/40 px-2.5 py-1.5 text-xs text-ink-1 transition-colors duration-150 hover:border-warn/50 hover:bg-warn/5 hover:text-warn active:bg-warn/10 focus-visible:outline-2 focus-visible:outline-accent motion-reduce:transition-none"
+            onClick={() => withViewTransition(() => { onScheduleChange(schedule.filter(item => item.key !== rule.key)); setSelection('trade') }, 'algorithm-config')}><Trash2 size={14} aria-hidden />删除时段</button>
         </div>
         <p className="mb-4 text-xs text-ink-3">按调仓开始时间选择，执行期间保持不变。</p>
         {timeErrors[index] && <p role="alert" className="mb-3 text-sm text-warn">{timeErrors[index]}</p>}
