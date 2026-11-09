@@ -59,6 +59,28 @@ test('参与率独立 NumberFlow 保留小于一个步长的小数，无滑条',
   expect(html).not.toContain('role="alert"')
 })
 
+test('整数秒参数共用时长输入与时分秒预设，小数秒仍保留原有精度', () => {
+  const info = metadata('说明')
+  info.params_schema = { type: 'object', properties: {
+    duration: { type: 'integer', title: '执行时长', minimum: 1, maximum: 86400, 'x-unit': '秒',
+      'x-control': 'presets', 'x-presets': [60, 300, 1800] },
+    wait: { type: 'integer', title: '最大等待', minimum: 1, maximum: 3600, 'x-unit': '秒' },
+    interval: { type: 'number', title: '间隔', minimum: 0.1, 'x-unit': '秒', 'x-control': 'stepper' },
+    optional: { title: '可空时长', anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }],
+      default: null, 'x-unit': '秒', 'x-control': 'stepper' },
+  } }
+  const html = renderToStaticMarkup(createElement(SchemaEditor, {
+    info, params: { duration: 4830, wait: 210, interval: 0.12345 }, onChange() {},
+  }))
+  expect(html).toContain('aria-label="执行时长：时"')
+  expect(html).toContain('aria-label="最大等待：分"')
+  expect(html).toContain('>30 分</button>')
+  expect(html).toContain('value="0.12345"')
+  expect(html).toContain('inputMode="decimal"')
+  expect(html).not.toContain('aria-label="可空时长：分"')
+  expect(html).not.toContain('role="alert"')
+})
+
 test('Decimal 与可空价格显示结构化表单，原有数值和字符串精度不丢失', () => {
   const info = metadata('说明')
   info.name = 'CUSTOM-DECIMAL'

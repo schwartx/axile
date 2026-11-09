@@ -230,6 +230,7 @@ function NumericSchemaField({ field, value, onChange, describedBy }: {
   const min = display.min
   const max = display.max
   return <ParameterNumberInput label={spec.title || field.name} value={draft} unit={display.suffix}
+    duration={spec.type === 'integer' && display.suffix === '秒' && !spec.nullable}
     step={display.step} min={min} max={max} exclusiveMin={spec.exclusiveMinimum !== undefined} exclusiveMax={spec.exclusiveMaximum !== undefined} decimal={spec.type === 'number'} mode={mode}
     presets={spec['x-presets']?.map((item) => item * display.scale)}
     sliderMin={spec['x-slider-min']} sliderMax={spec['x-slider-max']} describedBy={describedBy}
@@ -281,7 +282,7 @@ export function SchemaFieldRow({ field, value, onChange }: {
     <div className={ROW}>{heading}<Toggle on={value === true} ariaLabel={label} onClick={() => onChange(value !== true)} /></div>
   )
   if (!spec.decimal && (spec.type === 'integer' || spec.type === 'number')) {
-    if (spec.nullable || ['stepper', 'numberflow', 'presets', 'slider'].includes(spec['x-control'] ?? '')) return (
+    if ((spec.type === 'integer' && spec['x-unit'] === '秒') || spec.nullable || ['stepper', 'numberflow', 'presets', 'slider'].includes(spec['x-control'] ?? '')) return (
       <div className={ROW}>{heading}<NumericSchemaField field={field} value={value} onChange={onChange} describedBy={hint ? hintId : undefined} /></div>
     )
     const display = algorithmNumericDisplay(spec, value)

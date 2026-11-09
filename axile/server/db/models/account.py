@@ -30,7 +30,6 @@ from axile.server.db.models.account_notification import AccountNotificationState
 from axile.server.db.models.account_runtime_sync import AccountRuntimeSyncPublic
 from axile.server.db.models.account_settings import SupplementSettings
 from axile.server.db.models.account_validation import (
-    _MAX_EXECUTION_TIMEOUT,
     _validate_algorithm_config,
     _validate_cron_expr,
     _validate_leverage,
@@ -93,8 +92,7 @@ class AccountBase(BaseModel):
     execution_timeout: int = Field(
         default=DEFAULT_EXECUTION_TIMEOUT_SECONDS,
         ge=1,
-        le=_MAX_EXECUTION_TIMEOUT,
-        description=f"执行层总超时（秒）, 必填, 取值 1..{_MAX_EXECUTION_TIMEOUT}, 默认 {DEFAULT_EXECUTION_TIMEOUT_SECONDS}; 到点直接中断本次执行, 不等撤单",
+        description=f"执行层总超时（秒）, 必须为正整数, 默认 {DEFAULT_EXECUTION_TIMEOUT_SECONDS}; 到点直接中断本次执行, 不等撤单",
     )
 
     _check_weight_precision = field_validator("weight_precision")(_validate_weight_precision)
@@ -455,7 +453,7 @@ class AccountUpdate(Model):
     portfolio_id: Optional[int] = None
     write_empty_record: Optional[int] = None
     replay_recording_enabled: StrictBool = False
-    execution_timeout: Optional[int] = Field(default=None, ge=1, le=_MAX_EXECUTION_TIMEOUT)
+    execution_timeout: Optional[int] = Field(default=None, ge=1)
 
     _check_weight_precision = field_validator("weight_precision")(_validate_weight_precision)
 

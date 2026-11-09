@@ -342,7 +342,9 @@ export function EditSaveBar({
               <div className="text-[12px] font-semibold tracking-wide text-ink-3">
                 {layout === 'inline' ? <InkRewrite text={statusText} /> : statusText}{blocked && <span className="text-warn"> · 有错误</span>}
               </div>
-              <OverflowText className="num text-[14px] text-ink-1" text={changes.join('  ·  ')} />
+              {layout === 'inline'
+                ? <InkRewrite className="num w-full text-[14px] text-ink-1" text={changes.join('  ·  ')} overflow />
+                : <OverflowText className="num text-[14px] text-ink-1" text={changes.join('  ·  ')} />}
             </div>
             <button
               type="button"

@@ -35,6 +35,7 @@ import { runtimeSyncMessage, useAccountRuntimeSync } from '@/features/account/us
 import { AlgorithmWorkbench } from '@/features/account/AlgorithmWorkbench'
 import { algorithmScheduleDraft, algorithmScheduleValue, algorithmScheduleErrors } from '@/features/account/algorithmSchedule'
 import { ExecutionTimeoutInput } from '@/features/account/ExecutionTimeoutInput'
+import { formatDuration } from '@/components/ui/duration'
 import { executionTimeoutError } from '@/features/account/executionTimeout'
 import {
   EditError,
@@ -167,7 +168,7 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
     ?? algorithmScheduleErrors(schedule).find(Boolean) ?? algoParamError(trade) ?? algoParamError(empty)
   const changes: string[] = []
   if (recordingChanged) changes.push(`执行回放录制：${replayRecording ? '开启' : '关闭'}`)
-  if (timeoutChanged) changes.push(timeoutErr ? '执行超时有误' : `执行超时 ${acc.execution_timeout}s→${Number(executionTimeout)}s`)
+  if (timeoutChanged) changes.push(timeoutErr ? '执行超时有误' : `执行超时 ${formatDuration(acc.execution_timeout)} → ${formatDuration(Number(executionTimeout))}`)
   if (closeChanged) changes.push('平仓规则已改')
   if (tradeChanged) changes.push('主交易算法已改')
   if (emptyChanged) changes.push(empty ? '清仓算法已改' : '清仓算法已清除')

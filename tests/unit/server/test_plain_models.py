@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from axile.domain.execution import ExecutionArtifactType, ExecutionEventType
 from axile.server.db.models import (
     Account,
+    AccountCreate,
     AccountPublic,
     AccountSnapshot,
     AccountUpdate,
@@ -138,11 +139,19 @@ def test_public_models_read_attributes_without_exposing_credentials():
 
 @pytest.mark.parametrize(
     "payload",
-    [{"weight_precision": -1}, {"execution_timeout": 0}, {"execution_timeout": 541}, {"unexpected": True}],
+    [{"weight_precision": -1}, {"execution_timeout": 0}, {"execution_timeout": -1}, {"unexpected": True}],
 )
 def test_account_update_keeps_validation(payload):
     with pytest.raises(ValidationError):
         AccountUpdate.model_validate(payload)
+
+
+@pytest.mark.parametrize("timeout", [541, 3600, 86400])
+def test_account_models_accept_long_execution_timeout(timeout):
+    account = Account.model_validate(account_data() | {"execution_timeout": timeout})
+    payload = account.model_dump(include=set(AccountCreate.model_fields))
+    assert AccountCreate.model_validate(payload).execution_timeout == timeout
+    assert AccountSnapshot.model_validate(account.model_dump()).execution_timeout == timeout
 
 
 def test_portfolio_preserves_source_and_rejects_clearing_code():

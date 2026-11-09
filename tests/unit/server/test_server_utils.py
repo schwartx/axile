@@ -70,11 +70,10 @@ def test_account_update_rejects_non_positive_execution_timeout(timeout: int) -> 
         AccountUpdate(execution_timeout=timeout)
 
 
-@pytest.mark.parametrize("timeout", [541, 600, 3600])
-def test_account_update_rejects_execution_timeout_above_worker_kill_deadline(timeout: int) -> None:
-    """超过上界应被拒绝：否则多进程后端 600s 的强杀兜底会先于协作撤单触发。"""
-    with pytest.raises(ValidationError):
-        AccountUpdate(execution_timeout=timeout)
+@pytest.mark.parametrize("timeout", [541, 600, 3600, 86400])
+def test_account_update_accepts_execution_timeout_without_upper_bound(timeout: int) -> None:
+    """账户超时允许超过旧上限，worker 的外层等待跟随本次配置。"""
+    assert AccountUpdate(execution_timeout=timeout).execution_timeout == timeout
 
 
 def test_append_error_execute_record_sanitizes_account_config(record_database: Path) -> None:

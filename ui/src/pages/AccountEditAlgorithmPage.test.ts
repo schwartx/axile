@@ -72,11 +72,11 @@ test.each([true, false])('录制、时段和超时共用保存取消，只提交
     bar().props.onSave(); await new Promise(resolve => setImmediate(resolve)); nodes = all(render());
     const scheduleSaved = schedule().props.schedule.length === 1 && bar().props.changes.length === 0;
     timeout().props.onChange('180'); nodes = all(render());
-    expect(bar().props.changes).toEqual(['执行超时 300s→180s']);
+    expect(bar().props.changes).toEqual(['执行超时 5 分 → 3 分']);
     bar().props.onCancel(); nodes = all(render());
     expect(timeout().props.value).toBe('300');
     expect(bar().props.changes).toEqual([]);
-    for (const value of ['0', '541', '1.5', 'abc']) {
+    for (const value of ['0', '-1', '1.5', 'abc', 'NaN']) {
       timeout().props.onChange(value); nodes = all(render());
       expect(timeout().props.invalid).toBe(true);
       expect(bar().props.blocked).toBe(true);

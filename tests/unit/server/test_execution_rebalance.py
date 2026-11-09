@@ -1045,9 +1045,10 @@ def test_standard_input_accepts_database_trade_channel_string(trigger_source) ->
     assert standard_input.extra["audit"]["gm_session"] == context
 
 
-def test_account_execution_timeout_flows_into_standard_input() -> None:
+@pytest.mark.parametrize("timeout", [45, 3600, 86400])
+def test_account_execution_timeout_flows_into_standard_input(timeout: int) -> None:
     """账户上配置的执行总超时必须进入标准输入，并经跨进程序列化往返保留。"""
-    account = build_account(execution_timeout=45)
+    account = build_account(execution_timeout=timeout)
 
     standard_input = rebalance_execution._build_rebalance_standard_input(
         account=account,
@@ -1056,11 +1057,11 @@ def test_account_execution_timeout_flows_into_standard_input() -> None:
         execution_id="exec-timeout-1",
         trigger_source="scheduler",
     )
-    assert standard_input.execution_timeout == 45
+    assert standard_input.execution_timeout == timeout
 
     # worker 后端在独立进程用 from_dict 重建输入，deadline 必须一起过去。
     restored = UnifiedStandardInput.from_dict(standard_input.to_dict())
-    assert restored.execution_timeout == 45
+    assert restored.execution_timeout == timeout
 
 
 def test_standard_input_execution_timeout_defaults_to_180() -> None:
