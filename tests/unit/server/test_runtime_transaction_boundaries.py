@@ -173,6 +173,11 @@ def test_session_prepare_reloads_after_waiting_for_runtime_lock(
             class Manager:
                 configure_catalog_account = MagicMock()
 
+                async def drop_idle_account(self, account_id: int) -> bool:
+                    assert account_id == 1
+                    assert all(not session.in_transaction() for session in sessions)
+                    return True
+
                 async def prepare_account(self, account: Account):
                     assert all(not session.in_transaction() for session in sessions)
                     prepared.append(account.name)
