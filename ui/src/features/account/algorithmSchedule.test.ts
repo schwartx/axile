@@ -39,3 +39,24 @@ test('工作区提供默认、时段和清仓入口，未选中的表单保留�
   expect(html).toContain('清仓算法参数')
   expect(html).toContain('inert=""')
 })
+
+test('当日与跨日保留摘要和编辑区的次日节点，收起时对辅助技术隐藏', () => {
+  const render = (end: string) => renderToStaticMarkup(createElement(AlgorithmWorkbench, {
+    channel: 'binance', trade: rule().algorithm, empty: null, schedule: algorithmScheduleDraft([rule('09:30', end)]),
+    errors: {}, footer: null, onTradeChange() {}, onEmptyChange() {}, onScheduleChange() {}, onValidationError() {},
+  }))
+  for (const [end, nextDay] of [['09:00', true], ['10:00', false], ['09:30', false], ['', false]] as const) {
+    const html = render(end)
+    const count = end ? 2 : 1
+    expect(html.match(/>次日<\/span>/g)?.length).toBe(count)
+    const markers = html.match(/<span aria-hidden="(?:true|false)"[^>]*transition-\[grid-template-columns\][^>]*>/g) ?? []
+    expect(markers).toHaveLength(count)
+    for (const marker of markers) {
+      expect(marker).toContain(`aria-hidden="${!nextDay}"`)
+      expect(marker.includes('inert=""')).toBe(!nextDay)
+      expect(marker).toContain(nextDay ? 'grid-cols-[1fr]' : 'grid-cols-[0fr]')
+      expect(marker).toContain('motion-reduce:transition-none')
+    }
+    if (end) expect(html).toContain(`编辑09:30 至 ${nextDay ? '次日 ' : ''}${end}`)
+  }
+})

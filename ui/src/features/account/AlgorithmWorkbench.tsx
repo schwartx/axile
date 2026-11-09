@@ -42,6 +42,13 @@ function AlgorithmPanel({ active, label, children }: { active: boolean; label: s
 
 const TIME_FORMAT = { minimumIntegerDigits: 2, maximumFractionDigits: 0, useGrouping: false } as const
 
+function NextDayMarker({ active }: { active: boolean }) {
+  return <span aria-hidden={!active} inert={!active}
+    className={`inline-grid shrink-0 transition-[grid-template-columns] duration-200 ease-[cubic-bezier(.4,0,.2,1)] motion-reduce:transition-none ${active ? 'grid-cols-[1fr]' : 'grid-cols-[0fr]'}`}>
+    <span className="min-w-0 overflow-hidden whitespace-nowrap">次日</span>
+  </span>
+}
+
 function TimeRangeLabel({ start, end }: { start: string; end: string }) {
   if (!start || !end) return <>新时段</>
   const time = (value: string) => <span className="inline-flex items-baseline whitespace-nowrap">
@@ -50,7 +57,7 @@ function TimeRangeLabel({ start, end }: { start: string; end: string }) {
     <NumberTicker value={Number(value.slice(3))} format={TIME_FORMAT} />
   </span>
   return <span aria-hidden className="num inline-flex flex-wrap items-baseline">
-    {time(start)}<span className="mx-1">至{end < start ? ' 次日' : ''}</span>{time(end)}
+    {time(start)}<span className="mx-1 inline-flex items-baseline whitespace-nowrap">至<NextDayMarker active={end < start} /></span>{time(end)}
   </span>
 }
 
@@ -126,7 +133,7 @@ export function AlgorithmWorkbench({ channel, trade, empty, schedule, onTradeCha
         <div className="mb-2 flex flex-wrap items-center gap-3">
           <span className="text-sm text-ink-2">从</span>
           <MacTimePicker value={rule.start} onChange={start => update(rule.key, { start })} ariaLabel="开始时间" />
-          <span className="text-sm text-ink-2">至{rule.end && rule.end < rule.start ? '次日' : ''}</span>
+          <span className="inline-flex items-baseline whitespace-nowrap text-sm text-ink-2">至<NextDayMarker active={!!rule.end && rule.end < rule.start} /></span>
           <MacTimePicker value={rule.end} onChange={end => update(rule.key, { end })} ariaLabel="结束时间" />
           <span className="text-xs text-ink-3">北京时间</span>
           <button type="button" className="ml-auto inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-chip border border-line bg-fill/40 px-2.5 py-1.5 text-xs text-ink-1 transition-colors duration-150 hover:border-warn/50 hover:bg-warn/5 hover:text-warn active:bg-warn/10 focus-visible:outline-2 focus-visible:outline-accent motion-reduce:transition-none"

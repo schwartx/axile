@@ -420,7 +420,7 @@ export function MacTimePicker({
         aria-label={ariaLabel}
         aria-expanded={open}
         tabIndex={0}
-        className={`inline-flex overflow-hidden ${compact ? 'rounded-[9px]' : 'rounded-[12px]'} bg-fill outline-none focus-visible:shadow-[0_0_0_2px_var(--color-accent)]`}
+        className={`inline-flex overflow-hidden ${compact ? 'h-9 rounded-[9px]' : 'h-16 rounded-[12px]'} bg-fill outline-none focus-visible:shadow-[0_0_0_2px_var(--color-accent)]`}
         onKeyDown={(e) => {
           if (e.key === 'ArrowUp') {
             e.preventDefault()
@@ -451,7 +451,7 @@ export function MacTimePicker({
           disabled={minHour === maxHour}
           aria-pressed={part === 'h'}
           onClick={() => openMenu('h')}
-          className={`${compact ? 'min-h-8 min-w-9 px-2.5 py-1.5 text-[14px]' : 'min-w-[3.4rem] px-3.5 py-2.5 text-[29px]'} font-mono font-[640] leading-none tabular-nums tracking-tight transition-colors ${segClass('h')}`}
+          className={`flex items-center justify-center ${compact ? 'min-w-9 px-2.5 text-[14px]' : 'min-w-[3.4rem] px-3.5 text-[29px]'} font-mono font-[640] leading-none tabular-nums tracking-tight transition-colors ${segClass('h')}`}
         >
           {empty && !open ? '––' : <NumberTicker className="block" value={h} format={PART_FORMAT} />}
         </button>
@@ -460,7 +460,7 @@ export function MacTimePicker({
           aria-label="分"
           aria-pressed={part === 'm'}
           onClick={() => openMenu('m')}
-          className={`${compact ? 'min-h-8 min-w-9 px-2.5 py-1.5 text-[14px]' : 'min-w-[3.4rem] px-3.5 py-2.5 text-[29px]'} font-mono font-[640] leading-none tabular-nums tracking-tight transition-colors ${segClass('m')}`}
+          className={`flex items-center justify-center ${compact ? 'min-w-9 px-2.5 text-[14px]' : 'min-w-[3.4rem] px-3.5 text-[29px]'} font-mono font-[640] leading-none tabular-nums tracking-tight transition-colors ${segClass('m')}`}
         >
           {empty && !open ? '––' : <NumberTicker className="block" value={m} format={PART_FORMAT} />}
         </button>
