@@ -528,7 +528,10 @@ pub fn connection_accounts(database: &str, request: &Value) -> Result<Value, Ana
     };
     crate::with_read_snapshot(Path::new(database), |connection| {
         let mut accounts = match ids {
-            None => crate::accounts::list_on(connection)?,
+            None => crate::accounts::list_on(connection)?
+                .into_iter()
+                .filter(|account| account["archived_at"].is_null())
+                .collect(),
             Some(ids) => ids
                 .into_iter()
                 .filter_map(|id| crate::accounts::load_on(connection, id).transpose())

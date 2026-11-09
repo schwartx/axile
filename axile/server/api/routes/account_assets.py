@@ -8,7 +8,7 @@ from starlette.concurrency import run_in_threadpool
 
 from axile.server._native import _core
 from axile.server.account_assets import query_account_assets
-from axile.server.api.routes.account_support import _get_account_or_404
+from axile.server.api.routes.account_support import _get_account_or_404, ensure_account_current
 from axile.server.asset_observations import is_asset_observation
 from axile.server.business_facts.assets import save_manual_asset_snapshot
 from axile.server.core.db import analysis_store
@@ -29,6 +29,7 @@ router = APIRouter()
 async def refresh_account_assets(account_id: int) -> AccountAssetSnapshotPublic:
     """从交易渠道查询并持久化账户最新资产快照."""
     account = await _get_account_or_404(account_id)
+    ensure_account_current(account)
     if not try_register_account_asset_refresh(account_id):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

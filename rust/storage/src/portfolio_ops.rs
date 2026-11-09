@@ -9,7 +9,7 @@ use crate::error::AnalysisError;
 use crate::{accounts, target_ops, writer_scope};
 
 const COLUMNS: &str =
-    "id,name,market,description,custom_calc_py_code,status,tag,updated_at_us,created_at_us";
+    "id,name,market,description,custom_calc_py_code,status,tag,updated_at_us,created_at_us,archived_at_us";
 const UPDATE_FIELDS: [&str; 6] = [
     "name",
     "market",
@@ -50,6 +50,7 @@ fn portfolio_row(row: &Row<'_>) -> rusqlite::Result<Value> {
         "tag": row.get::<_, Option<String>>("tag")?,
         "updated_at": crate::time_us::read(row, "updated_at_us")?,
         "created_at": crate::time_us::read(row, "created_at_us")?,
+        "archived_at": crate::time_us::read_optional(row, "archived_at_us")?,
     }))
 }
 
@@ -96,6 +97,7 @@ fn create_on(connection: &Connection, request: &Value) -> Result<Value, Analysis
 fn update_on(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {
     let id = integer(request, "portfolio_id")?;
     let existing = require_portfolio(connection, id)?;
+    ensure_current(&existing)?;
     let changes = request["changes"]
         .as_object()
         .ok_or_else(|| invalid("组合更新载荷必须是对象"))?;
@@ -149,14 +151,59 @@ fn delete_on(connection: &Connection, id: i64) -> Result<Value, AnalysisError> {
     Ok(json!({"message": "成功删除组合"}))
 }
 
+fn ensure_current(portfolio: &Value) -> Result<(), AnalysisError> {
+    if !portfolio["archived_at"].is_null() {
+        return Err(AnalysisError::new("ARCHIVED", "组合已归档，请先恢复"));
+    }
+    Ok(())
+}
+
+fn archive_on(
+    connection: &Connection,
+    request: &Value,
+    archive: bool,
+) -> Result<Value, AnalysisError> {
+    let id = integer(request, "portfolio_id")?;
+    let portfolio = require_portfolio(connection, id)?;
+    if !portfolio["archived_at"].is_null() == archive {
+        return Ok(portfolio);
+    }
+    if archive {
+        let bound: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM account a WHERE a.archived_at_us IS NULL AND
+             (SELECT b.portfolio_id FROM portfolioaccount b WHERE b.account_id=a.id ORDER BY b.id DESC LIMIT 1)=?1)",
+            [id], |row| row.get(0),
+        ).map_err(sql)?;
+        if bound {
+            return Err(AnalysisError::new(
+                "ARCHIVED",
+                "组合仍被未归档账户绑定，请先改绑、解绑或归档相关账户",
+            ));
+        }
+    }
+    let stamp = crate::time_us::parse(text(request, "updated_at")?).map_err(invalid)?;
+    connection
+        .execute(
+            "UPDATE portfolio SET archived_at_us=?2,updated_at_us=?3 WHERE id=?1",
+            params![id, archive.then_some(stamp), stamp],
+        )
+        .map_err(sql)?;
+    public_portfolio(connection, require_portfolio(connection, id)?)
+}
+
 fn context_on(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {
     let id = integer(request, "portfolio_id")?;
     let portfolio = require_portfolio(connection, id)?;
+    ensure_current(&portfolio)?;
     let explicit = request.get("account_id");
     let account_id = match explicit {
         Some(Value::Null) => None,
         Some(_) => Some(integer(request, "account_id")?),
-        None => accounts::latest_account_on(connection, id)?,
+        None => connection.query_row(
+            "SELECT a.id FROM account a WHERE a.archived_at_us IS NULL AND
+             (SELECT portfolio_id FROM portfolioaccount WHERE account_id=a.id ORDER BY id DESC LIMIT 1)=?1
+             ORDER BY a.id DESC LIMIT 1", [id], |row| row.get(0),
+        ).optional().map_err(sql)?,
     };
     let account = match account_id {
         None => Value::Null,
@@ -171,17 +218,24 @@ fn context_on(connection: &Connection, request: &Value) -> Result<Value, Analysi
             )
         })?,
     };
+    if let Some(id) = account_id {
+        accounts::ensure_current_on(connection, id)?;
+    }
     Ok(json!({"portfolio": portfolio, "account_id": account_id, "account": account}))
 }
 
 fn bound_context_on(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {
     let account_id = integer(request, "account_id")?;
+    accounts::ensure_current_on(connection, account_id)?;
     let account = accounts::snapshot_on(connection, account_id)?;
     let portfolio_id = accounts::latest_portfolio_on(connection, account_id)?;
     let portfolio = portfolio_id
         .map(|id| portfolio_on(connection, id))
         .transpose()?
         .flatten();
+    if let Some(portfolio) = &portfolio {
+        ensure_current(portfolio)?;
+    }
     Ok(json!({"account": account, "portfolio_id": portfolio_id, "portfolio": portfolio}))
 }
 
@@ -229,6 +283,13 @@ pub fn portfolio_query(path: &str, request: &Value) -> Result<Value, AnalysisErr
                 .map_err(sql)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(sql)?;
+            let data: Vec<_> = data
+                .into_iter()
+                .filter(|p| {
+                    request["include_archived"] == true
+                        || p["archived_at"].is_null() == (request["archived"] != true)
+                })
+                .collect();
             Ok(json!({"data": data}))
         }
         "get" => public_portfolio(
@@ -259,8 +320,12 @@ pub fn portfolio_operation(path: &str, request: &Value) -> Result<Value, Analysi
         return match operation {
             "context" => context_on(&connection, request),
             "bound_context" => bound_context_on(&connection, request),
-            _ => accounts::snapshot_on(&connection, integer(request, "account_id")?)?
-                .ok_or_else(|| AnalysisError::new("NOT_FOUND", "账户不存在")),
+            _ => {
+                let id = integer(request, "account_id")?;
+                accounts::ensure_current_on(&connection, id)?;
+                accounts::snapshot_on(&connection, id)?
+                    .ok_or_else(|| AnalysisError::new("NOT_FOUND", "账户不存在"))
+            }
         };
     }
     let connection = writer_scope::open_writer(Path::new(path))?;
@@ -268,6 +333,7 @@ pub fn portfolio_operation(path: &str, request: &Value) -> Result<Value, Analysi
         "create" => create_on(&connection, request),
         "update" => public_portfolio(&connection, update_on(&connection, request)?),
         "delete" => delete_on(&connection, integer(request, "portfolio_id")?),
+        "archive" | "restore" => archive_on(&connection, request, operation == "archive"),
         "save_trial" => {
             update_on(&connection, request)?;
             target_ops::append_target_snapshot(&connection, request)?;
@@ -282,7 +348,7 @@ mod tests {
     use super::*;
 
     fn schema(connection: &Connection) {
-        connection.execute_batch("CREATE TABLE portfolio(id INTEGER PRIMARY KEY,name TEXT NOT NULL,market TEXT NOT NULL,description TEXT,custom_calc_py_code TEXT NOT NULL,status TEXT,tag TEXT,updated_at_us INTEGER NOT NULL,created_at_us INTEGER NOT NULL);").unwrap();
+        connection.execute_batch("CREATE TABLE portfolio(id INTEGER PRIMARY KEY,name TEXT NOT NULL,market TEXT NOT NULL,description TEXT,custom_calc_py_code TEXT NOT NULL,status TEXT,tag TEXT,updated_at_us INTEGER NOT NULL,created_at_us INTEGER NOT NULL,archived_at_us INTEGER);").unwrap();
     }
 
     fn initial(connection: &Connection) -> Value {

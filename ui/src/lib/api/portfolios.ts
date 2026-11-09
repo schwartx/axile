@@ -11,8 +11,13 @@ import type {
 } from '@/types/api'
 
 /** 组合列表（不含策略）。 */
-export function getPortfolios(signal?: AbortSignal): Promise<PortfolioList> {
-  return apiGet<PortfolioList>('/portfolio/', signal)
+export function getPortfolios(signal?: AbortSignal, scope: 'current' | 'archived' | 'all' = 'current'): Promise<PortfolioList> {
+  return apiGet<PortfolioList>(scope === 'all' ? '/portfolio/?include_archived=true' : scope === 'archived' ? '/portfolio/?archived=true' : '/portfolio/', signal)
+}
+
+/** 归档或恢复组合，不改变账户的运行状态。 */
+export function setPortfolioArchived(id: number, archived: boolean): Promise<Portfolio> {
+  return apiSend<Portfolio>('POST', `/portfolio/${id}/${archived ? 'archive' : 'restore'}`)
 }
 
 /** 组合详情（含当前策略与绑定账户）。 */

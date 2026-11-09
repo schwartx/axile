@@ -34,6 +34,7 @@ class Portfolio(PortfolioBase):
     """由自定义函数计算目标权重的投资组合."""
 
     id: Optional[int] = Field(default=None)
+    archived_at: str | None = None
     updated_at: str = Field(default_factory=now_str)
     created_at: str = Field(default_factory=now_str)
 
@@ -116,6 +117,7 @@ class PortfolioLitePublic(PortfolioBase):
     """简化版组合信息, 不加载关系."""
 
     id: Optional[int]
+    archived_at: str | None = None
     updated_at: str
     created_at: str
 

@@ -1,3 +1,4 @@
+import { ArchiveAction } from '@/features/account/ArchiveAction'
 import { shanghaiLabel } from '@/features/history/costs'
 import { useAccountConnection } from '@/stores/liveConnection'
 import { useConnectedAssets } from '@/features/account/useConnectedAssets'
@@ -427,6 +428,8 @@ export function AccountDetail({
             <AccountConnectionStatus accountId={accountId} />
           </div>
           <AccountActions
+            archiveAction={(className) => <ArchiveAction kind="account" id={accountId} name={item.name} className={className}
+              onChanged={async () => { await onDashboardRefresh?.(); await account.refresh() }} />}
             name={item.name}
             isStarted={isStarted}
             running={isBusy}

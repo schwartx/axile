@@ -214,6 +214,7 @@ pub fn intent_recovery(path: &str, _request: &Value) -> Result<Value, AnalysisEr
 fn insert_in_connection(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {
     let execution_id = text(request, "execution_id")?;
     let account = account_id(request)?;
+    crate::accounts::ensure_current_on(connection, account)?;
     let kind = text(request, "kind")?;
     if !["rebalance", "clear_positions"].contains(&kind) || !request["payload"].is_object() {
         return Err(AnalysisError::new(
@@ -406,7 +407,8 @@ mod tests {
     fn database() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch(
-            "CREATE TABLE execution_intent (
+            "CREATE TABLE account(id INTEGER PRIMARY KEY,archived_at_us INTEGER); INSERT INTO account(id) VALUES(1);
+             CREATE TABLE execution_intent (
                 id INTEGER PRIMARY KEY, execution_id TEXT UNIQUE NOT NULL,
                 account_id INTEGER NOT NULL, kind TEXT NOT NULL, trigger_source TEXT NOT NULL,
                 status TEXT NOT NULL, channel TEXT, algorithm TEXT, payload TEXT NOT NULL,

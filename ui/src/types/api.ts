@@ -213,6 +213,7 @@ export interface AccountConnectionDetail extends AccountConnection {
 }
 
 export interface Account {
+  archived_at?: string | null
   connection?: AccountConnection
   copied_from_account_id?: number | null
   copied_from_account_name?: string | null
@@ -408,6 +409,7 @@ export interface TrialLeverageOverrides {
 
 /** 仪表盘聚合中的单账户项，对应 `AccountDashboardItemPublic`。 */
 export interface AccountDashboardItem {
+  archived_at?: string | null
   connection?: AccountConnection
   account_id: number
   name: string
@@ -502,6 +504,7 @@ export interface AccountNextRun {
 
 /** 组合完整信息，对应 `PortfolioPublic`。 */
 export interface Portfolio {
+  archived_at?: string | null
   id: number | null
   name: string
   market: string
@@ -517,6 +520,7 @@ export interface Portfolio {
 
 /** 轻量组合信息，对应 `PortfolioLitePublic`（列表项，无策略）。 */
 export interface PortfolioLite {
+  archived_at?: string | null
   id: number | null
   name: string
   market: string

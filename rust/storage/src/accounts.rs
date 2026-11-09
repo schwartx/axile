@@ -22,6 +22,7 @@ const IDENTITY: &[&str] = &[
     "copied_from_account_name",
     "updated_at",
     "created_at",
+    "archived_at",
 ];
 const EXECUTION: &[&str] = &[
     "account_control_preset",
@@ -56,7 +57,7 @@ const GROUPS: &[(&str, &[&str])] = &[
 ];
 const ACCOUNT_SELECT: &str = "SELECT a.id,a.name,a.market,a.trade_channel,a.brokerage,a.remark,
     a.portfolio_id,a.copied_from_account_id,a.copied_from_account_name,a.updated_at_us,a.created_at_us,
-    s.connection,s.execution,s.schedule,s.notification,s.backtest";
+    a.archived_at_us,s.connection,s.execution,s.schedule,s.notification,s.backtest";
 const ACCOUNT_FROM: &str = " FROM account a LEFT JOIN account_settings s ON s.account_id=a.id";
 const STATE_SELECT: &str = ",
     CASE WHEN n.account_id IS NOT NULL THEN json_object(
@@ -166,7 +167,9 @@ fn account_row(row: &Row<'_>, states: bool) -> Result<Value, AnalysisError> {
     for (index, name) in IDENTITY.iter().enumerate() {
         data.insert(
             (*name).into(),
-            if matches!(*name, "created_at" | "updated_at") {
+            if *name == "archived_at" {
+                json!(crate::time_us::read_optional(row, index).map_err(sql)?)
+            } else if matches!(*name, "created_at" | "updated_at") {
                 json!(crate::time_us::read(row, index).map_err(sql)?)
             } else {
                 value(row, index)?
@@ -271,6 +274,28 @@ pub(crate) fn list_on(connection: &Connection) -> Result<Vec<Value>, AnalysisErr
     select_accounts(connection, None, true)
 }
 
+pub(crate) fn ensure_current_on(
+    connection: &Connection,
+    account_id: i64,
+) -> Result<(), AnalysisError> {
+    let archived: bool = connection
+        .query_row(
+            "SELECT archived_at_us IS NOT NULL FROM account WHERE id=?1",
+            [account_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql)?
+        .unwrap_or(false);
+    if archived {
+        return Err(AnalysisError::new(
+            "ACCOUNT_CONFLICT",
+            "账户已归档，请先恢复",
+        ));
+    }
+    Ok(())
+}
+
 fn require_on(connection: &Connection, account_id: i64) -> Result<Value, AnalysisError> {
     load_on(connection, account_id)?
         .ok_or_else(|| AnalysisError::new("ACCOUNT_NOT_FOUND", "账户不存在"))
@@ -314,15 +339,23 @@ fn ensure_portfolio_on(
     portfolio_id: Option<i64>,
 ) -> Result<(), AnalysisError> {
     if let Some(portfolio_id) = portfolio_id {
-        let exists: bool = connection
+        let archived = connection
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM portfolio WHERE id=?1)",
+                "SELECT archived_at_us IS NOT NULL FROM portfolio WHERE id=?1",
                 [portfolio_id],
-                |row| row.get(0),
+                |row| row.get::<_, bool>(0),
             )
+            .optional()
             .map_err(sql)?;
-        if !exists {
-            return Err(AnalysisError::new("PORTFOLIO_NOT_FOUND", "组合不存在"));
+        match archived {
+            None => return Err(AnalysisError::new("PORTFOLIO_NOT_FOUND", "组合不存在")),
+            Some(true) => {
+                return Err(AnalysisError::new(
+                    "ACCOUNT_CONFLICT",
+                    "组合已归档，请先恢复或改绑",
+                ))
+            }
+            Some(false) => (),
         }
     }
     Ok(())
@@ -515,6 +548,10 @@ pub fn account_list_json(path: &str, request: &Value) -> Result<Vec<u8>, Analysi
     crate::with_read_snapshot(Path::new(path), |connection| {
         let accounts = list_on(connection)?
             .into_iter()
+            .filter(|account| {
+                request["include_archived"] == true
+                    || account["archived_at"].is_null() == (request["archived"] != true)
+            })
             .map(|account| public_account(account, request))
             .collect::<Result<Vec<_>, _>>()?;
         json_bytes(&json!({"data": accounts}))
@@ -616,6 +653,7 @@ pub fn account_copy(path: &str, request: &Value) -> Result<Value, AnalysisError>
     let connection = writer_scope::open_writer(Path::new(path))?;
     writer_scope::immediate(&connection, || {
         let mut source = require_on(&connection, source_id)?;
+        ensure_current_on(&connection, source_id)?;
         check_revision(&source, request)?;
         if source["is_started"] == true {
             return Err(AnalysisError::new(
@@ -664,6 +702,7 @@ fn patch_on(
                 | "updated_at"
                 | "copied_from_account_id"
                 | "copied_from_account_name"
+                | "archived_at"
         )
     }) {
         if let Some(value) = data.get(*name) {
@@ -736,6 +775,15 @@ pub fn account_update(path: &str, request: &Value) -> Result<Value, AnalysisErro
     let connection = writer_scope::open_writer(Path::new(path))?;
     writer_scope::immediate(&connection, || {
         let previous = require_on(&connection, account_id)?;
+        ensure_current_on(&connection, account_id)?;
+        if data.get("is_started") == Some(&json!(true)) {
+            ensure_portfolio_on(
+                &connection,
+                data.get("portfolio_id")
+                    .unwrap_or(&previous["portfolio_id"])
+                    .as_i64(),
+            )?;
+        }
         check_revision(&previous, request)?;
         let (override_, code) = match data.get("account_control_override") {
             Some(value) => (value, "ACCOUNT_INPUT"),
@@ -815,9 +863,51 @@ pub fn account_delete(path: &str, request: &Value) -> Result<Value, AnalysisErro
     })
 }
 
+pub fn account_archive(path: &str, request: &Value) -> Result<Value, AnalysisError> {
+    let account_id = id(request)?;
+    let now = now(request)?;
+    let archive = request["archived"]
+        .as_bool()
+        .ok_or_else(|| invalid("缺少归档动作"))?;
+    let connection = writer_scope::open_writer(Path::new(path))?;
+    writer_scope::immediate(&connection, || {
+        let account = require_on(&connection, account_id)?;
+        if !account["archived_at"].is_null() == archive {
+            return Ok(account);
+        }
+        if archive {
+            let busy: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM execution_intent WHERE account_id=?1 AND status IN ('QUEUED','RUNNING','TERMINATING'))
+                 OR EXISTS(SELECT 1 FROM supplement_group WHERE account_id=?1 AND status IN ('active','cancelling'))",
+                [account_id], |row| row.get(0),
+            ).map_err(sql)?;
+            if account["is_started"] == true || busy {
+                return Err(AnalysisError::new(
+                    "ACCOUNT_CONFLICT",
+                    "请先暂停账户并处理完执行中、排队中和补单任务，再归档",
+                ));
+            }
+        }
+        let stamp = crate::time_us::parse(now).map_err(invalid)?;
+        connection
+            .execute(
+                "UPDATE account SET archived_at_us=?2,updated_at_us=?3 WHERE id=?1",
+                params![account_id, archive.then_some(stamp), stamp],
+            )
+            .map_err(sql)?;
+        connection.execute("UPDATE account_settings SET schedule=json_set(schedule,'$.is_started',json('false')) WHERE account_id=?1", [account_id]).map_err(sql)?;
+        runtime_sync::enqueue_on(&connection, account_id, true, None, now)?;
+        require_on(&connection, account_id)
+    })
+}
+
 pub fn account_dashboard_context(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     crate::with_read_snapshot(Path::new(path), |connection| {
         let mut accounts = list_on(connection)?;
+        accounts.retain(|account| {
+            request["include_archived"] == true
+                || account["archived_at"].is_null() == (request["archived"] != true)
+        });
         for account in &mut accounts {
             account["connection"] = crate::connection_state::public_connection(
                 account,
@@ -897,6 +987,7 @@ pub fn account_update_backtest(path: &str, request: &Value) -> Result<Value, Ana
     let connection = writer_scope::open_writer(Path::new(path))?;
     writer_scope::immediate(&connection, || {
         require_on(&connection, account_id)?;
+        ensure_current_on(&connection, account_id)?;
         patch_on(&connection, account_id, patch, now)?;
         connection.query_row(
             "SELECT json_extract(backtest,'$.backtest_fee_rate') FROM account_settings WHERE account_id=?1",
@@ -912,6 +1003,7 @@ pub fn account_stop_for_clear(path: &str, request: &Value) -> Result<Value, Anal
     let connection = writer_scope::open_writer(Path::new(path))?;
     writer_scope::immediate(&connection, || {
         require_on(&connection, account_id)?;
+        ensure_current_on(&connection, account_id)?;
         crate::supplements::cancel_groups_in_connection(
             &connection,
             account_id,
@@ -937,10 +1029,10 @@ mod tests {
     fn database() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch("PRAGMA foreign_keys=ON;
-            CREATE TABLE portfolio(id INTEGER PRIMARY KEY);
+            CREATE TABLE portfolio(id INTEGER PRIMARY KEY,archived_at_us INTEGER);
             CREATE TABLE account(id INTEGER PRIMARY KEY,name TEXT NOT NULL,market TEXT NOT NULL,
                 trade_channel TEXT NOT NULL,brokerage TEXT NOT NULL,remark TEXT,portfolio_id INTEGER REFERENCES portfolio(id),
-                copied_from_account_id INTEGER,copied_from_account_name TEXT,updated_at_us INTEGER NOT NULL,created_at_us INTEGER NOT NULL);
+                copied_from_account_id INTEGER,copied_from_account_name TEXT,updated_at_us INTEGER NOT NULL,created_at_us INTEGER NOT NULL,archived_at_us INTEGER);
             CREATE TABLE account_settings(account_id INTEGER PRIMARY KEY REFERENCES account(id) ON DELETE CASCADE,
                 connection TEXT NOT NULL,execution TEXT NOT NULL,schedule TEXT NOT NULL,notification TEXT NOT NULL,backtest TEXT NOT NULL);
             CREATE TABLE portfolioaccount(id INTEGER PRIMARY KEY,account_id INTEGER,portfolio_id INTEGER,created_at_us INTEGER);
@@ -953,7 +1045,7 @@ mod tests {
                 sequence INTEGER,status TEXT,observed_at_us INTEGER,message TEXT,error TEXT,label TEXT,presentation TEXT,
                 last_success_at_us INTEGER,last_failure TEXT,manually_disconnected INTEGER);
             CREATE TABLE supplement_group(id TEXT PRIMARY KEY,account_id INTEGER,status TEXT);
-            INSERT INTO portfolio VALUES(1);").unwrap();
+            INSERT INTO portfolio(id) VALUES(1);").unwrap();
         connection
     }
 

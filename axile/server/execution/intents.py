@@ -134,6 +134,10 @@ async def _intent_operation(name: str, request: dict[str, object]) -> Any:
     try:
         return await native_operation(name, request)
     except _core.NativeError as error:
+        if error.args[:1] == ("ACCOUNT_CONFLICT",):
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=409, detail=error.args[1]) from error
         if error.args[:1] == ("SUPPLEMENT_NOT_RUNNABLE",):
             from axile.server.execution.supplements import SupplementNotRunnable
 

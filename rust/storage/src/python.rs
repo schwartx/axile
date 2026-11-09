@@ -291,6 +291,7 @@ business_operations! { register_business_operations, business_operation, PyAny;
     account_create_replay => crate::accounts::account_create_replay,
     account_copy => crate::accounts::account_copy,
     account_update => crate::accounts::account_update,
+    account_archive => crate::accounts::account_archive,
     account_delete => crate::accounts::account_delete,
     account_dashboard_context => crate::accounts::account_dashboard_context,
     account_next_run_context => crate::accounts::account_next_run_context,

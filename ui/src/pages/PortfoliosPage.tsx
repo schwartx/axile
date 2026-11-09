@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Segmented } from '@/components/ui/Segmented'
+import { ArchiveAction } from '@/features/account/ArchiveAction'
+import { getPortfolios } from '@/lib/api/portfolios'
+import { usePolling } from '@/lib/hooks/usePolling'
+import { withViewTransition } from '@/lib/viewTransition'
+import { shanghaiLabel } from '@/features/history/costs'
 import { useSearchParams, useViewTransitionState } from 'react-router'
 import { Copy, LoaderCircle, Play, Plus, Trash2 } from 'lucide-react'
 import { Link, useNavigate } from '@/components/ui/nav'
@@ -33,7 +39,7 @@ import { useToastStore } from '@/stores/ui'
 import type { AccountDashboardItem, PortfolioLite } from '@/types/api'
 
 /** 组合列表 /portfolios —— 组合的「家」，保证每个组合始终可达 + 管理入口。 */
-export function PortfoliosPage() {
+function CurrentPortfolios() {
   const navigate = useNavigate()
   const toast = useToastStore((s) => s.toast)
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null)
@@ -275,6 +281,8 @@ function PortfolioCard({
               {running ? <LoaderCircle size={14} className="animate-spin motion-reduce:animate-none" aria-hidden /> : <Play size={14} aria-hidden />}
             </button>
           </Tooltip>
+          {p.id != null && <ArchiveAction kind="portfolio" id={p.id} name={p.name}
+            onChanged={() => useDomainStore.getState().refreshPortfolios()} />}
           <Tooltip content="复制组合">
             <button
               type="button"
@@ -429,4 +437,31 @@ function PortfolioFollowerLink({ account }: { account: AccountDashboardItem }) {
       </span>
     </Link>
   )
+}
+
+
+/** 归档组合只读，不挂载当前组合的运行与复制入口。 */
+export function PortfoliosPage() {
+  const [params, setParams] = useSearchParams()
+  const archived = params.get('archived') === '1'
+  const refresh = useDomainStore(s => s.refreshPortfolios)
+  const archive = usePolling(useCallback((signal: AbortSignal) => getPortfolios(signal, 'archived'), []), {
+    queryKey: 'archived-portfolios', intervalMs: 0, enabled: archived,
+  })
+  return <section>
+    <div className="mb-4"><Segmented value={archived ? 'archived' : 'current'} size="sm" ariaLabel="组合范围"
+      options={[{ value: 'current', label: '当前' }, { value: 'archived', label: '已归档' }]}
+      onChange={value => withViewTransition(() => { const next = new URLSearchParams(params); if (value === 'archived') next.set('archived', '1'); else next.delete('archived'); setParams(next) })} /></div>
+    {!archived ? <CurrentPortfolios /> : <div className="space-y-3">
+      <ErrorNotice intent="read" title="已归档组合加载失败" error={archive.error} onRetry={archive.refresh} />
+      {archive.loading && <p className="text-sm text-ink-2">加载已归档组合…</p>}
+      {archive.data?.data.length === 0 && <p className="text-sm text-ink-2">没有已归档组合。</p>}
+      {archive.data?.data.map(portfolio => <Card key={portfolio.id} className="flex flex-wrap items-center justify-between gap-3 p-5">
+        <div><Link to={`/portfolios/${portfolio.id}/edit`} className="font-semibold hover:text-accent">{portfolio.name}</Link>
+          <p className="mt-1 text-sm text-ink-2">归档于 {shanghaiLabel(portfolio.archived_at!)}</p></div>
+        {portfolio.id != null && <ArchiveAction kind="portfolio" id={portfolio.id} name={portfolio.name} archivedAt={portfolio.archived_at}
+          onChanged={async () => { await refresh(); await archive.refresh() }} />}
+      </Card>)}
+    </div>}
+  </section>
 }

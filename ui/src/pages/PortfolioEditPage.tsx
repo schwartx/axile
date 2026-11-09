@@ -1,3 +1,4 @@
+import { ArchivedPortfolioDetail } from '@/features/portfolio/ArchivedPortfolioDetail'
 import { ResizeHandle } from '@/components/ui/ResizeHandle'
 import { shanghaiLabel } from '@/features/history/costs'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -315,6 +316,8 @@ export function PortfolioEditPage() {
       </section>
     )
   }
+
+  if (pf?.archived_at) return <ArchivedPortfolioDetail portfolio={pf} onChanged={async () => { await refreshPortfolios(); await portfolio.refresh() }} />
 
   return (
     <>

@@ -115,7 +115,7 @@ def _assert_native_migrations() -> None:
     from axile.server.core.db import initialize_database
     from axile.server.native_store import native_operation_sync
 
-    assert _core.PUBLIC_HEAD == "0035"
+    assert _core.PUBLIC_HEAD == "0036"
     assert _core.ANALYSIS_FACT_SCHEMA == 42
     database = Path(os.environ["AXILE_CONTRACT_DB"])
     try:
@@ -134,13 +134,13 @@ def _assert_native_migrations() -> None:
     for name in ("migration_current", "migration_check"):
         result = getattr(_core, name)(str(database), '{"public":"head"}')
         assert result["public"] is None and result["private"] is None
-        assert result["public_target"] == "0035"
+        assert result["public_target"] == "0036"
         assert not database.exists(), f"{name} created a missing database"
 
     initialize_database()
-    assert _core.migration_current(str(database), "{}")["public"] == "0035"
+    assert _core.migration_current(str(database), "{}")["public"] == "0036"
     with closing(sqlite3.connect(database)) as oracle:
-        assert oracle.execute("SELECT version_num FROM alembic_version").fetchall() == [("0035",)]
+        assert oracle.execute("SELECT version_num FROM alembic_version").fetchall() == [("0036",)]
         journal_mode = oracle.execute("PRAGMA journal_mode").fetchone()
         assert journal_mode == ("wal",), journal_mode
         before = list(oracle.iterdump())
@@ -151,7 +151,7 @@ def _assert_native_migrations() -> None:
     _core.migration_downgrade(str(database), '{"public":"0033"}')
     assert _core.migration_current(str(database), "{}")["public"] == "0033"
     _core.migration_upgrade(str(database), "{}")
-    assert _core.migration_current(str(database), "{}")["public"] == "0035"
+    assert _core.migration_current(str(database), "{}")["public"] == "0036"
     plan = _core.migration_check(str(database), '{"public":"head"}')
     assert plan["public_fields"] == plan["private_fields"] == 0
     json.dumps(plan, allow_nan=False)
@@ -232,6 +232,7 @@ def _assert_api_contract() -> None:
     initialize_database()
     client = TestClient(_app)
     portfolio_fields = {
+        "archived_at",
         "name",
         "market",
         "description",
@@ -291,7 +292,7 @@ def _assert_api_contract() -> None:
             "is_started cron_expr gm_sessions replay_recording_enabled supplement has_pending_supplement remark brokerage weight_precision long_leverage "
             "short_leverage algorithm empty_positions_algorithm trade_rules futures_close_policy forbidden_symbols "
             "risk_symbols feishu_configured execution_notification_code portfolio_id write_empty_record execution_timeout "
-            "updated_at created_at runtime_sync notification_state connection execution_notification_status".split()
+            "updated_at created_at archived_at runtime_sync notification_state connection execution_notification_status".split()
         )
         assert set(account) == expected_fields
         assert account["account_configured"] and not account["feishu_configured"]

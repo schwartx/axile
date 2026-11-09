@@ -15,8 +15,13 @@ from axile.channels import get_channel
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionArtifactType, ExecutionTaskStatus
 from axile.executor.models.portfolio_target import PortfolioTarget, TargetMode
+from axile.server._native import _core
 from axile.server.api.deps import HistoryPaginationDep, SchedDep
-from axile.server.api.routes.account_support import _build_empty_positions_algorithm, _get_account_or_404
+from axile.server.api.routes.account_support import (
+    _build_empty_positions_algorithm,
+    _get_account_or_404,
+    ensure_account_current,
+)
 from axile.server.api.routes.portfolio import resolve_portfolio_target
 from axile.server.business_facts.assets import latest_asset_snapshot
 from axile.server.db.models import (
@@ -334,10 +339,12 @@ async def _account_target_public(
 @router.post("/execute/{account_id}", response_model=ExecutionTriggerResponse)
 async def execute(account_id: int) -> ExecutionTriggerResponse:
     """异步触发立即执行，并返回可用于轮询的执行标识."""
-    await _get_account_or_404(account_id)
+    ensure_account_current(await _get_account_or_404(account_id))
 
     try:
         submitted = await enqueue_execute_trade(account_id)
+    except HTTPException:
+        raise
     except AccountExecutionAlreadyRunningError as exc:
         logger.warning(f"执行交易冲突: account_id={account_id}, error={exc}")
         raise HTTPException(
@@ -380,7 +387,13 @@ async def account_target_snapshot(account_id: int) -> TargetWeightSnapshotPublic
 async def refresh_account_target_snapshot(account_id: int) -> TargetWeightSnapshotPublic:
     """按用户请求使用真实账户上下文重新计算并保存目标权重."""
     account = await _get_account_or_404(account_id)
-    context = await native_operation("portfolio_operation", {"op": "bound_context", "account_id": account_id})
+    ensure_account_current(account)
+    try:
+        context = await native_operation("portfolio_operation", {"op": "bound_context", "account_id": account_id})
+    except _core.NativeError as exc:
+        if exc.args[0] in {"ARCHIVED", "ACCOUNT_CONFLICT"}:
+            raise HTTPException(409, detail=exc.args[1]) from exc
+        raise
     portfolio_id = context["portfolio_id"]
     if portfolio_id is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="账户未绑定组合")
@@ -518,6 +531,7 @@ async def empty_all_positions(
 ) -> ExecutionTriggerResponse:
     """异步触发一键平仓，并返回可用于轮询的执行标识."""
     db_account = await _get_account_or_404(account_id)
+    ensure_account_current(db_account)
 
     try:
         algorithm = _build_empty_positions_algorithm(
@@ -538,6 +552,8 @@ async def empty_all_positions(
 
     try:
         submitted = await enqueue_empty_positions(account_id, algorithm=algorithm)
+    except HTTPException:
+        raise
     except AccountExecutionAlreadyRunningError as exc:
         logger.warning(f"清仓冲突: account_id={account_id}, error={exc}")
         raise HTTPException(

@@ -101,6 +101,17 @@ async def _prepare_runtime_target(
     """仅在渠道准备边界识别明确的柜台未初始化；scheduler 错误不能降级。"""
     reset = target.reset_worker or (target.account.trade_channel == TradeChannel.TQ and mode in {"day", "night"})
     try:
+        if target.account.archived_at is not None:
+            from axile.server.connection_runtime import forget_session
+            from axile.server.execution.worker_backend.manager import get_worker_backend_manager
+
+            manager = get_worker_backend_manager()
+            manager.configure_catalog_account(target.account)
+            account_id = target.account.id
+            assert account_id is not None
+            await manager.drop_account(account_id)
+            forget_session(account_id)
+            return "synchronized", None
         await reconcile_china_channel_account(target.account, reset=reset, last_execution=target.last_execution)
     except WorkerBackendExecutionError as exc:
         if target.account.trade_channel != TradeChannel.CTP or exc.reason_code != "CTP_NOT_INITIALIZED":

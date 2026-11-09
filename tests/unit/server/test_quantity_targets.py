@@ -122,7 +122,7 @@ def test_quantity_snapshot_roundtrip_and_downgrade_guard(native_database):
     assert public.quantities is None
     with pytest.raises(_core.NativeError, match="数量目标"):
         _core.migration_downgrade(path, '{"public":"0034"}')
-    assert _core.migration_current(path, "{}")["public"] == "0035"
+    assert _core.migration_current(path, "{}")["public"] == "0036"
 
 
 def test_retry_preserves_quantity_mode_and_frozen_targets(monkeypatch):

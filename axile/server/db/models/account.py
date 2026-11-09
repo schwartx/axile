@@ -145,6 +145,7 @@ class AccountSnapshot(AccountBase):
     id: int | None = None
     copied_from_account_id: int | None = None
     copied_from_account_name: str | None = None
+    archived_at: str | None = None
     updated_at: str = Field(default_factory=now_str)
     created_at: str = Field(default_factory=now_str)
     replay_config_version: int = Field(default=0, ge=0, strict=True)
@@ -202,6 +203,7 @@ class AccountPublic(Model):
     id: Optional[int]
     copied_from_account_id: Optional[int] = None
     copied_from_account_name: Optional[str] = None
+    archived_at: str | None = None
     name: str
     market: str
     trade_channel: TradeChannel
@@ -342,6 +344,7 @@ class AccountDashboardItemPublic(Model):
     """
 
     account_id: int
+    archived_at: str | None = None
     connection: AccountConnectionPublic = Field(default_factory=AccountConnectionPublic)
     name: str
     remark: Optional[str] = None
