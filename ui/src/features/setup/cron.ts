@@ -29,7 +29,7 @@ export interface NightSchedule {
 }
 
 /** 自定义节奏可选频率。 */
-export type CustomFreq = 'm15' | 'm60' | 'm120' | 'm240' | 'd1'
+export type CustomFreq = 'm15' | 'm30' | 'm60' | 'm120' | 'm240' | 'd1'
 
 /** 自定义节奏锚点（日线/4 小时线取开盘或临收）。 */
 export type Anchor = 'open' | 'close'
@@ -164,7 +164,7 @@ function applyOffsets(times: string[], windows: SessionWindow[], offs: number[])
   return seen
 }
 
-function sessionTimes(kind: Exclude<ScheduleKind, 'continuous'>, freq: 15 | 60 | 120): string[] {
+function sessionTimes(kind: Exclude<ScheduleKind, 'continuous'>, freq: 15 | 30 | 60 | 120): string[] {
   const clock = CLOCK_WINDOWS[kind]
   return rhythmTimes(
     barWindows(kind, clock).filter((window) => !isOvernight(window)),
@@ -219,6 +219,7 @@ export const PRESETS: Record<ScheduleKind, Preset[]> = {
     { id: 'open', label: '每交易日 · 开盘', sub: '09:30', build: (o) => timesToCron([SESSION_OPEN.cn_stock], '*', o, CLOCK_WINDOWS.cn_stock) },
     { id: 'close', label: '每交易日 · 临收', sub: '14:50', build: (o) => timesToCron([SESSION_CLOSE.cn_stock], '*', o, CLOCK_WINDOWS.cn_stock) },
     { id: 'm15', label: '盘中每 15 分', build: (o) => timesToCron(sessionTimes('cn_stock', 15), '*', o, CLOCK_WINDOWS.cn_stock) },
+    { id: 'm30', label: '盘中每 30 分', build: (o) => timesToCron(sessionTimes('cn_stock', 30), '*', o, CLOCK_WINDOWS.cn_stock) },
     { id: 'm60', label: '盘中每 60 分', build: (o) => timesToCron(sessionTimes('cn_stock', 60), '*', o, CLOCK_WINDOWS.cn_stock) },
   ],
   cn_futures: [
@@ -274,6 +275,7 @@ export interface ScheduleRule {
 
 const FREQ_LABEL: Record<CustomFreq, string> = {
   m15: '每 15 分钟',
+  m30: '每 30 分钟',
   m60: '每小时',
   m120: '每 2 小时',
   m240: '每 4 小时',
@@ -331,6 +333,7 @@ export function ruleFromPreset(market: ScheduleKind, presetId: string): Schedule
   }
   if (market === 'cn_stock') {
     if (presetId === 'm15') return { ...base, id: newRuleId(), freq: 'm15', time: '00:00' }
+    if (presetId === 'm30') return { ...base, id: newRuleId(), freq: 'm30', time: '00:00' }
     if (presetId === 'm60') return { ...base, id: newRuleId(), freq: 'm60', time: '00:00' }
     if (presetId === 'close') return { ...base, id: newRuleId(), freq: 'd1', time: '14:50', anchor: 'close' }
     return { ...base, id: newRuleId(), freq: 'd1', time: '09:30', anchor: 'open' }
@@ -394,12 +397,14 @@ export function compileScheduleRule(
     }
     const base: Record<Exclude<CustomFreq, 'd1'>, number[]> = {
       m15: [0, 15, 30, 45],
+      m30: [0, 30],
       m60: [0],
       m120: [0],
       m240: [0],
     }
     const hr: Record<Exclude<CustomFreq, 'd1'>, string> = {
       m15: '*',
+      m30: '*',
       m60: '*',
       m120: '*/2',
       m240: '*/4',
@@ -417,7 +422,7 @@ export function compileScheduleRule(
     const t = rule.anchor === 'close' ? SESSION_CLOSE[kind] : SESSION_OPEN[kind]
     return timesToCron([t], dow, offs, clock)
   }
-  const freq = rule.freq === 'm15' ? 15 : rule.freq === 'm120' ? 120 : 60
+  const freq = rule.freq === 'm15' ? 15 : rule.freq === 'm30' ? 30 : rule.freq === 'm120' ? 120 : 60
   return timesToCron(sessionTimes(kind, freq), dow, offs, clock)
 }
 

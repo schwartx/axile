@@ -17,6 +17,8 @@ test('仅 GM 展示四个阶段，盘后禁用，默认关闭', () => {
   expect(html).toContain('撤单受限时保留原委托')
   expect(html).toContain('09:24')
   expect(html).toContain('早盘不可撤单阶段触发时间')
+  expect(html).not.toContain('<select')
+  expect(html).toContain('role="group" aria-label="早盘不可撤单阶段触发时间"')
   for (const time of ['09:15', '14:57']) expect(html).toContain(`固定 ${time} 触发`)
   expect(html.match(/aria-checked="false"/g)).toHaveLength(4)
   const selected = renderToStaticMarkup(createElement(GMSessionControls, { channel: 'gm', value: { ...defaultGMSessions(), opening_cancelable: { enabled: true, time: '09:15' } }, onChange: () => {} }))

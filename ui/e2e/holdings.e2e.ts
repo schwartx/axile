@@ -28,6 +28,32 @@ async function mock(page: Page, options: { legacy?: boolean; unsynced?: boolean;
   await page.route('**/api/v1/account/*/orders**', route => route.fulfill({ json: orders }))
 }
 
+test('quantity rows align symbol text with quantities with and without buttons', async ({ page }, testInfo) => {
+  await mock(page, { emptyOrders: true })
+  await page.addInitScript(() => Object.assign(window, { holdingsPlan: {
+    target_mode: 'quantity', off_symbol_count: 0,
+    observed_at: null, target_calculated_at: null,
+    rows: [['513090.SH', 1800], ['513050.SH', 34700]].map(([symbol, quantity]) => ({
+      symbol, current_weight: null, target_weight: null,
+      current_quantity: quantity, target_quantity: quantity, aligned: true, action: 'aligned', side: 'none',
+    })),
+  } }))
+  for (const plain of [false, true]) {
+    await page.goto(`/e2e/holdings.html${plain ? '?plain' : ''}`)
+    const table = page.getByRole('table', { name: '目标数量与持仓' })
+    await expect(table.getByRole('cell')).toHaveCount(6)
+    for (const width of [800, 416]) {
+      await page.setViewportSize({ width, height: 600 })
+      for (const row of await table.getByRole('row').filter({ has: page.getByRole('cell') }).all()) {
+        const centers = await row.locator('.overflow-text-static, [role="cell"].num').evaluateAll(nodes =>
+          nodes.map(node => { const box = node.getBoundingClientRect(); return box.y + box.height / 2 }))
+        expect(Math.max(...centers) - Math.min(...centers)).toBeLessThan(1)
+      }
+      if (!plain && width === 800) await table.screenshot({ path: testInfo.outputPath('quantity-alignment.png') })
+    }
+  }
+})
+
 test('preview shows full ETF codes without pushing numeric columns aside', async ({ page }) => {
   await mock(page, { emptyOrders: true })
   const longSymbol = 'VERY-LONG-INSTRUMENT-IDENTIFIER-THAT-CANNOT-FIT-IN-THE-PREVIEW'

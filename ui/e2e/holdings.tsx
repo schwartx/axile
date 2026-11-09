@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { HoldingDetailDialog } from '../src/features/account/HoldingDetailDialog'
 import { CurrentOrdersButton, CurrentOrdersDialog } from '../src/features/account/CurrentOrders'
 import { HoldingsPreviewTable } from '../src/features/account/HoldingsPreviewTable'
+import { HoldingsView } from '../src/features/account/HoldingsView'
 import { holdingPreviewRows } from '../src/features/account/holdingDetailModel'
 import { useCurrentOrders } from '../src/features/account/useCurrentOrders'
 import { getAccountAssetSnapshots, getAccountTargetSnapshot } from '../src/lib/api/accounts'
@@ -10,6 +11,7 @@ import { usePolling } from '../src/lib/hooks/usePolling'
 import { useLiveConnection } from '../src/stores/liveConnection'
 import { useLiveOrders } from '../src/stores/liveOrders'
 import type { CurrentOrdersSnapshot } from '../src/lib/api/orders'
+import type { AccountRebalancePlan } from '../src/types/api'
 import '../src/styles/theme.css'
 
 const fractional = new URLSearchParams(location.search).has('fractional')
@@ -21,6 +23,7 @@ useLiveConnection.getState().apply({ stream_id: 'fixture', version: 1, kind: 'sn
 
 // 持仓布局用例直接注入统一镜像；真实 SSE / IPC 在 orders.e2e.ts 覆盖。
 const seeded = (window as Window & { holdingsOrders?: CurrentOrdersSnapshot }).holdingsOrders
+const quantityPlan = (window as Window & { holdingsPlan?: AccountRebalancePlan }).holdingsPlan
 if (seeded) useLiveOrders.getState().apply({ stream_id: 'fixture', version: 1, kind: 'snapshot', data: [
   { account_id: 1, snapshot: seeded },
   { account_id: 2, snapshot: { ...seeded, data: [], count: 0, cancellations: [] } },
@@ -41,9 +44,11 @@ export function Fixture() {
     <section className="max-w-[960px] rounded-xl border border-line bg-surface p-6">
       <h1 className="mb-4 text-sm text-ink-2">持仓 vs 目标 · 账户{accountId}</h1>
       <CurrentOrdersButton state={orders} />
-      <HoldingsPreviewTable holdings={assets.loading || target.loading ? null : holdingPreviewRows(positions, latest?.assets.total_asset ?? 0, target.data, !!latest)}
+      {quantityPlan ? <HoldingsView positions={positions} executablePlan={quantityPlan} target={{}} equity={0} assetLabel="市值" quantityLabel="股"
+        onSelect={new URLSearchParams(location.search).has('plain') ? undefined : (value, keyboardOpened) => { setSelection({ accountId, symbol: value, keyboardOpened }) }} />
+        : <HoldingsPreviewTable holdings={assets.loading || target.loading ? null : holdingPreviewRows(positions, latest?.assets.total_asset ?? 0, target.data, !!latest)}
         observed={!!latest} currency={currency} positionValueLabel="货值"
-        onSelect={(value, keyboardOpened) => { setSelection({ accountId, symbol: value, keyboardOpened }) }} />
+        onSelect={(value, keyboardOpened) => { setSelection({ accountId, symbol: value, keyboardOpened }) }} />}
     </section>
     <CurrentOrdersDialog state={orders} accountName={`账户${accountId}`} units={units} />
     <HoldingDetailDialog symbol={symbol} restoreFocus={!!selection?.keyboardOpened} positions={positions} observed={!!latest}

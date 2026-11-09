@@ -147,10 +147,10 @@ export function HoldingsView({
         <div role="row" className="grid grid-cols-3 gap-3 border-b border-line pb-2 text-[12px] text-ink-3">
           <span role="columnheader">代码</span><span role="columnheader">当前数量</span><span role="columnheader">目标数量</span>
         </div>
-        {executablePlan.rows.map(row => <div role="row" key={row.symbol} className="grid grid-cols-3 gap-3 border-b border-line py-3 text-[13px]">
+        {executablePlan.rows.map(row => <div role="row" key={row.symbol} className="grid grid-cols-3 items-center gap-3 border-b border-line py-3 text-[13px]">
           <span role="cell">{onSelect ? <button type="button" aria-haspopup="dialog" aria-label={`查看 ${row.symbol} 持仓与目标`}
             onClick={event => onSelect(row.symbol, event.detail === 0)}
-            className="min-h-8 w-full cursor-pointer text-left hover:text-accent focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-accent">
+            className="flex min-h-8 w-full items-center cursor-pointer text-left hover:text-accent focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-accent">
             <OverflowText text={row.symbol} />
           </button> : <OverflowText text={row.symbol} />}</span>
           <span role="cell" className="num">{quantityText(row.current_quantity, quantityLabel)}</span>

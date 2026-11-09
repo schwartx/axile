@@ -11,7 +11,8 @@ import type { ChannelCapability } from '../src/types/api'
 import { useBusinessSync } from '../src/lib/api/businessStream'
 import { useLiveControl } from '../src/stores/liveControl'
 import '../src/styles/theme.css'
-useChannelCatalogStore.setState({ channels: [{ channel: 'ctp', schedule: { kind: 'cn_futures', night: null } } as ChannelCapability] })
+const stock = new URLSearchParams(location.search).get('channel') === 'gm'
+useChannelCatalogStore.setState({ channels: [{ channel: stock ? 'gm' : 'ctp', schedule: { kind: stock ? 'cn_stock' : 'cn_futures', night: null } } as ChannelCapability] })
 export function Fixture() {
   const [timerOpen, setTimerOpen] = useState(false)
   useBusinessSync()
@@ -22,7 +23,7 @@ export function Fixture() {
     <ControlWaitingSection frame={frame} operationNames={{ place_order: '下单', cancel_order: '撤单' }} />
     <ControlRecentRecords frame={frame} operationNames={{ place_order: '下单', cancel_order: '撤单' }} />
     <button type="button" onClick={() => setTimerOpen(true)}>调整自动执行</button>
-    <TimerQuickModal open={timerOpen} accountId={1} accountName="示例账户" tradeChannel="ctp" cronExpr="" onClose={() => setTimerOpen(false)} onSaved={() => {}} />
+    <TimerQuickModal open={timerOpen} accountId={1} accountName="示例账户" tradeChannel={stock ? 'gm' : 'ctp'} cronExpr="" onClose={() => setTimerOpen(false)} onSaved={() => {}} />
     <button type="button" onClick={() => { const store = useLiveControl.getState(); store.disconnect(); useLiveControl.setState({ disconnectedAt: Date.now() - 5001 }); store.expire(Date.now()) }}>模拟断连</button>
   </main>
 }

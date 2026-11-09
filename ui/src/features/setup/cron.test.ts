@@ -14,6 +14,7 @@ import {
   parseSavedTimer,
   timerSupplement,
   resolveCronList,
+  ruleFromPreset,
   timerStateToCronExpr,
   type ScheduleRule,
   type TimerIntent,
@@ -76,6 +77,25 @@ describe('compileScheduleRule · continuous', () => {
 })
 
 describe('compileScheduleRule · 时段市场', () => {
+  it('A股 30 分预设按交易时段编译，保存回显与高级规则保持一致', () => {
+    const expected = ['0 10,11,13,14 * * *', '29 11 * * *', '30 9,10,13,14 * * *']
+    const lines = buildCronList('cn_stock', ['m30'], 0, 1)
+    expect(lines).toEqual(expected)
+    const expr = lines.join(' | ')
+    expect(describeCron('cn_stock', expr)).toBe('盘中每 30 分')
+    const state = parseSavedTimer('cn_stock', expr)
+    expect(state.timerTab).toBe('quick')
+    expect(state.presetIds).toEqual(['m30'])
+    expect(timerStateToCronExpr('cn_stock', state)).toBe(expr)
+    const expanded = ruleFromPreset('cn_stock', 'm30')
+    expect(expanded.freq).toBe('m30')
+    expect(compileScheduleRule('cn_stock', expanded, 0, 1)).toEqual(expected)
+    expect(buildCronList('cn_stock', ['m30'], 4, 1).join(' | ')).not.toMatch(/\b(?:30|31|32|33) 11\b/)
+  })
+
+  it('30 分高级规则在连续市场按半小时编译', () => {
+    expect(compileScheduleRule('continuous', rule({ freq: 'm30' }), 0, 1)).toEqual(['0,30 * * * *'])
+  })
   it('A股日线 open=09:30 / close=14:50', () => {
     expect(compileScheduleRule('cn_stock', rule({ freq: 'd1', time: '09:30' }), 0, 0)).toEqual(['30 9 * * *'])
     expect(compileScheduleRule('cn_stock', rule({ freq: 'd1', time: '14:50', anchor: 'close' }), 0, 0)).toEqual(['50 14 * * *'])
