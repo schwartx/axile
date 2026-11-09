@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test'
 import type { SchedulePreview } from '../src/lib/api/accounts'
 
 type PreviewRequest = {
+  cron_expr?: string
   after: string | null
   limit: number
   scheduled_ats?: string[]
@@ -130,4 +131,125 @@ test('股票阶段开关传入预览，盘后保持禁用', async ({ page }) => 
   await expect(opening).toHaveAttribute('aria-checked', 'true')
   await expect.poll(() => mock.requests.some(request => (request as PreviewRequest & { gm_sessions?: { opening_cancelable?: { enabled: boolean } } }).gm_sessions?.opening_cancelable?.enabled === true)).toBe(true)
   await expect(page.getByRole('switch', { name: '盘后定价交易', exact: true })).toBeDisabled()
+})
+
+test('GM 触发时间在编辑页和快捷弹窗复用时间滚轮，仅允许 09:20–09:24', async ({ page }, testInfo) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.route('**/api/v1/**', route => route.abort())
+  await mockPreview(page)
+  for (const modal of [false, true]) {
+    await page.setViewportSize({ width: modal ? 520 : 1440, height: 900 })
+    await page.goto(`/e2e/${modal ? 'control' : 'timer'}.html?channel=gm`)
+    if (modal) {
+      await page.getByRole('button', { name: '调整自动执行' }).click()
+      await page.getByRole('switch', { name: '自动调仓', exact: true }).click()
+    }
+    const trigger = page.getByRole('group', { name: '早盘不可撤单阶段触发时间' })
+    await expect(trigger.getByRole('button', { name: '时', exact: true })).toBeDisabled()
+    const minute = trigger.getByRole('button', { name: '分', exact: true })
+    await expect(minute).toHaveText('20')
+    expect((await trigger.boundingBox())!.height).toBeLessThanOrEqual(34)
+    await expect(page.locator('select')).toHaveCount(0)
+    await minute.click()
+    const menu = page.getByRole('dialog', { name: '选择时刻', exact: true })
+    const hours = menu.getByRole('listbox', { name: '时', exact: true })
+    const minutes = menu.getByRole('listbox', { name: '分', exact: true })
+    await expect(hours.getByRole('option')).toHaveText(['09'])
+    await expect(minutes.getByRole('option')).toHaveText(['20', '21', '22', '23', '24'])
+    await expect(menu).toBeVisible()
+    expect((await menu.boundingBox())!.height).toBeLessThan(145)
+    if (modal) await menu.screenshot({ path: testInfo.outputPath('gm-time-wheel.png') })
+    await minutes.getByRole('option', { name: '24', exact: true }).click()
+    await expect(minute).toHaveText('24')
+    await minutes.press('ArrowDown')
+    await expect(minute).toHaveText('24')
+    await minutes.press('ArrowUp')
+    await expect(minute).toHaveText('23')
+    await minutes.hover()
+    await page.mouse.wheel(0, 36)
+    await expect(minute).toHaveText('24')
+    const dragMinutes = async (distance: number) => {
+      const box = (await minutes.boundingBox())!
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+      await page.mouse.down()
+      await page.mouse.move(box.x + box.width + 20, box.y + box.height / 2 + distance, { steps: 8 })
+      await page.mouse.up()
+    }
+    await dragMinutes(64)
+    await expect(minute).toHaveText('22')
+    await expect.poll(() => minutes.evaluate(node => node.scrollTop)).toBe(64)
+    await dragMinutes(200)
+    await expect(minute).toHaveText('20')
+    await dragMinutes(-200)
+    await expect(minute).toHaveText('24')
+    await minutes.press('Escape')
+    await expect(menu).toHaveCount(0)
+    await expect(trigger).toBeFocused()
+    await trigger.press('ArrowUp')
+    await expect(minute).toHaveText('20')
+    await trigger.press('Enter')
+    await trigger.press('Escape')
+    await expect(menu).toHaveCount(0)
+    await expect(trigger).toBeFocused()
+    if (modal) await expect(page.getByRole('dialog', { name: '调整定时任务', exact: true })).toBeVisible()
+  }
+})
+
+test('高级编辑的时间滚轮保留完整的小时和分钟范围', async ({ page }) => {
+  await mockPreview(page)
+  await page.goto('/e2e/timer.html?channel=gm')
+  const trigger = page.getByRole('group', { name: '时刻', exact: true })
+  const hour = trigger.getByRole('button', { name: '时', exact: true })
+  await expect(hour).toBeEnabled()
+  await hour.click()
+  const menu = page.getByRole('dialog', { name: '选择时刻', exact: true })
+  const hours = menu.getByRole('listbox', { name: '时', exact: true })
+  const minutes = menu.getByRole('listbox', { name: '分', exact: true })
+  await expect(hours.getByRole('option')).toHaveCount(24)
+  await expect(minutes.getByRole('option')).toHaveCount(60)
+  await hours.getByRole('option', { name: '23', exact: true }).click()
+  await minutes.getByRole('option', { name: '59', exact: true }).click()
+  await expect(hour).toHaveText('23')
+  await expect(trigger.getByRole('button', { name: '分', exact: true })).toHaveText('59')
+  const box = (await hours.boundingBox())!
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 + 72, { steps: 8 })
+  await page.mouse.up()
+  await expect(hour).toHaveText('21')
+  await hours.getByRole('option', { name: '22', exact: true }).click()
+  await expect(hour).toHaveText('22')
+  await minutes.press('Escape')
+  await expect(menu).toHaveCount(0)
+})
+
+test('A股 30 分快捷节奏在编辑页和弹窗可选，预览与保存保持半小时', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.route('**/api/v1/**', route => route.abort())
+  const mock = await mockPreview(page)
+  const expected = '0 10,11,13,14 * * * | 29 11 * * * | 30 9,10,13,14 * * *'
+  let saved: { cron_expr?: string } | null = null
+  await page.route('**/api/v1/account/1', async route => {
+    saved = route.request().postDataJSON()
+    await route.fulfill({ json: { id: 1 } })
+  })
+  for (const modal of [false, true]) {
+    mock.requests.length = 0
+    await page.setViewportSize({ width: modal ? 520 : 1440, height: 900 })
+    await page.goto(`/e2e/${modal ? 'control' : 'timer'}.html?channel=gm`)
+    if (modal) {
+      await page.getByRole('button', { name: '调整自动执行' }).click()
+      await page.getByRole('switch', { name: '自动调仓', exact: true }).click()
+    } else {
+      await page.getByText('快捷', { exact: true }).click()
+    }
+    const preset = page.getByRole('button', { name: '盘中每 30 分', exact: true })
+    await preset.click()
+    await expect(preset).toHaveAttribute('aria-pressed', 'true')
+    await expect.poll(() => mock.requests.some(request => request.cron_expr === expected)).toBe(true)
+    if (modal) {
+      await page.getByRole('button', { name: '保存', exact: true }).click()
+      await expect.poll(() => saved?.cron_expr).toBe(expected)
+    }
+  }
 })

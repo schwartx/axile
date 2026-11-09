@@ -45,45 +45,59 @@ interface MenuPos {
  * 单列数字滚轮（中间槽高亮）。
  */
 function WheelColumn({
+  compact = false,
+  min = 0,
   max,
   value,
   onChange,
   labelledBy,
 }: {
+  compact?: boolean
+  min?: number
   max: number
   value: number
   onChange: (n: number) => void
   labelledBy: string
 }) {
+  const itemHeight = compact ? 32 : ITEM_H
   const scrollerRef = useRef<HTMLDivElement>(null)
   const suppress = useRef(false)
+  const drag = useRef<{ y: number; top: number } | null>(null)
+  const dragged = useRef(false)
 
   useEffect(() => {
     const el = scrollerRef.current
-    if (!el || suppress.current) return
-    const top = value * ITEM_H
+    if (!el || drag.current) return
+    const top = (value - min) * itemHeight
     if (Math.abs(el.scrollTop - top) > 1) el.scrollTop = top
-  }, [value])
+  }, [value, min, itemHeight])
 
   const settle = () => {
     const el = scrollerRef.current
     if (!el) return
-    const idx = Math.max(0, Math.min(max, Math.round(el.scrollTop / ITEM_H)))
+    const idx = Math.max(min, Math.min(max, min + Math.round(el.scrollTop / itemHeight)))
     suppress.current = true
-    el.scrollTo({ top: idx * ITEM_H, behavior: 'smooth' })
+    el.scrollTo({ top: (idx - min) * itemHeight, behavior: 'smooth' })
     if (idx !== value) onChange(idx)
     window.setTimeout(() => {
       suppress.current = false
     }, 120)
   }
 
-  const pad = Math.floor(VISIBLE / 2)
+  const visible = compact ? 3 : VISIBLE
+  const pad = Math.floor(visible / 2)
+  const finishDrag = () => {
+    if (!drag.current) return
+    drag.current = null
+    settle()
+  }
 
   return (
-    <div className="relative w-[64px]">
+    <div className={`relative ${compact ? 'w-12' : 'w-[64px]'}`}>
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-x-0.5 top-1/2 z-[1] h-9 -translate-y-1/2 rounded-[9px] bg-accent/15 shadow-[inset_0_0_0_1px_var(--color-accent)]"
+        style={{ height: itemHeight }}
+        className="pointer-events-none absolute inset-x-0.5 top-1/2 -translate-y-1/2 rounded-[9px] bg-ink-1"
       />
       <div
         ref={scrollerRef}
@@ -91,34 +105,61 @@ function WheelColumn({
         aria-labelledby={labelledBy}
         aria-activedescendant={`${labelledBy}-${value}`}
         tabIndex={0}
-        className="relative h-[180px] overflow-y-auto overscroll-contain [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        style={{ height: itemHeight * visible }}
+        className="relative cursor-grab select-none overflow-y-auto overscroll-contain active:cursor-grabbing [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        onPointerDown={(event) => {
+          dragged.current = false
+          if (event.pointerType !== 'mouse' || event.button !== 0) return
+          const target = event.target as HTMLElement
+          event.preventDefault()
+          event.currentTarget.focus({ preventScroll: true })
+          drag.current = { y: event.clientY, top: event.currentTarget.scrollTop }
+          suppress.current = false
+          target.setPointerCapture(event.pointerId)
+        }}
+        onPointerMove={(event) => {
+          if (!drag.current) return
+          const distance = drag.current.y - event.clientY
+          if (!dragged.current && Math.abs(distance) < 4) return
+          dragged.current = true
+          event.currentTarget.scrollTop = drag.current.top + distance
+        }}
+        onClickCapture={(event) => {
+          if (!dragged.current || event.detail === 0) return
+          event.preventDefault()
+          event.stopPropagation()
+        }}
+        onWheel={() => { suppress.current = false }}
         onScroll={() => {
           if (suppress.current) return
           const el = scrollerRef.current
           if (!el) return
-          const idx = Math.max(0, Math.min(max, Math.round(el.scrollTop / ITEM_H)))
+          const idx = Math.max(min, Math.min(max, min + Math.round(el.scrollTop / itemHeight)))
           if (idx !== value) onChange(idx)
         }}
         onKeyDown={(e) => {
           if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
             e.preventDefault()
-            onChange(e.key === 'ArrowUp' ? Math.max(0, value - 1) : Math.min(max, value + 1))
+            onChange(e.key === 'ArrowUp' ? Math.max(min, value - 1) : Math.min(max, value + 1))
           }
         }}
-        onPointerUp={settle}
+        onPointerUp={() => { drag.current = null; settle() }}
+        onPointerCancel={finishDrag}
+        onLostPointerCapture={finishDrag}
       >
         {Array.from({ length: pad }, (_, i) => (
-          <div key={`t-${i}`} className="h-9 shrink-0" aria-hidden />
+          <div key={`t-${i}`} style={{ height: itemHeight }} className="shrink-0" aria-hidden />
         ))}
-        {Array.from({ length: max + 1 }, (_, n) => (
+        {Array.from({ length: max - min + 1 }, (_, i) => i + min).map(n => (
           <button
             key={n}
             type="button"
             id={`${labelledBy}-${n}`}
             role="option"
             aria-selected={n === value}
-            className={`flex h-9 w-full shrink-0 cursor-pointer items-center justify-center font-mono text-[21px] font-[640] tabular-nums ${
-              n === value ? 'text-ink-1' : 'text-ink-3'
+            style={{ height: itemHeight }}
+            className={`flex w-full shrink-0 cursor-grab items-center justify-center font-mono ${compact ? 'text-[16px]' : 'text-[21px]'} font-[640] tabular-nums active:cursor-grabbing ${
+              n === value ? 'text-surface' : 'text-ink-3'
             }`}
             onClick={() => onChange(n)}
           >
@@ -126,11 +167,11 @@ function WheelColumn({
           </button>
         ))}
         {Array.from({ length: pad }, (_, i) => (
-          <div key={`b-${i}`} className="h-9 shrink-0" aria-hidden />
+          <div key={`b-${i}`} style={{ height: itemHeight }} className="shrink-0" aria-hidden />
         ))}
       </div>
-      <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-12 bg-gradient-to-b from-surface to-transparent" />
-      <div aria-hidden className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-surface to-transparent" />
+      <div aria-hidden className={`pointer-events-none absolute inset-x-0 top-0 ${compact ? 'h-6' : 'h-12'} bg-gradient-to-b from-surface to-transparent`} />
+      <div aria-hidden className={`pointer-events-none absolute inset-x-0 bottom-0 ${compact ? 'h-6' : 'h-12'} bg-gradient-to-t from-surface to-transparent`} />
     </div>
   )
 }
@@ -142,17 +183,34 @@ export function MacTimePicker({
   value,
   onChange,
   className = '',
+  min = '00:00',
+  max = '23:59',
+  ariaLabel = '时刻',
+  compact = false,
 }: {
   value: string
   onChange: (value: string) => void
   className?: string
+  min?: string
+  max?: string
+  ariaLabel?: string
+  compact?: boolean
 }): ReactElement {
   const parsed = parseHm(value)
-  const h = parsed?.h ?? 8
-  const m = parsed?.m ?? 0
+  const lower = parseHm(min) ?? { h: 0, m: 0 }
+  const upper = parseHm(max) ?? { h: 23, m: 59 }
+  const minTime = lower.h * 60 + lower.m
+  const maxTime = Math.max(minTime, upper.h * 60 + upper.m)
+  const current = Math.max(minTime, Math.min(maxTime, (parsed?.h ?? 8) * 60 + (parsed?.m ?? 0)))
+  const h = Math.floor(current / 60)
+  const m = current % 60
+  const minHour = lower.h
+  const maxHour = Math.floor(maxTime / 60)
+  const minMinute = h === minHour ? lower.m : 0
+  const maxMinute = h === maxHour ? maxTime % 60 : 59
   const empty = !parsed
 
-  const [part, setPart] = useState<Part>('h')
+  const [part, setPart] = useState<Part>(minHour === maxHour ? 'm' : 'h')
   const [open, setOpen] = useState(false)
   const [pos, setPos] = useState<MenuPos | null>(null)
   const triggerRef = useRef<HTMLDivElement>(null)
@@ -161,9 +219,10 @@ export function MacTimePicker({
 
   const commit = useCallback(
     (nh: number, nm: number) => {
-      onChange(`${pad2(nh)}:${pad2(nm)}`)
+      const total = Math.max(minTime, Math.min(maxTime, nh * 60 + nm))
+      onChange(`${pad2(Math.floor(total / 60))}:${pad2(total % 60)}`)
     },
-    [onChange],
+    [onChange, minTime, maxTime],
   )
 
   const ensureValue = () => {
@@ -172,23 +231,28 @@ export function MacTimePicker({
 
   const bump = (delta: number) => {
     ensureValue()
-    if (part === 'h') commit((h + delta + 24) % 24, m)
-    else commit(h, (m + delta + 60) % 60)
+    if (part === 'h') {
+      const count = maxHour - minHour + 1
+      commit(minHour + (h - minHour + delta + count) % count, m)
+    } else {
+      const count = maxMinute - minMinute + 1
+      commit(h, minMinute + (m - minMinute + delta + count) % count)
+    }
   }
 
   const place = useCallback(() => {
     const el = triggerRef.current
     if (!el) return
     const r = el.getBoundingClientRect()
-    const menuH = 220
-    const menuW = 160
+    const menuH = compact ? 136 : 220
+    const menuW = compact ? 128 : 160
     const spaceBelow = window.innerHeight - r.bottom
     const placement: 'down' | 'up' = spaceBelow < menuH + GAP && r.top > spaceBelow ? 'up' : 'down'
     let left = r.right - menuW
     left = Math.max(8, Math.min(left, window.innerWidth - menuW - 8))
     const top = placement === 'down' ? r.bottom + GAP : r.top - GAP - menuH
     setPos({ top, left, placement })
-  }, [])
+  }, [compact])
 
   const openMenu = (which: Part) => {
     setPart(which)
@@ -227,10 +291,10 @@ export function MacTimePicker({
     }
   }, [open])
 
-  /** 一体胶囊：当前段 accent，另一段 fill；空值两段弱化。 */
+  /** 一体胶囊：当前段反色突出，空值两段弱化。 */
   const segClass = (which: Part) => {
     if (empty && !open) return 'bg-transparent text-ink-3'
-    if (part === which) return 'bg-accent text-white'
+    if (part === which) return 'bg-ink-1 text-surface'
     return 'bg-transparent text-ink-1'
   }
 
@@ -242,7 +306,14 @@ export function MacTimePicker({
         ref={menuRef}
         role="dialog"
         aria-label="选择时刻"
-        className="select-pop-in fixed z-50 flex gap-2 rounded-[14px] border border-line bg-surface p-2.5 shadow-[0_12px_32px_rgba(0,0,0,0.18)]"
+        onKeyDown={(event) => {
+          if (event.key !== 'Escape') return
+          event.preventDefault()
+          event.stopPropagation()
+          setOpen(false)
+          triggerRef.current?.focus()
+        }}
+        className={`select-pop-in fixed z-50 flex ${compact ? 'gap-1.5 p-2' : 'gap-2 p-2.5'} rounded-[14px] border border-line bg-surface shadow-[0_12px_32px_rgba(0,0,0,0.18)]`}
         style={{ top: pos.top, left: pos.left }}
       >
         <div className="flex flex-col items-center">
@@ -250,7 +321,9 @@ export function MacTimePicker({
             时
           </span>
           <WheelColumn
-            max={23}
+            compact={compact}
+            min={minHour}
+            max={maxHour}
             value={h}
             labelledBy={`${baseId}-h`}
             onChange={(nh) => {
@@ -265,7 +338,9 @@ export function MacTimePicker({
             分
           </span>
           <WheelColumn
-            max={59}
+            compact={compact}
+            min={minMinute}
+            max={maxMinute}
             value={m}
             labelledBy={`${baseId}-m`}
             onChange={(nm) => {
@@ -275,7 +350,7 @@ export function MacTimePicker({
           />
         </div>
       </div>,
-      document.body,
+      triggerRef.current?.closest(':popover-open, dialog[open]') ?? document.body,
     )
 
   return (
@@ -283,10 +358,10 @@ export function MacTimePicker({
       <div
         ref={triggerRef}
         role="group"
-        aria-label="时刻"
+        aria-label={ariaLabel}
         aria-expanded={open}
         tabIndex={0}
-        className="inline-flex overflow-hidden rounded-[12px] bg-fill outline-none focus-visible:shadow-[0_0_0_2px_var(--color-accent)]"
+        className={`inline-flex overflow-hidden ${compact ? 'rounded-[9px]' : 'rounded-[12px]'} bg-fill outline-none focus-visible:shadow-[0_0_0_2px_var(--color-accent)]`}
         onKeyDown={(e) => {
           if (e.key === 'ArrowUp') {
             e.preventDefault()
@@ -296,7 +371,7 @@ export function MacTimePicker({
             bump(-1)
           } else if (e.key === 'ArrowLeft') {
             e.preventDefault()
-            setPart('h')
+            setPart(minHour === maxHour ? 'm' : 'h')
           } else if (e.key === 'ArrowRight') {
             e.preventDefault()
             setPart('m')
@@ -304,7 +379,9 @@ export function MacTimePicker({
             e.preventDefault()
             if (open) setOpen(false)
             else openMenu(part)
-          } else if (e.key === 'Escape') {
+          } else if (e.key === 'Escape' && open) {
+            e.preventDefault()
+            e.stopPropagation()
             setOpen(false)
           }
         }}
@@ -318,9 +395,10 @@ export function MacTimePicker({
         <button
           type="button"
           aria-label="时"
+          disabled={minHour === maxHour}
           aria-pressed={part === 'h'}
           onClick={() => openMenu('h')}
-          className={`min-w-[3.4rem] px-3.5 py-2.5 font-mono text-[29px] font-[640] leading-none tabular-nums tracking-tight transition-colors ${segClass('h')}`}
+          className={`${compact ? 'min-h-8 min-w-9 px-2.5 py-1.5 text-[14px]' : 'min-w-[3.4rem] px-3.5 py-2.5 text-[29px]'} font-mono font-[640] leading-none tabular-nums tracking-tight transition-colors ${segClass('h')}`}
         >
           {empty && !open ? '––' : pad2(h)}
         </button>
@@ -329,7 +407,7 @@ export function MacTimePicker({
           aria-label="分"
           aria-pressed={part === 'm'}
           onClick={() => openMenu('m')}
-          className={`min-w-[3.4rem] px-3.5 py-2.5 font-mono text-[29px] font-[640] leading-none tabular-nums tracking-tight transition-colors ${segClass('m')}`}
+          className={`${compact ? 'min-h-8 min-w-9 px-2.5 py-1.5 text-[14px]' : 'min-w-[3.4rem] px-3.5 py-2.5 text-[29px]'} font-mono font-[640] leading-none tabular-nums tracking-tight transition-colors ${segClass('m')}`}
         >
           {empty && !open ? '––' : pad2(m)}
         </button>

@@ -28,6 +28,7 @@ const DOW_LABELS = ['日', '一', '二', '三', '四', '五', '六'] as const
 
 const FREQ_OPTIONS: { value: CustomFreq; label: string }[] = [
   { value: 'm15', label: '15 分' },
+  { value: 'm30', label: '30 分' },
   { value: 'm60', label: '1 小时' },
   { value: 'm120', label: '2 小时' },
   { value: 'm240', label: '4 小时' },
@@ -36,6 +37,7 @@ const FREQ_OPTIONS: { value: CustomFreq; label: string }[] = [
 
 const FREQ_TITLE: Record<CustomFreq, string> = {
   m15: '每 15 分钟',
+  m30: '每 30 分钟',
   m60: '每小时',
   m120: '每 2 小时',
   m240: '每 4 小时',
