@@ -14,6 +14,7 @@ from axile.executor.algorithms.utils.order_helper import (
 )
 from axile.executor.algorithms.utils.order_tracker import ChaseConfig, OrderTracker
 from axile.executor.constants.order_status import OrderStatus
+from axile.executor.market_data_validation import DEFAULT_QUOTE_MAX_AGE_SECONDS
 from axile.executor.models.unified_account_assets import PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, UnifiedOrder
 
@@ -166,7 +167,7 @@ def test_real_algorithm_split_keeps_pricing_evidence_during_refresh(monkeypatch,
     owner = Executor()
     owner.position = 2
     if expire:
-        owner.quote.timestamp -= 4500
+        owner.quote.timestamp -= int((DEFAULT_QUOTE_MAX_AGE_SECONDS - 0.5) * 1000)
     monkeypatch.setattr(
         owner,
         "get_account_assets",

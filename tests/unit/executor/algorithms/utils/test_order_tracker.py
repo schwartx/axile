@@ -1055,16 +1055,16 @@ def test_chase_uses_post_cancel_fill_for_remaining_volume() -> None:
     assert chase[0]["details"]["chase"]["remaining_volume"] == 60.0
 
 
-@pytest.mark.parametrize("timestamp", [990_000, 1_001_000])
-def test_rest_refresh_rejects_old_or_future_snapshot(timestamp):
+@pytest.mark.parametrize("timestamp,fresh", [(990_000, False), (1_001_000, True), (1_001_001, False)])
+def test_rest_refresh_respects_snapshot_time_boundaries(timestamp, fresh):
     clock = _FixedClock(now=1000.0)
     quote = _price("SHSE.600000", 10, 11, timestamp_ms=timestamp)
     executor = _MarketDataExecutor(quote)
     tracker = OrderTracker(executor=executor, clock=clock, price_stale_after=5)
     tracker.latest_prices["SHSE.600000"] = quote
-    assert tracker._usable_price("SHSE.600000") is None
+    assert (tracker._usable_price("SHSE.600000") is not None) is fresh
     assert quote.timestamp == timestamp
-    assert tracker._usable_price("SHSE.600000") is None
+    assert (tracker._usable_price("SHSE.600000") is not None) is fresh
 
 
 def test_resident_account_does_not_poll_even_if_legacy_interval_is_configured():
