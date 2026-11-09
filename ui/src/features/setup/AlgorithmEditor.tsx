@@ -39,7 +39,11 @@ function MethodParamsStage({ method, children }: { method: string; children: Rea
 
   // 换 method：先淡出 → 换内容 → 淡入。
   useEffect(() => {
-    if (method === methodRef.current) return
+    if (method === methodRef.current) {
+      // 快速切回仍在显示的算法时，撤销尚未完成的淡出。
+      setOpaque(true)
+      return
+    }
 
     const reduced =
       typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches

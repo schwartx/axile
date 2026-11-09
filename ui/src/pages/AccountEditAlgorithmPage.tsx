@@ -19,7 +19,6 @@ import { AccountPageTitle } from '@/features/account/pageHead'
 import { useChannelDescriptor } from '@/stores/channels'
 import {
   accountConfigVtName,
-  readAccountConfigSummary,
   writeAccountConfigSummary,
 } from '@/features/account/configSummary'
 import { algorithmTransitionSlot, readAlgorithmAccountPreview, writeAlgorithmAccountPreview } from '@/features/account/algorithmNameTransition'
@@ -33,19 +32,15 @@ import { FuturesClosePolicyEditor } from '@/features/account/FuturesClosePolicyE
 import { defaultClosePolicy } from '@/features/account/futuresClosePolicy'
 import { RuntimeSyncStatus } from '@/features/account/RuntimeSyncStatus'
 import { runtimeSyncMessage, useAccountRuntimeSync } from '@/features/account/useAccountRuntimeSync'
-import { AlgorithmEditor } from '@/features/setup/AlgorithmEditor'
-import { AlgorithmScheduleEditor, EditableAlgorithm } from '@/features/account/AlgorithmScheduleEditor'
-import { algorithmScheduleDraft, algorithmScheduleValue, algorithmScheduleErrors, algorithmScheduleSummary } from '@/features/account/algorithmSchedule'
+import { AlgorithmWorkbench } from '@/features/account/AlgorithmWorkbench'
+import { algorithmScheduleDraft, algorithmScheduleValue, algorithmScheduleErrors } from '@/features/account/algorithmSchedule'
 import {
   EditError,
   EditLoading,
   EditSaveBar,
-  EditSynopsis,
-  Row,
-  Section,
   Toggle,
 } from '@/features/account/editUi'
-import type { Account, AlgorithmSlot } from '@/types/api'
+import type { Account } from '@/types/api'
 
 function norm(v: unknown): string {
   return JSON.stringify(v ?? null)
@@ -81,7 +76,6 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
   // Hero 配置带算法名 ↔ 对应选择器选中名称；首帧靠详情预览保留落点。
   const tSelf = useViewTransitionState(`/accounts/${accountId}/edit/algorithm`)
   const tDetail = useViewTransitionState(`/accounts/${accountId}`)
-  const cachedConfig = acc ? null : readAccountConfigSummary(accountId)
   useEffect(() => {
     if (acc && descriptor) {
       writeAccountConfigSummary(accountId, acc, {
@@ -105,12 +99,13 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
   const [trade, setTrade] = useState<AlgorithmRef | null>(() => algorithmRefOf(accountPreview?.algorithm))
   const [empty, setEmpty] = useState<AlgorithmRef | null>(() => algorithmRefOf(accountPreview?.empty_positions_algorithm))
   const [schedule, setSchedule] = useState(() => algorithmScheduleDraft(accountPreview?.algorithm_schedule ?? []))
-  const [scheduleError, setScheduleError] = useState<string | null>(null)
   const [closePolicy, setClosePolicy] = useState(accountPreview?.futures_close_policy ?? defaultClosePolicy())
   const [replayRecording, setReplayRecording] = useState(accountPreview?.replay_recording_enabled ?? false)
   const [saving, setSaving] = useState(false)
-  const [tradeError, setTradeError] = useState<string | null>(null)
-  const [emptyError, setEmptyError] = useState<string | null>(null)
+  const [editorErrors, setEditorErrors] = useState<Record<string, string | null>>({})
+  const setEditorError = useCallback((key: string, error: string | null) => {
+    setEditorErrors(previous => previous[key] === error ? previous : { ...previous, [key]: error })
+  }, [])
   const [saveError, setSaveError] = useState<Error | null>(null)
 
   /** 草稿重置为服务端当前算法引用；数据未就绪时返回 false（供首帧初始化门控）。 */
@@ -118,10 +113,8 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
     if (!acc || !descriptor) return false
     setTrade(structuredClone(algorithmRefOf(acc.algorithm) ?? descriptor.defaults.trade_algorithm))
     setEmpty(structuredClone(algorithmRefOf(acc.empty_positions_algorithm)))
-    setTradeError(null)
-    setEmptyError(null)
-    setSchedule(algorithmScheduleDraft(acc.algorithm_schedule ?? []))
-    setScheduleError(null)
+    setEditorErrors({})
+    setSchedule(previous => algorithmScheduleDraft(acc.algorithm_schedule ?? [], previous))
     setClosePolicy(acc.futures_close_policy ?? defaultClosePolicy())
     setReplayRecording(acc.replay_recording_enabled ?? false)
     setSaveError(null)
@@ -136,47 +129,18 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
     return <EditError error={account.error} onRetry={account.refresh} />
 
   const isReady = !(!ready || !acc || !trade || !descriptor)
-  // 「当前配置」摘要沿用 草稿 → 真源 → 缓存 的兜底链，加载期间保持内容稳定。
-  // 具名捕获现在落在选择器的算法名称；详情预览使选择器首帧就能渲染。
-  const savedTradeSum = acc ? describeAlgorithmRef(algorithmRefOf(acc.algorithm)) : null
-  const tradeSynopsis = trade
-    ? describeAlgorithmRef(trade)
-    : (savedTradeSum ?? cachedConfig?.algorithm ?? null)
-  const savedEmptySum = acc ? describeAlgorithmRef(algorithmRefOf(acc.empty_positions_algorithm)) : null
-  // 清仓草稿可合法为 null（未设置）；未就绪时走真源 / 缓存，保证摘要节点常挂、FLIP 有落点。
-  const emptySynopsis = isReady
-    ? describeAlgorithmRef(empty)
-    : (savedEmptySum ?? cachedConfig?.emptyAlgorithm ?? null)
-  // 草稿与持久配置同文时才让所点击的算法名共享；避免未保存选择飞向旧名称。
-  const tradeSame = trade == null || tradeSynopsis === savedTradeSum
-  const emptySame = !isReady || describeAlgorithmRef(empty) === savedEmptySum
+  const tradeSame = trade == null || describeAlgorithmRef(trade) === describeAlgorithmRef(algorithmRefOf(acc?.algorithm))
+  const emptySame = !isReady || describeAlgorithmRef(empty) === describeAlgorithmRef(algorithmRefOf(acc?.empty_positions_algorithm))
   const activeSlot = algorithmTransitionSlot(accountId)
   const tradeNameVt = tSelf && tDetail && activeSlot === 'trade' && tradeSame && schedule.length === 0
     ? accountConfigVtName(accountId, 'algorithm') : undefined
   const emptyNameVt = tSelf && tDetail && activeSlot === 'empty' && emptySame
     ? accountConfigVtName(accountId, 'empty') : undefined
 
-  /** 标题 + 当前配置摘要：加载与就绪两态共用（同位同节点）；下单 / 清仓都常挂。 */
-  const synopsis = tradeSynopsis != null && (
-    <EditSynopsis note={isReady ? '保存后用于后续执行，已在途任务不变。' : undefined}>
-      <div className="grid grid-cols-[3rem_minmax(0,1fr)] gap-x-3 gap-y-0.5">
-        <span className="font-normal text-ink-3">下单</span>
-        <span className="inline-block">
-          {algorithmScheduleSummary(trade ?? algorithmRefOf(acc?.algorithm), schedule.length)}
-        </span>
-        <span className="font-normal text-ink-3">清仓</span>
-        <span className="inline-block">
-          {emptySynopsis ?? '—'}
-        </span>
-      </div>
-    </EditSynopsis>
-  )
-
   if (!isReady)
     return (
-      <section className="pb-24">
+      <section className="px-4 pt-4 md:px-5">
         {title}
-        {synopsis}
         <EditLoading bare />
       </section>
     )
@@ -193,13 +157,15 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
   const recordingChanged = recordingPatch.replay_recording_enabled !== undefined
   const dirty = tradeChanged || emptyChanged || scheduleChanged || closeChanged || recordingChanged
 
-  const err = tradeError ?? emptyError ?? scheduleError ?? algorithmScheduleErrors(schedule).find(Boolean) ?? algoParamError(trade) ?? algoParamError(empty)
+  const err = ['trade', 'empty', ...schedule.map(rule => rule.key)].map(key => editorErrors[key]).find(Boolean)
+    ?? algorithmScheduleErrors(schedule).find(Boolean) ?? algoParamError(trade) ?? algoParamError(empty)
   const changes: string[] = []
   if (recordingChanged) changes.push(`执行回放录制：${replayRecording ? '开启' : '关闭'}`)
   if (closeChanged) changes.push('平仓规则已改')
   if (tradeChanged) changes.push('主交易算法已改')
   if (emptyChanged) changes.push(empty ? '清仓算法已改' : '清仓算法已清除')
   if (scheduleChanged) changes.push('交易时段已改')
+  if (err && changes.length === 0) changes.push('参数编辑尚未完成')
 
   const save = async () => {
     if (err) return toast(err)
@@ -224,8 +190,8 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
       writeAlgorithmAccountPreview(accountId, updated)
       setTrade(algorithmRefOf(updated.algorithm) ?? descriptor.defaults.trade_algorithm)
       setEmpty(algorithmRefOf(updated.empty_positions_algorithm))
-      setSchedule(algorithmScheduleDraft(updated.algorithm_schedule ?? []))
-      setScheduleError(null)
+      setSchedule(previous => algorithmScheduleDraft(updated.algorithm_schedule ?? [], previous))
+      setEditorErrors({})
       setClosePolicy(updated.futures_close_policy ?? defaultClosePolicy())
       setReplayRecording(updated.replay_recording_enabled ?? false)
       runtime.acceptSaved(updated.runtime_sync)
@@ -247,79 +213,49 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
     }
   }
 
-  const slotRow = (
-    slot: AlgorithmSlot,
-    label: string,
-    value: AlgorithmRef | null,
-    onChange: (v: AlgorithmRef | null) => void,
-  ) => (
-    <Row label={label} top span>
-      <AlgorithmEditor
-        nameVtName={slot === 'trade' ? tradeNameVt : emptyNameVt}
-        onValidationError={slot === 'trade' ? setTradeError : setEmptyError}
-        slot={slot}
-        channel={acc.trade_channel}
-        value={slot === 'trade' ? (value ?? descriptor.defaults.trade_algorithm) : value}
-        allowClear={slot === 'empty'}
-        onChange={onChange}
-      />
-    </Row>
-  )
-
   return (
-    <section>
-      {title}
-      {synopsis}
+    <section aria-label="执行算法设置" className="grid h-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] gap-y-2 px-4 pt-4 md:px-5">
+      <header>
+        {title}
+        <RuntimeSyncStatus runtime={runtime} disabled={saving} accountId={accountId} />
+      </header>
 
-      <RuntimeSyncStatus runtime={runtime} disabled={saving} accountId={accountId} />
-
-      <fieldset disabled={saving} className="min-w-0" inert={saving}>
-        {descriptor.futures_close && <Section label="平仓规则">
-          <p className="mb-3 text-sm text-ink-3">常规调仓与清仓共用，修改后用于后续执行。</p>
-          <FuturesClosePolicyEditor value={closePolicy} capability={descriptor.futures_close} onChange={(value) => { setSaveError(null); setClosePolicy(value) }} />
-        </Section>}
-
-        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1" role="group" aria-label="执行回放录制">
-          <div className="inline-flex items-center gap-1">
-            <span className="text-[12px] font-semibold tracking-wide text-ink-3">执行回放录制</span>
-            <Tooltip content="记录行情、委托和成交，方便之后回看执行过程。开启并保存后开始记录，之前的数据不会补录。">
-              <button type="button" aria-label="执行回放录制说明" className="inline-flex size-6 shrink-0 items-center justify-center rounded-chip text-ink-3 hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent">
-                <Info size={14} aria-hidden />
-              </button>
-            </Tooltip>
-          </div>
-          <div className="flex min-w-0 items-center gap-2">
-            <Toggle on={replayRecording} onClick={() => { setSaveError(null); setReplayRecording(!replayRecording) }} ariaLabel="记录执行回放" />
-            <div className="flex min-w-0 flex-wrap items-center gap-x-1">
-              {recordingChanged && <span className="text-[12px] text-ink-3">待保存</span>}
-              <ReplayRecordingStatus accountId={accountId} savedEnabled={acc.replay_recording_enabled ?? false} />
+      <fieldset disabled={saving} className="min-h-0 min-w-0 overflow-hidden" inert={saving}>
+        <AlgorithmWorkbench
+          channel={acc.trade_channel} trade={trade} empty={empty} schedule={schedule}
+          initialSlot={activeSlot} tradeNameVt={tradeNameVt} emptyNameVt={emptyNameVt}
+          onTradeChange={value => { setSaveError(null); setTrade(value) }}
+          onEmptyChange={value => { setSaveError(null); setEmpty(value) }}
+          onScheduleChange={value => { setSaveError(null); setSchedule(value) }}
+          errors={editorErrors} onValidationError={setEditorError}
+          footer={<div className="space-y-2 pb-1">
+            {descriptor.futures_close && <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 border-t border-line pt-2">
+              <span className="shrink-0 text-xs text-ink-3">平仓规则</span>
+              <FuturesClosePolicyEditor value={closePolicy} capability={descriptor.futures_close}
+                onChange={value => { setSaveError(null); setClosePolicy(value) }} />
+            </div>}
+            <div className="border-t border-line pt-2" role="group" aria-label="执行回放录制">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 flex-wrap items-center gap-1 text-sm">
+                  <span>回放录制</span>
+                  <Tooltip content="记录行情、委托和成交，方便之后回看执行过程。保存后开始记录，之前的数据不会补录。">
+                    <button type="button" aria-label="执行回放录制说明" className="inline-flex size-6 items-center justify-center rounded-chip text-ink-3 hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent">
+                      <Info size={14} aria-hidden />
+                    </button>
+                  </Tooltip>
+                  {recordingChanged && <span className="text-xs text-ink-3">待保存</span>}
+                  <ReplayRecordingStatus accountId={accountId} savedEnabled={acc.replay_recording_enabled ?? false} />
+                </div>
+                <Toggle on={replayRecording} onClick={() => { setSaveError(null); setReplayRecording(!replayRecording) }} ariaLabel="记录执行回放" />
+              </div>
             </div>
-          </div>
-        </div>
-
-        <Section label="主交易算法">
-          <div className="md:col-span-2">
-            <EditableAlgorithm label="平时使用" channel={acc.trade_channel} value={trade} nameVtName={tradeNameVt}
-              onValidationError={setTradeError} onChange={value => { setSaveError(null); setTrade(value) }} />
-            {tradeError && <p role="alert" className="text-sm text-warn">{tradeError}</p>}
-            <AlgorithmScheduleEditor channel={acc.trade_channel} defaultAlgorithm={trade} value={schedule}
-              onChange={value => { setSaveError(null); setSchedule(value) }} onValidationError={setScheduleError} />
-          </div>
-        </Section>
-        <Section label="清仓算法">
-          <p className="mb-3 text-sm text-ink-3">用于清仓执行。</p>
-          {slotRow('empty', '算法', empty, (value) => { setSaveError(null); setEmpty(value) })}
-        </Section>
+          </div>}
+        />
       </fieldset>
 
-      <EditSaveBar
-        changes={changes}
-        blocked={Boolean(err)}
-        onCancel={() => { if (!saving) resetAlgorithms() }}
-        onSave={() => void save()}
-        saving={saving}
-        error={saveError}
-      />
+      <EditSaveBar layout="inline" changes={changes} blocked={Boolean(err)}
+        onCancel={() => { if (!saving) resetAlgorithms() }} onSave={() => void save()}
+        saving={saving} error={saveError} />
     </section>
   )
 }

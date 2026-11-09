@@ -3,14 +3,14 @@ import { useLocation } from 'react-router'
 import {
   BellRing,
   Boxes,
-  ChevronDown,
-  ChevronUp,
   CircleGauge,
   Settings2,
   X,
 } from 'lucide-react'
 import { Link } from '@/components/ui/nav'
 import { OverflowText } from '@/components/ui/OverflowText'
+import { EdgeScrollHint } from '@/components/ui/EdgeScrollHint'
+import { useScrollEdges } from '@/hooks/useScrollEdges'
 import { channelLabel } from '@/features/dashboard/display'
 import { useDomainStore } from '@/stores/domain'
 import { useNavigationStore } from '@/stores/ui'
@@ -57,54 +57,6 @@ function NavSection({
   )
 }
 
-/** 跟踪滚动容器两端是否还有被裁掉的内容，用于驱动边缘渐隐提示。 */
-function useScrollEdges(ref: RefObject<HTMLElement | null>): {
-  up: boolean
-  down: boolean
-  overflowing: boolean
-  measured: boolean
-  scrollHeight: number
-  clientHeight: number
-} {
-  const [edges, setEdges] = useState({ up: false, down: false, overflowing: false, measured: false, scrollHeight: 0, clientHeight: 0 })
-  useLayoutEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const content = el.firstElementChild
-    const update = () => {
-      const remaining = el.scrollHeight - el.clientHeight - el.scrollTop
-      const next = {
-        up: el.scrollTop > 1,
-        down: remaining > 1,
-        overflowing: el.scrollHeight - el.clientHeight > 1,
-        measured: true,
-        scrollHeight: el.scrollHeight,
-        clientHeight: el.clientHeight,
-      }
-      setEdges((prev) => (
-        prev.up === next.up
-        && prev.down === next.down
-        && prev.overflowing === next.overflowing
-        && prev.measured === next.measured
-        && prev.scrollHeight === next.scrollHeight
-        && prev.clientHeight === next.clientHeight
-          ? prev
-          : next
-      ))
-    }
-    update()
-    el.addEventListener('scroll', update, { passive: true })
-    const observer = new ResizeObserver(update)
-    observer.observe(el)
-    if (content) observer.observe(content)
-    return () => {
-      el.removeEventListener('scroll', update)
-      observer.disconnect()
-    }
-  }, [ref])
-  return edges
-}
-
 type SettingsMovePhase = 'idle' | 'leaving' | 'placed' | 'entering'
 
 function GlobalSettingsNav({ phase, dense }: { phase: SettingsMovePhase; dense: boolean }) {
@@ -129,40 +81,6 @@ function GlobalSettingsNav({ phase, dense }: { phase: SettingsMovePhase; dense: 
           </div>
         </div>
       ))}
-    </div>
-  )
-}
-
-/** 溢出端的方向提示：渐隐带 + 可点击箭头，点击按接近一屏的步长朝该端滚动。 */
-function EdgeScrollHint({ edge, visible, target }: { edge: 'up' | 'down'; visible: boolean; target: RefObject<HTMLElement | null> }) {
-  const Icon = edge === 'up' ? ChevronUp : ChevronDown
-  const nudge = () => {
-    const el = target.current
-    if (!el) return
-    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    el.scrollBy({
-      top: (edge === 'up' ? -1 : 1) * el.clientHeight * 0.8,
-      behavior: reduced ? 'auto' : 'smooth',
-    })
-  }
-  return (
-    <div
-      aria-hidden={!visible}
-      className={`pointer-events-none absolute inset-x-0 z-[2] flex h-5 from-surface via-surface/80 to-transparent transition-opacity duration-200 motion-reduce:transition-none ${
-        edge === 'up' ? 'top-0 items-start bg-gradient-to-b' : 'bottom-0 items-end bg-gradient-to-t'
-      } ${visible ? 'opacity-100' : 'opacity-0'}`}
-    >
-      <button
-        type="button"
-        aria-label={edge === 'up' ? '向上滚动导航' : '向下滚动导航'}
-        tabIndex={visible ? 0 : -1}
-        onClick={nudge}
-        className={`mx-auto px-3 text-ink-3 transition-colors duration-150 hover:text-ink-1 ${
-          visible ? 'pointer-events-auto' : 'pointer-events-none'
-        }`}
-      >
-        <Icon size={14} aria-hidden />
-      </button>
     </div>
   )
 }

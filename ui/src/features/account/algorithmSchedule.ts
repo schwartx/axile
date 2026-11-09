@@ -3,9 +3,9 @@ import type { AlgorithmRef, AlgorithmTimeRule } from '@/types/api'
 
 export type AlgorithmRuleDraft = AlgorithmTimeRule & { key: string }
 
-export function algorithmScheduleDraft(rules: AlgorithmTimeRule[]): AlgorithmRuleDraft[] {
+export function algorithmScheduleDraft(rules: AlgorithmTimeRule[], previous: AlgorithmRuleDraft[] = []): AlgorithmRuleDraft[] {
   return rules.toSorted((a, b) => a.start.localeCompare(b.start))
-    .map(rule => ({ ...structuredClone(rule), key: crypto.randomUUID() }))
+    .map(rule => ({ ...structuredClone(rule), key: previous.find(item => item.start === rule.start && item.end === rule.end)?.key ?? crypto.randomUUID() }))
 }
 
 export function algorithmScheduleValue(rules: AlgorithmRuleDraft[]): AlgorithmTimeRule[] {
@@ -36,18 +36,6 @@ export function algorithmScheduleErrors(rules: AlgorithmTimeRule[]): (string | n
     }
   }
   return errors
-}
-
-export function algorithmParameterSummary(algorithm: AlgorithmRef): string {
-  const p = algorithm.params
-  const parts: string[] = []
-  if (typeof p.total_duration === 'number') parts.push(`持续 ${p.total_duration} 秒`)
-  if (typeof p.slices === 'number') parts.push(`分 ${p.slices} 次`)
-  if (typeof p.participation_rate === 'number') parts.push(`参与率 ${Number((p.participation_rate * 100).toFixed(2))}%`)
-  if (typeof p.max_wait_seconds === 'number') parts.push(`单次等待 ${p.max_wait_seconds} 秒`)
-  if (p.price_strategy === 'PASSIVE') parts.push('被动挂单')
-  if (p.price_strategy === 'ACTIVE') parts.push('主动报价')
-  return parts.join(' · ')
 }
 
 export function algorithmScheduleSummary(algorithm: AlgorithmRef | null, count: number): string {

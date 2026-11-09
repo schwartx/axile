@@ -36,17 +36,15 @@ test('录制和时段共用保存取消，提交只包含修改字段', () => {
       ['features/account/pageHead.tsx', ['AccountPageTitle']], ['features/setup/AlgorithmEditor.tsx', ['AlgorithmEditor']],
       ['features/account/FuturesClosePolicyEditor.tsx', ['FuturesClosePolicyEditor']], ['components/ui/Tooltip.tsx', ['Tooltip']],
       ['features/account/RuntimeSyncStatus.tsx', ['RuntimeSyncStatus']], ['features/replay/ReplayRecordingStatus.tsx', ['ReplayRecordingStatus']],
-      ['features/account/AlgorithmScheduleEditor.tsx', ['AlgorithmScheduleEditor', 'EditableAlgorithm']],
+      ['features/account/AlgorithmWorkbench.tsx', ['AlgorithmWorkbench']],
     ]) mock.module(ui + path, () => Object.fromEntries(names.map(name => [name, name])));
     const { AccountEditAlgorithmPage } = await import(ui + 'pages/AccountEditAlgorithmPage.tsx');
     const form = AccountEditAlgorithmPage();
     const render = () => { at = 0; return form.type(form.props) };
-    function all(node) { return Array.isArray(node) ? node.flatMap(all) : node?.props ? [node, ...all(node.props.children)] : [] }
+    function all(node) { return Array.isArray(node) ? node.flatMap(all) : node?.props ? [node, ...all(node.props.children), ...all(node.props.footer)] : [] }
     let nodes = all(render());
     const toggle = () => nodes.find(n => n.type === 'Toggle');
     const bar = () => nodes.find(n => n.type === 'EditSaveBar');
-    const recordingIndex = nodes.findIndex(n => n.props.role === 'group' && n.props['aria-label'] === '执行回放录制');
-    const before = recordingIndex >= 0 && recordingIndex < nodes.findIndex(n => n.type === 'Section' && n.props.label === '主交易算法');
     toggle().props.onClick(); nodes = all(render());
     const pending = bar().props.changes;
     bar().props.onCancel(); nodes = all(render());
@@ -57,20 +55,20 @@ test('录制和时段共用保存取消，提交只包含修改字段', () => {
     toggle().props.onClick(); nodes = all(render());
     bar().props.onSave(); await new Promise(resolve => setImmediate(resolve));
     nodes = all(render());
-    const schedule = () => nodes.find(n => n.type === 'AlgorithmScheduleEditor');
+    const schedule = () => nodes.find(n => n.type === 'AlgorithmWorkbench');
     const rule = { key: 'draft-only', start: '09:30', end: '10:00', algorithm: { method: 'TWAP', params: { slices: 4 } } };
-    schedule().props.onChange([rule]); nodes = all(render());
+    schedule().props.onScheduleChange([rule]); nodes = all(render());
     const schedulePending = bar().props.changes;
     bar().props.onCancel(); nodes = all(render());
-    const scheduleCancelled = schedule().props.value.length === 0 && bar().props.changes.length === 0;
-    schedule().props.onChange([rule]); nodes = all(render());
+    const scheduleCancelled = schedule().props.schedule.length === 0 && bar().props.changes.length === 0;
+    schedule().props.onScheduleChange([rule]); nodes = all(render());
     bar().props.onSave(); await new Promise(resolve => setImmediate(resolve)); nodes = all(render());
-    const scheduleSaved = schedule().props.value.length === 1 && bar().props.changes.length === 0;
-    console.log(JSON.stringify({ before, pending, cancelled, saved, schedulePending, scheduleCancelled, scheduleSaved, patches }));
+    const scheduleSaved = schedule().props.schedule.length === 1 && bar().props.changes.length === 0;
+    console.log(JSON.stringify({ pending, cancelled, saved, schedulePending, scheduleCancelled, scheduleSaved, patches }));
   `
   const result = spawnSync(process.execPath, ['-e', script], { cwd: new URL('../../', import.meta.url), encoding: 'utf8', timeout: 10_000 })
   if (result.status !== 0) throw Error(result.stderr || String(result.error))
-  expect(JSON.parse(result.stdout)).toEqual({ before: true, pending: ['执行回放录制：开启'], cancelled: true, saved: true,
+  expect(JSON.parse(result.stdout)).toEqual({ pending: ['执行回放录制：开启'], cancelled: true, saved: true,
     schedulePending: ['交易时段已改'], scheduleCancelled: true, scheduleSaved: true,
     patches: [{ replay_recording_enabled: true }, { replay_recording_enabled: false }, {
       algorithm_schedule: [{ start: '09:30', end: '10:00', algorithm: { method: 'TWAP', params: { slices: 4 } } }],

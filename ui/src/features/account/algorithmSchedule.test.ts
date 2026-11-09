@@ -1,9 +1,9 @@
 import { expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createElement } from 'react'
-import { EditableAlgorithm } from '@/features/account/AlgorithmScheduleEditor'
+import { AlgorithmWorkbench } from '@/features/account/AlgorithmWorkbench'
 import {
-  algorithmParameterSummary, algorithmScheduleDraft, algorithmScheduleErrors, algorithmScheduleValue, algorithmTimeLabel,
+  algorithmScheduleDraft, algorithmScheduleErrors, algorithmScheduleValue, algorithmTimeLabel,
 } from '@/features/account/algorithmSchedule'
 import type { AlgorithmTimeRule } from '@/types/api'
 
@@ -23,14 +23,19 @@ test('草稿独立于已保存配置，提交只包含 API 字段并按时间排
   draft[0].algorithm.params.slices = 6
   expect(saved[1].algorithm.params.slices).toBe(4)
   expect(algorithmScheduleValue(draft)).toEqual([{ ...saved[1], algorithm: { ...saved[1].algorithm, params: { total_duration: 120, slices: 6 } } }, saved[0]])
-  expect(algorithmParameterSummary(draft[0].algorithm)).toBe('持续 120 秒 · 分 6 次')
+  expect(algorithmScheduleDraft(algorithmScheduleValue(draft), draft)[0].key).toBe(draft[0].key)
 })
 
-test('算法折叠时仍显示摘要，隐藏参数不会进入键盘焦点', () => {
-  const html = renderToStaticMarkup(createElement(EditableAlgorithm, {
-    label: '平时使用', channel: 'ctp', value: rule().algorithm, onChange() {},
+test('工作区提供默认、时段和清仓入口，未选中的表单保留并禁止聚焦', () => {
+  const html = renderToStaticMarkup(createElement(AlgorithmWorkbench, {
+    channel: 'ctp', trade: rule().algorithm, empty: null, schedule: algorithmScheduleDraft([rule()]),
+    errors: {}, footer: null, onTradeChange() {}, onEmptyChange() {}, onScheduleChange() {}, onValidationError() {},
   }))
-  expect(html).toContain('持续 120 秒')
-  expect(html).toContain('aria-expanded="false"')
+  expect(html).toContain('编辑默认算法')
+  expect(html).toContain('编辑09:30 至 10:00')
+  expect(html).toContain('编辑清仓算法')
+  expect(html).toContain('当前算法编辑区')
+  expect(html).toContain('时段参数 1')
+  expect(html).toContain('清仓算法参数')
   expect(html).toContain('inert=""')
 })
