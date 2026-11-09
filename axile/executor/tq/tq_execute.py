@@ -28,10 +28,10 @@ from axile.executor.models.unified_input import AccountConfig, TQAccountConfig, 
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
 from axile.executor.order_submission_context import get_order_submission_context, get_order_submission_validator
+from axile.executor.order_terminal_audit import OrderTerminalAudit
 from axile.executor.session_closed import COMMON_SESSION_CLOSED, SESSION_CLOSED_MESSAGE
 from axile.executor.tq import replay
 from axile.executor.tq.converters import account_to_unified, order_to_unified, quote_to_unified, trade_to_unified
-from axile.executor.tq.order_terminal_audit import TQOrderTerminalAudit
 from axile.executor.tq.runtime import TQRuntime, snapshot_entity
 from axile.executor.tq.symbols import TQInstrument
 
@@ -198,7 +198,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
     def _initialize_connection(self, account_config: AccountConfig) -> None:
         if not isinstance(account_config, TQAccountConfig):
             raise TypeError("TQExecutor requires TQAccountConfig")
-        self._terminal_audit = TQOrderTerminalAudit(self.logger)
+        self._terminal_audit = OrderTerminalAudit(self.logger, TradeChannel.TQ)
         connection_monitor(self).step("api_connection", "running")
         runtime = TQRuntime(lambda: self._build_api(account_config), connection=connection_monitor(self))
         runtime.add_listener(self._on_runtime_event)
