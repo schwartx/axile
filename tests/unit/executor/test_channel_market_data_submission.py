@@ -98,7 +98,7 @@ def test_tq_queue_revalidates_before_audit_registration_and_sdk(executor, monkey
                 session.place_order, OrderDirection.BUY, OrderType.LIMIT, 1, consumed.bids[0][0], market_data=consumed
             )
             assert queued.wait(2)
-            clock.sleep(6)
+            clock.sleep(11)
             fresh = consumed.model_copy(update={"timestamp": int(clock.time() * 1000)})
             publish(fresh)
             quote_calls = api.quote_calls
@@ -146,7 +146,7 @@ def test_gm_queue_preserves_validator_error_and_excludes_callback_from_sdk(monke
             assert request.operation == "order_volume"
             assert request.kwargs["submission_validator"] is not None
             bridge._request_queue.put(request)
-            clock.sleep(6)
+            clock.sleep(11)
             publish(consumed.model_copy(update={"timestamp": int(clock.time() * 1000)}))
             gm_strategy._process_bridge_requests(None)
             with pytest.raises(MarketDataUnavailableError, match="已过期") as rejected:

@@ -79,7 +79,7 @@ def test_auction_reference_price_and_submission(monkeypatch, source, last_trade_
     monkeypatch.setattr(instance, "place_order", submit)
     monkeypatch.setattr(session, "emit_audit_event", lambda **_: True)
     assert session.place_order(OrderDirection.BUY, OrderType.LIMIT, 100, 10, market_data=quote) == "order"
-    monkeypatch.setattr(instance, "market_data_now", lambda: now.timestamp() + 6)
+    monkeypatch.setattr(instance, "market_data_now", lambda: now.timestamp() + 11)
     with pytest.raises(MarketDataUnavailableError, match="行情已过期"):
         session.place_order(OrderDirection.BUY, OrderType.LIMIT, 100, 10, market_data=quote)
     assert submit.call_count == 1
