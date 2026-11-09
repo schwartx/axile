@@ -117,6 +117,7 @@ export function HoldingsView({
   assetLabel,
   sizing = null,
   quantityLabel = '',
+  onSelect,
 }: {
   positions: Position[]
   executablePlan: AccountRebalancePlan | null
@@ -126,6 +127,7 @@ export function HoldingsView({
   assetLabel: string
   sizing?: TargetSizing | null
   quantityLabel?: string
+  onSelect?: (symbol: string, keyboardOpened: boolean) => void
 }) {
   const plan = rebalancePlanOfServer(executablePlan)
   const scale = plan.rows.reduce((max, row) => Math.max(max, Math.abs(row.cur), Math.abs(row.tgt)), 0)
@@ -146,7 +148,11 @@ export function HoldingsView({
           <span role="columnheader">代码</span><span role="columnheader">当前数量</span><span role="columnheader">目标数量</span>
         </div>
         {executablePlan.rows.map(row => <div role="row" key={row.symbol} className="grid grid-cols-3 gap-3 border-b border-line py-3 text-[13px]">
-          <OverflowText text={row.symbol} />
+          <span role="cell">{onSelect ? <button type="button" aria-haspopup="dialog" aria-label={`查看 ${row.symbol} 持仓与目标`}
+            onClick={event => onSelect(row.symbol, event.detail === 0)}
+            className="min-h-8 w-full cursor-pointer text-left hover:text-accent focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-accent">
+            <OverflowText text={row.symbol} />
+          </button> : <OverflowText text={row.symbol} />}</span>
           <span role="cell" className="num">{quantityText(row.current_quantity, quantityLabel)}</span>
           <span role="cell" className="num">{quantityText(row.target_quantity, quantityLabel)} · {row.aligned ? '到位' : '待调整'}</span>
         </div>)}

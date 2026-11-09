@@ -390,9 +390,9 @@ export function rebalancePlanOfServer(plan: AccountRebalancePlan | null): Rebala
   return {
     rows,
     off: plan?.off_symbol_count ?? 0,
-    buys: rows.filter((row) => row.side === 'buy').length,
-    sells: rows.filter((row) => row.side === 'sell').length,
-    flips: rows.filter((row) => row.action === 'flip').length,
+    buys: (plan?.rows ?? []).filter((row) => row.side === 'buy').length,
+    sells: (plan?.rows ?? []).filter((row) => row.side === 'sell').length,
+    flips: (plan?.rows ?? []).filter((row) => row.action === 'flip').length,
     netExposure: rows.reduce((sum, row) => sum + row.cur, 0),
     grossExposure: rows.reduce((sum, row) => sum + Math.abs(row.cur), 0),
     targetNet: rows.reduce((sum, row) => sum + row.tgt, 0),
