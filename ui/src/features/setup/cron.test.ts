@@ -17,6 +17,7 @@ import {
   ruleFromPreset,
   timerStateToCronExpr,
   type ScheduleRule,
+  type CustomFreq,
   type TimerIntent,
 } from './cron'
 import { timerEditorError } from './cron'
@@ -77,20 +78,39 @@ describe('compileScheduleRule · continuous', () => {
 })
 
 describe('compileScheduleRule · 时段市场', () => {
-  it('A股 30 分预设按交易时段编译，保存回显与高级规则保持一致', () => {
-    const expected = ['0 10,11,13,14 * * *', '29 11 * * *', '30 9,10,13,14 * * *']
-    const lines = buildCronList('cn_stock', ['m30'], 0, 1)
+  it.each([
+    ['m15', 15, ['0 10,11,13,14 * * *', '15 10,11,13,14 * * *', '30 9,10,13,14 * * *', '45 9,10,13,14 * * *'],
+      ['09:30', '09:45', '10:00', '10:15', '10:30', '10:45', '11:00', '11:15', '13:00', '13:15', '13:30', '13:45', '14:00', '14:15', '14:30', '14:45']],
+    ['m30', 30, ['0 10,11,13,14 * * *', '30 9,10,13,14 * * *'],
+      ['09:30', '10:00', '10:30', '11:00', '13:00', '13:30', '14:00', '14:30']],
+    ['m60', 60, ['0 13,14 * * *', '30 9,10 * * *'],
+      ['09:30', '10:30', '13:00', '14:00']],
+  ] satisfies [CustomFreq, number, string[], string[]][])('A股 %s 从各段开盘起算，不补临收点，保存回显与高级规则一致', (preset, minutes, expected, times) => {
+    const lines = buildCronList('cn_stock', [preset], 0, 1)
     expect(lines).toEqual(expected)
     const expr = lines.join(' | ')
-    expect(describeCron('cn_stock', expr)).toBe('盘中每 30 分')
+    expect(describeCron('cn_stock', expr)).toBe(`盘中每 ${minutes} 分`)
     const state = parseSavedTimer('cn_stock', expr)
     expect(state.timerTab).toBe('quick')
-    expect(state.presetIds).toEqual(['m30'])
+    expect(state.presetIds).toEqual([preset])
     expect(timerStateToCronExpr('cn_stock', state)).toBe(expr)
-    const expanded = ruleFromPreset('cn_stock', 'm30')
-    expect(expanded.freq).toBe('m30')
+    const expanded = ruleFromPreset('cn_stock', preset)
+    expect(expanded.freq).toBe(preset)
     expect(compileScheduleRule('cn_stock', expanded, 0, 1)).toEqual(expected)
-    expect(buildCronList('cn_stock', ['m30'], 4, 1).join(' | ')).not.toMatch(/\b(?:30|31|32|33) 11\b/)
+    setSystemTime(new Date(2026, 10, 9, 9, 0))
+    try {
+      expect(nextFires(lines, times.length + 1).map(time => time.toTimeString().slice(0, 5))).toEqual([...times, '09:30'])
+    } finally {
+      setSystemTime()
+    }
+  })
+
+  it('旧 A股节奏原样回填，不静默删除已保存的 11:29', () => {
+    const expr = '0 13,14 * * * | 29 11 * * * | 30 9,10 * * *'
+    const state = parseSavedTimer('cn_stock', expr)
+    expect(state.timerTab).toBe('custom')
+    expect(timerStateToCronExpr('cn_stock', state)).toBe(expr)
+    expect(describeCron('cn_stock', expr)).toBeNull()
   })
 
   it('30 分高级规则在连续市场按半小时编译', () => {
@@ -109,10 +129,9 @@ describe('compileScheduleRule · 时段市场', () => {
     expect(compileScheduleRule('cn_stock', rule({ freq: 'm240', anchor: 'close' }), 0, 0)).toEqual(['50 14 * * *'])
   })
 
-  it('A股 m120 开盘打一枪，收盘钳到可报单最后一分钟', () => {
+  it('A股 m120 同样只保留各段开盘，不补临收点', () => {
     expect(compileScheduleRule('cn_stock', rule({ freq: 'm120' }), 0, 0)).toEqual([
       '0 13 * * *',
-      '29 11 * * *',
       '30 9 * * *',
     ])
   })
@@ -230,16 +249,20 @@ describe('buildCronList · 补发放大偏移', () => {
   })
 
   it('A股 15 分补发不走进午休', () => {
-    const expr = buildCronList('cn_stock', ['m15'], 4, 1).join(' | ')
-    expect(expr).toContain('29 11')
+    const lines = buildCronList('cn_stock', ['m15'], 4, 1)
+    const expr = lines.join(' | ')
+    expect(lines).toContain('19 10,11,13,14 * * *')
+    expect(expr).not.toContain('29 11')
     expect(expr).not.toContain('30 11')
     expect(expr).not.toContain('31 11')
     expect(expr).not.toContain('0 15')
   })
 
-  it('期货 15 分下午从 13:00 开盘打一枪', () => {
-    const lines = buildCronList('cn_futures', ['m15'], 0, 0)
-    expect(lines.some((line) => line.startsWith('0 ') && /\b13\b/.test(line))).toBe(true)
+  it('期货 15 分保留现有收盘点行为', () => {
+    expect(buildCronList('cn_futures', ['m15'], 0, 0)).toEqual([
+      '0 9,10,11,13,14,15 * * *', '15 9,10,11,13,14 * * *', '29 11 * * *',
+      '30 9,10,13,14 * * *', '45 9,10,13,14 * * *',
+    ])
   })
 })
 
