@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -20,6 +21,7 @@ from openctp_ctp import thosttraderapi as td
 
 from axile.channels.cn_futures import canonicalize_cn_futures_symbol, czce_is_option_instrument
 from axile.common.trade_channel import TradeChannel
+from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
 from axile.executor.abstract_executor.base import AbstractExecutor
 from axile.executor.account_control.decorators import run_controlled_call
 from axile.executor.account_control.exceptions import AccountControlBlockedError
@@ -92,7 +94,7 @@ from axile.executor.execution_engine import ExecutionEngine
 from axile.executor.futures_order_intent import is_close_intent, single_close_offset
 from axile.executor.instrument_catalog import catalog_deadline, catalog_remaining
 from axile.executor.instrument_catalog_records import Instrument, InstrumentRecord, from_ctp
-from axile.executor.market_data_validation import QUOTE_FUTURE_TOLERANCE_SECONDS
+from axile.executor.market_data_validation import QUOTE_FUTURE_TOLERANCE_SECONDS, MarketDataUnavailableError
 from axile.executor.models.execution_result import AlgorithmResult, ExecutionStatus, TargetSizingDecision
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_callback import (
@@ -106,7 +108,7 @@ from axile.executor.order_insert_rejects import (
     rejected_order_update,
     resolve_insert_reject_order_id,
 )
-from axile.executor.order_submission_context import validate_order_submission
+from axile.executor.order_submission_context import get_order_submission_context, validate_order_submission
 from axile.executor.order_volume_limits import (
     effective_max_order_volume,
     ensure_order_volume_allowed,
@@ -224,6 +226,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         self._catalog_progress_at = 0.0
         self._quotes = {}
         self._valuation_quotes = {}
+        self._valuation_snapshots = {}
         self._quote_time_logged = set()
         self._quote_rejections = {}
         self._quote_diagnostics = QuoteDiagnostics()
@@ -252,6 +255,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         self._catalog_queried = False
         self.settlement_confirmation: dict[str, object] | None = None
         self._subscriptions = set()
+        self._subscription_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ctp-subscribe")
         self._subscription_acks = set()
         self._subscription_errors = {}
         self._exchange_orders = {}
@@ -306,7 +310,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 execution_error=f"{name}请求未受理，返回码 {code}",
             )
 
-    def _call_trader_request(self, name, req, *, before_send=None) -> int:
+    def _call_trader_request(self, name, req, *, before_send=None, quote_price=None) -> int:
         """直接发送一次 TraderApi 请求，不附加账户控制或适配层重试。"""
         if hasattr(req, "InstrumentID"):
             validate_instrument(
@@ -321,10 +325,17 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             if name.startswith("ReqQry"):
                 self._catalog_checkpoint()
             if name in {"ReqOrderInsert", "ReqExecOrderInsert", "ReqOptionSelfCloseInsert"}:
-                self._require_new_order_ready(str(req.InstrumentID))
+                symbol = str(req.InstrumentID)
+                if quote_price is None:
+                    self._require_new_order_ready(symbol)
+                else:
+                    self._require_new_order_ready(symbol, require_quote=False)
                 if name == "ReqOrderInsert":
                     validate_order_submission()
-                    self._validate_order_quote(str(req.InstrumentID), req.LimitPrice, req.OrderPriceType)
+                    if quote_price is None:
+                        self._validate_order_quote(symbol, req.LimitPrice, req.OrderPriceType)
+                    else:
+                        req.LimitPrice = self._price_order_at_send(symbol, quote_price)
             elif name in {"ReqOrderAction", "ReqExecOrderAction", "ReqOptionSelfCloseAction"}:
                 self._require_session_ready()
             if before_send is not None:
@@ -1015,8 +1026,9 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             self.account_orders.invalidate(str(reason))
             self._ready = False
             self._monitoring = False
-            self._quotes.clear()
-            self._valuation_quotes.clear()
+            self._quotes = {}
+            self._valuation_quotes = {}
+            self._valuation_snapshots = {}
             self._fail_waiters(self._connection_failure)
 
     def _require_active_connection(self):
@@ -1040,7 +1052,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         ):
             raise CtpRequestError(f"CTP {symbol} 尚未收到本会话订阅的新行情")
 
-    def _require_new_order_ready(self, symbol=None):
+    def _require_new_order_ready(self, symbol=None, *, require_quote=True):
         """未归属成交只阻止新增委托，不阻止健康会话撤销已知订单。"""
         self._require_session_ready()
         runtime = self.get_active_execution_runtime()
@@ -1048,7 +1060,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             runtime.handle_termination_checkpoint(symbol)
         if self._unassociated_trades or self._ambiguous_exchange_orders:
             raise CtpRequestError("CTP 存在未归属成交或歧义订单关联，禁止新单")
-        if symbol:
+        if symbol and require_quote:
             self._require_session_ready(symbol)
 
     def _send_stage(self, stage, operation, name, req):
@@ -1217,14 +1229,13 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     @override
     def _verify_connection(self):
-        with self._lock:
-            return (
-                self._ready
-                and not self._closed
-                and not self._invalid_reason
-                and self._trader_connected
-                and self._market_connected
-            )
+        return (
+            self._ready
+            and not self._closed
+            and not self._invalid_reason
+            and self._trader_connected
+            and self._market_connected
+        )
 
     def _reconcile_session(self):
         """就绪前取得当前交易日完整查询快照，并恢复旧会话的订单关联。
@@ -1492,15 +1503,10 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 self.logger.warning("CTP 持仓行情订阅不可用: %s", exc)
         deadline = time.monotonic() + min(self._timeout, 3.0)
         while open_symbols and time.monotonic() < deadline:
-            with self._lock:
-                if all(
-                    self._fresh_valuation_quote_error(self._valuation_quotes.get(symbol)) is None
-                    for symbol in open_symbols
-                ):
-                    break
+            if all(self._fresh_valuation_quote_error(self._valuation_quote(symbol)) is None for symbol in open_symbols):
+                break
             threading.Event().wait(0.05)
-        with self._lock:
-            cached = {symbol: self._valuation_quotes.get(symbol) for symbol in symbols}
+        cached = {symbol: self._valuation_quote(symbol) for symbol in symbols}
         quotes = {}
         errors = {}
         for symbol in symbols:
@@ -1526,6 +1532,13 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             quotes[symbol] = selected
         return quotes, errors
 
+    def _valuation_quote(self, symbol):
+        tick = self._valuation_quotes.get(symbol)
+        snapshot = self._valuation_snapshots.get(symbol)
+        if tick is None or (snapshot is not None and snapshot.timestamp >= tick.timestamp):
+            return snapshot
+        return tick
+
     def _query_valuation_snapshot(self, symbol):
         """从交易柜台查询单合约快照；失败时保留已有估值行情。"""
         validate_instrument(symbol)
@@ -1546,9 +1559,10 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 quote.extra["received_at"] = time.time()
                 quote.extra["valuation_source"] = "ctp_snapshot_last_price"
                 with self._lock:
-                    previous = self._valuation_quotes.get(symbol)
+                    self._require_active_connection()
+                    previous = self._valuation_snapshots.get(symbol)
                     if previous is None or quote.timestamp >= previous.timestamp:
-                        self._valuation_quotes[symbol] = quote
+                        self._valuation_snapshots[symbol] = quote
                 return quote
         except CtpSessionRecoveryRequired:
             raise
@@ -1588,16 +1602,21 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         self.initialize_websocket(symbols)
         deadline = clock_monotonic() + self._timeout
         while clock_monotonic() < deadline:
-            with self._lock:
+            self._require_session_ready()
+            quotes = {symbol: self._quotes.get(symbol) for symbol in symbols}
+            errors = {
+                symbol: error for symbol in symbols if (error := self._subscription_errors.get(symbol)) is not None
+            }
+            if errors:
+                raise CtpRequestError(f"行情订阅失败: {errors}")
+            if all(
+                symbol in self._subscription_acks and self._snapshot_quote_error(symbol, quote) is None
+                for symbol, quote in quotes.items()
+            ):
                 self._require_session_ready()
-                errors = {x: self._subscription_errors[x] for x in symbols if x in self._subscription_errors}
-                if errors:
-                    raise CtpRequestError(f"行情订阅失败: {errors}")
-                if all(x in self._subscription_acks and self._quote_error(x) is None for x in symbols):
-                    return {x: self._quotes[x] for x in symbols}
+                return quotes
             get_default_clock().sleep(0.05)
-        with self._lock:
-            diagnostics = {symbol: self._quote_diagnostic(symbol) for symbol in symbols}
+        diagnostics = {symbol: self._quote_diagnostic(symbol) for symbol in symbols}
         raise TimeoutError(f"行情等待超时: {symbols}; {diagnostics}")
 
     def _quote_diagnostic(self, symbol):
@@ -1641,21 +1660,63 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             now=get_default_clock().time() if now is None else now,
             trading_day=self._trading_day,
             max_age=self._config().quote_max_age_seconds,
-            tick=self.get_tick_size(symbol),
+            tick=self.get_tick_size(symbol) or 0.0,
         )
 
     def _validate_order_quote(self, symbol, price, native_price_type):
-        error = self._quote_error(symbol)
+        quote = self._quotes.get(symbol)
+        error = self._snapshot_quote_error(symbol, quote)
         if error is not None:
             raise CtpRequestError(f"CTP 行情不可用于新单: {symbol}: {error}")
-        quote = self._quotes[symbol]
+        assert quote is not None
         if native_price_type == td.THOST_FTDC_OPT_LimitPrice and not price_in_bounds(
             price,
-            tick=self.get_tick_size(symbol),
+            tick=self.get_tick_size(symbol) or 0.0,
             lower=quote.extra["lower_limit_price"],
             upper=quote.extra["upper_limit_price"],
         ):
             raise ValueError(f"限价 {price} 不符合 tick 或涨跌停")
+
+    def _price_order_at_send(self, symbol, quote_price):
+        quote = self._quotes.get(symbol)
+        self._require_pricing_quote(symbol, quote)
+        assert quote is not None
+        price = quote_price(quote)
+        if not price_in_bounds(
+            price,
+            tick=self.get_tick_size(symbol) or 0.0,
+            lower=quote.extra["lower_limit_price"],
+            upper=quote.extra["upper_limit_price"],
+        ):
+            raise MarketDataUnavailableError(symbol, "限价不符合最小变价单位或涨跌停")
+        self._require_pricing_quote(symbol, quote)
+        return price
+
+    def _require_pricing_quote(self, symbol, quote):
+        checked_at = self.market_data_now()
+        error = (
+            "行情订阅未就绪"
+            if symbol not in self._subscription_acks or symbol in self._subscription_errors
+            else self.market_data_error(quote, now=checked_at)
+        )
+        if error is None:
+            return
+        self.emit_audit_event(
+            event_type=ExecutionEventType.SYMBOL_SKIPPED,
+            status=ExecutionEventStatus.WARNING,
+            reason_family=ExecutionReasonFamily.MARKET_RULE,
+            reason_code=MarketDataUnavailableError.reason_code,
+            symbol=symbol,
+            audit_context=get_order_submission_context(),
+            details={
+                "reason": error,
+                "quote_timestamp": None if quote is None else quote.timestamp,
+                "checked_at": checked_at,
+                "source": None if quote is None else quote.extra.get("source"),
+                "time_basis": None if quote is None else quote.extra.get("time_basis", "exchange"),
+            },
+        )
+        raise MarketDataUnavailableError(symbol, error)
 
     def _new_ref(self):
         with self._lock:
@@ -1677,9 +1738,13 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         for field in ("offset_flag", "offset"):
             if field in kwargs and kwargs[field] is None:
                 raise CTPInputValidationError(f"开平标志 {field} 不能为 None")
+        quote_price = kwargs.get("quote_price")
+        if quote_price is not None and (not callable(quote_price) or order_type != OrderType.LIMIT):
+            raise CTPInputValidationError("发送点定价仅支持 CTP 限价委托")
         with self._lock:
-            self._require_new_order_ready(symbol)
-        self._ensure_instrument_symbols([symbol])
+            self._require_new_order_ready(symbol, require_quote=quote_price is None)
+        if quote_price is None:
+            self._ensure_instrument_symbols([symbol])
         if symbol not in self._instruments:
             raise ValueError(f"未知 CTP 合约: {symbol}")
         trade_rule = kwargs.get("trade_rule")
@@ -1692,9 +1757,12 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             trade_rule=trade_rule if isinstance(trade_rule, dict) else None,
         )
         native_price_type = td.THOST_FTDC_OPT_LimitPrice if order_type == OrderType.LIMIT else ""
-        self._validate_order_quote(symbol, price, native_price_type)
+        if quote_price is None:
+            self._validate_order_quote(symbol, price, native_price_type)
         raw = kwargs.get("offset_flag", kwargs.get("offset"))
         if raw is None:
+            if quote_price is not None:
+                raise CTPInputValidationError("发送点定价要求已确认开平标志")
             raw = "open"
             if is_close_intent(direction, kwargs.get("position_side")):
                 raw = single_close_offset(self.plan_close_orders(symbol, direction, volume, self.get_account_assets()))
@@ -1732,7 +1800,11 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         }
         self._order_keys[oid] = key
         try:
-            self._call_trader_request("ReqOrderInsert", r)
+            if quote_price is None:
+                self._call_trader_request("ReqOrderInsert", r)
+            else:
+                self._call_trader_request("ReqOrderInsert", r, quote_price=quote_price)
+                price = float(getattr(r, "LimitPrice"))
         except Exception:
             self._order_keys.pop(oid, None)
             raise
@@ -2082,79 +2154,77 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         return float(minimum) if isinstance(minimum, int | float) and not isinstance(minimum, bool) else 1.0
 
     def _on_quote(self, row):
-        with self._lock:
-            if self._closed or self._invalid_reason:
-                return
-            received_at = clock_now().timestamp()
-            q = quote_to_unified(row)
-            if q.symbol not in self._subscriptions:
-                return
-            quote_day = q.extra["trading_day"]
-            if quote_day != self._trading_day:
-                try:
-                    rollover = quote_day.isdigit() and date.fromisoformat(quote_day) > date.fromisoformat(
-                        self._trading_day
-                    )
-                except ValueError:
-                    rollover = False
-                if not rollover:
-                    self._quote_rejections[q.symbol] = {
-                        "reason": "trading_day_mismatch",
-                        "session_trading_day": self._trading_day,
-                        **self._quote_time_evidence(q, received_at),
-                    }
-                    return
-                self._invalidate_connection(
-                    "行情交易日变化，请重建 CTP 会话",
-                    connection_failure=True,
-                    label="交易日已变化",
-                    presentation=lambda: self._session_problem(
-                        "交易日已变化",
-                        "已订阅行情的交易日发生变化，当前会话已失效。",
-                        {
-                            "会话交易日": self._trading_day,
-                            "行情交易日": quote_day,
-                            "触发合约": q.symbol,
-                            "交易所": q.extra["exchange_id"],
-                            "行情时间": q.update_time,
-                        },
-                    ),
-                )
-                return
-            self._normalize_quote_time(q)
-            q.extra["received_at"] = received_at
-            error = self._snapshot_quote_error(q.symbol, q, now=received_at)
-            previous = self._quotes.get(q.symbol)
-            latest_allowed_time = received_at + QUOTE_FUTURE_TOLERANCE_SECONDS
-            out_of_order = previous is not None and q.timestamp <= previous.timestamp <= latest_allowed_time * 1000
-            if not hasattr(self, "_quote_diagnostics"):
-                self._quote_diagnostics = QuoteDiagnostics()
-            self._quote_diagnostics.observe(
-                q.symbol,
-                event_time_ms=q.timestamp,
-                received_at=received_at,
-                reason=error or ("out_of_order" if out_of_order else None),
-            )
-            valuation_previous = self._valuation_quotes.get(q.symbol)
-            if (
-                not out_of_order
-                and valuation_quote_error(q) is None
-                and (valuation_previous is None or q.timestamp > valuation_previous.timestamp)
-            ):
-                self._valuation_quotes[q.symbol] = q
-            if error or out_of_order:
+        quotes = self._quotes
+        valuation_quotes = self._valuation_quotes
+        if self._closed or self._invalid_reason:
+            return
+        received_at = clock_now().timestamp()
+        q = quote_to_unified(row)
+        if q.symbol not in self._subscriptions:
+            return
+        quote_day = q.extra["trading_day"]
+        if quote_day != self._trading_day:
+            try:
+                rollover = quote_day.isdigit() and date.fromisoformat(quote_day) > date.fromisoformat(self._trading_day)
+            except ValueError:
+                rollover = False
+            if not rollover:
                 self._quote_rejections[q.symbol] = {
-                    "reason": error or "out_of_order",
+                    "reason": "trading_day_mismatch",
+                    "session_trading_day": self._trading_day,
                     **self._quote_time_evidence(q, received_at),
                 }
-            if out_of_order or (
-                error
-                and previous is not None
-                and self._snapshot_quote_error(q.symbol, previous, now=received_at) is None
-            ):
                 return
-            self._quotes[q.symbol] = q
-        self._dispatch(self._price_callbacks, q)
+            self._invalidate_connection(
+                "行情交易日变化，请重建 CTP 会话",
+                connection_failure=True,
+                label="交易日已变化",
+                presentation=lambda: self._session_problem(
+                    "交易日已变化",
+                    "已订阅行情的交易日发生变化，当前会话已失效。",
+                    {
+                        "会话交易日": self._trading_day,
+                        "行情交易日": quote_day,
+                        "触发合约": q.symbol,
+                        "交易所": q.extra["exchange_id"],
+                        "行情时间": q.update_time,
+                    },
+                ),
+            )
+            return
+        self._normalize_quote_time(q)
+        q.extra["received_at"] = received_at
+        error = self._snapshot_quote_error(q.symbol, q, now=received_at)
+        previous = quotes.get(q.symbol)
+        latest_allowed_time = received_at + QUOTE_FUTURE_TOLERANCE_SECONDS
+        out_of_order = previous is not None and q.timestamp <= previous.timestamp <= latest_allowed_time * 1000
+        if not hasattr(self, "_quote_diagnostics"):
+            self._quote_diagnostics = QuoteDiagnostics()
+        self._quote_diagnostics.observe(
+            q.symbol,
+            event_time_ms=q.timestamp,
+            received_at=received_at,
+            reason=error or ("out_of_order" if out_of_order else None),
+        )
+        valuation_previous = valuation_quotes.get(q.symbol)
+        if (
+            not out_of_order
+            and valuation_quote_error(q) is None
+            and (valuation_previous is None or q.timestamp > valuation_previous.timestamp)
+        ):
+            valuation_quotes[q.symbol] = q
+        if error or out_of_order:
+            self._quote_rejections[q.symbol] = {
+                "reason": error or "out_of_order",
+                **self._quote_time_evidence(q, received_at),
+            }
+        if out_of_order or (
+            error and previous is not None and self._snapshot_quote_error(q.symbol, previous, now=received_at) is None
+        ):
+            return
+        quotes[q.symbol] = q
+        if self._quotes is quotes and not self._closed:
+            self._dispatch(self._price_callbacks, q)
 
     def _normalize_quote_time(self, quote):
         instrument = self._instruments.get(quote.symbol)
@@ -2186,19 +2256,19 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     def _market_subscribed(self, row, info):
         """保留订阅失败，禁止以缓存行情掩盖异步拒绝。"""
-        with self._lock:
-            if self._closed or self._invalid_reason:
+        quotes = self._quotes
+        if self._closed or self._invalid_reason:
+            return
+        error = self._error(info, "行情订阅")
+        symbol = str(getattr(row, "InstrumentID", ""))
+        if error:
+            if not symbol:
+                self._invalidate_connection(error)
                 return
-            error = self._error(info, "行情订阅")
-            symbol = str(getattr(row, "InstrumentID", ""))
-            if error:
-                if not symbol:
-                    self._invalidate_connection(error)
-                    return
-                self._subscription_errors[symbol] = str(error)
-                self._quotes.pop(symbol, None)
-            elif symbol in self._subscriptions:
-                self._subscription_acks.add(symbol)
+            self._subscription_errors[symbol] = str(error)
+            quotes.pop(symbol, None)
+        elif symbol in self._subscriptions:
+            self._subscription_acks.add(symbol)
 
     @override
     def initialize_websocket(self, symbols=None):
@@ -2211,22 +2281,36 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         unknown = [x for x in symbols if x not in self._instruments]
         if unknown:
             raise ValueError(f"未知 CTP 合约: {unknown}")
-        with self._lock:
+        self._require_session_ready()
+        if self._subscription_acks.issuperset(symbols):
+            return
+        try:
+            future = self._subscription_worker.submit(self._subscribe_market_data, symbols)
+        except RuntimeError:
             self._require_session_ready()
-            new_symbols = [symbol for symbol in dict.fromkeys(symbols) if symbol not in self._subscriptions]
-            if not new_symbols:
-                return
-            encoded = [symbol.encode() for symbol in new_symbols]
-            self._subscriptions.update(new_symbols)
-            try:
-                self._check(self._market_api.SubscribeMarketData(encoded, len(encoded)), "行情订阅")
-            except Exception:
-                self._subscriptions.difference_update(new_symbols)
-                self._subscription_acks.difference_update(new_symbols)
-                for symbol in new_symbols:
-                    self._quotes.pop(symbol, None)
-                raise
-            self._monitoring = True
+            raise
+        future.result()
+
+    def _subscribe_market_data(self, symbols):
+        # 原生订阅串行运行，关闭时先等工作线程退出，再释放 MdApi。
+        self._require_session_ready()
+        new_symbols = [symbol for symbol in dict.fromkeys(symbols) if symbol not in self._subscriptions]
+        if not new_symbols:
+            return
+        api = self._market_api
+        if api is None:
+            raise CtpSessionRecoveryRequired("CTP 行情 API 已释放")
+        encoded = [symbol.encode() for symbol in new_symbols]
+        self._subscriptions.update(new_symbols)
+        try:
+            self._check(api.SubscribeMarketData(encoded, len(encoded)), "行情订阅")
+        except Exception:
+            self._subscriptions.difference_update(new_symbols)
+            self._subscription_acks.difference_update(new_symbols)
+            for symbol in new_symbols:
+                self._quotes.pop(symbol, None)
+            raise
+        self._monitoring = True
 
     def _dispatch(self, callbacks, value):
         for cb in list(callbacks):
@@ -2271,13 +2355,14 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     def is_monitoring(self):
         """返回行情监控状态。"""
-        with self._lock:
-            return (
-                self._monitoring
-                and self._verify_connection()
-                and not self._subscription_errors
-                and all(symbol in self._quotes and symbol in self._subscription_acks for symbol in self._subscriptions)
+        return (
+            self._monitoring
+            and self._verify_connection()
+            and not self._subscription_errors
+            and all(
+                symbol in self._quotes and symbol in self._subscription_acks for symbol in self._subscriptions.copy()
             )
+        )
 
     def submit_option_action(self, symbol, action, volume, **kwargs):
         """提交期权指令。"""
@@ -2395,6 +2480,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             self._ready = False
         self._monitoring = False
         self._fail_waiters(ConnectionError("CTPExecutor 已关闭"))
+        self._subscription_worker.shutdown(wait=True)
         for name in ("_market_api", "_trader_api"):
             api = getattr(self, name)
             if api:

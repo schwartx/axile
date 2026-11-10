@@ -16,9 +16,11 @@ from tests.unit.executor.ctp._quote_test_support import fresh_quote
 def _executor(*, closed: bool) -> CTPExecutor:
     executor = CTPExecutor.__new__(CTPExecutor)
     executor._lock = threading.RLock()
+    executor._require_active_connection = Mock()
     executor._catalog_query_state = threading.local()
     executor._timeout = 0.01
     executor._instruments = {"rb2610": SimpleNamespace(ExchangeID="SHFE", VolumeMultiple=10)}
+    executor._valuation_snapshots = {}
     executor._valuation_quotes = {}
     executor.initialize_websocket = Mock()
     executor._get_ctp_session_block_reason = Mock(return_value="CTP.SESSION.CLOSED" if closed else None)
@@ -128,7 +130,7 @@ def test_snapshot_query_extracts_last_price_and_keeps_source() -> None:
     assert quote is not None
     assert quote.last_price == 3200
     assert quote.extra["valuation_source"] == "ctp_snapshot_last_price"
-    assert executor._valuation_quotes["rb2610"] is quote
+    assert executor._valuation_snapshots["rb2610"] is quote
     name, request = executor._query.call_args.args
     assert name == "ReqQryDepthMarketData"
     assert request.InstrumentID == "rb2610"
