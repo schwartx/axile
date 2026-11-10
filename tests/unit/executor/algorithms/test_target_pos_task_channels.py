@@ -341,8 +341,8 @@ class _FreshQuoteExecutor(_FuturesExecutor):
     def get_market_data(self):
         quote = super().get_market_data()
         quote.timestamp = int(self.clock.time() * 1000)
-        quote.bid_price += self.clock.time()
-        quote.ask_price += self.clock.time()
+        quote.bids = [(price + self.clock.time(), volume) for price, volume in quote.bids]
+        quote.asks = [(price + self.clock.time(), volume) for price, volume in quote.asks]
         self.quotes.append(quote)
         return quote
 
