@@ -123,7 +123,7 @@ const router = createBrowserRouter([
           { path: 'portfolios/:id/edit', element: <PortfolioEditPage />, handle: { fullBleed: true } },
           { path: 'settings/notification', element: <SystemEditNotificationPage />, handle: { fullBleed: true } },
           { path: 'settings', element: <SystemConfigPage /> },
-          { path: 'settings/advanced', element: <SystemConfigPage section="advanced" /> },
+          { path: 'settings/advanced', element: <SystemConfigPage section="advanced" />, handle: { fullBleed: true } },
           { path: '*', element: <Placeholder title="页面不存在" milestone="—" /> },
         ],
       },

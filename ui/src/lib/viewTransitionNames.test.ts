@@ -20,6 +20,7 @@ const ALLOWED_VT_PREFIXES = [
   'edit-shell-',
   'account-config-',
   'app-nav-selection',
+  'algorithm-directory-row',
 ] as const
 
 /** 禁止的内容 morph / 已撤共享名。 */

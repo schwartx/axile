@@ -11,9 +11,8 @@ import { usePythonDraft, usePythonRun, usePythonSave } from '@/components/ui/pyt
 import { PythonFunctionEditor } from '@/components/ui/PythonFunctionEditor'
 import { Select } from '@/components/ui/Select'
 import { SettingsSaveBar } from '@/components/ui/SettingsSaveBar'
-import { StringTagInput } from '@/components/ui/StringTagInput'
+import { AlgorithmExtensions } from '@/features/init/AlgorithmExtensions'
 import {
-  appendUniqueStrings,
   normalizeStringList,
 } from '@/components/ui/stringList'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
@@ -271,9 +270,7 @@ export function InitWizard({
   const [clearAlertKey, setClearAlertKey] = useState(false)
   const [feishuTest, setFeishuTest] = useState<TestState>(null)
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null)
-  const [directoryPickerTarget, setDirectoryPickerTarget] = useState<
-    'log' | 'algorithm' | null
-  >(null)
+  const [logDirectoryPickerOpen, setLogDirectoryPickerOpen] = useState(false)
   const draftState = usePythonDraft(draftFromInitial(initial, isEdit), (a, b) =>
     a.exe_err_feishu_key === b.exe_err_feishu_key && a.system_execution_notification_mode === b.system_execution_notification_mode && a.system_execution_notification_code === b.system_execution_notification_code)
   const { draft, setDraft, baseline: savedAlert } = draftState
@@ -387,6 +384,15 @@ export function InitWizard({
     if (step < steps.length - 1) setStep(step + 1)
     else onSave()
   }
+
+  const algorithmExtensions = (
+    <AlgorithmExtensions
+      directories={splitLines(draft.algorithm_directories)}
+      modules={splitLines(draft.algorithm_modules)}
+      onDirectoriesChange={(values) => set({ algorithm_directories: values.join('\n') })}
+      onModulesChange={(values) => set({ algorithm_modules: values.join('\n') })}
+    />
+  )
 
   return (
     <div className={`flex flex-col ${isEdit ? 'h-full' : 'h-screen'}`}>
@@ -510,31 +516,9 @@ export function InitWizard({
                         set({ axile_log_rotation: e.target.value })
                       }
                     />
-                    <label className={labelCls}>用户算法目录（每行一个）</label>
-                    <textarea
-                      className={`${inputCls} min-h-[72px] font-mono`}
-                      value={draft.algorithm_directories}
-                      onChange={(e) =>
-                        set({ algorithm_directories: e.target.value })
-                      }
-                      placeholder="./my_algorithms"
-                    />
-                    <p className="mt-1.5 text-[13px] leading-relaxed text-ink-3">
-                      指向存放自定义算法的目录，启动时扫描其中的{' '}
-                      <span className="num">.py</span> 并加载注册的算法；
-                      保存后服务重启生效，随后在账户「怎么交易」里可选。
-                    </p>
-                    <label className={labelCls}>
-                      算法模块（每行一个 · 进阶）
-                    </label>
-                    <textarea
-                      className={`${inputCls} min-h-[72px] font-mono`}
-                      value={draft.algorithm_modules}
-                      onChange={(e) =>
-                        set({ algorithm_modules: e.target.value })
-                      }
-                      placeholder="package.module"
-                    />
+                    <Section label="自定义算法">
+                      {algorithmExtensions}
+                    </Section>
                   </details>
                 </div>
               </WizardPage>
@@ -545,10 +529,6 @@ export function InitWizard({
                 <div className="text-[23px] font-[680] tracking-tight">
                   高级
                 </div>
-                <div className="mt-3 border-l-2 border-warn/60 bg-warn-tint/50 py-2 pl-3 pr-2 text-[14px] text-ink-2">
-                  保存后将重启服务，并中断正在进行中的执行。
-                </div>
-
                 <Section label="存储">
                   <Row label="数据库地址" hint="持久化" top span>
                     <div className="flex items-center gap-2">
@@ -638,7 +618,7 @@ export function InitWizard({
                       <button
                         type="button"
                         className="inline-flex flex-none cursor-pointer items-center gap-1.5 rounded-[9px] border border-line bg-surface px-4 py-2 text-[15px] text-ink-2 transition-[border-color] hover:border-ink-3/40"
-                        onClick={() => setDirectoryPickerTarget('log')}
+                        onClick={() => setLogDirectoryPickerOpen(true)}
                       >
                         <FolderOpen size={15} />
                         选择目录
@@ -650,42 +630,8 @@ export function InitWizard({
                   </Row>
                 </Section>
 
-                <Section label="算法扩展">
-                  <Row label="用户算法目录" hint="扫描 .py" top span>
-                    <StringTagInput
-                      id="advanced-algorithm-directories"
-                      value={splitLines(draft.algorithm_directories)}
-                      mode="directory"
-                      placeholder="输入目录路径…"
-                      help="Enter 确认；启动时扫描目录中的 .py 文件并加载注册算法。"
-                      onChange={(values) =>
-                        set({ algorithm_directories: values.join('\n') })
-                      }
-                      action={
-                        <button
-                          type="button"
-                          className="inline-flex flex-none cursor-pointer items-center gap-1.5 rounded-[9px] border border-line bg-surface px-3 py-1.5 text-[13px] text-ink-2"
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => setDirectoryPickerTarget('algorithm')}
-                        >
-                          <FolderOpen size={14} />
-                          浏览目录
-                        </button>
-                      }
-                    />
-                  </Row>
-                  <Row label="算法模块" hint="进阶" top span>
-                    <StringTagInput
-                      id="advanced-algorithm-modules"
-                      value={splitLines(draft.algorithm_modules)}
-                      mode="module"
-                      placeholder="package.module"
-                      help="Enter、Tab、逗号或空格确认；按 Python 模块路径加载。"
-                      onChange={(values) =>
-                        set({ algorithm_modules: values.join('\n') })
-                      }
-                    />
-                  </Row>
+                <Section label="自定义算法">
+                  {algorithmExtensions}
                 </Section>
               </div>
             )}
@@ -740,23 +686,11 @@ export function InitWizard({
         </div>
       </div>
       <DirectoryPicker
-        open={directoryPickerTarget !== null}
-        initialPath={
-          directoryPickerTarget === 'log'
-            ? draft.app_log_dir
-            : splitLines(draft.algorithm_directories).at(-1)
-        }
-        onClose={() => setDirectoryPickerTarget(null)}
+        open={logDirectoryPickerOpen}
+        initialPath={draft.app_log_dir}
+        onClose={() => setLogDirectoryPickerOpen(false)}
         onSelect={(path) => {
-          if (directoryPickerTarget === 'log') {
-            set({ app_log_dir: path })
-            return
-          }
-          const directories = appendUniqueStrings(
-            splitLines(draft.algorithm_directories),
-            [path],
-          )
-          set({ algorithm_directories: directories.join('\n') })
+          set({ app_log_dir: path })
         }}
       />
       <ConfirmModal spec={confirm} onClose={() => setConfirm(null)} />

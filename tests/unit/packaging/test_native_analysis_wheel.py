@@ -98,6 +98,7 @@ def test_wheel_probe_requires_business_freeze_queue_and_migration_entrypoints(
     )
     assert {
         "account_dashboard_context",
+        "scan_algorithm_directory",
         "account_public",
         "connection_accounts",
         "execution_read",

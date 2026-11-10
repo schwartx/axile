@@ -1,6 +1,7 @@
 """动态算法模块发现与服务启动接线测试。"""
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -104,6 +105,44 @@ def test_run_server_uses_import_string_when_reload_enabled(
     assert kwargs["reload"] is True
     assert kwargs["reload_dirs"] == [str(Path("axile")), str(algorithm_dir), str(extra_reload_dir)]
     assert server_main.os.environ[server_app.ALGORITHM_DIRECTORIES_ENV] == str(algorithm_dir)
+
+
+@pytest.mark.parametrize("reload", [False, True])
+def test_run_server_keeps_configured_algorithm_directories(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    reload: bool,
+) -> None:
+    """启动器的默认目录不能覆盖界面保存的目录，热重载也应监听这些目录。"""
+    default = tmp_path / "user_algorithms"
+    configured = tmp_path / "my algorithms"
+    for directory in (default, configured):
+        directory.mkdir()
+    monkeypatch.setattr(server_main.settings, "algorithm_directories", [str(configured), str(default)])
+    loaded: list[Path] = []
+    configs: list[dict[str, object]] = []
+
+    def fake_config(*args: object, **kwargs: object) -> SimpleNamespace:
+        configs.append(kwargs)
+        return SimpleNamespace(uds=None)
+
+    monkeypatch.setattr(server_main, "set_algorithm_directories", loaded.extend)
+    monkeypatch.setattr(server_main.uvicorn, "Config", fake_config)
+    monkeypatch.setattr(server_main.uvicorn, "Server", lambda config: SimpleNamespace(run=lambda: None))
+    monkeypatch.setattr(server_main, "setup_logging", lambda: None)
+    monkeypatch.setattr(server_main, "initialize_database", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server_main.signal, "signal", lambda *_args: None)
+    monkeypatch.setenv(server_app.ALGORITHM_DIRECTORIES_ENV, "")
+
+    server_main.run_server(host="127.0.0.1", port=8000, algorithm_dir=default, reload=reload)
+
+    assert loaded == [default, configured]
+    if reload:
+        assert configs[0]["reload_dirs"] == [str(Path("axile")), str(default), str(configured)]
+        assert server_main.os.environ[server_app.ALGORITHM_DIRECTORIES_ENV] == server_main.os.pathsep.join(
+            [str(default), str(configured)]
+        )
+        assert server_app._initial_algorithm_directories() == [default, configured]
 
 
 def test_load_configured_algorithm_modules_reraises_nested_import_error(

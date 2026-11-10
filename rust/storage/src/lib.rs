@@ -1,6 +1,7 @@
 //! Axile SQLite business operations and consistent analysis queries.
 
 pub(crate) mod accounts;
+pub(crate) mod algorithm_discovery;
 pub(crate) mod analysis;
 pub(crate) mod analysis_ops;
 pub mod analysis_queue;

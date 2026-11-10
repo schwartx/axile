@@ -1,7 +1,7 @@
 //! Python 绑定:每业务函数一个 typed 入口,进程内直调;纯透传查询返回 JSON 字节。
 
 use pyo3::create_exception;
-use pyo3::exceptions::{PyException, PyTypeError};
+use pyo3::exceptions::{PyException, PyOSError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyDict, PyFloat, PyInt, PyTuple};
 use pyo3::Py;
@@ -592,10 +592,25 @@ fn queue_claim(py: Python<'_>, path: &str, now: f64, token: &str) -> PyResult<Py
     json_to_py(py, &result.unwrap_or(Value::Null))
 }
 
+#[pyfunction]
+fn scan_algorithm_directory(py: Python<'_>, path: String) -> PyResult<Py<PyAny>> {
+    let preview = py
+        .detach(|| crate::algorithm_discovery::scan_directory(Path::new(&path)))
+        .map_err(|error| PyOSError::new_err(error.to_string()))?;
+    let value =
+        serde_json::to_value(preview).map_err(|error| PyTypeError::new_err(error.to_string()))?;
+    json_to_py(py, &value)
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("ANALYSIS_FACT_SCHEMA", 42)?;
     m.add("PUBLIC_HEAD", crate::migrations::PUBLIC_HEAD)?;
+    m.add(
+        "ALGORITHM_DISCOVERY_BACKEND",
+        crate::algorithm_discovery::block_backend(),
+    )?;
+    m.add_function(wrap_pyfunction!(scan_algorithm_directory, m)?)?;
     m.add(
         "EVIDENCE_INPUT_STAGES",
         PyTuple::new(m.py(), EVIDENCE_INPUT_STAGES)?,

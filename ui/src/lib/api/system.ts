@@ -25,7 +25,7 @@ export function getAlgorithms(signal?: AbortSignal): Promise<AlgorithmInfo[]> {
   return apiGet<AlgorithmInfo[]>('/algorithms', signal)
 }
 
-export function getDirectories(path?: string, signal?: AbortSignal): Promise<DirectoryListing> {
+export function getDirectories(path?: string, signal?: AbortSignal, algorithms = false): Promise<DirectoryListing> {
   const query = path ? `?path=${encodeURIComponent(path)}` : ''
-  return apiGet<DirectoryListing>(`/utils/directories${query}`, signal)
+  return apiGet<DirectoryListing>(`${algorithms ? '/algorithms/discover' : '/utils/directories'}${query}`, signal)
 }

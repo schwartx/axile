@@ -107,7 +107,7 @@ export function StringTagInput({
         <input
           ref={inputRef}
           id={id}
-          className="h-7 min-w-[16rem] flex-1 bg-transparent font-mono text-[14px] text-ink-1 outline-none placeholder:text-ink-3"
+          className="h-7 min-w-[min(16rem,100%)] flex-1 bg-transparent font-mono text-[14px] text-ink-1 outline-none placeholder:text-ink-3"
           value={text}
           placeholder={value.length ? '继续输入…' : placeholder}
           autoComplete="off"

@@ -10,6 +10,7 @@ Notes
 import asyncio
 import os
 import signal
+from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import parse_qsl, urlsplit
 from zoneinfo import ZoneInfo
@@ -31,6 +32,7 @@ from axile.common.default_system_notification import DEFAULT_SYSTEM_NOTIFICATION
 from axile.common.notification_config import validate_notification_config
 from axile.common.notification_function import run_notification_function
 from axile.executor.algorithms.utils.clock import clock_now, get_default_clock
+from axile.server.algorithm_discovery import require_algorithm_directory
 from axile.server.db.models.system_notification import SystemNotificationStatePublic
 from axile.server.error_notifications import build_system_notification_context, build_test_card
 from axile.server.native_store import native_operation
@@ -416,6 +418,12 @@ def init_save(payload: InitSaveRequest, background_tasks: BackgroundTasks) -> Te
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"数据库地址不合法：{exc}",
         ) from exc
+
+    for directory in payload.algorithm_directories:
+        try:
+            require_algorithm_directory(Path(directory))
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=f"算法目录不可用：{exc}") from exc
 
     values: dict[str, Any] = {
         "sqlalchemy_database_uri": database_uri,
