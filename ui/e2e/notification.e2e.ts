@@ -2,6 +2,45 @@ import { expect, test, type Page } from '@playwright/test'
 
 const template = 'def notify(context):\n    pass\n'
 const custom = 'def notify(context):\n    print(context)\n'
+
+test('高级设置滚动区铺满工作区，底部表单和保存栏可达', async ({ page }, testInfo) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.route('**/api/v1/**', route => {
+    const path = new URL(route.request().url()).pathname
+    if (path.endsWith('/init/status')) return route.fulfill({ json: {
+      configured: true,
+      values: { environment: 'local', app_log_dir: 'logs', axile_log_rotation: '1 day', algorithm_modules: [], algorithm_directories: [] },
+    } })
+    if (path.endsWith('/account/dashboard') || path.endsWith('/portfolio/')) return route.fulfill({ json: { data: [] } })
+    if (path.endsWith('/health-check/')) return route.fulfill({ json: true })
+    if (path.endsWith('/events/stream')) return route.fulfill({ contentType: 'text/event-stream', body: ': connected\n\n' })
+    return route.fulfill({ json: [] })
+  })
+  await page.goto('/settings/advanced')
+  await expect(page.getByText('存储', { exact: true })).toBeVisible()
+  const scroll = page.locator('.app-workspace .overflow-y-auto')
+  for (const dark of [false, true]) {
+    await page.evaluate(value => document.documentElement.classList.toggle('dark', value), dark)
+    for (const viewport of [{ width: 1280, height: 675 }, { width: 390, height: 700 }]) {
+      await page.setViewportSize(viewport)
+      await expect.poll(() => scroll.evaluate(element => ({
+        bottom: Math.round(element.getBoundingClientRect().bottom),
+        rightGap: Math.round(element.closest('main')!.getBoundingClientRect().left + element.closest('main')!.clientWidth - element.getBoundingClientRect().right),
+        horizontalOverflow: element.scrollWidth > element.clientWidth,
+      }))).toEqual({ bottom: viewport.height, rightGap: 0, horizontalOverflow: false })
+      await page.getByRole('button', { name: /按模块名添加/ }).click()
+      await page.getByPlaceholder('package.module').fill('my_algorithms')
+      await page.getByPlaceholder('package.module').press('Enter')
+      await expect(page.getByRole('button', { name: '保存并重启', exact: true })).toBeInViewport()
+      await scroll.evaluate(element => { element.scrollTop = element.scrollHeight })
+      await expect(page.getByRole('textbox', { name: 'Python 模块名' })).toBeInViewport()
+      await page.screenshot({ path: testInfo.outputPath(`advanced-${dark ? 'dark' : 'light'}-${viewport.width}.png`), animations: 'disabled' })
+      await page.getByRole('button', { name: '取消修改', exact: true }).click()
+      await page.getByRole('button', { name: /按模块名添加/ }).click()
+    }
+  }
+})
+
 async function setup(page: Page, status: 'none' | 'default' | 'function', configured = true) {
   let account = {
     id: 1, name: '测试账户', remark: '', trade_channel: 'ctp', market: '期货', portfolio_id: null,

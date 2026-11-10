@@ -11,7 +11,7 @@ from pathlib import Path
 import uvicorn
 from loguru import logger
 
-from axile.common.config import is_configured
+from axile.common.config import is_configured, settings
 from axile.server.app import (  # pyright: ignore[reportPrivateUsage]
     ALGORITHM_DIRECTORIES_ENV,
     _app,
@@ -212,9 +212,15 @@ def run_server(
         signal.signal(signal.SIGTERM, _force_exit)
 
     host = _validate_host(host)
-    set_algorithm_directories([algorithm_dir])
+    # 启动器传入的目录与界面保存的目录都要加载，并传给热重载子进程。
+    algorithm_directories = list(
+        dict.fromkeys(
+            [algorithm_dir, *(Path(item).expanduser() for item in settings.algorithm_directories if item.strip())]
+        )
+    )
+    set_algorithm_directories(algorithm_directories)
     if reload:
-        os.environ[ALGORITHM_DIRECTORIES_ENV] = str(algorithm_dir)
+        os.environ[ALGORITHM_DIRECTORIES_ENV] = os.pathsep.join(str(path) for path in algorithm_directories)
 
     uvicorn_config = uvicorn.Config(
         "axile.server.app:_app" if reload else _app,
@@ -224,7 +230,11 @@ def run_server(
         reload=reload,
         # SSE 不会自行结束；限时排空连接后进入 lifespan 清理。
         timeout_graceful_shutdown=5,
-        reload_dirs=[str(path) for path in _get_reload_dirs(algorithm_dir, reload_dirs)] if reload else None,
+        reload_dirs=[
+            str(path) for path in _get_reload_dirs(algorithm_dir, [*algorithm_directories, *(reload_dirs or [])])
+        ]
+        if reload
+        else None,
     )
 
     # Uvicorn 会在 Config 构造阶段准备自己的日志对象；自定义日志桥接若提前安装，
