@@ -82,7 +82,6 @@ def test_F17_target_open_splits_by_max_single_order_size() -> None:
         "rb2610",
         50,
         flat,
-        executor.get_market_data(),
         "PASSIVE",
         trade_rule={"max_single_order_size": 2},
     )
@@ -98,7 +97,9 @@ def test_target_rebalances_minimum_and_preserves_partial_submission(monkeypatch)
 
     executor = _SplitExecutor()
     monkeypatch.setattr(executor, "get_order_volume_bounds", lambda *_: (3, 10))
-    orders, submitted = _place_volume_slices(executor, OrderDirection.BUY, 12, 3200, offset_flag="0", trade_rule=None)
+    orders, submitted = _place_volume_slices(
+        executor, OrderDirection.BUY, 12, "PASSIVE", offset_flag="0", trade_rule=None
+    )
     assert [order.volume for order in orders] == [9, 3]
     assert submitted == 12
     original_place = executor.place_order
@@ -112,7 +113,9 @@ def test_target_rebalances_minimum_and_preserves_partial_submission(monkeypatch)
         return original_place(*args, **kwargs)
 
     monkeypatch.setattr(executor, "place_order", place)
-    orders, submitted = _place_volume_slices(executor, OrderDirection.BUY, 30, 3200, offset_flag="0", trade_rule=None)
+    orders, submitted = _place_volume_slices(
+        executor, OrderDirection.BUY, 30, "PASSIVE", offset_flag="0", trade_rule=None
+    )
     assert count == 2
     assert len(orders) == 1
     assert submitted == 10
@@ -133,5 +136,5 @@ def test_target_session_recovery_is_not_swallowed(monkeypatch):
     monkeypatch.setattr(executor, "place_order", fail)
     with pytest.raises(CtpSessionRecoveryRequired):
         _submit_close_leg(
-            executor, executor.symbol, OrderDirection.BUY.value, 3, 3200, "3", "start", "ok", "failed {error}"
+            executor, executor.symbol, OrderDirection.BUY.value, 3, "PASSIVE", "3", "start", "ok", "failed {error}"
         )

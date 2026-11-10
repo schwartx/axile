@@ -120,8 +120,11 @@ def test_unsupported_volume_bounds_preserve_fractional_market_order():
 
     owner = FallbackExecutor()
     owner.channel_type = TradeChannel.GM
+    owner.get_market_data = lambda: None
     session = ExecutionSession(owner=cast("Any", owner), symbol="rb2610")
     assert session.get_order_volume_bounds(OrderType.MARKET, {"max_single_order_size": 0.1}) is None
-    orders, submitted = _place_volume_slices(owner, OrderDirection.BUY, 0.4, 100, offset_flag="0", trade_rule=None)
+    orders, submitted = _place_volume_slices(
+        owner, OrderDirection.BUY, 0.4, "PASSIVE", offset_flag="0", trade_rule=None, order_type=OrderType.MARKET
+    )
     assert submitted == 0.4
     assert orders[0].volume == 0.4

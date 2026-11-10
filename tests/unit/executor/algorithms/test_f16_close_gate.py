@@ -107,7 +107,6 @@ def test_F16_failed_close_falls_through_to_open_opposite_position() -> None:
         "rb2610",
         0,
         detail,
-        executor.get_market_data(),
         "PASSIVE",
     )
     assert orders == []
@@ -124,7 +123,6 @@ def test_F16_failed_close_short_does_not_open_long() -> None:
         "rb2610",
         0,
         detail,
-        executor.get_market_data(),
         "PASSIVE",
     )
     assert orders == []
