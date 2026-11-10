@@ -5,6 +5,7 @@ import { apiSend } from '@/lib/api/client'
 import type { AlgorithmInfo } from '@/types/api'
 import { directoryBreadcrumbs } from '@/components/ui/directoryPath'
 import { OverflowText } from '@/components/ui/OverflowText'
+import { useDirectoryFilterMotion } from '@/components/ui/useDirectoryFilterMotion'
 import { useDirectoryNavigation } from '@/components/ui/useDirectoryNavigation'
 import type { DirectoryListing } from '@/types/api'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
@@ -45,6 +46,8 @@ export function DirectoryPicker({
   const [showHidden, setShowHidden] = useState(false)
   const { listing, location, setLocation, locationRevision, focusedPath, setFocusedPath,
     loading, pending, error, load, reset, cancel, requestedPath, directoriesRef, previewRef } = useDirectoryNavigation(algorithms)
+
+  const prepareFilterMotion = useDirectoryFilterMotion(directoriesRef, listing?.path, location, open)
 
   useReadRecovery(async () => { await load(requestedPath.current, true) }, open)
 
@@ -99,6 +102,24 @@ export function DirectoryPicker({
     return () => window.removeEventListener('keydown', keydown)
   }, [open, onClose, listing?.parent, load])
 
+  const typedPath = location.trim().replaceAll('\\', '/')
+  const slash = typedPath.lastIndexOf('/')
+  const typedParent = slash >= 0 ? typedPath.slice(0, slash + 1) : ''
+  const parentPath = typedParent === '/' ? '/' : typedParent.replace(/\/$/, '')
+  const currentPath = listing?.path?.replaceAll('\\', '/').replace(/\/$/, '') || '/'
+  const filtering = algorithms && typedPath !== currentPath && parentPath === currentPath
+  const fragment = filtering ? typedPath.slice(slash + 1) : ''
+
+  useEffect(() => {
+    if (!open || !algorithms || !parentPath || typedPath === currentPath || parentPath === currentPath) return
+    const previousRequest = requestedPath.current
+    const revision = locationRevision.current
+    const timer = window.setTimeout(() => {
+      if (requestedPath.current === previousRequest && locationRevision.current === revision) void load(typedParent, true)
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [open, algorithms, parentPath, currentPath, typedParent, typedPath, load, requestedPath, locationRevision])
+
   if (!open) return null
 
   const submitLocation = (event: FormEvent) => {
@@ -118,10 +139,10 @@ export function DirectoryPicker({
   ))
 
   const currentActive = !loading || requestedPath.current === listing?.path
-  const entries = listing?.entries.filter(entry => !algorithms || showHidden || !entry.name.startsWith('.')) ?? []
+  const entries = listing?.entries.filter(entry => !algorithms || showHidden || !entry.name.startsWith('.')).filter(entry => !filtering || entry.name.startsWith(fragment)) ?? []
   const hiddenCount = listing?.entries.filter(entry => entry.name.startsWith('.')).length ?? 0
   const currentName = listing?.path ? directoryBreadcrumbs(listing.path).at(-1)?.label ?? listing.path : '本机磁盘'
-  const rowStyle = 'flex h-9 w-full min-w-0 cursor-pointer items-center gap-2 rounded-[7px] border-l-2 px-2 text-left transition-colors duration-150 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-accent'
+  const rowStyle = 'flex h-9 w-full min-w-0 cursor-pointer items-center gap-2 rounded-[7px] border-l-2 px-2 text-left transition-colors duration-100 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-accent'
   const moveDirectoryFocus = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[data-directory-entry]'))
     const index = buttons.indexOf(document.activeElement as HTMLButtonElement)
@@ -154,7 +175,27 @@ export function DirectoryPicker({
           <button type="button" title="上一级" aria-label="上一级" disabled={!listing?.parent} className="grid h-10 w-10 flex-none cursor-pointer place-items-center rounded-[8px] border border-line text-ink-2 disabled:cursor-default disabled:opacity-35" onClick={() => listing?.parent && void load(listing.parent)}>
             <ChevronLeft size={17} />
           </button>
-          <input ref={locationRef} aria-label="目录路径" value={location} onChange={(event) => { locationRevision.current++; setLocation(event.target.value) }} placeholder="输入绝对路径" spellCheck={false} className="h-10 min-w-0 flex-1 rounded-[8px] border border-line bg-surface px-3 font-mono text-[14px] outline-none focus:border-accent" />
+          <input ref={locationRef} aria-label="目录路径" value={location} onChange={(event) => { if (algorithms) prepareFilterMotion(); locationRevision.current++; setLocation(event.target.value); setFocusedPath(null) }} onKeyDown={(event) => {
+            if (!algorithms || event.nativeEvent.isComposing || !filtering || !entries.length) return
+            const index = entries.findIndex(entry => entry.path === focusedPath)
+            if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+              event.preventDefault()
+              const next = entries[Math.max(0, Math.min(entries.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)))]
+              setFocusedPath(next.path)
+              directoriesRef.current?.querySelector(`[data-directory-path="${CSS.escape(next.path)}"]`)?.scrollIntoView({ block: 'nearest' })
+            } else if (event.key === 'Tab' && !event.shiftKey && (index >= 0 || entries.length === 1)) {
+              event.preventDefault()
+              event.stopPropagation()
+              const next = entries[index >= 0 ? index : 0]
+              locationRevision.current++
+              setLocation(`${next.path}/`)
+            } else if (event.key === 'Enter' && index >= 0) {
+              event.preventDefault()
+              locationRevision.current++
+              setLocation(entries[index].path)
+              void load(entries[index].path)
+            }
+          }} placeholder="输入绝对路径" spellCheck={false} className="h-10 min-w-0 flex-1 rounded-[8px] border border-line bg-surface px-3 font-mono text-[14px] outline-none focus:border-accent" />
           <button type="submit" className="h-10 flex-none cursor-pointer rounded-[8px] border border-line px-4 text-[14px] text-ink-2">前往</button>
         </form>
 
@@ -185,14 +226,14 @@ export function DirectoryPicker({
                   {currentActive && <span className="hidden flex-none text-[11px] text-ink-3 sm:inline">当前</span>}
                 </button>}
                 {entries.map(entry => {
-                  const pending = loading && requestedPath.current === entry.path
+                  const pending = (loading && requestedPath.current === entry.path) || (filtering && focusedPath === entry.path)
                   return <button key={entry.path} type="button" data-directory-entry data-directory-path={entry.path} tabIndex={focusedPath === entry.path ? 0 : -1} onFocus={() => setFocusedPath(entry.path)} aria-current={pending ? 'location' : undefined} className={`${rowStyle} mt-0.5 ${pending ? 'border-accent bg-accent-soft text-ink-1' : 'border-transparent text-ink-2 hover:bg-fill hover:text-ink-1'}`} onClick={() => void load(entry.path)}>
                     <Folder size={16} className="flex-none" aria-hidden />
                     <OverflowText className="min-w-0 flex-1 text-[13px]" text={entry.name} />
                     <ChevronRight size={13} className="flex-none text-ink-3" aria-hidden />
                   </button>
                 })}
-                {!loading && entries.length === 0 && <p className="px-2 py-4 text-[12px] leading-5 text-ink-3">{hiddenCount && !showHidden ? '没有可见子目录' : '没有子目录'}</p>}
+                {!loading && entries.length === 0 && <p className="px-2 py-4 text-[12px] leading-5 text-ink-3">{filtering && fragment ? '没有匹配的目录' : hiddenCount && !showHidden ? '没有可见子目录' : '没有子目录'}</p>}
               </div>
             </section>
             <section className="directory-browser-preview flex min-h-0 min-w-0 flex-col" aria-label="当前目录的算法" aria-busy={loading}>

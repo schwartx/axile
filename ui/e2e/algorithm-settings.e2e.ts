@@ -384,3 +384,78 @@ test('名称未知的文件先展示入口，点击后显示实际注册算法',
   await expect(preview.getByRole('button', { name: '已加载', exact: true })).toBeDisabled()
   expect(loads).toBe(1)
 })
+
+test('路径输入即时过滤并用 Tab 进入', async ({ page }) => {
+  await setup(page)
+  const requests: string[] = []
+  await page.route('**/api/v1/algorithms/discover**', route => {
+    const path = new URL(route.request().url()).searchParams.get('path') ?? '/home/ichika'
+    requests.push(path)
+    return route.fulfill({ json: { path: path.replace(/\/$/, ''), parent: '/home', entries: path === '/home/ichika' ? [{ name: 'my-algos', path: '/home/ichika/my-algos' }, { name: 'gm-sdk', path: '/home/ichika/gm-sdk' }] : [], discovery: { files: 0, algorithms: [], issues: [], can_use: false } } })
+  })
+  await page.getByRole('button', { name: '添加算法目录', exact: true }).click()
+  const input = page.getByRole('textbox', { name: '目录路径' })
+  const navigation = page.getByRole('region', { name: '目录导航' })
+  await expect(input).toHaveValue('/home/ichika')
+  const count = requests.length
+  await input.fill('/home/ichika/my')
+  await expect(navigation.getByRole('button', { name: 'my-algos', exact: true })).toBeVisible()
+  await expect(navigation.getByRole('button', { name: 'gm-sdk', exact: true })).toHaveCount(0)
+  expect(requests.length).toBe(count)
+  await input.fill('/home/ichika/zz')
+  await expect(navigation).toContainText('没有匹配的目录')
+  await input.fill('/home/ichika/my')
+  await input.press('ArrowDown')
+  await expect(input).toBeFocused()
+  await input.press('Tab')
+  await expect(input).toHaveValue('/home/ichika/my-algos/')
+  await expect.poll(() => requests.at(-1)).toBe('/home/ichika/my-algos/')
+  await expect(input).toBeFocused()
+})
+
+for (const reduced of [false, true]) {
+  test(`筛选补位动效可中断且遵循减少动态效果：${reduced}`, async ({ page }) => {
+    await setup(page)
+    await page.emulateMedia({ reducedMotion: reduced ? 'reduce' : 'no-preference' })
+    await page.route('**/api/v1/algorithms/discover**', route => route.fulfill({ json: {
+      path: '/home/ichika', parent: '/home', entries: ['aaa', 'my-one', 'bbb', 'my-two'].map(name => ({ name, path: `/home/ichika/${name}` })),
+      discovery: { files: 0, algorithms: [], issues: [], can_use: false },
+    } }))
+    await page.getByRole('button', { name: '添加算法目录', exact: true }).click()
+    const input = page.getByRole('textbox', { name: '目录路径' })
+    await expect(input).toHaveValue('/home/ichika')
+    await page.evaluate(() => {
+      const original = Element.prototype.animate
+      document.documentElement.dataset.filterAnimations = '0'
+      Element.prototype.animate = function (...args) {
+        const animation = original.apply(this, args)
+        if (this.matches('[data-directory-entry]')) {
+          animation.pause()
+          document.documentElement.dataset.filterAnimations = String(Number(document.documentElement.dataset.filterAnimations) + 1)
+        }
+        return animation
+      }
+    })
+    await input.fill('/home/ichika/my')
+    const navigation = page.getByRole('region', { name: '目录导航' })
+    await expect(navigation.getByRole('button', { name: 'aaa', exact: true })).toHaveCount(0)
+    if (!reduced) {
+      await expect.poll(() => page.evaluate(() => Number(document.documentElement.dataset.filterAnimations))).toBeGreaterThan(0)
+      const frames = await navigation.getByRole('button', { name: 'my-two', exact: true }).evaluate(element => (element.getAnimations()[0].effect as KeyframeEffect).getKeyframes())
+      expect(frames[0].transform).not.toBe('translateY(0px)')
+    }
+    await input.fill('/home/ichika/my-t')
+    await expect(input).toBeFocused()
+    await expect(navigation.getByRole('button', { name: 'my-one', exact: true })).toHaveCount(0)
+    if (reduced) expect(await page.evaluate(() => Number(document.documentElement.dataset.filterAnimations))).toBe(0)
+    await input.fill('/home/ichika/')
+    if (!reduced) {
+      const frames = await navigation.getByRole('button', { name: 'aaa', exact: true }).evaluate(element => (element.getAnimations()[0].effect as KeyframeEffect).getKeyframes())
+      expect(Number(frames[0].opacity)).toBe(0)
+      await page.emulateMedia({ reducedMotion: 'reduce' })
+      await expect.poll(() => page.evaluate(() => document.getAnimations().filter(a => a.playState === 'paused').length)).toBe(0)
+    }
+    await page.getByRole('button', { name: '关闭目录选择器', exact: true }).click()
+    expect(await page.evaluate(() => document.getAnimations().filter(a => a.playState === 'paused').length)).toBe(0)
+  })
+}
