@@ -29,7 +29,7 @@ function DirectoryAlgorithms({ directory, initial }: { directory: string; initia
   const { discovery } = preview
   return <div className="mt-1 text-[13px]">
     {discovery.algorithms.length > 0
-      ? <p className="break-words text-ink-2">{discovery.algorithms.map(algorithm => algorithm.name).join('、')}</p>
+      ? <p className="break-words text-ink-2">{discovery.algorithms.map(algorithm => algorithm.name || `${algorithm.function}（待加载）`).join('、')}</p>
       : <p className="text-warn">当前目录没有发现算法，请移除此项并选择脚本所在目录。</p>}
     {discovery.issues.map((issue, index) => <p key={index} className="break-words text-warn">{issue.file}：{issue.message}</p>)}
   </div>

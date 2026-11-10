@@ -489,6 +489,28 @@
   }
 }
 
+/* 算法目录导航：同一个目录行交接，列表与结果仅在固定槽位换内容。 */
+@media (prefers-reduced-motion: no-preference) {
+  :root:active-view-transition-type(directory-browser) { view-transition-name: none; }
+  :root:active-view-transition-type(directory-browser) .app-workspace { view-transition-name: none; }
+  :root:active-view-transition-type(directory-browser) .directory-browser-preview { view-transition-name: algorithm-directory-preview; }
+  :root:active-view-transition-type(directory-browser)::view-transition { pointer-events: none; }
+  :root:active-view-transition-type(directory-browser)::view-transition-group(*) {
+    animation-duration: 200ms;
+    animation-timing-function: cubic-bezier(.32,.72,0,1);
+    pointer-events: none;
+  }
+  :root:active-view-transition-type(directory-browser)::view-transition-group(algorithm-directory-row) { z-index: 1; }
+  :root:active-view-transition-type(directory-browser)::view-transition-old(algorithm-directory-preview) {
+    animation: app-workspace-old 150ms cubic-bezier(.4,0,.2,1) both;
+    mix-blend-mode: normal;
+  }
+  :root:active-view-transition-type(directory-browser)::view-transition-new(algorithm-directory-preview) {
+    animation: app-workspace-new 150ms cubic-bezier(.4,0,.2,1) both;
+    mix-blend-mode: normal;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   ::view-transition-group(*),
   ::view-transition-old(*),
@@ -721,6 +743,11 @@
   .ink-rewrite-in-prose,
   .ink-rewrite-out-prose {
     animation: none;
+  }
+  /* 关闭过渡时隐藏旧文案，保留占位，避免新旧文字叠在一起。 */
+  .ink-rewrite-out,
+  .ink-rewrite-out-prose {
+    visibility: hidden;
   }
 }
 

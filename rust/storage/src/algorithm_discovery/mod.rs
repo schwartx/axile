@@ -147,7 +147,7 @@ fn registration<const FAST: bool>(b: &[u8], offset: usize) -> Result<Option<(Str
     if b.get(i) != Some(&b'(') {
         return Err(());
     }
-    let (name, mut i) = literal_name::<FAST>(b, i + 1)?;
+    let (name, mut i) = literal_name::<FAST>(b, i + 1).unwrap_or_else(|_| (String::new(), i + 1));
     let mut depth = 1usize;
     while i < b.len() {
         match b[i] {
@@ -460,8 +460,8 @@ mod tests {
     fn dynamic_is_reported() {
         {
             let r = discover("@register_algorithm(make_name())\ndef f(e, i): pass\n");
-            assert!(r.algorithms.is_empty());
-            assert_eq!(r.unsupported, vec![0]);
+            assert_eq!(r.algorithms[0].name, "");
+            assert!(r.unsupported.is_empty());
         }
     }
     #[test]

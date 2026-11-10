@@ -28,22 +28,35 @@ type ViewTransitionDocument = Document & {
  *     触发状态变更的回调（通常是一个或多个 ``setState``）。
  * type : string, optional
  *     页内过渡类型，用 CSS 限定参与区域；不支持时立即更新。
+ * afterUpdate : function, optional
+ *     React 提交后、浏览器采集新快照前恢复滚动与焦点。
+ *
+ * Returns
+ * -------
+ * ViewTransition | undefined
+ *     原生过渡句柄，调用方可在后续操作到来时中止；降级时无句柄。
 
  * Notes
  * -----
  * 浏览器不支持 View Transitions API 时直接同步执行 ``update``，行为与硬切一致。
  */
-export function withViewTransition(update: () => void, type?: string): void {
+export function withViewTransition(update: () => void, type?: string, afterUpdate?: () => void): ViewTransition | undefined {
   const doc = document as ViewTransitionDocument
   if (typeof doc.startViewTransition !== 'function' || (type && (
     window.matchMedia('(prefers-reduced-motion: reduce)').matches
     || !CSS.supports(`selector(:active-view-transition-type(${type}))`)
   ))) {
-    update()
+    if (afterUpdate) {
+      flushSync(update)
+      afterUpdate()
+    } else update()
     return
   }
-  const commit = () => flushSync(update)
-  doc.startViewTransition(type ? { update: commit, types: [type] } : commit)
+  const commit = () => {
+    flushSync(update)
+    afterUpdate?.()
+  }
+  return doc.startViewTransition(type ? { update: commit, types: [type] } : commit) as ViewTransition
 }
 
 /**

@@ -157,12 +157,18 @@ def _load_configured_algorithm_directories() -> list[str]:
         load_algorithm_modules(modules)
         registered = {meta.name: meta for meta in list_algorithms_metadata()}
         for declaration in preview.discovery.algorithms:
-            meta = registered.get(declaration.name)
-            module = sys.modules.get(getattr(meta.func, "__module__", "")) if meta else None
-            origin = getattr(module, "__file__", None)
             expected = Path(preview.path) / declaration.file
-            if origin is None or Path(origin).resolve() != expected:
-                raise ValueError(f"算法 {declaration.name} 未由 {preview.path} / {declaration.file} 成功注册")
+            matches = []
+            for meta in registered.values():
+                module = sys.modules.get(getattr(meta.func, "__module__", ""))
+                origin = getattr(module, "__file__", None)
+                if origin and Path(origin).resolve() == expected and meta.func.__name__ == declaration.function:
+                    if not declaration.name or meta.name == declaration.name:
+                        matches.append(meta)
+            if not matches:
+                raise ValueError(
+                    f"算法 {declaration.name or declaration.function} 未由 {preview.path} / {declaration.file} 成功注册"
+                )
         loaded_directories.append(preview.path)
         logger.info("已加载用户算法目录: {} -> {}", preview.path, ", ".join(modules))
     return loaded_directories

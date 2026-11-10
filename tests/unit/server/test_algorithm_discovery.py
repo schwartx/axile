@@ -55,7 +55,7 @@ def test_preview_does_not_recurse_and_ignores_non_python_files(tmp_path: Path) -
     assert child["discovery"]["can_use"] is True
 
 
-@pytest.mark.parametrize("source", [b"\xff", b"@register_algorithm(name())\ndef run(e, i): pass\n"])
+@pytest.mark.parametrize("source", [b"\xff", b"@register_algorithm(\n"])
 def test_incomplete_scan_cannot_be_selected(tmp_path: Path, source: bytes) -> None:
     _script(tmp_path / "valid.py")
     (tmp_path / "bad.py").write_bytes(source)
@@ -118,3 +118,25 @@ def test_declared_name_is_not_a_successful_runtime_registration(
     monkeypatch.setattr(server_app, "_algorithm_directories", [tmp_path])
     with pytest.raises(ValueError, match="未由.*成功注册"):
         server_app._load_configured_algorithm_directories()
+
+
+def test_explicit_load_resolves_imported_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    base.list_algorithms_metadata()
+    monkeypatch.setattr(base, "_algorithm_registry", base._algorithm_registry.copy())
+    (tmp_path / "names.py").write_text("NAME = 'CROSS-FILE-NAME'\n", encoding="utf-8")
+    (tmp_path / "algo.py").write_text(
+        "from axile import register_algorithm\nfrom .names import NAME\n"
+        "@register_algorithm(NAME)\ndef run(e, i): pass\n",
+        encoding="utf-8",
+    )
+    client = _client()
+    discovery = client.get("/api/v1/algorithms/discover", params={"path": str(tmp_path)}).json()["discovery"]
+    assert discovery["can_use"]
+    assert discovery["algorithms"][0]["name"] == ""
+    assert "CROSS-FILE-NAME" not in base._algorithm_registry
+    response = client.post("/api/v1/algorithms/load", json={"directory": str(tmp_path), "file": "algo.py"})
+    assert response.status_code == 200, response.text
+    assert [item["name"] for item in response.json()] == ["CROSS-FILE-NAME"]
+    assert (
+        client.post("/api/v1/algorithms/load", json={"directory": str(tmp_path), "file": "names.py"}).status_code == 400
+    )
