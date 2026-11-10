@@ -24,6 +24,7 @@ from axile.server.api.deps import get_scheduler
 from axile.server.api.routes import account as account_routes
 from axile.server.api.routes import account_crud as account_crud_routes
 from axile.server.db.models import Account, AccountCreate
+from axile.server.execution import account_runtime_sync
 from tests.conftest import native_store_call
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._native_read_views import account_view
@@ -716,6 +717,40 @@ def test_copy_preserves_config_and_starts_without_source_history(account_client)
             == 1
         )
         assert connection.execute("SELECT count(*) FROM executerecord WHERE account_id=1").fetchone()[0] == 1
+
+
+def test_copy_and_runtime_sync_accept_legacy_algorithm_schedule(account_client, monkeypatch) -> None:
+    client, database = account_client
+    monkeypatch.setattr(
+        account_crud_routes, "reconcile_account_runtime", account_runtime_sync.reconcile_account_runtime
+    )
+    monkeypatch.setattr(account_runtime_sync, "reconcile_china_channel_account", AsyncMock(return_value=True))
+    source = _seed_account(database, is_started=False)
+    existing_copy = _seed_account(database, id=2, is_started=False, copied_from_account_id=source.id)
+    with closing(oracle_connect(database)) as connection, connection:
+        connection.execute(
+            "UPDATE account_settings SET execution=json_remove(execution,'$.algorithm_schedule') WHERE account_id=?",
+            (source.id,),
+        )
+        connection.execute(
+            "UPDATE account_settings SET execution=json_set(execution,'$.algorithm_schedule',NULL) WHERE account_id=?",
+            (existing_copy.id,),
+        )
+
+    response = client.post(f"/account/{source.id}/copy", json={"name": "新账户"})
+    assert response.status_code == 201, response.text
+    created = response.json()
+    assert created["algorithm_schedule"] == []
+    assert created["runtime_sync"]["status"] == "synchronized"
+    with closing(oracle_connect(database)) as connection:
+        assert connection.execute(
+            "SELECT json_type(execution,'$.algorithm_schedule') FROM account_settings WHERE account_id=?",
+            (created["id"],),
+        ).fetchone() == ("array",)
+
+    retried = client.post(f"/account/{existing_copy.id}/runtime-sync/retry")
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["status"] == "synchronized"
 
 
 def test_create_idempotency_replays_before_custom_validation(account_client) -> None:

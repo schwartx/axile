@@ -183,6 +183,9 @@ fn account_row(row: &Row<'_>, states: bool) -> Result<Value, AnalysisError> {
         let group: String = row.get(IDENTITY.len() + offset).map_err(sql)?;
         data.extend(object(&group)?);
     }
+    if data.get("algorithm_schedule").is_none_or(Value::is_null) {
+        data.insert("algorithm_schedule".into(), json!([]));
+    }
     normalize_schedule(&mut data)?;
     data.insert("gm_sessions".into(), data["channel_options"]["gm"].clone());
     data.entry("replay_recording_enabled")
