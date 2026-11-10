@@ -157,6 +157,9 @@ def test_init_save_writes_config_and_schedules_restart(
     monkeypatch.setattr(cfg, "CONFIG_TOML_PATH", toml_path)
     restarted: dict[str, bool] = {}
     monkeypatch.setattr(init_module, "_restart_process", lambda: restarted.setdefault("done", True))
+    algorithm_directory = tmp_path / "my_algos"
+    algorithm_directory.mkdir()
+    (algorithm_directory / "algo.py").write_text("@register_algorithm('TEST')\ndef run(e, i): pass\n", encoding="utf-8")
 
     response = client.post(
         "/api/v1/init/save",
@@ -164,7 +167,7 @@ def test_init_save_writes_config_and_schedules_restart(
             "sqlalchemy_database_uri": "sqlite+aiosqlite:///./axile.db",
             "exe_err_feishu_key": "bot-key-123",
             "algorithm_modules": ["pkg.a"],
-            "algorithm_directories": ["./my_algos"],
+            "algorithm_directories": [str(algorithm_directory)],
         },
     )
 
@@ -173,8 +176,35 @@ def test_init_save_writes_config_and_schedules_restart(
     written = toml_path.read_text(encoding="utf-8")
     assert 'exe_err_feishu_key = "bot-key-123"' in written
     assert "tushare_token" not in written
-    assert "./my_algos" in written
+    assert str(algorithm_directory) in written
     assert restarted.get("done") is True
+
+
+@pytest.mark.parametrize("kind", ["empty", "removed", "invalid-encoding"])
+def test_save_rechecks_algorithm_directory_before_writing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str
+) -> None:
+    toml_path = tmp_path / "config.toml"
+    toml_path.write_text('environment = "local"\n', encoding="utf-8")
+    monkeypatch.setattr(cfg, "CONFIG_TOML_PATH", toml_path)
+    restarted = []
+    monkeypatch.setattr(init_module, "_restart_process", lambda: restarted.append(True))
+    directory = tmp_path / "algorithms"
+    directory.mkdir()
+    script = directory / "algo.py"
+    if kind == "removed":
+        script.write_text("@register_algorithm('TEST')\ndef run(e, i): pass\n", encoding="utf-8")
+        from axile.server.algorithm_discovery import discover_directory
+
+        assert discover_directory(directory).discovery.can_use
+        script.unlink()
+    elif kind == "invalid-encoding":
+        script.write_bytes(b"\xff")
+    response = client.post("/api/v1/init/save", json={"algorithm_directories": [str(directory)]})
+    assert response.status_code == 422
+    assert "算法目录不可用" in response.json()["detail"]
+    assert toml_path.read_text(encoding="utf-8") == 'environment = "local"\n'
+    assert not restarted
 
 
 def test_advanced_save_preserves_omitted_credentials(

@@ -13,7 +13,6 @@ import { Select } from '@/components/ui/Select'
 import { SettingsSaveBar } from '@/components/ui/SettingsSaveBar'
 import { AlgorithmExtensions } from '@/features/init/AlgorithmExtensions'
 import {
-  appendUniqueStrings,
   normalizeStringList,
 } from '@/components/ui/stringList'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
@@ -271,9 +270,7 @@ export function InitWizard({
   const [clearAlertKey, setClearAlertKey] = useState(false)
   const [feishuTest, setFeishuTest] = useState<TestState>(null)
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null)
-  const [directoryPickerTarget, setDirectoryPickerTarget] = useState<
-    'log' | 'algorithm' | null
-  >(null)
+  const [logDirectoryPickerOpen, setLogDirectoryPickerOpen] = useState(false)
   const draftState = usePythonDraft(draftFromInitial(initial, isEdit), (a, b) =>
     a.exe_err_feishu_key === b.exe_err_feishu_key && a.system_execution_notification_mode === b.system_execution_notification_mode && a.system_execution_notification_code === b.system_execution_notification_code)
   const { draft, setDraft, baseline: savedAlert } = draftState
@@ -394,7 +391,6 @@ export function InitWizard({
       modules={splitLines(draft.algorithm_modules)}
       onDirectoriesChange={(values) => set({ algorithm_directories: values.join('\n') })}
       onModulesChange={(values) => set({ algorithm_modules: values.join('\n') })}
-      onBrowse={() => setDirectoryPickerTarget('algorithm')}
     />
   )
 
@@ -622,7 +618,7 @@ export function InitWizard({
                       <button
                         type="button"
                         className="inline-flex flex-none cursor-pointer items-center gap-1.5 rounded-[9px] border border-line bg-surface px-4 py-2 text-[15px] text-ink-2 transition-[border-color] hover:border-ink-3/40"
-                        onClick={() => setDirectoryPickerTarget('log')}
+                        onClick={() => setLogDirectoryPickerOpen(true)}
                       >
                         <FolderOpen size={15} />
                         选择目录
@@ -690,23 +686,11 @@ export function InitWizard({
         </div>
       </div>
       <DirectoryPicker
-        open={directoryPickerTarget !== null}
-        initialPath={
-          directoryPickerTarget === 'log'
-            ? draft.app_log_dir
-            : splitLines(draft.algorithm_directories).at(-1)
-        }
-        onClose={() => setDirectoryPickerTarget(null)}
+        open={logDirectoryPickerOpen}
+        initialPath={draft.app_log_dir}
+        onClose={() => setLogDirectoryPickerOpen(false)}
         onSelect={(path) => {
-          if (directoryPickerTarget === 'log') {
-            set({ app_log_dir: path })
-            return
-          }
-          const directories = appendUniqueStrings(
-            splitLines(draft.algorithm_directories),
-            [path],
-          )
-          set({ algorithm_directories: directories.join('\n') })
+          set({ app_log_dir: path })
         }}
       />
       <ConfirmModal spec={confirm} onClose={() => setConfirm(null)} />

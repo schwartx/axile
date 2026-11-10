@@ -19,6 +19,7 @@ ENGINE_VERSION = "equity-ledger-1"
 def ensure_native_capabilities() -> None:
     """Reject obsolete extensions before any background services start."""
     required = (
+        "scan_algorithm_directory",
         "close_database",
         "account_public",
         "connection_accounts",

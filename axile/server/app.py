@@ -5,7 +5,9 @@ import os
 import sys
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
+from hashlib import sha256
 from pathlib import Path
+from types import ModuleType
 
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
@@ -16,7 +18,9 @@ from loguru import logger
 
 from axile.common.config import API_V1_STR, PROJECT_NAME, is_configured, settings
 from axile.executor.account_control.exceptions import AccountControlConfigError
+from axile.executor.algorithms.core.base import list_algorithms_metadata
 from axile.executor.algorithms.core.loader import load_algorithm_modules
+from axile.server.algorithm_discovery import AlgorithmDirectory, discover_directory
 from axile.server.api.main import api_router
 from axile.server.compression import CompressionMiddleware
 from axile.server.core.log_config import setup_logging
@@ -113,44 +117,54 @@ def _get_directory_algorithm_modules(directory: Path) -> list[str]:
     if not package_dir.is_dir():
         raise NotADirectoryError(f"算法目录不是有效目录: {package_dir}")
 
-    import_root = str(package_dir.parent)
-    # 只注入父目录，避免把包目录本身作为顶层路径后改变模块解析结果。
+    return _directory_modules(discover_directory(package_dir))
+
+
+def _directory_modules(preview: AlgorithmDirectory) -> list[str]:
+    """只加载当前层声明了算法的文件，辅助模块由脚本自己的 import 负责。"""
+    if preview.discovery.issues:
+        issue = preview.discovery.issues[0]
+        raise ValueError(f"算法目录 {preview.path} / {issue.file}：{issue.message}")
+    if not preview.discovery.can_use:
+        return []
+    directory = Path(preview.path)
+    import_root = str(directory.parent)
     if import_root not in sys.path:
         sys.path.insert(0, import_root)
-
-    if (package_dir / "__init__.py").exists():
-        return [package_dir.name]
-
-    modules = [
-        f"{package_dir.name}.{file.stem}"
-        for file in sorted(package_dir.glob("*.py"))
-        if file.name != "__init__.py" and not file.stem.startswith("_")
-    ]
-    if not modules:
-        logger.info("用户算法目录中未找到可加载模块: {}", package_dir)
-    return modules
+    files = sorted({algorithm.file for algorithm in preview.discovery.algorithms})
+    package = directory.name
+    if not (directory / "__init__.py").is_file():
+        # 平铺脚本使用独立命名空间，避免两个同名文件夹互相复用已导入模块。
+        package = f"_axile_algorithms_{sha256(preview.path.encode()).hexdigest()[:16]}"
+        namespace = ModuleType(package)
+        namespace.__dict__["__path__"] = [preview.path]
+        sys.modules.setdefault(package, namespace)
+    return [package if file == "__init__.py" else f"{package}.{Path(file).stem}" for file in files]
 
 
 def _load_configured_algorithm_directories() -> list[str]:
-    """
-    加载目录配置中声明的用户算法模块。
-
-    Returns
-    -------
-    list[str]
-        成功完成扫描并触发加载的目录列表。
-    """
+    """单层发现并加载脚本，检查声明是否确实注册，空目录不标为已加载。"""
     loaded_directories: list[str] = []
-
     for directory in _algorithm_directories:
-        modules = _get_directory_algorithm_modules(directory)
+        if not directory.expanduser().exists():
+            continue
+        preview = discover_directory(directory)
+        modules = _directory_modules(preview)
         if not modules:
             continue
-
+        # Resolve builtins/entry points first so they cannot overwrite directory registrations later.
+        list_algorithms_metadata()
         load_algorithm_modules(modules)
-        loaded_directories.append(str(directory))
-        logger.info("已加载用户算法目录: {} -> {}", directory, ", ".join(modules))
-
+        registered = {meta.name: meta for meta in list_algorithms_metadata()}
+        for declaration in preview.discovery.algorithms:
+            meta = registered.get(declaration.name)
+            module = sys.modules.get(getattr(meta.func, "__module__", "")) if meta else None
+            origin = getattr(module, "__file__", None)
+            expected = Path(preview.path) / declaration.file
+            if origin is None or Path(origin).resolve() != expected:
+                raise ValueError(f"算法 {declaration.name} 未由 {preview.path} / {declaration.file} 成功注册")
+        loaded_directories.append(preview.path)
+        logger.info("已加载用户算法目录: {} -> {}", preview.path, ", ".join(modules))
     return loaded_directories
 
 

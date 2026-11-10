@@ -61,6 +61,14 @@ export interface DirectoryListing {
   path: string | null
   parent: string | null
   entries: DirectoryEntry[]
+  discovery?: AlgorithmDiscovery
+}
+
+export interface AlgorithmDiscovery {
+  files: number
+  algorithms: Array<{ name: string; function: string; file: string }>
+  issues: Array<{ file: string; message: string }>
+  can_use: boolean
 }
 
 /** 单个渠道的依赖可用性，对应 `ChannelCapabilityPublic`。 */

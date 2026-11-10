@@ -1,11 +1,28 @@
 """交易算法注册表查询路由."""
 
-from fastapi import APIRouter
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from axile.executor.algorithms.core.base import AlgorithmMetadata, list_algorithms_metadata
+from axile.server.algorithm_discovery import AlgorithmDirectory, discover_directory
 
 router = APIRouter(prefix="/algorithms", tags=["algorithms"])
+
+
+@router.get("/discover", response_model=AlgorithmDirectory)
+def discover_algorithms(path: str | None = None) -> AlgorithmDirectory:
+    """返回当前层目录和算法声明，浏览期间不加载或执行用户脚本。"""
+    try:
+        return discover_directory(Path.cwd() if path is None else Path(path))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="目录不存在") from exc
+    except NotADirectoryError as exc:
+        raise HTTPException(status_code=400, detail="路径不是目录") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=403, detail="无法读取该目录") from exc
+
 
 # 内置算法所在包前缀；据此区分内置与用户自定义算法。
 _BUILTIN_MODULE_PREFIX = "axile.executor.algorithms.defaults"

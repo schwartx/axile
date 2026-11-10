@@ -11,13 +11,15 @@ import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 export function DirectoryPicker({
   open,
   initialPath,
+  algorithms = false,
   onClose,
   onSelect,
 }: {
   open: boolean
   initialPath?: string
+  algorithms?: boolean
   onClose: () => void
-  onSelect: (path: string) => void
+  onSelect: (path: string, listing: DirectoryListing) => void
 }) {
   const dialogRef = useRef<HTMLDivElement>(null)
   const locationRef = useRef<HTMLInputElement>(null)
@@ -28,19 +30,21 @@ export function DirectoryPicker({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
   const requestedPath = useRef<string | undefined>(undefined)
+  const locationRevision = useRef(0)
 
   const load = useCallback(async (path?: string, preserveLocation = false): Promise<boolean> => {
     requestedPath.current = path
     controllerRef.current?.abort()
     const controller = new AbortController()
+    const revision = locationRevision.current
     controllerRef.current = controller
     setLoading(true)
     setError(null)
     try {
-      const next = await getDirectories(path, controller.signal)
+      const next = await getDirectories(path, controller.signal, algorithms)
       if (controller.signal.aborted) return false
       setListing(next)
-      if (!preserveLocation) setLocation(next.path ?? '')
+      if (!preserveLocation && revision === locationRevision.current) setLocation(next.path ?? '')
     } catch (caught) {
       if (controller.signal.aborted) return false
       setError(caught instanceof Error ? caught : new Error(String(caught)))
@@ -49,7 +53,7 @@ export function DirectoryPicker({
       if (!controller.signal.aborted) setLoading(false)
     }
     return true
-  }, [])
+  }, [algorithms])
   useReadRecovery(async () => { await load(requestedPath.current, true) }, open)
 
   useEffect(() => {
@@ -108,10 +112,14 @@ export function DirectoryPicker({
   }
 
   const selectCurrent = () => {
-    if (!listing?.path) return
-    onSelect(listing.path)
+    if (!canSelect || !listing?.path) return
+    onSelect(listing.path, listing)
     onClose()
   }
+
+  const canSelect = Boolean(listing?.path) && !loading && !error && (!algorithms || (
+    listing?.discovery?.can_use === true && location === listing.path
+  ))
 
   return (
     <>
@@ -135,7 +143,7 @@ export function DirectoryPicker({
           <button type="button" title="上一级" aria-label="上一级" disabled={!listing?.parent} className="grid h-10 w-10 flex-none cursor-pointer place-items-center rounded-[8px] border border-line text-ink-2 disabled:cursor-default disabled:opacity-35" onClick={() => listing?.parent && void load(listing.parent)}>
             <ChevronLeft size={17} />
           </button>
-          <input ref={locationRef} value={location} onChange={(event) => setLocation(event.target.value)} placeholder="输入绝对路径" spellCheck={false} className="h-10 min-w-0 flex-1 rounded-[8px] border border-line bg-surface px-3 font-mono text-[14px] outline-none focus:border-accent" />
+          <input ref={locationRef} aria-label="目录路径" value={location} onChange={(event) => { locationRevision.current++; setLocation(event.target.value) }} placeholder="输入绝对路径" spellCheck={false} className="h-10 min-w-0 flex-1 rounded-[8px] border border-line bg-surface px-3 font-mono text-[14px] outline-none focus:border-accent" />
           <button type="submit" className="h-10 flex-none cursor-pointer rounded-[8px] border border-line px-4 text-[14px] text-ink-2">前往</button>
         </form>
 
@@ -153,6 +161,24 @@ export function DirectoryPicker({
         <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2 sm:px-3" aria-busy={loading}>
           <ErrorNotice intent="read" title="目录读取失败" error={error} hasData={listing != null} embedded onRetry={async () => { await load(requestedPath.current) }} />
           {!error && loading && !listing && <div className="px-3 py-4 text-[14px] text-ink-3">正在读取目录…</div>}
+          {algorithms && loading && listing && <p className="px-3 py-3 text-[13px] text-ink-3" role="status">正在检查当前目录…</p>}
+          {algorithms && !error && !loading && listing?.discovery && (
+            <section className="mx-1 mb-2 rounded-[8px] border border-line px-3 py-3" aria-label="当前目录的算法" aria-live="polite">
+              <p className="text-[13px] text-ink-2">
+                {listing.discovery.algorithms.length > 0 ? `发现 ${listing.discovery.algorithms.length} 个算法` : '当前目录没有发现算法'}
+              </p>
+              {listing.discovery.algorithms.length === 0 && <p className="mt-1 text-[13px] text-ink-3">只检查当前目录的脚本，可继续进入子文件夹查找。</p>}
+              <ul>
+                {listing.discovery.algorithms.map((algorithm) => (
+                  <li key={`${algorithm.file}:${algorithm.name}:${algorithm.function}`} className="mt-2 flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1 text-[13px]">
+                    <span className="break-all font-medium text-ink-1">{algorithm.name}</span>
+                    <span className="break-all font-mono text-ink-3">{algorithm.file}</span>
+                  </li>
+                ))}
+              </ul>
+              {listing.discovery.issues.map((issue, index) => <p key={index} className="mt-2 break-words text-[13px] text-warn">{issue.file}：{issue.message}</p>)}
+            </section>
+          )}
           {listing?.entries.length === 0 && <div className="px-3 py-4 text-[14px] text-ink-3">此目录没有子文件夹</div>}
           {listing?.entries.map((entry) => (
             <button key={entry.path} type="button" className="flex h-11 w-full cursor-pointer items-center gap-3 rounded-[8px] px-3 text-left hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent" onClick={() => void load(entry.path)}>
@@ -166,7 +192,7 @@ export function DirectoryPicker({
         <div className="flex flex-none items-center gap-3 border-t border-line px-4 py-3 sm:px-5">
           <OverflowText className="min-w-0 flex-1 text-[13px] text-ink-3" text={listing?.path ?? '请选择文件夹'} />
           <button type="button" className="h-10 cursor-pointer rounded-[8px] border border-line px-4 text-[14px] text-ink-2" onClick={onClose}>取消</button>
-          <button type="button" disabled={!listing?.path} className="h-10 cursor-pointer rounded-[8px] border border-ink-1 bg-ink-1 px-4 text-[14px] font-[550] text-surface disabled:cursor-default disabled:opacity-40" onClick={selectCurrent}>使用此目录</button>
+          <button type="button" disabled={!canSelect} className="h-10 cursor-pointer rounded-[8px] border border-ink-1 bg-ink-1 px-4 text-[14px] font-[550] text-surface disabled:cursor-default disabled:opacity-40" onClick={selectCurrent}>使用此目录</button>
         </div>
       </div>
     </>

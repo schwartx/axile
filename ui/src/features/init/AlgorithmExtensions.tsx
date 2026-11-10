@@ -1,24 +1,55 @@
 import { ChevronDown, FolderOpen, X } from 'lucide-react'
-import { useId, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 
+import { DirectoryPicker } from '@/components/ui/DirectoryPicker'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { StringTagInput } from '@/components/ui/StringTagInput'
+import { getDirectories } from '@/lib/api/system'
+import type { DirectoryListing } from '@/types/api'
+
+function DirectoryAlgorithms({ directory, initial }: { directory: string; initial?: DirectoryListing }) {
+  const [preview, setPreview] = useState(initial)
+  const [error, setError] = useState<Error | null>(null)
+  useEffect(() => {
+    if (initial) {
+      setPreview(initial)
+      setError(null)
+      return
+    }
+    const controller = new AbortController()
+    void getDirectories(directory, controller.signal, true).then((next) => {
+      if (!controller.signal.aborted) setPreview(next)
+    }).catch((cause) => {
+      if (!controller.signal.aborted) setError(cause instanceof Error ? cause : new Error(String(cause)))
+    })
+    return () => controller.abort()
+  }, [directory, initial])
+  if (error) return <p className="mt-1 text-[13px] text-warn" role="alert">无法检查此目录：{error.message}</p>
+  if (!preview?.discovery) return <p className="mt-1 text-[13px] text-ink-3">正在检查算法…</p>
+  const { discovery } = preview
+  return <div className="mt-1 text-[13px]">
+    {discovery.algorithms.length > 0
+      ? <p className="break-words text-ink-2">{discovery.algorithms.map(algorithm => algorithm.name).join('、')}</p>
+      : <p className="text-warn">当前目录没有发现算法，请移除此项并选择脚本所在目录。</p>}
+    {discovery.issues.map((issue, index) => <p key={index} className="break-words text-warn">{issue.file}：{issue.message}</p>)}
+  </div>
+}
 
 export function AlgorithmExtensions({
   directories,
   modules,
   onDirectoriesChange,
   onModulesChange,
-  onBrowse,
 }: {
   directories: string[]
   modules: string[]
   onDirectoriesChange: (directories: string[]) => void
   onModulesChange: (modules: string[]) => void
-  onBrowse: () => void
 }) {
   const id = useId()
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [previews, setPreviews] = useState<Record<string, DirectoryListing>>({})
 
   return (
     <div className="min-w-0 py-3 md:col-span-2">
@@ -29,7 +60,7 @@ export function AlgorithmExtensions({
         <button
           type="button"
           className="inline-flex flex-none cursor-pointer items-center gap-2 rounded-[9px] border border-line bg-surface px-3 py-2 text-[14px] text-ink-1 hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent"
-          onClick={onBrowse}
+          onClick={() => setPickerOpen(true)}
         >
           <FolderOpen size={16} aria-hidden />
           添加算法目录
@@ -39,7 +70,10 @@ export function AlgorithmExtensions({
         {directories.map((directory) => (
           <li key={directory} className="mt-3 flex min-w-0 items-center gap-3 rounded-[9px] border border-line px-3 py-2">
             <FolderOpen size={16} className="flex-none text-ink-3" aria-hidden />
-            <OverflowText className="min-w-0 flex-1 font-mono text-[13px] text-ink-2" text={directory} />
+            <div className="min-w-0 flex-1">
+              <OverflowText className="font-mono text-[13px] text-ink-2" text={directory} />
+              <DirectoryAlgorithms directory={directory} initial={previews[directory]} />
+            </div>
             <button
               type="button"
               aria-label={`移除算法目录 ${directory}`}
@@ -80,6 +114,16 @@ export function AlgorithmExtensions({
           />
         </div>
       </div>
+      <DirectoryPicker
+        open={pickerOpen}
+        algorithms
+        initialPath={directories.at(-1)}
+        onClose={() => setPickerOpen(false)}
+        onSelect={(path, preview) => {
+          setPreviews(current => ({ ...current, [path]: preview }))
+          if (!directories.includes(path)) onDirectoriesChange([...directories, path])
+        }}
+      />
     </div>
   )
 }
