@@ -1,5 +1,5 @@
-import { ChevronLeft, ChevronRight, Eye, Folder, FolderOpen, HardDrive, LoaderCircle, X } from 'lucide-react'
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { ChevronLeft, ChevronRight, Eye, FileCode2, Folder, FolderOpen, HardDrive, LoaderCircle, X } from 'lucide-react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 
 import { apiSend } from '@/lib/api/client'
 import type { AlgorithmInfo } from '@/types/api'
@@ -26,6 +26,22 @@ export function DirectoryPicker({
 }) {
   const dialogRef = useRef<HTMLDivElement>(null)
   const locationRef = useRef<HTMLInputElement>(null)
+  const addressRef = useRef<HTMLButtonElement>(null)
+  const focusAddress = useRef(false)
+  const [editingPath, setEditingPath] = useState(!algorithms)
+  const editPath = useCallback(() => {
+    setEditingPath(true)
+  }, [])
+  useLayoutEffect(() => {
+    if (!open || !algorithms) return
+    if (editingPath) {
+      locationRef.current?.focus()
+      locationRef.current?.select()
+    } else if (focusAddress.current) {
+      focusAddress.current = false
+      addressRef.current?.focus({ preventScroll: true })
+    }
+  }, [open, algorithms, editingPath])
   const triggerRef = useRef<HTMLElement | null>(null)
   const [loadedFiles, setLoadedFiles] = useState<Record<string, AlgorithmInfo[]>>({})
   const [fileErrors, setFileErrors] = useState<Record<string, string>>({})
@@ -55,6 +71,8 @@ export function DirectoryPicker({
     if (!open) return
     triggerRef.current = document.activeElement as HTMLElement | null
     reset()
+    focusAddress.current = true
+    setEditingPath(!algorithms)
     const initial = initialPath?.trim()
     let active = true
     void (async () => {
@@ -65,18 +83,33 @@ export function DirectoryPicker({
       if (await load(initial) !== false) return
       if (active) await load()
     })()
-    requestAnimationFrame(() => locationRef.current?.focus())
+    if (!algorithms) locationRef.current?.focus()
+    else if (!locationRef.current || locationRef.current.inert) { focusAddress.current = false; addressRef.current?.focus() }
     return () => {
       active = false
       cancel()
       triggerRef.current?.focus({ preventScroll: true })
     }
-  }, [open, initialPath, load, reset, cancel])
+  }, [open, initialPath, load, reset, cancel, algorithms])
 
   useEffect(() => {
     if (!open) return
     const keydown = (event: KeyboardEvent) => {
+      if (algorithms && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'l') {
+        event.preventDefault()
+        editPath()
+        return
+      }
       if (event.key === 'Escape') {
+        event.preventDefault()
+        if (algorithms && editingPath) {
+          locationRevision.current++
+          setLocation(listing?.path ?? '')
+          focusAddress.current = true
+          setEditingPath(false)
+          if (listing?.path && (loading || error)) void load(listing.path)
+          return
+        }
         onClose()
         return
       }
@@ -86,7 +119,7 @@ export function DirectoryPicker({
         return
       }
       if (event.key !== 'Tab') return
-      const focusable = dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled):not([tabindex="-1"]), input:not(:disabled)')
+      const focusable = dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled):not([tabindex="-1"]), input:not(:disabled):not([tabindex="-1"])')
       if (!focusable?.length) return
       const first = focusable[0]
       const last = focusable[focusable.length - 1]
@@ -100,7 +133,7 @@ export function DirectoryPicker({
     }
     window.addEventListener('keydown', keydown)
     return () => window.removeEventListener('keydown', keydown)
-  }, [open, onClose, listing?.parent, load])
+  }, [open, onClose, listing?.parent, listing?.path, load, algorithms, editingPath, locationRevision, setLocation, loading, error, editPath])
 
   const typedPath = location.trim().replaceAll('\\', '/')
   const slash = typedPath.lastIndexOf('/')
@@ -122,10 +155,16 @@ export function DirectoryPicker({
 
   if (!open) return null
 
+  const navigatePath = async (path?: string) => {
+    const revision = locationRevision.current
+    if (await load(path) && algorithms && locationRevision.current === revision) {
+      focusAddress.current = true
+      setEditingPath(false)
+    }
+  }
   const submitLocation = (event: FormEvent) => {
     event.preventDefault()
-    if (location.trim()) void load(location.trim())
-    else void load()
+    void navigatePath(location.trim() || undefined)
   }
 
   const selectCurrent = () => {
@@ -140,6 +179,12 @@ export function DirectoryPicker({
 
   const currentActive = !loading || requestedPath.current === listing?.path
   const entries = listing?.entries.filter(entry => !algorithms || showHidden || !entry.name.startsWith('.')).filter(entry => !filtering || entry.name.startsWith(fragment)) ?? []
+  const files = new Map<string, NonNullable<DirectoryListing['discovery']>['algorithms']>()
+  for (const declaration of listing?.discovery?.algorithms ?? []) {
+    const declarations = files.get(declaration.file) ?? []
+    declarations.push(declaration)
+    files.set(declaration.file, declarations)
+  }
   const hiddenCount = listing?.entries.filter(entry => entry.name.startsWith('.')).length ?? 0
   const currentName = listing?.path ? directoryBreadcrumbs(listing.path).at(-1)?.label ?? listing.path : '本机磁盘'
   const rowStyle = 'flex h-9 w-full min-w-0 cursor-pointer items-center gap-2 rounded-[7px] border-l-2 px-2 text-left transition-colors duration-100 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-accent'
@@ -175,7 +220,17 @@ export function DirectoryPicker({
           <button type="button" title="上一级" aria-label="上一级" disabled={!listing?.parent} className="grid h-10 w-10 flex-none cursor-pointer place-items-center rounded-[8px] border border-line text-ink-2 disabled:cursor-default disabled:opacity-35" onClick={() => listing?.parent && void load(listing.parent)}>
             <ChevronLeft size={17} />
           </button>
-          <input ref={locationRef} aria-label="目录路径" value={location} onChange={(event) => { if (algorithms) prepareFilterMotion(); locationRevision.current++; setLocation(event.target.value); setFocusedPath(null) }} onKeyDown={(event) => {
+          <div className={algorithms ? 'relative h-10 min-w-0 flex-1 rounded-[8px] border border-line bg-surface focus-within:border-accent' : 'contents'} onBlur={event => {
+            if (!algorithms || !editingPath) return
+            const target = event.relatedTarget
+            if (target instanceof Node && event.currentTarget.contains(target)) return
+            focusAddress.current = false
+            locationRevision.current++
+            setLocation(listing?.path ?? '')
+            setEditingPath(false)
+            if (listing?.path && (loading || error)) void load(listing.path)
+          }}>
+          <input inert={algorithms && !editingPath} aria-hidden={algorithms && !editingPath} tabIndex={algorithms && !editingPath ? -1 : undefined} ref={locationRef} aria-label="目录路径" value={location} onChange={(event) => { if (algorithms) prepareFilterMotion(); locationRevision.current++; setLocation(event.target.value); setFocusedPath(null) }} onKeyDown={(event) => {
             if (!algorithms || event.nativeEvent.isComposing || !filtering || !entries.length) return
             const index = entries.findIndex(entry => entry.path === focusedPath)
             if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -193,13 +248,11 @@ export function DirectoryPicker({
               event.preventDefault()
               locationRevision.current++
               setLocation(entries[index].path)
-              void load(entries[index].path)
+              void navigatePath(entries[index].path)
             }
-          }} placeholder="输入绝对路径" spellCheck={false} className="h-10 min-w-0 flex-1 rounded-[8px] border border-line bg-surface px-3 font-mono text-[14px] outline-none focus:border-accent" />
-          <button type="submit" className="h-10 flex-none cursor-pointer rounded-[8px] border border-line px-4 text-[14px] text-ink-2">前往</button>
-        </form>
-
-        <div className="flex min-h-10 flex-none items-center gap-1 overflow-x-auto border-b border-line px-4 py-2 sm:px-5" aria-label="当前目录">
+          }} placeholder="输入绝对路径" spellCheck={false} className={algorithms ? `absolute inset-0 h-full w-full min-w-0 bg-transparent pl-3 pr-20 font-mono text-[14px] outline-none ${editingPath ? '' : 'invisible'}` : 'h-10 min-w-0 flex-1 rounded-[8px] border border-line bg-surface px-3 font-mono text-[14px] outline-none focus:border-accent'} />
+          {algorithms && <div inert={editingPath} aria-hidden={editingPath} className={`absolute inset-0 flex min-w-0 items-center gap-1 overflow-x-auto px-2 ${editingPath ? 'invisible' : ''}`} aria-label="当前目录" onClick={event => { if (event.target === event.currentTarget) editPath() }}>
+          <button ref={addressRef} type="button" aria-label="编辑目录路径" title="编辑路径（Ctrl+L）" className="order-last h-full min-w-6 flex-1 cursor-text focus-visible:outline-none" onClick={editPath} />
           {listing?.path ? directoryBreadcrumbs(listing.path).map((crumb, index, crumbs) => (
             <div key={crumb.path} className="flex flex-none items-center">
               {index > 0 && <ChevronRight size={13} className="mx-0.5 text-ink-3" />}
@@ -208,7 +261,21 @@ export function DirectoryPicker({
               </button>
             </div>
           )) : <span className="text-[13px] text-ink-3">本机磁盘</span>}
-        </div>
+        </div>}
+          <button type="submit" inert={algorithms && !editingPath} aria-hidden={algorithms && !editingPath} tabIndex={algorithms && !editingPath ? -1 : undefined} className={algorithms ? `absolute right-1 top-1 h-7 w-16 cursor-pointer rounded-md border border-line text-[13px] text-ink-2 ${editingPath ? '' : 'invisible'}` : 'h-10 flex-none cursor-pointer rounded-[8px] border border-line px-4 text-[14px] text-ink-2'}>前往</button>
+          </div>
+        </form>
+
+        {!algorithms && <div className="flex min-h-10 flex-none items-center gap-1 overflow-x-auto border-b border-line px-4 py-2 sm:px-5" aria-label="当前目录">
+          {listing?.path ? directoryBreadcrumbs(listing.path).map((crumb, index, crumbs) => (
+            <div key={crumb.path} className="flex flex-none items-center">
+              {index > 0 && <ChevronRight size={13} className="mx-0.5 text-ink-3" />}
+              <button type="button" className={`cursor-pointer rounded px-1.5 py-1 text-[13px] ${index === crumbs.length - 1 ? 'text-ink-1' : 'text-ink-2 hover:bg-fill'}`} onClick={() => void load(crumb.path)}>
+                {crumb.label}
+              </button>
+            </div>
+          )) : <span className="text-[13px] text-ink-3">本机磁盘</span>}
+        </div>}
 
         {algorithms ? (
           <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1.8fr)_minmax(0,1fr)] overflow-hidden">
@@ -239,7 +306,7 @@ export function DirectoryPicker({
             <section className="directory-browser-preview flex min-h-0 min-w-0 flex-col" aria-label="当前目录的算法" aria-busy={loading}>
               <div className="flex h-10 flex-none items-center gap-2 border-b border-line px-3 text-[12px] text-ink-2 sm:px-4" role="status" aria-live="polite">
                 <span className="grid w-3.5 flex-none place-items-center" aria-hidden>{pending && <LoaderCircle size={13} className="animate-spin motion-reduce:animate-none" />}</span>
-                <span>{pending ? '正在检查目录…' : error ? '目录读取失败' : `当前目录的算法 · ${listing?.discovery?.algorithms.length ?? 0}`}</span>
+                <span>{pending ? '正在检查目录…' : error ? '目录读取失败' : `算法文件 · ${files.size}`}</span>
               </div>
               <div ref={previewRef} className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable] overscroll-contain px-3 py-3 sm:px-4">
                 <ErrorNotice intent="read" title="目录读取失败" error={error} hasData={listing != null} embedded onRetry={async () => { await load(requestedPath.current) }} />
@@ -250,14 +317,30 @@ export function DirectoryPicker({
                       <p className="text-ink-2">当前目录没有发现算法</p>
                       <p className="mt-1">从左侧进入脚本所在的文件夹。</p>
                     </div> : <ul className="divide-y divide-line">
-                      {listing.discovery.algorithms.map(algorithm => <li key={`${algorithm.file}:${algorithm.name}:${algorithm.function}`} className="py-3 first:pt-0">
-                        <p className="break-all text-[14px] font-medium text-ink-1">{algorithm.name || algorithm.function}</p>
-                        <OverflowText className="mt-1 block min-w-0 font-mono text-[12px] text-ink-3" text={algorithm.file} />
-                        {!algorithm.name && !loadedFiles[`${listing.path}/${algorithm.file}`] && <p className="mt-1 text-[12px] text-ink-3">名称待加载</p>}
-                        <button type="button" disabled={loadingFiles.includes(`${listing.path}/${algorithm.file}`) || !!loadedFiles[`${listing.path}/${algorithm.file}`]} className="mt-2 cursor-pointer text-[12px] text-accent disabled:opacity-50" onClick={() => void loadFile(listing.path!, algorithm.file)}>{loadingFiles.includes(`${listing.path}/${algorithm.file}`) ? '正在加载…' : loadedFiles[`${listing.path}/${algorithm.file}`] ? '已加载' : '加载文件'}</button>
-                        {loadedFiles[`${listing.path}/${algorithm.file}`]?.map(meta => <p key={meta.name} className="mt-2 text-[13px] text-ink-1">{meta.label || meta.name} · {meta.name}</p>)}
-                        {fileErrors[`${listing.path}/${algorithm.file}`] && <p role="alert" className="mt-2 text-[12px] text-warn">{fileErrors[`${listing.path}/${algorithm.file}`]}</p>}
-                      </li>)}
+                      {Array.from(files, ([file, declarations]) => {
+                        const key = `${listing.path}/${file}`
+                        const registered = loadedFiles[key]
+                        const busy = loadingFiles.includes(key)
+                        const names = registered ?? declarations.filter(item => item.name).map(item => ({ name: item.name, label: item.name }))
+                        return <li key={file} className="py-3 first:pt-0">
+                          <div className="grid min-w-0 grid-cols-[16px_minmax(0,1fr)] items-center gap-x-2 gap-y-1 sm:grid-cols-[16px_minmax(0,1fr)_auto]">
+                            <FileCode2 size={16} className="flex-none text-ink-3" aria-hidden />
+                            <OverflowText className="min-w-0 flex-1 font-mono text-[12px] font-medium text-ink-1" text={file} />
+                            <button type="button" aria-label={`${registered ? '已加载' : '加载'} ${file}`} disabled={busy || !!registered} onClick={() => void loadFile(listing.path!, file)} className={`col-start-2 inline-flex h-7 min-w-14 justify-self-start sm:col-start-auto sm:justify-self-end flex-none cursor-pointer items-center justify-center gap-1 rounded-md border px-2 text-[12px] transition-colors duration-100 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default ${registered ? 'border-transparent text-ink-3' : 'border-line text-ink-2 hover:bg-fill disabled:opacity-60'}`}>
+                              {busy && <LoaderCircle size={12} className="animate-spin motion-reduce:animate-none" aria-hidden />}
+                              {busy ? '加载中' : registered ? '已加载' : '加载'}
+                            </button>
+                          </div>
+                          <div className="pl-6">
+                            {names.length === 0 && !fileErrors[key] && <p className="mt-1 text-[12px] text-ink-3">待加载</p>}
+                            {names.map(meta => <div key={meta.name} className="mt-1">
+                              <p className="break-words text-[13px] text-ink-1">{meta.label || meta.name}</p>
+                              {meta.label && meta.label !== meta.name && <p className="mt-0.5 break-all font-mono text-[12px] text-ink-3">{meta.name}</p>}
+                            </div>)}
+                            {fileErrors[key] && <p role="alert" className="mt-2 break-words text-[12px] text-warn">{fileErrors[key]}</p>}
+                          </div>
+                        </li>
+                      })}
                     </ul>}
                     {listing.discovery.issues.map((issue, index) => <p key={index} className="mt-3 break-words text-[12px] leading-5 text-warn">{issue.file}：{issue.message}</p>)}
                   </>}

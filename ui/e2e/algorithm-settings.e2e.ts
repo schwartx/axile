@@ -43,6 +43,12 @@ async function setup(page: Page, directories: string[] = [], nativeDiscovery = f
   return { saves, scans }
 }
 
+async function editDirectoryPath(page: Page) {
+  const edit = page.getByRole('button', { name: '编辑目录路径', exact: true })
+  if (await edit.isVisible()) await edit.click()
+  return page.getByRole('textbox', { name: '目录路径' })
+}
+
 test('选择目录即可添加，去重、移除、取消及保存保留已有模块配置', async ({ page }) => {
   const { saves, scans } = await setup(page)
   const modules = page.getByRole('textbox', { name: 'Python 模块名', includeHidden: true })
@@ -84,7 +90,8 @@ test('真实 Rust API 只扫描当前层，没有算法时不能选择目录', a
   try {
     await setup(page, [], true)
     await page.getByRole('button', { name: '添加算法目录', exact: true }).click()
-    const location = page.getByRole('textbox', { name: '目录路径' })
+    const location = await editDirectoryPath(page)
+    await editDirectoryPath(page)
     await location.fill(root)
     await location.press('Enter')
     await expect(page.getByText('当前目录没有发现算法', { exact: true })).toBeVisible()
@@ -95,6 +102,7 @@ test('真实 Rust API 只扫描当前层，没有算法时不能选择目录', a
     await page.evaluate(() => document.documentElement.classList.add('dark'))
     await expect(page.getByRole('dialog', { name: '选择算法目录' })).toHaveCSS('background-color', 'rgb(20, 26, 34)')
     await page.screenshot({ path: testInfo.outputPath('native-algorithm-preview.png') })
+    await editDirectoryPath(page)
     await location.fill(root)
     await expect(page.getByRole('button', { name: '添加此目录', exact: true })).toBeDisabled()
     await location.fill(scripts)
@@ -116,7 +124,7 @@ test('切换目录读取期间及读取失败时，不能使用上一个目录�
     await pending
     await route.fulfill({ status: 404, json: { detail: '目录不存在' } })
   })
-  await page.getByRole('textbox', { name: '目录路径' }).fill('/missing')
+  await (await editDirectoryPath(page)).fill('/missing')
   await page.getByRole('textbox', { name: '目录路径' }).press('Enter')
   await expect(page.getByRole('button', { name: '添加此目录', exact: true })).toBeDisabled()
   release()
@@ -135,7 +143,7 @@ test('初次读取结果不能覆盖用户正在输入的路径', async ({ page 
     } })
   })
   await page.getByRole('button', { name: '添加算法目录', exact: true }).click()
-  await page.getByRole('textbox', { name: '目录路径' }).fill('/user/typed')
+  await (await editDirectoryPath(page)).fill('/user/typed')
   release()
   await expect(page.getByRole('region', { name: '当前目录的算法' })).toContainText('INITIAL')
   await expect(page.getByRole('textbox', { name: '目录路径' })).toHaveValue('/user/typed')
@@ -349,40 +357,56 @@ test('中断初次读取后不触发兜底请求，迟到的结果不能覆盖�
   })
   await page.getByRole('button', { name: '添加算法目录', exact: true }).click()
   await expect.poll(() => requests).toContain(algorithmDirectory)
-  const location = page.getByRole('textbox', { name: '目录路径' })
+  const location = await editDirectoryPath(page)
   await location.fill('/new')
   await location.press('Enter')
   await expect(page.getByRole('region', { name: '当前目录的算法' })).toContainText('NEW')
   release()
   await expect.poll(() => settled).toContain(algorithmDirectory)
-  await expect(location).toHaveValue('/new')
+  await expect(page.getByRole('button', { name: '编辑目录路径', exact: true })).toBeVisible()
   expect(requests).toEqual([algorithmDirectory, '/new'])
   await expect(page.getByRole('button', { name: '添加此目录', exact: true })).toBeEnabled()
 })
 
-test('名称未知的文件先展示入口，点击后显示实际注册算法', async ({ page }) => {
+test('名称未知的文件先展示入口，点击后显示实际注册算法', async ({ page }, testInfo) => {
   await setup(page)
   let loads = 0
   await page.route('**/api/v1/algorithms/discover**', route => route.fulfill({ json: {
     path: algorithmDirectory, parent: '/', entries: [],
-    discovery: { files: 1, algorithms: [{ name: '', function: 'breakeven_maker', file: 'breakeven_maker.py' }], issues: [], can_use: true },
+    discovery: { files: 1, algorithms: [{ name: '', function: 'breakeven_maker', file: 'breakeven_maker.py' }, { name: '', function: 'second_entry', file: 'breakeven_maker.py' }], issues: [], can_use: true },
   } }))
   await page.route('**/api/v1/algorithms/load', route => {
     loads++
     expect(route.request().method()).toBe('POST')
     expect(route.request().postDataJSON()).toEqual({ directory: algorithmDirectory, file: 'breakeven_maker.py' })
+    if (loads === 1) return route.fulfill({ status: 400, json: { detail: '缺少依赖：example' } })
     return route.fulfill({ json: [{ name: 'BREAKEVEN-MAKER', label: '保本挂单', description: '', default_params: {}, params_schema: {}, channels: ['binance'], slots: null, builtin: false }] })
   })
   await page.getByRole('button', { name: '添加算法目录', exact: true }).click()
   const preview = page.getByRole('region', { name: '当前目录的算法' })
   await expect(preview).toContainText('breakeven_maker.py')
-  await expect(preview).toContainText('名称待加载')
+  await expect(preview).toContainText('待加载')
   await expect(page.getByRole('button', { name: '添加此目录', exact: true })).toBeEnabled()
   expect(loads).toBe(0)
-  await preview.getByRole('button', { name: '加载文件', exact: true }).click()
+  await expect(preview.getByRole('status')).toContainText('算法文件 · 1')
+  await expect(preview.getByRole('button', { name: '加载 breakeven_maker.py', exact: true })).toHaveCount(1)
+  for (const dark of [false, true]) {
+    await page.evaluate(value => document.documentElement.classList.toggle('dark', value), dark)
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 800 })
+      expect(await preview.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true)
+      await page.screenshot({ path: testInfo.outputPath(`file-entry-${dark}-${width}.png`) })
+    }
+  }
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await preview.getByRole('button', { name: '加载 breakeven_maker.py', exact: true }).click()
+  await expect(preview.getByRole('alert')).toContainText('缺少依赖：example')
+  await preview.getByRole('button', { name: '加载 breakeven_maker.py', exact: true }).click()
   await expect(preview).toContainText('BREAKEVEN-MAKER')
-  await expect(preview.getByRole('button', { name: '已加载', exact: true })).toBeDisabled()
-  expect(loads).toBe(1)
+  await expect(preview.getByRole('button', { name: '已加载 breakeven_maker.py', exact: true })).toBeDisabled()
+  expect(loads).toBe(2)
+  await expect(preview).not.toContainText('待加载')
+  await page.screenshot({ path: testInfo.outputPath('file-entry-loaded.png') })
 })
 
 test('路径输入即时过滤并用 Tab 进入', async ({ page }) => {
@@ -394,7 +418,7 @@ test('路径输入即时过滤并用 Tab 进入', async ({ page }) => {
     return route.fulfill({ json: { path: path.replace(/\/$/, ''), parent: '/home', entries: path === '/home/ichika' ? [{ name: 'my-algos', path: '/home/ichika/my-algos' }, { name: 'gm-sdk', path: '/home/ichika/gm-sdk' }] : [], discovery: { files: 0, algorithms: [], issues: [], can_use: false } } })
   })
   await page.getByRole('button', { name: '添加算法目录', exact: true }).click()
-  const input = page.getByRole('textbox', { name: '目录路径' })
+  const input = await editDirectoryPath(page)
   const navigation = page.getByRole('region', { name: '目录导航' })
   await expect(input).toHaveValue('/home/ichika')
   const count = requests.length
@@ -422,7 +446,7 @@ for (const reduced of [false, true]) {
       discovery: { files: 0, algorithms: [], issues: [], can_use: false },
     } }))
     await page.getByRole('button', { name: '添加算法目录', exact: true }).click()
-    const input = page.getByRole('textbox', { name: '目录路径' })
+    const input = await editDirectoryPath(page)
     await expect(input).toHaveValue('/home/ichika')
     await page.evaluate(() => {
       const original = Element.prototype.animate
@@ -459,3 +483,76 @@ for (const reduced of [false, true]) {
     expect(await page.evaluate(() => document.getAnimations().filter(a => a.playState === 'paused').length)).toBe(0)
   })
 }
+
+test('地址栏原位切换、Ctrl+L 编辑、失败保留输入与两级 Escape', async ({ page }, testInfo) => {
+  await setup(page)
+  await page.getByRole('button', { name: '添加算法目录', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '选择算法目录', exact: true })
+  const edit = dialog.getByRole('button', { name: '编辑目录路径', exact: true })
+  await expect(edit).toBeVisible()
+  await expect(dialog.getByRole('textbox', { name: '目录路径' })).toHaveCount(0)
+  await expect(dialog.getByRole('button', { name: '前往', exact: true })).toHaveCount(0)
+  const address = dialog.locator('form')
+  const height = await address.evaluate(element => element.getBoundingClientRect().height)
+  const shell = address.locator('div').first()
+  const bounds = await shell.boundingBox()
+  await page.keyboard.press('Control+l')
+  const input = dialog.getByRole('textbox', { name: '目录路径' })
+  await expect(input).toBeFocused()
+  expect(await shell.boundingBox()).toEqual(bounds)
+  await input.evaluate(element => { element.dataset.retained = 'yes' })
+  await expect(input).toHaveValue(algorithmDirectory)
+  expect(await input.evaluate(element => (element as HTMLInputElement).selectionEnd! - (element as HTMLInputElement).selectionStart!)).toBe(algorithmDirectory.length)
+  expect(await address.evaluate(element => element.getBoundingClientRect().height)).toBe(height)
+  await input.fill('/typed')
+  await input.press('Escape')
+  await expect(edit).toBeFocused()
+  await expect(dialog).toBeVisible()
+  expect(await shell.boundingBox()).toEqual(bounds)
+  await edit.click()
+  await expect(input).toHaveAttribute('data-retained', 'yes')
+  await expect(input).toHaveValue(algorithmDirectory)
+  await page.route('**/api/v1/algorithms/discover?path=%2Fmissing', route => route.fulfill({ status: 404, json: { detail: '目录不存在' } }))
+  await input.fill('/missing')
+  await input.press('Enter')
+  await expect(dialog.getByText('目录不存在', { exact: true }).filter({ visible: true })).toBeVisible()
+  await expect(input).toHaveValue('/missing')
+  await input.fill(algorithmDirectory)
+  await input.press('Enter')
+  await expect(edit).toBeVisible()
+  await expect(input).toHaveCount(0)
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 800 })
+    expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true)
+    await page.screenshot({ path: testInfo.outputPath(`unified-address-${width}.png`) })
+  }
+  await edit.click()
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(dialog).toHaveCount(0)
+})
+
+
+test('路径输入失焦恢复面包屑、不抢焦点且前往仍可提交', async ({ page }) => {
+  await setup(page)
+  await page.getByRole('button', { name: '添加算法目录', exact: true }).click()
+  const input = await editDirectoryPath(page)
+  await input.fill('/unsubmitted')
+  const hidden = page.getByRole('button', { name: '显示隐藏目录', exact: true })
+  await hidden.click()
+  await expect(hidden).toBeFocused()
+  await expect(page.getByRole('button', { name: '编辑目录路径', exact: true })).toBeVisible()
+  await expect(input).toHaveCount(0)
+  await editDirectoryPath(page)
+  await expect(input).toHaveValue(algorithmDirectory)
+  await input.fill('/new/path')
+  await page.getByRole('button', { name: '前往', exact: true }).click()
+  await expect(page.getByRole('button', { name: '编辑目录路径', exact: true })).toBeVisible()
+  await editDirectoryPath(page)
+  await expect(input).toHaveValue('/new/path')
+  await input.press('Tab')
+  await page.keyboard.press('Tab')
+  await expect(page.getByRole('button', { name: '编辑目录路径', exact: true })).toBeVisible()
+  await expect(input).toHaveCount(0)
+})
