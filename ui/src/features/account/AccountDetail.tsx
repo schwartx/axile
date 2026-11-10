@@ -22,6 +22,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type CS
 import { useViewTransitionState } from 'react-router'
 import { ArrowLeftRight, RefreshCw, Video, VideoOff } from 'lucide-react'
 import { cardPerformance, currentEquity } from '@/features/dashboard/performance'
+import { PerformanceStatus } from '@/features/dashboard/PerformanceStatus'
 import { Link, useNavigate } from '@/components/ui/nav'
 import { Card, Chip } from '@/components/ui/Card'
 import { BackLink } from '@/components/ui/BackLink'
@@ -205,7 +206,7 @@ export function AccountDetail({
   const snapshotPositions = positionsOfAssets(latestAssets)
   const positions = snapshotPositions
   const equity = currentEquity(item)
-  const { pct, dayLabel, statusLabel } = cardPerformance(item.performance, Date.now(), {
+  const { pct, dayLabel } = cardPerformance(item.performance, Date.now(), {
     equity,
     observedAt: item.asset_observed_at,
     previousClose: item.previous_close,
@@ -496,14 +497,15 @@ export function AccountDetail({
                 <AssetRefreshFeedback accountId={accountId} manualError={assetRefreshError} automaticError={connectedAssets.error} />
               </div>
               <div className="mt-1.5 text-[14.5px] text-ink-2">
-                {pct == null && <span>{dayLabel} — · </span>}
-                <span className="text-xs text-ink-3">{statusLabel}{statusLabel ? ' · ' : ''}</span>
-                {pct != null && (
-                  <span className={`num ${pct > 0 ? 'text-up' : pct < 0 ? 'text-down' : 'text-ink-2'}`}>
-                    {dayLabel} {pct >= 0 ? '+' : '−'}
-                    <NumberTicker value={Math.abs(pct)} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />
-                  </span>
-                )}
+                <span className="inline-flex items-baseline">
+                  {pct == null ? <span>{dayLabel} —</span> : (
+                    <span className={`num ${pct > 0 ? 'text-up' : pct < 0 ? 'text-down' : 'text-ink-2'}`}>
+                      {dayLabel} {pct >= 0 ? '+' : '−'}
+                      <NumberTicker value={Math.abs(pct)} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />
+                    </span>
+                  )}
+                  <PerformanceStatus status={item.performance?.status} />
+                </span>
                 {' · 组合 '}
                 {portfolioId != null ? (
                   <Link
@@ -725,7 +727,7 @@ export function AccountDetail({
               </div>
             </SkeletonGroup>
           ) : showComparisonPanel ? (
-            <div className="grid min-h-48 gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.618fr)]">
+            <div className={`grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.618fr)] ${comparison.data?.target_mode === 'quantity' ? '' : 'min-h-48'}`}>
               <div className="border-t border-line pt-3">
                 <div className={`text-[23px] font-[640] ${STATUS_TEXT_CLASS[driftLevel]}`}>
                   {driftHeadline}
@@ -748,7 +750,7 @@ export function AccountDetail({
               </div>
               <div className="min-w-0 border-t border-line lg:border-t-0 lg:border-l lg:pl-5">
                 {comparison.data?.target_mode === 'quantity' ? <div tabIndex={0}
-                  className="quiet-scrollbar h-48 overflow-auto overscroll-contain focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-line">
+                  className="quiet-scrollbar max-h-48 overflow-auto overscroll-contain focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-line">
                   <HoldingsView positions={positions} executablePlan={comparison.data} target={{}} equity={observedTotalAsset(latestAssets, item.total_asset)}
                     assetLabel={positionValueLabel} quantityLabel={channelDescriptor?.units?.quantity_label}
                     onSelect={(symbol, keyboardOpened) => { setHoldingSelection({ accountId, symbol, keyboardOpened }) }} />
