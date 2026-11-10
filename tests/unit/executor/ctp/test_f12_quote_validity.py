@@ -101,9 +101,9 @@ def test_real_executor_blocks_stale_or_invalid_quote_at_get_and_submit(monkeypat
         quote.timestamp = 1_000_000
         quote.extra["received_at"] = 1000.0
         if fault == "exchange_stale":
-            quote.timestamp -= 6000
+            quote.timestamp -= 11_000
         elif fault == "receive_stale":
-            quote.extra["received_at"] -= 6
+            quote.extra["received_at"] -= 11
         elif fault == "one_sided":
             quote.ask_volume = 0
         elif fault == "tick":

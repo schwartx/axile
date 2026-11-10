@@ -94,7 +94,11 @@ from axile.executor.execution_engine import ExecutionEngine
 from axile.executor.futures_order_intent import is_close_intent, single_close_offset
 from axile.executor.instrument_catalog import catalog_deadline, catalog_remaining
 from axile.executor.instrument_catalog_records import Instrument, InstrumentRecord, from_ctp
-from axile.executor.market_data_validation import QUOTE_FUTURE_TOLERANCE_SECONDS, MarketDataUnavailableError
+from axile.executor.market_data_validation import (
+    DEFAULT_QUOTE_MAX_AGE_SECONDS,
+    QUOTE_FUTURE_TOLERANCE_SECONDS,
+    MarketDataUnavailableError,
+)
 from axile.executor.models.execution_result import AlgorithmResult, ExecutionStatus, TargetSizingDecision
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_callback import (
@@ -1577,7 +1581,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         now = self.market_data_now() if now is None else now
         if purpose == "sizing":
             error = fresh_valuation_quote_error(
-                quote, now=now, trading_day=self._trading_day, max_age=self._config().quote_max_age_seconds
+                quote, now=now, trading_day=self._trading_day, max_age=DEFAULT_QUOTE_MAX_AGE_SECONDS
             )
         else:
             error = "missing_quote" if quote is None else self._snapshot_quote_error(quote.symbol, quote, now=now)
@@ -1652,7 +1656,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             quote,
             now=get_default_clock().time(),
             trading_day=self._trading_day,
-            max_age=self._config().quote_max_age_seconds,
+            max_age=DEFAULT_QUOTE_MAX_AGE_SECONDS,
         )
 
     def _snapshot_quote_error(self, symbol, quote, *, now=None):
@@ -1660,7 +1664,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             quote,
             now=get_default_clock().time() if now is None else now,
             trading_day=self._trading_day,
-            max_age=self._config().quote_max_age_seconds,
+            max_age=DEFAULT_QUOTE_MAX_AGE_SECONDS,
             tick=self.get_tick_size(symbol) or 0.0,
         )
 
