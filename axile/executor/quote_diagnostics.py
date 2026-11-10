@@ -1,6 +1,6 @@
 """有界行情时间采样，辅助区分前置延迟、订阅问题和乱序回报。"""
 
-from collections import OrderedDict, deque
+from collections import OrderedDict
 from typing import Any
 
 
@@ -15,14 +15,17 @@ class QuoteDiagnostics:
         self._symbols: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
     def observe(self, symbol: str, *, event_time_ms: int, received_at: float, reason: str | None) -> None:
-        """由持有行情锁的调用方传入已规范化时间和既有拒绝原因。"""
-        row = self._symbols.pop(symbol, None)
-        if row is None:
-            row = {"received": 0, "accepted": 0, "rejected": 0, "frames": deque(maxlen=self.frames)}
-        row["received"] += 1
-        row["rejected" if reason else "accepted"] += 1
-        row["frames"].append({"event_time_ms": event_time_ms, "received_at": received_at, "reason": reason})
-        self._symbols[symbol] = row
+        """行情回调发布完整采样，读取方可直接复制已发布记录。"""
+        previous = self._symbols.get(symbol)
+        frames = previous["frames"] if previous is not None else ()
+        frame = {"event_time_ms": event_time_ms, "received_at": received_at, "reason": reason}
+        self._symbols[symbol] = {
+            "received": (previous["received"] if previous is not None else 0) + 1,
+            "accepted": (previous["accepted"] if previous is not None else 0) + int(reason is None),
+            "rejected": (previous["rejected"] if previous is not None else 0) + int(reason is not None),
+            "frames": (*frames, frame)[-self.frames :],
+        }
+        self._symbols.move_to_end(symbol)
         if len(self._symbols) > self.max_symbols:
             self._symbols.popitem(last=False)
 

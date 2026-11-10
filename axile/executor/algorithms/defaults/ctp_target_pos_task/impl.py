@@ -13,6 +13,7 @@ Notes
 """
 
 import math
+from functools import partial
 from typing import Any, Dict, List, Literal, Tuple, cast
 
 from pydantic import ConfigDict, Field
@@ -32,6 +33,7 @@ from axile.executor.algorithms.utils import setup_order_tracker, teardown_order_
 from axile.executor.algorithms.utils.final_position import read_final_position
 from axile.executor.algorithms.utils.order_tracker import ChaseConfig, OrderTracker
 from axile.executor.algorithms.utils.outcome import summarize_outcome
+from axile.executor.execution_session import ExecutionSession
 from axile.executor.market_data_validation import MarketDataUnavailableError
 from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.models.unified_account_assets import (
@@ -329,28 +331,42 @@ def _place_volume_slices(
     for chunk in slices:
         limit_price = 0.0
         try:
-            try:
-                market_data = clone_price_data(executor.get_market_data())
-            except TimeoutError as exc:
-                raise MarketDataUnavailableError(executor.symbol, "行情等待超时，本笔未提交") from exc
-            if order_type == OrderType.LIMIT:
-                limit_price = _calculate_order_price(market_data, price_type, direction)
-                if not math.isfinite(limit_price) or limit_price <= 0:
-                    action = "开仓" if offset_flag == THOST_FTDC_OF_Open else "平仓"
-                    message = f"{executor.symbol} {action}缺少有效行情，未提交限价单"
-                    executor.logger.error(message)
-                    if tracker is not None:
-                        tracker.explicit_error = message
-                    break
-            order = executor.place_order(
-                direction,
-                order_type,
-                chunk,
-                limit_price,
-                market_data=market_data,
-                offset_flag=offset_flag,
-                trade_rule=trade_rule,
-            )
+            if (
+                isinstance(executor, ExecutionSession)
+                and executor.channel_type == TradeChannel.CTP
+                and order_type == OrderType.LIMIT
+            ):
+                order = executor.place_order(
+                    direction,
+                    order_type,
+                    chunk,
+                    quote_price=partial(_calculate_order_price, price_type=price_type, direction=direction),
+                    offset_flag=offset_flag,
+                    trade_rule=trade_rule,
+                )
+            else:
+                try:
+                    market_data = clone_price_data(executor.get_market_data())
+                except TimeoutError as exc:
+                    raise MarketDataUnavailableError(executor.symbol, "行情等待超时，本笔未提交") from exc
+                if order_type == OrderType.LIMIT:
+                    limit_price = _calculate_order_price(market_data, price_type, direction)
+                    if not math.isfinite(limit_price) or limit_price <= 0:
+                        action = "开仓" if offset_flag == THOST_FTDC_OF_Open else "平仓"
+                        message = f"{executor.symbol} {action}缺少有效行情，未提交限价单"
+                        executor.logger.error(message)
+                        if tracker is not None:
+                            tracker.explicit_error = message
+                        break
+                order = executor.place_order(
+                    direction,
+                    order_type,
+                    chunk,
+                    limit_price,
+                    market_data=market_data,
+                    offset_flag=offset_flag,
+                    trade_rule=trade_rule,
+                )
         except Exception as exc:
             if tracker is not None:
                 tracker.record_exception(exc, "报单")
@@ -377,7 +393,7 @@ def _place_volume_slices(
                         "direction": direction.value,
                         "order_type": order_type.value,
                         "volume": float(chunk),
-                        "price": float(limit_price),
+                        "price": float(order.price),
                         "offset_flag": offset_flag,
                     }
                 },

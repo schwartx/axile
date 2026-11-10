@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
+from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor.support import _coerce_object_dict, _coerce_trade_rules
 from axile.executor.account_control.decorators import controlled_operation
 from axile.executor.market_data_validation import MarketDataUnavailableError
@@ -114,7 +115,9 @@ class AbstractExecutorFacadeMixin:
         normalized_symbol = executor._normalize_symbol(symbol)
         try:
             direction, order_type = normalize_order_enums(direction, order_type)
-            if get_order_submission_validator() is not None:
+            if get_order_submission_validator() is not None or (
+                executor.channel_type == TradeChannel.CTP and callable(kwargs.get("quote_price"))
+            ):
                 validate_order_submission()
                 order = executor._place_order_impl(normalized_symbol, direction, order_type, volume, price, **kwargs)
             else:

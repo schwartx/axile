@@ -1,6 +1,7 @@
 """CTP 原生请求字段构造与调用测试。"""
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -15,6 +16,8 @@ from axile.executor.account_control.guard import AccountControlGuard
 from axile.executor.account_control.models import AccountControlDecision
 from axile.executor.account_control.presets import resolve_account_control_policy
 from axile.executor.account_control.snapshot import AccountControlCounterSnapshot
+from axile.executor.algorithms.defaults.ctp_target_pos_task.impl import _place_volume_slices
+from axile.executor.algorithms.utils.clock import get_default_clock
 from axile.executor.ctp.ctp_execute import (
     CTPExecutor,
     CtpRequestError,
@@ -29,9 +32,11 @@ from axile.executor.ctp.requests import (
     build_query_settlement_confirm,
     resolve_offset,
 )
+from axile.executor.execution_session import ExecutionSession
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import CTPAccountConfig, UnifiedStandardInput
 from axile.executor.models.unified_order import OrderDirection, OrderType
+from tests.fixtures.algorithm_fakes import ClockStub
 from tests.unit.executor.ctp._quote_test_support import fresh_quote
 
 
@@ -43,6 +48,7 @@ def test_position_valuation_subscribes_combination_legs_and_skips_zero(config):
     executor.initialize_websocket = Mock()
     executor._get_ctp_session_block_reason = Mock(return_value=None)
     executor._fresh_valuation_quote_error = Mock(return_value=None)
+    executor._valuation_snapshots = {}
     executor._valuation_quotes = {symbol: fresh_quote(symbol, "") for symbol in executor._instruments}
     executor._query_valuation_snapshot = Mock()
     rows = [
@@ -285,6 +291,86 @@ def test_market_subscription_encodes_instrument_ids() -> None:
     assert executor._monitoring is True
 
 
+def test_subscription_callback_and_quote_read_do_not_wait_for_trader_lock(config, monkeypatch):
+    executor = CTPExecutor(TradeChannel.CTP)
+    executor.account_config = config
+    executor._ready = executor._trader_connected = executor._market_connected = True
+    executor._trading_day = "20260824"
+    executor._instruments = {"ag2612": SimpleNamespace(PriceTick=1.0)}
+    executor._ensure_instrument_symbols = Mock()
+    executor._market_api = Mock()
+    monkeypatch.setattr(
+        executor,
+        "_normalize_quote_time",
+        lambda quote: setattr(quote, "timestamp", int(get_default_clock().time() * 1000)),
+    )
+
+    def subscribe(*_):
+        executor._market_subscribed(SimpleNamespace(InstrumentID="ag2612"), None)
+        executor._on_quote(
+            {
+                "InstrumentID": "ag2612",
+                "TradingDay": "20260824",
+                "LastPrice": 9000,
+                "BidPrice1": 8999,
+                "AskPrice1": 9001,
+                "BidVolume1": 2,
+                "AskVolume1": 2,
+                "LowerLimitPrice": 8000,
+                "UpperLimitPrice": 10000,
+            }
+        )
+        return 0
+
+    executor._market_api.SubscribeMarketData.side_effect = subscribe
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool, executor._lock:
+            first = pool.submit(executor.get_market_data, ["ag2612"])
+            second = pool.submit(executor.get_market_data, ["ag2612"])
+            assert first.result(timeout=2)["ag2612"].bid_price == 8999
+            assert second.result(timeout=2)["ag2612"].bid_price == 8999
+        executor._market_api.SubscribeMarketData.assert_called_once_with([b"ag2612"], 1)
+    finally:
+        executor.close()
+
+
+def test_close_waits_for_native_subscription_before_releasing_mdapi():
+    executor = CTPExecutor(TradeChannel.CTP)
+    executor._ready = executor._trader_connected = executor._market_connected = True
+    executor._instruments = {"ag2612": object()}
+    executor._ensure_instrument_symbols = Mock()
+    market_api = executor._market_api = Mock()
+    started, finish = threading.Event(), threading.Event()
+
+    def subscribe(*_):
+        started.set()
+        assert finish.wait(2)
+        market_api.Release.assert_not_called()
+        return 0
+
+    market_api.SubscribeMarketData.side_effect = subscribe
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        subscription = pool.submit(executor.initialize_websocket, ["ag2612"])
+        try:
+            assert started.wait(2)
+            shutdown = executor._subscription_worker.shutdown
+            shutdown_started = threading.Event()
+
+            def shutdown_worker(*, wait):
+                shutdown_started.set()
+                shutdown(wait=wait)
+
+            executor._subscription_worker.shutdown = shutdown_worker
+            close = pool.submit(executor.close)
+            assert shutdown_started.wait(2)
+            market_api.Release.assert_not_called()
+        finally:
+            finish.set()
+        subscription.result(timeout=2)
+        close.result(timeout=2)
+    market_api.Release.assert_called_once()
+
+
 def test_query_settlement_confirm_populates_account_key(config: CTPAccountConfig) -> None:
     request = build_query_settlement_confirm(config)
 
@@ -494,6 +580,60 @@ def test_public_place_order_controls_ctp_submit_once(
     assert [event.operation for event in events] == ["place_order"]
     assert events[0].decision == AccountControlDecision.ALLOWED
     assert events[0].metadata["groups"] == ["ctp_td_global"]
+
+
+@pytest.mark.parametrize("new_tick", [True, False])
+def test_target_limit_prices_at_native_send_after_shared_ctp_wait(config, monkeypatch, new_tick):
+    executor = _submit_point_executor(config)
+    moment = datetime(2026, 8, 24, 21, 29, tzinfo=_SHANGHAI)
+    _at_clock(monkeypatch, moment)
+    clock = ClockStub()
+    clock.current = moment.timestamp()
+    monkeypatch.setattr(get_default_clock(), "time", clock.time)
+    original = executor._quotes["ag2612"]
+    original.timestamp = int((clock.time() - 4) * 1000)
+    original.extra["received_at"] = clock.time() - 4
+    fresh = original.model_copy(deep=True)
+    fresh.bid_price = 3034
+    guard = AccountControlGuard(
+        account_id=1,
+        execution_id="exec-ctp-order",
+        channel=TradeChannel.CTP,
+        policy=resolve_account_control_policy("ctp"),
+        baseline=AccountControlCounterSnapshot(),
+        wait_clock=clock,
+        wait_poll_interval_ms=1500,
+    )
+    executor.set_account_control_guard(guard)
+    guard.begin_operation("query_positions").record_outcome("accepted")
+
+    def publish_while_waiting(seconds):
+        clock.sleep(seconds)
+        if new_tick:
+            fresh.timestamp = int(clock.time() * 1000)
+            fresh.extra["received_at"] = clock.time()
+            executor._quotes["ag2612"] = fresh
+
+    guard._sleep = publish_while_waiting
+    audit = executor.emit_audit_event = Mock()
+    session = ExecutionSession(executor, "ag2612")
+    orders, submitted = _place_volume_slices(
+        session, OrderDirection.BUY, 1, "PASSIVE", offset_flag="0", trade_rule=None
+    )
+
+    assert clock.time() == moment.timestamp() + 1.5
+    if new_tick:
+        executor._trader_api.ReqOrderInsert.assert_called_once()
+        request = executor._trader_api.ReqOrderInsert.call_args.args[0]
+        assert request.LimitPrice == orders[0].price == 3034
+        assert submitted == 1
+    else:
+        executor._trader_api.ReqOrderInsert.assert_not_called()
+        assert orders == []
+        assert submitted == 0
+        assert executor._order_keys == {}
+        assert audit.call_args.kwargs["reason_code"] == "COMMON.MARKET_DATA.UNAVAILABLE"
+        assert audit.call_args.kwargs["details"]["quote_timestamp"] == original.timestamp
 
 
 def test_place_order_does_not_retry_rate_limit(config: CTPAccountConfig, monkeypatch: pytest.MonkeyPatch) -> None:
