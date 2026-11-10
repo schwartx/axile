@@ -1,6 +1,82 @@
 import { expect, test, type Page } from '@playwright/test'
 import { DEFAULT_FUTURES_CRON } from '../src/features/setup/cron'
 
+async function mockCopy(page: Page, failure?: 'copy' | 'archive') {
+  const writes: string[] = []
+  let reject = failure
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (request.method() !== 'GET') writes.push(path)
+    if (path.endsWith('/copy') || path.endsWith('/archive')) {
+      if (reject && path.endsWith(`/${reject}`)) {
+        reject = undefined
+        await route.fulfill({ status: 409, json: { detail: '当前任务未结束，请稍后重试' } })
+      } else {
+        await route.fulfill({ json: { id: path.endsWith('/copy') ? 2 : 1, is_started: false,
+          runtime_sync: { status: 'synchronized' } } })
+      }
+    } else {
+      await route.fulfill({ json: { data: [] } })
+    }
+  })
+  return writes
+}
+
+test('创建并归档原账户按顺序执行，窄屏按钮可见', async ({ page }, info) => {
+  const writes = await mockCopy(page)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/e2e/archival.html?copy')
+  const dialog = page.getByRole('dialog', { name: '复制账户' })
+  const create = dialog.getByRole('button', { name: '创建并归档原账户', exact: true })
+  await expect(create).toBeInViewport()
+  await expect(dialog.getByRole('button', { name: '创建暂停账户', exact: true })).toBeInViewport()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  await page.screenshot({ path: info.outputPath('copy-and-archive-narrow.png'), fullPage: true })
+  await create.click()
+  await expect(page.getByRole('heading', { name: '已创建的新账户' })).toBeVisible()
+  expect(writes).toEqual(['/api/v1/account/1/copy', '/api/v1/account/1/archive'])
+})
+
+test('归档失败后重试不重复创建账户', async ({ page }) => {
+  const writes = await mockCopy(page, 'archive')
+  await page.goto('/e2e/archival.html?copy')
+  await page.getByRole('button', { name: '创建并归档原账户', exact: true }).click()
+  await expect(page.getByText('新账户已创建，原账户归档尚未确认。重试只归档原账户，不会重复创建。')).toBeVisible()
+  await expect(page.getByRole('button', { name: '创建暂停账户', exact: true })).toBeDisabled()
+  await expect(page.getByLabel('新账户名称')).toBeDisabled()
+  await page.getByRole('button', { name: '重试：归档原账户失败', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '已创建的新账户' })).toBeVisible()
+  expect(writes).toEqual(['/api/v1/account/1/copy', '/api/v1/account/1/archive', '/api/v1/account/1/archive'])
+})
+
+test('复制失败不归档，重试保留归档选择', async ({ page }) => {
+  const writes = await mockCopy(page, 'copy')
+  await page.goto('/e2e/archival.html?copy')
+  await page.getByRole('button', { name: '创建并归档原账户', exact: true }).click()
+  await expect(page.getByRole('alert')).toContainText('复制账户失败')
+  expect(writes).toEqual(['/api/v1/account/1/copy'])
+  await page.getByRole('button', { name: '重试：复制账户失败', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '已创建的新账户' })).toBeVisible()
+  expect(writes).toEqual(['/api/v1/account/1/copy', '/api/v1/account/1/copy', '/api/v1/account/1/archive'])
+})
+
+test('原有创建暂停账户不归档原账户', async ({ page }) => {
+  const writes = await mockCopy(page)
+  await page.goto('/e2e/archival.html?copy')
+  await page.getByRole('button', { name: '创建暂停账户', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '已创建的新账户' })).toBeVisible()
+  expect(writes).toEqual(['/api/v1/account/1/copy'])
+})
+
+for (const blocked of ['started', 'busy']) test(`来源账户${blocked}时禁用两种创建操作`, async ({ page }) => {
+  const writes = await mockCopy(page)
+  await page.goto(`/e2e/archival.html?copy&${blocked}`)
+  await expect(page.getByRole('button', { name: '创建暂停账户', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '创建并归档原账户', exact: true })).toBeDisabled()
+  expect(writes).toEqual([])
+})
+
 async function mockArchive(page: Page, account: Record<string, unknown> = {}) {
   const writes: string[] = []
   let archived = false
