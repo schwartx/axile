@@ -16,7 +16,9 @@ def select_scope(paths: list[str]) -> dict[str, str]:
 if __name__ == "__main__":
     scope = select_scope([])
     if len(sys.argv) == 3:
-        changed = subprocess.check_output(["git", "diff", "--name-only", "--no-renames", "-z", f"{sys.argv[1]}...{sys.argv[2]}"])
+        changed = subprocess.check_output(
+            ["git", "diff", "--name-only", "--no-renames", "-z", f"{sys.argv[1]}...{sys.argv[2]}"]
+        )
         scope = select_scope(changed.decode().rstrip("\0").split("\0"))
     for key, value in scope.items():
         print(f"{key}={value}")
