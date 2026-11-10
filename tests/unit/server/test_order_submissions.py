@@ -45,6 +45,7 @@ def test_main_and_script_share_account_day_without_recounting_callbacks(tmp_path
             fact("script", "rejected", start + 1),
             fact("pending", "pending", start + 2),
             fact("exception", "unknown", start + 3),
+            fact("blocked", "not_sent", start + 5),
             fact("old", "accepted", start - 1),
             fact("tomorrow", "accepted", end),
             fact("another-account", "accepted", start, account_id=2),
@@ -65,6 +66,7 @@ def test_main_and_script_share_account_day_without_recounting_callbacks(tmp_path
             _core.order_submissions(_core.Store(database), 1, "2026-10-19", "Asia/Shanghai", start, end, 100)
         )["data"]
         assert next(row for row in all_rows if row["submission_uid"] == "main")["revision"] == 2
+        assert next(row for row in all_rows if row["submission_uid"] == "blocked")["send_status"] == "not_sent"
 
         app = FastAPI()
         app.include_router(router, prefix="/account")

@@ -7,11 +7,13 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, cast
 
 from axile.common.logging import LogComponent, bind_log_context
 from axile.common.order_param_model import OrderParamModel
+from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
 from axile.executor.market_data_validation import MarketDataPurpose, MarketDataUnavailableError
 from axile.executor.models.order_channel_health import OrderChannelHealth
@@ -124,6 +126,11 @@ class ExecutionSession:
             return planner(self.symbol, direction, volume, account_assets)
         return [(volume, {})]
 
+    @property
+    def supports_quote_at_send(self) -> bool:
+        """只有在原生发送点校验和定价的执行器才能接收延后报价。"""
+        return self.channel_type == TradeChannel.CTP and getattr(self._owner, "supports_quote_at_send", False) is True
+
     def place_order(
         self,
         direction: OrderDirection,
@@ -133,10 +140,18 @@ class ExecutionSession:
         *,
         market_data: UnifiedPriceData | None = None,
         market_data_purpose: MarketDataPurpose | None = None,
+        quote_price: Callable[[UnifiedPriceData], float] | None = None,
         **kwargs: object,
     ) -> UnifiedOrder:
         """按消费时的行情快照下单，并在账户限流等待后重新校验同一证据。"""
         self.handle_termination_checkpoint()
+        if quote_price is not None:
+            if not self.supports_quote_at_send or order_type != OrderType.LIMIT:
+                raise ValueError("当前执行器或订单类型不支持发送前定价")
+            with order_submission_context(self.audit_context):
+                return self._owner.place_order(
+                    self.symbol, direction, order_type, volume, quote_price=quote_price, **kwargs
+                )
         quote = clone_price_data(market_data if market_data is not None else self._market_data.get())
         purpose: MarketDataPurpose = (
             "order" if order_type != OrderType.MARKET or market_data_purpose == "order" else "sizing"
