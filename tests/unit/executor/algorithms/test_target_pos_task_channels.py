@@ -420,6 +420,46 @@ def test_target_send_wait_still_rejects_expired_quote_without_retry(monkeypatch)
     assert result.orders == executor.orders == []
 
 
+@pytest.mark.parametrize("submitted_first", [False, True])
+def test_target_quote_timeout_is_known_unsubmitted(monkeypatch, submitted_first):
+    executor = _FreshQuoteExecutor(TradeChannel.CTP)
+    get_quote = executor.get_market_data
+
+    def timed_out_quote():
+        if executor.quotes and (not submitted_first or executor.orders):
+            raise TimeoutError("行情等待超时")
+        return get_quote()
+
+    monkeypatch.setattr(executor, "get_market_data", timed_out_quote)
+    place = MagicMock(wraps=executor.place_order)
+    monkeypatch.setattr(executor, "place_order", place)
+    result = ctp_target_pos_task_algorithm(
+        cast("ExecutorProtocol", executor),
+        AlgorithmInput(symbol=executor.symbol, target_volume=1, trade_rule={}, params=CTPTargetPosTaskParams()),
+    )
+
+    assert result.status == (ExecutionStatus.PARTIAL if submitted_first else ExecutionStatus.BLOCKED)
+    assert result.reason_code == "COMMON.MARKET_DATA.UNAVAILABLE"
+    assert result.error == f"{executor.symbol} 行情不可用于交易：行情等待超时，本笔未提交"
+    assert place.call_count == len(result.orders) == int(submitted_first)
+    assert all(order.extra["offset_flag"] == "4" for order in result.orders)
+
+
+def test_target_submit_timeout_keeps_unknown_acceptance(monkeypatch):
+    executor = _FreshQuoteExecutor(TradeChannel.CTP)
+    place = MagicMock(side_effect=TimeoutError("报单等待超时"))
+    monkeypatch.setattr(executor, "place_order", place)
+    result = ctp_target_pos_task_algorithm(
+        cast("ExecutorProtocol", executor),
+        AlgorithmInput(symbol=executor.symbol, target_volume=1, trade_rule={}, params=CTPTargetPosTaskParams()),
+    )
+
+    assert result.status == ExecutionStatus.FAILED
+    assert result.error == "报单请求超时，是否受理尚未确认"
+    assert place.call_count == 1
+    assert result.orders == []
+
+
 @pytest.mark.parametrize("channel", [TradeChannel.CTP, TradeChannel.TQ])
 def test_target_pos_task_uses_same_close_then_open_flow(channel: TradeChannel) -> None:
     executor = _FuturesExecutor(channel)

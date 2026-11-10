@@ -32,6 +32,7 @@ from axile.executor.algorithms.utils import setup_order_tracker, teardown_order_
 from axile.executor.algorithms.utils.final_position import read_final_position
 from axile.executor.algorithms.utils.order_tracker import ChaseConfig, OrderTracker
 from axile.executor.algorithms.utils.outcome import summarize_outcome
+from axile.executor.market_data_validation import MarketDataUnavailableError
 from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.models.unified_account_assets import (
     Position,
@@ -329,7 +330,10 @@ def _place_volume_slices(
     for chunk in slices:
         limit_price = 0.0
         try:
-            market_data = clone_price_data(executor.get_market_data())
+            try:
+                market_data = clone_price_data(executor.get_market_data())
+            except TimeoutError as exc:
+                raise MarketDataUnavailableError(executor.symbol, "行情等待超时，本笔未提交") from exc
             if order_type == OrderType.LIMIT:
                 limit_price = _calculate_order_price(market_data, price_type, direction)
                 if not math.isfinite(limit_price) or limit_price <= 0:
