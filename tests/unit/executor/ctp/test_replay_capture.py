@@ -126,9 +126,7 @@ def test_snapshot_depth_does_not_turn_missing_levels_into_zero_liquidity(broker)
     data = replay.quote(broker.executor, quote)
     assert data["bids"] == [{"price": 9000.0, "quantity": 3.0}]
     assert data["available_depth"] == {"bid": 1, "ask": 1}
-    assert data["valid_until_us"] == data["received_time_us"] + int(
-        broker.executor.account_config.quote_max_age_seconds * 1_000_000
-    )
+    assert data["valid_until_us"] == data["received_time_us"] + 10_000_000
     assert data["book_valid"]
     assert data["field_quality"]["BidPrice2"] == "invalid"
 

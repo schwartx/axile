@@ -83,6 +83,13 @@ def test_query_rejected_before_any_send(value, entry):
     executor._config.assert_not_called()
 
 
+def test_legacy_quote_max_age_is_ignored(config):
+    legacy_data = {**config.model_dump(), "quote_max_age_seconds": 30.0}
+
+    assert CTPAccountConfig.model_validate(legacy_data).model_dump() == config.model_dump()
+    assert "quote_max_age_seconds" not in CTPAccountConfig.model_json_schema()["properties"]
+
+
 @pytest.mark.parametrize("field", ["broker_id", "investor_id", "app_id", "auth_code"])
 @pytest.mark.parametrize("value", BAD)
 def test_config_and_bypassed_config_rejected(config, field, value):

@@ -115,6 +115,9 @@ pub fn summary(
         .map_err(database)?;
     for row in rows {
         let (operation, send, broker, count) = row.map_err(database)?;
+        if send.as_deref() == Some("not_sent") {
+            continue;
+        }
         let cancel = operation == "cancel_order";
         let status = match (cancel, send.as_deref()) {
             (true, Some("accepted")) => "cancel_sync_accepted",
@@ -189,7 +192,8 @@ fn unknown() -> String {
 
 fn validate_fact(fact: &Fact) -> Result<(), String> {
     if !["place_order", "cancel_order"].contains(&fact.operation.as_str())
-        || !["pending", "accepted", "rejected", "unknown"].contains(&fact.send_status.as_str())
+        || !["pending", "accepted", "rejected", "unknown", "not_sent"]
+            .contains(&fact.send_status.as_str())
         || !["unknown", "acknowledged", "rejected"].contains(&fact.broker_status.as_str())
     {
         return Err("INVALID_DATA: invalid submission status or operation".into());

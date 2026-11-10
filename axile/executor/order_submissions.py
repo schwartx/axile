@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from threading import RLock
 from typing import Literal
 from uuid import uuid4
@@ -28,7 +29,7 @@ class OrderSubmissionFact(BaseModel):
     request_id: int
     occurred_at_ms: int
     revision: int = 0
-    send_status: Literal["pending", "accepted", "rejected", "unknown"] = "pending"
+    send_status: Literal["pending", "accepted", "rejected", "unknown", "not_sent"] = "pending"
     return_code: int | None = None
     broker_status: Literal["unknown", "acknowledged", "rejected"] = "unknown"
     error_id: int | None = None
@@ -62,8 +63,9 @@ class OrderSubmissionRecorder:
         execution_id: str | None = None,
         source: str | None = None,
         operation: Literal["place_order", "cancel_order"] = "place_order",
+        send_scope: AbstractContextManager[None] | None = None,
     ) -> int:
-        """在本地校验之后包装一次原生报单，记录同步返回并保留提前到达的回报。"""
+        """先落盘，再进入发送门禁并调用原生接口，保留提前到达的回报。"""
         fact = OrderSubmissionFact(
             submission_uid=uuid4().hex,
             account_id=self.account_id,
@@ -88,12 +90,20 @@ class OrderSubmissionRecorder:
                 _, old = self._requests.popitem(last=False)
                 if self._orders.get(old.order_id) == old.request_id:
                     self._orders.pop(old.order_id, None)
+        sent_at = None
         try:
-            code = int(call())
+            with send_scope if send_scope is not None else nullcontext():
+                sent_at = clock_now_ms()
+                code = int(call())
         except BaseException:
-            self._update(request_id, send_status="unknown")
+            if sent_at is None:
+                self._update(request_id, send_status="not_sent")
+            else:
+                self._update(request_id, send_status="unknown", occurred_at_ms=sent_at)
             raise
-        self._update(request_id, send_status="accepted" if code == 0 else "rejected", return_code=code)
+        self._update(
+            request_id, send_status="accepted" if code == 0 else "rejected", return_code=code, occurred_at_ms=sent_at
+        )
         return code
 
     def broker_result(self, order_id: str, *, rejected: bool, error_id: int | None = None) -> None:

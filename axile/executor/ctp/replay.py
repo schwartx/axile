@@ -11,6 +11,7 @@ from axile.executor import replay as recording
 from axile.executor.ctp.converters import _time, stable_order_id
 from axile.executor.ctp.quote_time import resolve_quote_time
 from axile.executor.ctp_product_sessions import get_ctp_product_sessions
+from axile.executor.market_data_validation import DEFAULT_QUOTE_MAX_AGE_SECONDS
 from axile.executor.quote_quality import quote_observation
 from axile.executor.trading_calendar import CHINA_CALENDAR_ID
 
@@ -294,15 +295,12 @@ def quote(owner: object, row: object) -> dict[str, object]:
         sides[label] = levels
     data.update(_quote_time(owner, f))
     bids, asks = sides["bids"], sides["asks"]
-    config = getattr(owner, "account_config", None)
-    age = getattr(config, "quote_max_age_seconds", 0)
-    validity = int(age * 1_000_000) if isinstance(age, (int, float)) and math.isfinite(age) and age > 0 else None
     data.update(
         symbol=f.text("InstrumentID"),
         **sides,
         available_depth={"bid": len(bids), "ask": len(asks)},
         depth_coverage={"kind": "top_n", "bid": len(bids), "ask": len(asks), "unlisted": "unknown"},
-        **quote_observation(bids, asks, validity_us=validity),
+        **quote_observation(bids, asks, validity_us=int(DEFAULT_QUOTE_MAX_AGE_SECONDS * 1_000_000)),
         last_price=f.number("LastPrice"),
         last_price_kind="trade" if f.quality.get("LastPrice") == "known" else "unknown",
         volume=f.number("Volume"),

@@ -7,7 +7,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -20,6 +20,7 @@ from openctp_ctp import thosttraderapi as td
 
 from axile.channels.cn_futures import canonicalize_cn_futures_symbol, czce_is_option_instrument
 from axile.common.trade_channel import TradeChannel
+from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
 from axile.executor.abstract_executor.base import AbstractExecutor
 from axile.executor.account_control.decorators import run_controlled_call
 from axile.executor.account_control.exceptions import AccountControlBlockedError
@@ -93,7 +94,11 @@ from axile.executor.execution_engine import ExecutionEngine
 from axile.executor.futures_order_intent import is_close_intent, single_close_offset
 from axile.executor.instrument_catalog import catalog_deadline, catalog_remaining
 from axile.executor.instrument_catalog_records import Instrument, InstrumentRecord, from_ctp
-from axile.executor.market_data_validation import QUOTE_FUTURE_TOLERANCE_SECONDS
+from axile.executor.market_data_validation import (
+    DEFAULT_QUOTE_MAX_AGE_SECONDS,
+    QUOTE_FUTURE_TOLERANCE_SECONDS,
+    MarketDataUnavailableError,
+)
 from axile.executor.models.execution_result import AlgorithmResult, ExecutionStatus, TargetSizingDecision
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_callback import (
@@ -107,7 +112,7 @@ from axile.executor.order_insert_rejects import (
     rejected_order_update,
     resolve_insert_reject_order_id,
 )
-from axile.executor.order_submission_context import validate_order_submission
+from axile.executor.order_submission_context import get_order_submission_context, validate_order_submission
 from axile.executor.order_volume_limits import (
     effective_max_order_volume,
     ensure_order_volume_allowed,
@@ -213,6 +218,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
     """直接持有 OpenCTP API 的统一执行器。"""
 
     _catalog_requires_specs = True
+    supports_quote_at_send = True
 
     def __init__(self, channel_type: TradeChannel, account_config: AccountConfig | None = None) -> None:
         self._init_instrument_catalog()
@@ -309,7 +315,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 execution_error=f"{name}请求未受理，返回码 {code}",
             )
 
-    def _call_trader_request(self, name, req, *, before_send=None) -> int:
+    def _call_trader_request(self, name, req, *, before_send=None, quote_price=None) -> int:
         """直接发送一次 TraderApi 请求，不附加账户控制或适配层重试。"""
         if hasattr(req, "InstrumentID"):
             validate_instrument(
@@ -318,22 +324,13 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             )
         guard = getattr(self._catalog_query_state, "guard", None) or self.get_account_control_guard()
         rid = self._next_id()
-        # 账户控制可能等待很久，故门禁必须落在等待之后的原生请求发送点。
-        with self._lock:
-            self._require_active_connection()
-            if name.startswith("ReqQry"):
-                self._catalog_checkpoint()
-            if name in {"ReqOrderInsert", "ReqExecOrderInsert", "ReqOptionSelfCloseInsert"}:
-                self._require_new_order_ready(str(req.InstrumentID))
-                if name == "ReqOrderInsert":
-                    validate_order_submission()
-                    self._validate_order_quote(str(req.InstrumentID), req.LimitPrice, req.OrderPriceType)
-            elif name in {"ReqOrderAction", "ReqExecOrderAction", "ReqOptionSelfCloseAction"}:
-                self._require_session_ready()
-            if before_send is not None:
-                before_send(rid)
-            self._link_control_request(guard, rid, name, req)
-            code = self._invoke_trader_request(name, req, rid, guard)
+        scope = self._trader_send_scope(name, req, rid, guard, before_send, quote_price)
+        if quote_price is None:
+            with scope:
+                code = self._invoke_trader_request(name, req, rid, guard)
+        else:
+            # 待发送记录落盘时释放交易锁，让行情回调能够发布新盘口。
+            code = self._invoke_trader_request(name, req, rid, guard, send_scope=scope)
         if code == 0:
             return rid
         self._control_request_result(rid, "broker_sync_rejected", {"return_code": code})
@@ -379,48 +376,74 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             )
         raise error
 
-    def _invoke_trader_request(self, name, req, rid, guard) -> int:
-        """本地校验完成后记录报单与撤单调用；其他请求不计入报撤。"""
+    @contextmanager
+    def _trader_send_scope(self, name, req, rid, guard, before_send, quote_price):
+        """在原生调用期间持有会话锁；延后定价在待发送记录落盘后进行。"""
+        with self._lock:
+            self._require_active_connection()
+            if name.startswith("ReqQry"):
+                self._catalog_checkpoint()
+            if name in {"ReqOrderInsert", "ReqExecOrderInsert", "ReqOptionSelfCloseInsert"}:
+                symbol = str(req.InstrumentID)
+                if quote_price is None:
+                    self._require_new_order_ready(symbol)
+                else:
+                    self._require_new_order_ready(symbol, require_quote=False)
+                if name == "ReqOrderInsert":
+                    validate_order_submission()
+                    if quote_price is None:
+                        self._validate_order_quote(symbol, req.LimitPrice, req.OrderPriceType)
+                    else:
+                        self._require_order_session(symbol)
+                        req.LimitPrice = self._price_order_at_send(symbol, quote_price)
+            elif name in {"ReqOrderAction", "ReqExecOrderAction", "ReqOptionSelfCloseAction"}:
+                self._require_session_ready()
+            if before_send is not None:
+                before_send(rid)
+            self._link_control_request(guard, rid, name, req)
+            yield
+
+    def _invoke_trader_request(self, name, req, rid, guard, *, send_scope=None) -> int:
+        """在实际报撤时录制原生请求及同步结果。"""
         from axile.executor.account_control.context import controlled_source
 
+        if name not in {"ReqOrderInsert", "ReqOrderAction"}:
+            return int(getattr(self._trader_api, name)(req, rid))
         receipt = capture_command_receipt(self)
-        if name in {"ReqOrderInsert", "ReqOrderAction"}:
+
+        def send():
             replay_capture.capture(
                 self,
                 "/command",
                 lambda: replay_capture.command(self, name, req, rid, phase="native_request"),
                 receipt=receipt,
             )
-        recorder = getattr(self, "order_submission_recorder", None)
-        if name not in {"ReqOrderInsert", "ReqOrderAction"} or recorder is None:
             result = int(getattr(self._trader_api, name)(req, rid))
-            if name in {"ReqOrderInsert", "ReqOrderAction"}:
-                replay_capture.capture(
-                    self,
-                    "/command",
-                    lambda: replay_capture.command(self, name, req, rid, phase="native_return", result=result),
-                    receipt=receipt,
-                )
+            replay_capture.capture(
+                self,
+                "/command",
+                lambda: replay_capture.command(self, name, req, rid, phase="native_return", result=result),
+                receipt=receipt,
+            )
             return result
+
+        recorder = getattr(self, "order_submission_recorder", None)
+        if recorder is None:
+            with send_scope if send_scope is not None else nullcontext():
+                return send()
         source = None if guard is None else controlled_source(guard, guard.source).value
         front_id = self._front_id if name == "ReqOrderInsert" else int(req.FrontID)
         session_id = self._session_id if name == "ReqOrderInsert" else int(req.SessionID)
-        result = recorder.submit(
-            lambda: getattr(self._trader_api, name)(req, rid),
+        return recorder.submit(
+            send,
             symbol=str(req.InstrumentID),
             order_id=stable_order_id(self._trading_day, front_id, session_id, str(req.OrderRef)),
             request_id=rid,
             execution_id=getattr(guard, "execution_id", None),
             source=source,
             operation="cancel_order" if name == "ReqOrderAction" else "place_order",
+            send_scope=send_scope,
         )
-        replay_capture.capture(
-            self,
-            "/command",
-            lambda: replay_capture.command(self, name, req, rid, phase="native_return", result=result),
-            receipt=receipt,
-        )
-        return result
 
     def _link_control_request(self, guard, rid, name, req) -> None:
         """在发送前登记有界关联，回调可先于同步调用返回。"""
@@ -1135,7 +1158,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         ):
             raise CtpRequestError(f"CTP {symbol} 尚未收到本会话订阅的新行情")
 
-    def _require_new_order_ready(self, symbol=None):
+    def _require_new_order_ready(self, symbol=None, *, require_quote=True):
         """未归属成交只阻止新增委托，不阻止健康会话撤销已知订单。"""
         self._require_session_ready()
         runtime = self.get_active_execution_runtime()
@@ -1143,7 +1166,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             runtime.handle_termination_checkpoint(symbol)
         if self._unassociated_trades or self._ambiguous_exchange_orders:
             raise CtpRequestError("CTP 存在未归属成交或歧义订单关联，禁止新单")
-        if symbol:
+        if symbol and require_quote:
             self._require_session_ready(symbol)
 
     def _send_stage(self, stage, operation, name, req):
@@ -1688,7 +1711,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         now = self.market_data_now() if now is None else now
         if purpose == "sizing":
             error = fresh_valuation_quote_error(
-                quote, now=now, trading_day=self._trading_day, max_age=self._config().quote_max_age_seconds
+                quote, now=now, trading_day=self._trading_day, max_age=DEFAULT_QUOTE_MAX_AGE_SECONDS
             )
         else:
             error = "missing_quote" if quote is None else self._snapshot_quote_error(quote.symbol, quote, now=now)
@@ -1758,7 +1781,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             quote,
             now=get_default_clock().time(),
             trading_day=self._trading_day,
-            max_age=self._config().quote_max_age_seconds,
+            max_age=DEFAULT_QUOTE_MAX_AGE_SECONDS,
         )
 
     def _snapshot_quote_error(self, symbol, quote, *, now=None):
@@ -1766,7 +1789,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             quote,
             now=get_default_clock().time() if now is None else now,
             trading_day=self._trading_day,
-            max_age=self._config().quote_max_age_seconds,
+            max_age=DEFAULT_QUOTE_MAX_AGE_SECONDS,
             tick=self.get_tick_size(symbol),
         )
 
@@ -1783,6 +1806,47 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         ):
             raise ValueError(f"限价 {price} 不符合 tick 或涨跌停")
 
+    def _price_order_at_send(self, symbol, quote_price):
+        quote = self._quotes.get(symbol)
+        self._require_pricing_quote(symbol, quote)
+        assert quote is not None
+        price = quote_price(quote)
+        if not price_in_bounds(
+            price,
+            tick=self.get_tick_size(symbol) or 0.0,
+            lower=quote.extra["lower_limit_price"],
+            upper=quote.extra["upper_limit_price"],
+        ):
+            raise MarketDataUnavailableError(symbol, "限价不符合最小变价单位或涨跌停")
+        self._require_pricing_quote(symbol, quote)
+        return price
+
+    def _require_pricing_quote(self, symbol, quote):
+        checked_at = self.market_data_now()
+        error = (
+            "行情订阅未就绪"
+            if symbol not in self._subscription_acks or symbol in self._subscription_errors
+            else self.market_data_error(quote, now=checked_at)
+        )
+        if error is None:
+            return
+        self.emit_audit_event(
+            event_type=ExecutionEventType.SYMBOL_SKIPPED,
+            status=ExecutionEventStatus.WARNING,
+            reason_family=ExecutionReasonFamily.MARKET_RULE,
+            reason_code=MarketDataUnavailableError.reason_code,
+            symbol=symbol,
+            audit_context=get_order_submission_context(),
+            details={
+                "reason": error,
+                "quote_timestamp": None if quote is None else quote.timestamp,
+                "checked_at": checked_at,
+                "source": None if quote is None else quote.extra.get("source"),
+                "time_basis": None if quote is None else quote.extra.get("time_basis", "exchange"),
+            },
+        )
+        raise MarketDataUnavailableError(symbol, error)
+
     def _new_ref(self):
         with self._lock:
             r = str(self._order_ref)
@@ -1796,6 +1860,19 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         exchange = str(getattr(self._instruments.get(symbol), "ExchangeID", ""))
         return self._plan_futures_close(symbol, direction, volume, account_assets, exchange)
 
+    def _require_order_session(self, symbol):
+        reason_code = self._get_ctp_session_block_reason(symbol)
+        if reason_code is not None:
+            raise AccountControlBlockedError(
+                reason_code,
+                execution_error=_session_block_message(reason_code),
+                account_id=None,
+                execution_id=None,
+                channel=TradeChannel.CTP,
+                operation="place_order",
+                symbol=symbol,
+            )
+
     @override
     def _place_order_impl(self, symbol, direction, order_type, volume, price=0, **kwargs):
         validate_instrument(symbol)
@@ -1803,9 +1880,16 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         for field in ("offset_flag", "offset"):
             if field in kwargs and kwargs[field] is None:
                 raise CTPInputValidationError(f"开平标志 {field} 不能为 None")
+        quote_price = kwargs.get("quote_price")
+        if quote_price is not None and (not callable(quote_price) or order_type != OrderType.LIMIT):
+            raise CTPInputValidationError("发送前定价仅支持 CTP 限价委托")
         with self._lock:
-            self._require_new_order_ready(symbol)
-        self._ensure_instrument_symbols([symbol])
+            if quote_price is None:
+                self._require_new_order_ready(symbol)
+            else:
+                self._require_new_order_ready(symbol, require_quote=False)
+        if quote_price is None:
+            self._ensure_instrument_symbols([symbol])
         if symbol not in self._instruments:
             raise ValueError(f"未知 CTP 合约: {symbol}")
         trade_rule = kwargs.get("trade_rule")
@@ -1818,24 +1902,17 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             trade_rule=trade_rule if isinstance(trade_rule, dict) else None,
         )
         native_price_type = td.THOST_FTDC_OPT_LimitPrice if order_type == OrderType.LIMIT else ""
-        self._validate_order_quote(symbol, price, native_price_type)
+        if quote_price is None:
+            self._validate_order_quote(symbol, price, native_price_type)
         raw = kwargs.get("offset_flag", kwargs.get("offset"))
         if raw is None:
+            if quote_price is not None:
+                raise CTPInputValidationError("发送前定价要求已确认开平标志")
             raw = "open"
             if is_close_intent(direction, kwargs.get("position_side")):
                 raw = single_close_offset(self.plan_close_orders(symbol, direction, volume, self.get_account_assets()))
         offset = resolve_offset(raw)
-        reason_code = self._get_ctp_session_block_reason(symbol)
-        if reason_code is not None:
-            raise AccountControlBlockedError(
-                reason_code,
-                execution_error=_session_block_message(reason_code),
-                account_id=None,
-                execution_id=None,
-                channel=TradeChannel.CTP,
-                operation="place_order",
-                symbol=symbol,
-            )
+        self._require_order_session(symbol)
         c = self._config()
         ref = self._new_ref()
         r = build_order_insert(
@@ -1858,7 +1935,11 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         }
         self._order_keys[oid] = key
         try:
-            self._call_trader_request("ReqOrderInsert", r)
+            if quote_price is None:
+                self._call_trader_request("ReqOrderInsert", r)
+            else:
+                self._call_trader_request("ReqOrderInsert", r, quote_price=quote_price)
+                price = float(getattr(r, "LimitPrice"))
         except Exception:
             self._order_keys.pop(oid, None)
             raise

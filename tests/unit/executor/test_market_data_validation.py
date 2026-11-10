@@ -215,16 +215,27 @@ def test_tracker_uses_channel_validator_instead_of_own_age():
     assert not tracker._price_is_fresh(quote(), 1000)
 
 
-def test_ctp_reuses_trading_day_and_configured_age():
+@pytest.mark.parametrize("purpose", ["sizing", "order"])
+def test_ctp_uses_shared_age_and_checks_trading_day(purpose):
     from axile.executor.ctp.ctp_execute import CTPExecutor
 
     executor = object.__new__(CTPExecutor)
     executor._trading_day = "20261104"
-    executor._config = lambda: SimpleNamespace(quote_max_age_seconds=20)
-    q = quote(990, extra={"trading_day": "20261104", "received_at": 990.0})
-    assert executor.market_data_error(q, purpose="sizing", now=1000) is None
+    q = quote(
+        990,
+        symbol="ag2612",
+        extra={"trading_day": "20261104", "received_at": 990.0, "lower_limit_price": 5.0, "upper_limit_price": 15.0},
+    )
+    executor._instruments = {q.symbol: SimpleNamespace(PriceTick=0.1)}
+
+    assert executor.market_data_error(q, purpose=purpose, now=1000) is None
+    q.timestamp -= 1
+    assert executor.market_data_error(q, purpose=purpose, now=1000) == "交易所行情时间过期或超前"
+    q.timestamp += 1
+    q.extra["received_at"] -= 0.001
+    assert executor.market_data_error(q, purpose=purpose, now=1000) == "行情接收时间过期或超前"
     q.extra["trading_day"] = "20261103"
-    assert executor.market_data_error(q, purpose="sizing", now=1000) == "行情交易日不匹配"
+    assert executor.market_data_error(q, purpose=purpose, now=1000) == "行情交易日不匹配"
 
 
 def test_tq_cached_quote_is_not_permanently_fresh():

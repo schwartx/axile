@@ -1,6 +1,7 @@
 """CTP 原生请求字段构造与调用测试。"""
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -15,6 +16,8 @@ from axile.executor.account_control.guard import AccountControlGuard
 from axile.executor.account_control.models import AccountControlDecision
 from axile.executor.account_control.presets import resolve_account_control_policy
 from axile.executor.account_control.snapshot import AccountControlCounterSnapshot
+from axile.executor.algorithms.defaults.ctp_target_pos_task.impl import _place_volume_slices
+from axile.executor.algorithms.utils.clock import get_default_clock
 from axile.executor.ctp.ctp_execute import (
     CTPExecutor,
     CtpRequestError,
@@ -29,9 +32,14 @@ from axile.executor.ctp.requests import (
     build_query_settlement_confirm,
     resolve_offset,
 )
+from axile.executor.ctp.spi import MarketSpi
+from axile.executor.execution_session import ExecutionSession
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import CTPAccountConfig, UnifiedStandardInput
 from axile.executor.models.unified_order import OrderDirection, OrderType
+from axile.executor.order_submissions import OrderSubmissionRecorder
+from axile.executor.replay import set_replay_observer
+from tests.fixtures.algorithm_fakes import ClockStub
 from tests.unit.executor.ctp._quote_test_support import fresh_quote
 
 
@@ -494,6 +502,85 @@ def test_public_place_order_controls_ctp_submit_once(
     assert [event.operation for event in events] == ["place_order"]
     assert events[0].decision == AccountControlDecision.ALLOWED
     assert events[0].metadata["groups"] == ["ctp_td_global"]
+
+
+@pytest.mark.parametrize("new_tick", [True, False])
+def test_target_limit_uses_tick_published_during_pending_write(config, monkeypatch, new_tick):
+    executor = _submit_point_executor(config)
+    clock = ClockStub()
+    clock.current = datetime(2026, 8, 24, 21, 29, tzinfo=_SHANGHAI).timestamp()
+    start = clock.current
+    monkeypatch.setattr(get_default_clock(), "time", clock.time)
+    monkeypatch.setattr(
+        "axile.executor.ctp.ctp_execute.clock_now", lambda **_: datetime.fromtimestamp(clock.time(), tz=_SHANGHAI)
+    )
+    original = executor._quotes["ag2612"]
+    original.timestamp = int((start - 8) * 1000)
+    original.extra["received_at"] = start - 8
+    executor._subscriptions.add("ag2612")
+    monkeypatch.setattr(
+        executor, "_normalize_quote_time", lambda quote: setattr(quote, "timestamp", int(clock.time() * 1000))
+    )
+    guard = AccountControlGuard(
+        account_id=1,
+        execution_id="exec-ctp-order",
+        channel=TradeChannel.CTP,
+        policy=resolve_account_control_policy("ctp"),
+        baseline=AccountControlCounterSnapshot(),
+        wait_clock=clock,
+        wait_poll_interval_ms=1500,
+    )
+    executor.set_account_control_guard(guard)
+    guard.begin_operation("query_positions").record_outcome("accepted")
+    guard._sleep = clock.sleep
+    audit = executor.emit_audit_event = Mock()
+    observations, facts = [], []
+    set_replay_observer(executor, lambda topic, data: observations.append((topic, data)))
+
+    with ThreadPoolExecutor(max_workers=1) as callbacks:
+
+        def sink(fact):
+            facts.append(fact)
+            if fact.send_status != "pending":
+                return
+            assert clock.time() == start + 1.5
+            assert all(data.get("phase") != "native_request" for _, data in observations)
+            clock.sleep(1)
+            if new_tick:
+                row = SimpleNamespace(
+                    InstrumentID="ag2612",
+                    TradingDay="20260824",
+                    LastPrice=3038,
+                    BidPrice1=3037,
+                    AskPrice1=3039,
+                    BidVolume1=1,
+                    AskVolume1=1,
+                    LowerLimitPrice=1,
+                    UpperLimitPrice=100000,
+                )
+                callbacks.submit(MarketSpi(executor).OnRtnDepthMarketData, row).result(timeout=2)
+
+        executor.order_submission_recorder = OrderSubmissionRecorder(1, sink)
+        orders, submitted = _place_volume_slices(
+            ExecutionSession(executor, "ag2612"), OrderDirection.BUY, 1, "PASSIVE", offset_flag="0", trade_rule=None
+        )
+
+    native = [data for _, data in observations if data.get("phase") in {"native_request", "native_return"}]
+    if new_tick:
+        executor._trader_api.ReqOrderInsert.assert_called_once()
+        request = executor._trader_api.ReqOrderInsert.call_args.args[0]
+        assert request.LimitPrice == orders[0].price == 3037
+        assert submitted == 1
+        assert [event["phase"] for event in native] == ["native_request", "native_return"]
+        assert all(event["price"] == 3037 for event in native)
+        assert facts[-1].send_status == "accepted"
+    else:
+        executor._trader_api.ReqOrderInsert.assert_not_called()
+        assert not native and not orders and not executor._order_keys
+        assert submitted == 0
+        assert facts[-1].send_status == "not_sent"
+        assert facts[-1].return_code is None
+        assert audit.call_args.kwargs["reason_code"] == "COMMON.MARKET_DATA.UNAVAILABLE"
 
 
 def test_place_order_does_not_retry_rate_limit(config: CTPAccountConfig, monkeypatch: pytest.MonkeyPatch) -> None:
