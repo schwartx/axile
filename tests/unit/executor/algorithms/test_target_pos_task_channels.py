@@ -21,15 +21,18 @@ from axile.executor.ctp.converters import account_to_unified
 from axile.executor.ctp.ctp_execute import CtpSessionRecoveryRequired
 from axile.executor.futures_close_policy import FuturesClosePolicy
 from axile.executor.futures_order_intent import plan_futures_close_orders
+from axile.executor.market_data_validation import MarketDataUnavailableError, market_data_error
 from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
 from axile.executor.termination import ExecutionTerminated
+from tests.fixtures.algorithm_fakes import ClockStub
 
 
 def test_ctp_split_failure_keeps_already_submitted_order():
     executor = MagicMock()
+    executor.get_market_data.return_value = _FuturesExecutor(TradeChannel.CTP).get_market_data()
     executor.get_order_volume_bounds.return_value = (1, 1)
     order = UnifiedOrder(
         order_id="first",
@@ -44,7 +47,7 @@ def test_ctp_split_failure_keeps_already_submitted_order():
     tracker = OrderTracker(executor)
     tracker.add_order = MagicMock(wraps=tracker.add_order)
     orders, submitted = _place_volume_slices(
-        executor, OrderDirection.BUY, 2, 10, offset_flag="0", trade_rule={}, tracker=tracker
+        executor, OrderDirection.BUY, 2, "PASSIVE", offset_flag="0", trade_rule={}, tracker=tracker
     )
     assert orders == [order]
     assert submitted == 1
@@ -322,6 +325,103 @@ class _FuturesExecutor:
         return None
 
 
+class _FreshQuoteExecutor(_FuturesExecutor):
+    def __init__(self, channel, price_strategy="PASSIVE"):
+        super().__init__(channel)
+        self.clock = ClockStub()
+        self.clock.current = 1000
+        self.price_strategy = price_strategy
+        self.quotes = []
+
+    def get_account_assets(self):
+        self.clock.sleep(6)
+        return super().get_account_assets()
+
+    def get_order_volume_bounds(self, *_):
+        return 1, 1
+
+    def get_market_data(self):
+        quote = super().get_market_data()
+        quote.timestamp = int(self.clock.time() * 1000)
+        quote.bid_price += self.clock.time()
+        quote.ask_price += self.clock.time()
+        self.quotes.append(quote)
+        return quote
+
+    def place_order(self, direction, order_type, volume, price=0, **kwargs):
+        quote = kwargs.pop("market_data", self.quotes[0])
+        purpose = "order" if order_type == OrderType.LIMIT else "sizing"
+        error = market_data_error(quote, now=self.clock.time(), max_age=5, purpose=purpose)
+        if error:
+            raise MarketDataUnavailableError(self.symbol, error)
+        expected = _calculate_order_price(quote, self.price_strategy, direction) if order_type == OrderType.LIMIT else 0
+        assert price == expected
+        order = super().place_order(direction, order_type, volume, price, **kwargs)
+        self.clock.sleep(6)
+        return order
+
+
+@pytest.mark.parametrize("channel", [TradeChannel.CTP, TradeChannel.TQ])
+@pytest.mark.parametrize("price_strategy", ["PASSIVE", "ACTIVE"])
+@pytest.mark.parametrize("close_order_type", ["LIMIT", "MARKET"])
+def test_target_reprices_each_slice_after_slow_position_queries(channel, price_strategy, close_order_type):
+    executor = _FreshQuoteExecutor(channel, price_strategy)
+    executor.short_yesterday = 2
+    result = ctp_target_pos_task_algorithm(
+        cast("ExecutorProtocol", executor),
+        AlgorithmInput(
+            symbol=executor.symbol,
+            target_volume=2,
+            trade_rule={"price": price_strategy},
+            params=CTPTargetPosTaskParams(close_order_type=close_order_type, max_wait_seconds=1),
+        ),
+    )
+
+    assert result.status == ExecutionStatus.SUCCEEDED
+    assert result.final_volume == 2
+    assert [order.extra["offset_flag"] for order in executor.orders] == ["4", "4", "3", "0", "0"]
+    assert [order.volume for order in executor.orders] == [1] * 5
+    assert len({order.price for order in executor.orders if order.order_type == OrderType.LIMIT}) == (
+        5 if close_order_type == "LIMIT" else 2
+    )
+
+
+def test_target_quote_loss_keeps_submitted_close_and_blocks_open(monkeypatch):
+    executor = _FreshQuoteExecutor(TradeChannel.CTP)
+    get_quote = executor.get_market_data
+    monkeypatch.setattr(executor, "get_market_data", lambda: None if executor.orders else get_quote())
+    result = ctp_target_pos_task_algorithm(
+        cast("ExecutorProtocol", executor),
+        AlgorithmInput(symbol=executor.symbol, target_volume=1, trade_rule={}, params=CTPTargetPosTaskParams()),
+    )
+
+    assert result.status == ExecutionStatus.PARTIAL
+    assert result.final_volume == -1
+    assert [order.extra["offset_flag"] for order in result.orders] == ["4"]
+    assert "缺少有效行情" in result.error
+
+
+def test_target_send_wait_still_rejects_expired_quote_without_retry(monkeypatch):
+    executor = _FreshQuoteExecutor(TradeChannel.CTP)
+    place = executor.place_order
+
+    def delayed_send(*args, **kwargs):
+        executor.clock.sleep(6)
+        executor.get_market_data()
+        return place(*args, **kwargs)
+
+    monkeypatch.setattr(executor, "place_order", delayed_send)
+    result = ctp_target_pos_task_algorithm(
+        cast("ExecutorProtocol", executor),
+        AlgorithmInput(symbol=executor.symbol, target_volume=1, trade_rule={}, params=CTPTargetPosTaskParams()),
+    )
+
+    assert result.status == ExecutionStatus.BLOCKED
+    assert result.reason_code == "COMMON.MARKET_DATA.UNAVAILABLE"
+    assert "已过期" in result.error
+    assert result.orders == executor.orders == []
+
+
 @pytest.mark.parametrize("channel", [TradeChannel.CTP, TradeChannel.TQ])
 def test_target_pos_task_uses_same_close_then_open_flow(channel: TradeChannel) -> None:
     executor = _FuturesExecutor(channel)
@@ -457,7 +557,7 @@ def test_target_pos_task_market_slices_use_market_bounds() -> None:
         executor,
         OrderDirection.BUY,
         4,
-        0,
+        "PASSIVE",
         offset_flag="4",
         trade_rule={},
         tracker=tracker,
