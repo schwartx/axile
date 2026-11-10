@@ -23,7 +23,7 @@ from axile.server._native import _core
 from axile.server.api.deps import get_scheduler
 from axile.server.api.routes import account as account_routes
 from axile.server.api.routes import account_crud as account_crud_routes
-from axile.server.db.models import Account
+from axile.server.db.models import Account, AccountCreate
 from tests.conftest import native_store_call
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._native_read_views import account_view
@@ -85,18 +85,7 @@ def _build_account(
 
 
 def _account_payload() -> dict[str, object]:
-    return _build_account().model_dump(
-        mode="json",
-        exclude={
-            "id",
-            "created_at",
-            "updated_at",
-            "copied_from_account_id",
-            "copied_from_account_name",
-            "replay_config_version",
-            "channel_options",
-        },
-    )
+    return _build_account().model_dump(mode="json", include=set(AccountCreate.model_fields))
 
 
 def _build_app() -> FastAPI:
@@ -674,8 +663,8 @@ def test_update_gm_resets_only_changed_connection(account_client, patch, reset_e
     assert (saved["connection_state"] is not None) is reset_expected
 
 
-@pytest.mark.parametrize("condition", ["started", "scheduled", "running", "queued"])
-def test_copy_rejects_active_source(account_client, monkeypatch, condition) -> None:
+@pytest.mark.parametrize("condition", ["started", "scheduled", "running", "queued", "archived"])
+def test_copy_rejects_unavailable_source(account_client, monkeypatch, condition) -> None:
     client, database = account_client
     _seed_account(database, is_started=condition == "started")
     if condition == "scheduled":
@@ -684,8 +673,11 @@ def test_copy_rejects_active_source(account_client, monkeypatch, condition) -> N
         monkeypatch.setattr(account_crud_routes, "get_running_execution_id", lambda _id: "running")
     elif condition == "queued":
         monkeypatch.setattr(account_crud_routes, "get_queued_execution_id", lambda _id: "queued")
+    elif condition == "archived":
+        archived = client.post("/account/1/archive")
+        assert archived.status_code == 200, archived.text
     assert client.post("/account/1/copy", json={"name": "新账户"}).status_code == 409
-    assert len(client.get("/account/").json()["data"]) == 1
+    assert len(client.get("/account/?include_archived=true").json()["data"]) == 1
 
 
 def test_copy_preserves_config_and_starts_without_source_history(account_client) -> None:
@@ -706,6 +698,7 @@ def test_copy_preserves_config_and_starts_without_source_history(account_client)
         )
     response = client.post("/account/1/copy", json={"name": "  新账户  "})
     assert response.status_code == 201, response.text
+    assert response.json()["archived_at"] is None
     assert "server-only-webhook" not in response.text
     copied = _load_account(database, response.json()["id"])
     assert copied.name == "新账户" and copied.is_started is False
