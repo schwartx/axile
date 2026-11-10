@@ -74,7 +74,8 @@ uv run pytest tests/unit/channels/test_registry.py::test_duplicate_channel_regis
 
 ## CI 验证范围
 
-- PR 仅修改 `ui/` 时只运行 UI 检查。
+- UI 检查仅运行 lint、单元测试和构建；CI 不安装浏览器、不运行 Playwright E2E。
+- PR 仅修改 `ui/` 时只运行上述 UI 检查。
 - PR 仅修改 `axile/executor/` 和 `tests/unit/executor/` 时，运行执行器单测、全部契约与集成测试、
   CTP 离线场景，以及 Ruff 和类型检查；跳过 UI 和全仓覆盖率统计。
 - 共享配置、fixture、其他路径或跨层改动仍运行全量检查；空差异也回退全量。

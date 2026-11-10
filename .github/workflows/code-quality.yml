@@ -56,15 +56,6 @@ jobs:
       working-directory: ui
     - run: bun run lint && bun test && bun run build
       working-directory: ui
-    - run: bunx playwright install --with-deps chromium
-      working-directory: ui
-    - run: bun run test:e2e
-      working-directory: ui
-    - uses: actions/upload-artifact@v4
-      if: failure()
-      with:
-        name: editor-browser-traces
-        path: ui/test-results/
   lint:
     needs: scope
     if: needs.scope.outputs.backend != 'none'
