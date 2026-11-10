@@ -18,6 +18,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type CS
 import { useViewTransitionState } from 'react-router'
 import { ArrowLeftRight, RefreshCw } from 'lucide-react'
 import { cardPerformance, currentEquity } from '@/features/dashboard/performance'
+import { PerformanceStatus } from '@/features/dashboard/PerformanceStatus'
 import { Link, useNavigate } from '@/components/ui/nav'
 import { Card, Chip } from '@/components/ui/Card'
 import { BackLink } from '@/components/ui/BackLink'
@@ -199,7 +200,7 @@ export function AccountDetail({
   const snapshotPositions = positionsOfAssets(latestAssets)
   const positions = snapshotPositions
   const equity = currentEquity(item)
-  const { pct, dayLabel, statusLabel } = cardPerformance(item.performance, Date.now(), {
+  const { pct, dayLabel } = cardPerformance(item.performance, Date.now(), {
     equity,
     observedAt: item.asset_observed_at,
     previousClose: item.previous_close,
@@ -494,14 +495,15 @@ export function AccountDetail({
                 <AssetRefreshFeedback accountId={accountId} manualError={assetRefreshError} automaticError={connectedAssets.error} />
               </div>
               <div className="mt-1.5 text-[14.5px] text-ink-2">
-                {pct == null && <span>{dayLabel} — · </span>}
-                <span className="text-xs text-ink-3">{statusLabel}{statusLabel ? ' · ' : ''}</span>
-                {pct != null && (
-                  <span className={`num ${pct > 0 ? 'text-up' : pct < 0 ? 'text-down' : 'text-ink-2'}`}>
-                    {dayLabel} {pct >= 0 ? '+' : '−'}
-                    <NumberTicker value={Math.abs(pct)} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />
-                  </span>
-                )}
+                <span className="inline-flex items-baseline">
+                  {pct == null ? <span>{dayLabel} —</span> : (
+                    <span className={`num ${pct > 0 ? 'text-up' : pct < 0 ? 'text-down' : 'text-ink-2'}`}>
+                      {dayLabel} {pct >= 0 ? '+' : '−'}
+                      <NumberTicker value={Math.abs(pct)} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />
+                    </span>
+                  )}
+                  <PerformanceStatus status={item.performance?.status} />
+                </span>
                 {' · 组合 '}
                 {portfolioId != null ? (
                   <Link
