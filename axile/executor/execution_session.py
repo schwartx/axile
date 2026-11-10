@@ -126,6 +126,11 @@ class ExecutionSession:
             return planner(self.symbol, direction, volume, account_assets)
         return [(volume, {})]
 
+    @property
+    def supports_quote_at_send(self) -> bool:
+        """只有在原生发送点校验和定价的执行器才能接收延后报价。"""
+        return self.channel_type == TradeChannel.CTP and getattr(self._owner, "supports_quote_at_send", False) is True
+
     def place_order(
         self,
         direction: OrderDirection,
@@ -141,7 +146,7 @@ class ExecutionSession:
         """按消费时的行情快照下单，并在账户限流等待后重新校验同一证据。"""
         self.handle_termination_checkpoint()
         if quote_price is not None:
-            if self.channel_type != TradeChannel.CTP or order_type != OrderType.LIMIT:
+            if not self.supports_quote_at_send or order_type != OrderType.LIMIT:
                 raise ValueError("仅 CTP 限价委托支持在发送点定价")
             with order_submission_context(self.audit_context):
                 return self._owner.place_order(

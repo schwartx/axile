@@ -116,7 +116,9 @@ class AbstractExecutorFacadeMixin:
         try:
             direction, order_type = normalize_order_enums(direction, order_type)
             if get_order_submission_validator() is not None or (
-                executor.channel_type == TradeChannel.CTP and callable(kwargs.get("quote_price"))
+                executor.channel_type == TradeChannel.CTP
+                and getattr(executor, "supports_quote_at_send", False) is True
+                and callable(kwargs.get("quote_price"))
             ):
                 validate_order_submission()
                 order = executor._place_order_impl(normalized_symbol, direction, order_type, volume, price, **kwargs)

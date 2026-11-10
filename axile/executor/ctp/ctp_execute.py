@@ -212,6 +212,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
     """直接持有 OpenCTP API 的统一执行器。"""
 
     _catalog_requires_specs = True
+    supports_quote_at_send = True
 
     def __init__(self, channel_type: TradeChannel, account_config: AccountConfig | None = None) -> None:
         self._init_instrument_catalog()

@@ -333,7 +333,7 @@ def _place_volume_slices(
         try:
             if (
                 isinstance(executor, ExecutionSession)
-                and executor.channel_type == TradeChannel.CTP
+                and executor.supports_quote_at_send
                 and order_type == OrderType.LIMIT
             ):
                 order = executor.place_order(
