@@ -15,8 +15,8 @@ test('金额和日涨跌来自同一观测，日期按上海时间判断', () =>
   expect(cardPerformance(summary, Date.parse('2026-09-07T16:00:00Z')).dayLabel).toBe('2026-09-07')
   expect(cardPerformance().equity).toBeNull()
   expect(cardPerformance({ ...summary, account_equity: null }).equity).toBeNull()
-  expect(cardPerformance({ ...summary, status: 'stale' })).toMatchObject({ equity: 117128.71, statusLabel: '绩效更新中' })
-  expect(cardPerformance({ ...summary, status: 'failed' })).toMatchObject({ equity: 117128.71, statusLabel: '绩效更新失败' })
+  expect(cardPerformance({ ...summary, status: 'stale' }).equity).toBe(117128.71)
+  expect(cardPerformance({ ...summary, status: 'failed' }).equity).toBe(117128.71)
 })
 
 const point = (day: number, value: number | null): PerformancePoint => ({ date: `2026-01-${String(day).padStart(2, '0')}`, observed_at: `2026-01-${String(day).padStart(2, '0')}T00:00:00+08:00`, account_return: value, portfolio_return: null, account_daily_return: null, portfolio_daily_return: null, difference: null })

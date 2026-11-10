@@ -4,6 +4,7 @@ import { ArrowUpRight, Copy, Plus } from 'lucide-react'
 import { CopyAccountDialog } from '@/features/account/CopyAccountDialog'
 import { AccountConnectionStatus } from '@/features/account/AccountConnectionStatus'
 import { cardPerformance, currentEquity } from '@/features/dashboard/performance'
+import { PerformanceStatus } from '@/features/dashboard/PerformanceStatus'
 import { Link, useNavigate } from '@/components/ui/nav'
 import { Card } from '@/components/ui/Card'
 import { NumberTicker } from '@/components/ui/NumberTicker'
@@ -37,7 +38,7 @@ function FleetCard({
   const live = useRunning(item.account_id)
   // 当前权益来自资产查询；有前收时日涨跌 = 当前权益 / 前收 - 1。
   const equity = currentEquity(item)
-  const { pct, dayLabel, statusLabel } = cardPerformance(item.performance, Date.now(), {
+  const { pct, dayLabel } = cardPerformance(item.performance, Date.now(), {
     equity,
     observedAt: item.asset_observed_at,
     previousClose: item.previous_close,
@@ -116,14 +117,15 @@ function FleetCard({
             {equity == null ? '—' : <NumberTicker value={equity} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} />}
           </span>
           <span className="text-[14px] text-ink-3">{displayCurrencyUnit(item.currency)}</span>
-          {pct == null && <span className="text-ink-3">{dayLabel} —</span>}
-          <span className="text-xs text-ink-3">{statusLabel}</span>
-          {pct != null && (
-            <span className={`num text-[14px] ${pctCls}`}>
-              {dayLabel} {pct >= 0 ? '+' : '−'}
-              <NumberTicker value={Math.abs(pct)} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />
-            </span>
-          )}
+          <span className="inline-flex items-baseline">
+            {pct == null ? <span className="text-ink-3">{dayLabel} —</span> : (
+              <span className={`num text-[14px] ${pctCls}`}>
+                {dayLabel} {pct >= 0 ? '+' : '−'}
+                <NumberTicker value={Math.abs(pct)} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />
+              </span>
+            )}
+            <PerformanceStatus status={item.performance?.status} />
+          </span>
         </div>
         <PerformanceCurveLink accountId={item.account_id} summary={item.performance} source="fleet" width={120} height={34} />
       </div>
