@@ -354,17 +354,7 @@ async def copy_account(
 
         try:
             payload = AccountCreate.model_validate(
-                source.model_dump(
-                    exclude={
-                        "id",
-                        "created_at",
-                        "updated_at",
-                        "copied_from_account_id",
-                        "copied_from_account_name",
-                        "replay_config_version",
-                        "channel_options",
-                    }
-                )
+                source.model_dump(include=set(AccountCreate.model_fields))
                 | {"name": request.name.strip(), "is_started": False, "replay_recording_enabled": False}
             )
             ensure_account_control_preset_compatible(payload.account_control_preset, payload.trade_channel)
