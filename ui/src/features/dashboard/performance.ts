@@ -18,7 +18,6 @@ export function cardPerformance(
     equity: summary?.account_equity ?? null,
     pct: livePct ?? (summary?.account_daily_return == null ? null : summary.account_daily_return * 100),
     dayLabel: day == null ? '日涨跌' : day === shanghaiDay(new Date(now).toISOString()) ? '今日' : day,
-    statusLabel: !summary || summary.status === 'empty' ? '暂无绩效' : summary.status === 'failed' ? '绩效更新失败' : summary.status === 'pending' || summary.status === 'stale' ? '绩效更新中' : '',
   }
 }
 

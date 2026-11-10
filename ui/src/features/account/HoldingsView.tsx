@@ -141,23 +141,28 @@ export function HoldingsView({
   const heldCount = positions.filter((position) => Math.abs(signedPositionQuantity(position) ?? 0) > QTY_EPS).length
 
   if (executablePlan?.target_mode === 'quantity') {
-    return <div>
-      <p className="mb-3 text-[14px] text-ink-2">数量目标 · {executablePlan.rows.length} 个品种 · {executablePlan.off_symbol_count ?? '—'} 个待调整</p>
-      <div role="table" aria-label="目标数量与持仓">
-        <div role="row" className="grid grid-cols-3 gap-3 border-b border-line pb-2 text-[12px] text-ink-3">
-          <span role="columnheader">代码</span><span role="columnheader">当前数量</span><span role="columnheader">目标数量</span>
-        </div>
-        {executablePlan.rows.map(row => <div role="row" key={row.symbol} className="grid grid-cols-3 items-center gap-3 border-b border-line py-3 text-[13px]">
-          <span role="cell">{onSelect ? <button type="button" aria-haspopup="dialog" aria-label={`查看 ${row.symbol} 持仓与目标`}
+    return <table aria-label="目标数量与持仓" className="w-full table-auto border-separate border-spacing-0">
+      <thead className="sticky top-0 z-[1] bg-surface">
+        <tr className="text-[12px] text-ink-3">
+          <th scope="col" className="h-8 w-full border-b border-line text-left font-medium">代码</th>
+          <th scope="col" className="h-8 whitespace-nowrap border-b border-line pl-3 text-right font-medium">当前数量</th>
+          <th scope="col" className="h-8 whitespace-nowrap border-b border-line pl-3 text-right font-medium">目标数量</th>
+          <th scope="col" className="h-8 whitespace-nowrap border-b border-line pl-3 text-left font-medium">状态</th>
+        </tr>
+      </thead>
+      <tbody>
+        {executablePlan.rows.map(row => <tr key={row.symbol} className="text-[13px]">
+          <td className="h-9 w-full max-w-0 border-b border-line">{onSelect ? <button type="button" aria-haspopup="dialog" aria-label={`查看 ${row.symbol} 持仓与目标`}
             onClick={event => onSelect(row.symbol, event.detail === 0)}
             className="flex min-h-8 w-full items-center cursor-pointer text-left hover:text-accent focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-accent">
             <OverflowText text={row.symbol} />
-          </button> : <OverflowText text={row.symbol} />}</span>
-          <span role="cell" className="num">{quantityText(row.current_quantity, quantityLabel)}</span>
-          <span role="cell" className="num">{quantityText(row.target_quantity, quantityLabel)} · {row.aligned ? '到位' : '待调整'}</span>
-        </div>)}
-      </div>
-    </div>
+          </button> : <OverflowText text={row.symbol} />}</td>
+          <td className="num h-9 whitespace-nowrap border-b border-line pl-3 text-right">{quantityText(row.current_quantity, quantityLabel)}</td>
+          <td className="num h-9 whitespace-nowrap border-b border-line pl-3 text-right">{quantityText(row.target_quantity, quantityLabel)}</td>
+          <td className={`h-9 whitespace-nowrap border-b border-line pl-3 text-[12px] ${row.aligned ? 'text-ink-3' : 'font-medium text-warn'}`}>{row.aligned ? '到位' : '待调整'}</td>
+        </tr>)}
+      </tbody>
+    </table>
   }
   if (plan.rows.length === 0) {
     return <p className="text-[14px] text-ink-2">当前空仓，且无目标持仓。</p>
