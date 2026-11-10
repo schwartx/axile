@@ -15,7 +15,7 @@ from axile.executor.gm.core import gm_strategy
 from axile.executor.gm.core.api_bridge import GMApiBridge
 from axile.executor.gm.core.strategy_bridge import GMStrategyBridge
 from axile.executor.gm.gm_execute import GMExecutor
-from axile.executor.market_data_validation import MarketDataUnavailableError
+from axile.executor.market_data_validation import DEFAULT_QUOTE_MAX_AGE_SECONDS, MarketDataUnavailableError
 from axile.executor.models.unified_input import GMAccountConfig
 from axile.executor.models.unified_order import OrderDirection, OrderType
 from axile.executor.order_submissions import OrderSubmissionRecorder
@@ -205,7 +205,7 @@ def test_ctp_revalidates_frozen_quote_after_final_send_lock_wait(config, monkeyp
             with native_lock:
                 start_send.set()
                 assert waiting.wait(2)
-                clock.sleep(6)
+                clock.sleep(DEFAULT_QUOTE_MAX_AGE_SECONDS + 1)
                 fresh = consumed.model_copy(deep=True)
                 fresh.timestamp = int(clock.time() * 1000)
                 fresh.extra["received_at"] = clock.time()

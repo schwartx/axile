@@ -20,14 +20,17 @@ def config():
 BAD = [" ", "\n", "\r", "!", "@", "中文", "A\nB", "A" * 1024]
 
 
+@pytest.mark.parametrize("value", ["", *BAD, "A" * 81, "rb2612 ", " rb2612", "rb\r2612", "rb\t2612"])
+def test_invalid_instrument_formats(value):
+    with pytest.raises(CTPInputValidationError, match="合约代码格式"):
+        validate_instrument(value)
+
+
+# 格式全集由校验器覆盖；入口只验证拦截位置和空串的特殊语义。
 @pytest.mark.parametrize(
     ("value", "entry"),
-    [
-        (value, entry)
-        for value in ["", *BAD, "A" * 81, "rb2612 ", " rb2612", "rb\r2612", "rb\t2612"]
-        for entry in ["order", "subscribe", "cancel", "orders", "trades"]
-        if value or entry not in {"orders", "trades"}
-    ],
+    [(" ", entry) for entry in ["order", "subscribe", "cancel", "orders", "trades"]]
+    + [("", entry) for entry in ["order", "subscribe", "cancel"]],
 )
 def test_bad_instrument_precedes_readiness_catalog_and_native_requests(value, entry):
     executor = SimpleNamespace(
@@ -67,9 +70,9 @@ def test_cancel_rejected_before_lookup_or_query(value):
     executor._send_trader_request.assert_not_called()
 
 
-@pytest.mark.parametrize("value", BAD)
 @pytest.mark.parametrize("entry", ["catalog", "commission", "depth"])
-def test_query_rejected_before_any_send(value, entry):
+def test_query_rejected_before_any_send(entry):
+    value = " "
     executor = SimpleNamespace(_query=Mock(), _config=Mock())
     with pytest.raises(ValueError):
         if entry == "catalog":
@@ -134,11 +137,11 @@ def test_manual_cancel_rejected_before_worker_dispatch(value, monkeypatch):
     state.assert_not_called()
 
 
-@pytest.mark.parametrize("value", BAD)
 @pytest.mark.parametrize(
     "name", ["ReqOrderInsert", "ReqOrderAction", "ReqQryInstrument", "ReqQryOrder", "ReqQryDepthMarketData"]
 )
-def test_raw_native_boundary_rejects_before_state_checks(value, name):
+def test_raw_native_boundary_rejects_before_state_checks(name):
+    value = " "
     executor = SimpleNamespace(_trader_api=Mock())
     with pytest.raises(CTPInputValidationError, match="合约代码格式"):
         CTPExecutor._call_trader_request(executor, name, SimpleNamespace(InstrumentID=value))
