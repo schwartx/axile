@@ -591,8 +591,8 @@ def test_target_limit_prices_at_native_send_after_shared_ctp_wait(config, monkey
     clock.current = moment.timestamp()
     monkeypatch.setattr(get_default_clock(), "time", clock.time)
     original = executor._quotes["ag2612"]
-    original.timestamp = int((clock.time() - 4) * 1000)
-    original.extra["received_at"] = clock.time() - 4
+    original.timestamp = int((clock.time() - 9) * 1000)
+    original.extra["received_at"] = clock.time() - 9
     fresh = original.model_copy(deep=True)
     fresh.bid_price = 3034
     guard = AccountControlGuard(
