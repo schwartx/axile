@@ -29,11 +29,11 @@ export function WeightBars({ weights, format = 'percent', quantityUnit = '', cla
   if (rows.length === 0) return null
   const max = Math.abs(rows[0][1])
   return (
-    <div className={className} role="list" aria-label={format === 'quantity' ? '目标持仓' : '品种权重'}>
+    <div className={`grid grid-cols-[minmax(0,max-content)_minmax(0,1fr)_max-content] gap-x-3 ${className}`} role="list" aria-label={format === 'quantity' ? '目标持仓' : '品种权重'}>
       {rows.map(([sym, w]) => (
-        <div key={sym} role="listitem" className="flex items-center gap-3 py-1.5 text-[14.5px]">
-          <OverflowText className="w-20 flex-none font-[520] text-ink-1" text={sym} />
-          <div aria-hidden className="h-1.5 min-w-0 flex-1">
+        <div key={sym} role="listitem" className="col-span-3 grid grid-cols-subgrid items-center py-1.5 text-[14.5px]">
+          <OverflowText className="font-[520] text-ink-1" text={sym} />
+          <div aria-hidden className="h-1.5 min-w-0">
             <div
               className={`h-full rounded-full transition-[width] duration-200 ease-[cubic-bezier(.4,0,.2,1)] motion-reduce:transition-none ${
                 w < 0 ? 'market-negative-weight bg-ink-3/45 contrast:bg-ink-3' : 'bg-ink-2/65 contrast:bg-ink-2'
@@ -41,7 +41,7 @@ export function WeightBars({ weights, format = 'percent', quantityUnit = '', cla
               style={{ width: `${((Math.abs(w) / max) * 100).toFixed(2)}%` }}
             />
           </div>
-          <span className="num min-w-16 flex-none whitespace-nowrap text-right font-medium text-ink-1">
+          <span className="num whitespace-nowrap text-right font-medium text-ink-1">
             {format === 'quantity'
               ? `${w < 0 ? '空' : '多'} ${Math.abs(w).toLocaleString('en-US', { maximumSignificantDigits: 15, useGrouping: false })}${quantityUnit ? ` ${quantityUnit}` : ''}`
               : format === 'raw' ? w.toFixed(4) : `${(w * 100).toFixed(1)}%`}
