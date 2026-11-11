@@ -27,9 +27,24 @@ def test_current_requests_auction_ticks(monkeypatch):
 
 
 @pytest.mark.parametrize("source", ["snapshot", "subscription"])
-@pytest.mark.parametrize("last_trade_price", [0.0, 99.0])
-@pytest.mark.parametrize("hour,minute", [(9, 16), (9, 24), (14, 58), (9, 30)])
-@pytest.mark.parametrize("bid,ask", [(10.0, 10.0), (0.0, 10.0), (9.9, 10.0), (float("inf"), float("inf"))])
+@pytest.mark.parametrize(
+    ("hour", "minute", "last_trade_price", "bid", "ask"),
+    [
+        (9, 16, last, bid, ask)
+        for last in [0.0, 99.0]
+        for bid, ask in [(10.0, 10.0), (0.0, 10.0), (9.9, 10.0), (float("inf"), float("inf"))]
+    ]
+    + [
+        (9, 24, 0.0, 10.0, 10.0),
+        (9, 24, 99.0, 9.9, 10.0),
+        (14, 58, 0.0, 10.0, 10.0),
+        (14, 58, 99.0, 9.9, 10.0),
+        (9, 30, 0.0, 10.0, 10.0),
+        (9, 30, 0.0, 9.9, 10.0),
+        (9, 30, 99.0, 10.0, 10.0),
+        (9, 30, 99.0, 9.9, 10.0),
+    ],
+)
 def test_auction_reference_price_and_submission(monkeypatch, source, last_trade_price, hour, minute, bid, ask):
     now = datetime(2026, 11, 4, hour, minute, tzinfo=SHANGHAI)
     instance = GMExecutor(

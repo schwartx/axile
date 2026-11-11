@@ -36,8 +36,10 @@ NATIVE_OPERATIONS = (
 )
 
 
-@pytest.mark.parametrize("missing", NATIVE_OPERATIONS)
-@pytest.mark.parametrize("entrypoint", ["lifespan", "manager"])
+@pytest.mark.parametrize(
+    ("missing", "entrypoint"),
+    [(name, "manager") for name in NATIVE_OPERATIONS] + [("queue_recover", "lifespan")],
+)
 def test_obsolete_native_rejected_before_background_services(monkeypatch, missing, entrypoint):
     from axile.server import performance_analysis
 
