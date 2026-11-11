@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 import aiohttp
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Response, status
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from axile.common.config import (
     CONFIG_TOML_PATH,
@@ -94,6 +94,14 @@ class ExecutionAlertUpdateRequest(BaseModel):
     system_execution_notification_code: str | None = None
 
 
+class BrowserTitleUpdateRequest(BaseModel):
+    """浏览器标签标题；空串恢复按访问地址生成的默认标题。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    browser_title: str = Field(max_length=120)
+
+
 class TestResult(BaseModel):
     """连通性测试或保存操作的结果.
 
@@ -149,6 +157,7 @@ def _prefill_values() -> dict[str, Any]:
         "system_execution_notification_mode": settings.system_execution_notification_mode,
         "system_execution_notification_code": settings.system_execution_notification_code,
         "environment": settings.environment,
+        "browser_title": settings.browser_title,
         "app_log_dir": str(settings.app_log_dir),
         "axile_log_rotation": settings.axile_log_rotation,
         "algorithm_modules": settings.algorithm_modules,
@@ -182,6 +191,20 @@ async def test_db(payload: DbTestRequest) -> TestResult:
     except Exception as exc:  # noqa: BLE001 - 连接异常统一转为失败结果
         return TestResult(ok=False, message=f"数据库连接失败：{exc}")
     return TestResult(ok=True, message="数据库连接成功")
+
+
+@router.patch("/browser-title")
+def update_browser_title(payload: BrowserTitleUpdateRequest) -> TestResult:
+    """先持久化再更新当前标题，无需重启服务。"""
+    if not is_configured():
+        raise HTTPException(status_code=409, detail="系统尚未完成初始化，请先完成初始化配置")
+    title = payload.browser_title.strip()
+    try:
+        update_config_toml_values({"browser_title": title})
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"写入配置文件失败：{exc}") from exc
+    settings.browser_title = title
+    return TestResult(ok=True, message="浏览器标签标题已保存，无需重启服务。")
 
 
 def _sqlite_boolean(value: str) -> bool:
@@ -426,6 +449,7 @@ def init_save(payload: InitSaveRequest, background_tasks: BackgroundTasks) -> Te
             raise HTTPException(status_code=422, detail=f"算法目录不可用：{exc}") from exc
 
     values: dict[str, Any] = {
+        "browser_title": settings.browser_title,
         "sqlalchemy_database_uri": database_uri,
         "exe_err_feishu_key": feishu_key,
         "system_execution_notification_mode": mode,

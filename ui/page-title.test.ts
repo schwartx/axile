@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
+import { browserTitle } from './src/lib/browserTitle'
 
 const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8')
 const script = html.match(/<script>([\s\S]*?)<\/script>/)![1]
@@ -18,4 +19,12 @@ test.each([
   const document = { title: 'axile', documentElement: { classList: { toggle() {} } } }
   runInNewContext(script, { location: new URL(url), document })
   expect(document.title).toBe(title)
+  expect(browserTitle('', new URL(url))).toBe(title)
+  expect(browserTitle('   ', new URL(url))).toBe(title)
+})
+
+test('自定义标题完整替换默认标题，保留中文与普通文本', () => {
+  const location = new URL('http://localhost:8001/accounts/5')
+  expect(browserTitle('  实盘 · axile  ', location)).toBe('实盘 · axile')
+  expect(browserTitle('<测试> & "axile"', location)).toBe('<测试> & "axile"')
 })

@@ -6,6 +6,7 @@ import { AppShell } from '@/components/AppShell'
 import { cancelCurveTransition, observeCurveNavigation } from '@/features/history/curveTransition'
 import { InitWizard } from '@/features/init/InitWizard'
 import { initStatus, initValuesFromStatus, type InitValues } from '@/lib/api/init'
+import { browserTitle } from '@/lib/browserTitle'
 import { useDomainSync } from '@/stores/domain'
 import { useChannelCatalogSync } from '@/stores/channels'
 import { useBusinessSync } from '@/lib/api/businessStream'
@@ -77,6 +78,7 @@ function AppRoot() {
     initStatus()
       .then((s) => {
         if (!alive) return
+        document.title = browserTitle(s.values.browser_title ?? '', window.location)
         setInitial(initValuesFromStatus(s.values))
         setPhase(s.configured ? 'ready' : 'setup')
       })

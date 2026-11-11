@@ -18,7 +18,12 @@ from axile.server.app import validation_exception_handler
 
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    for name in ("exe_err_feishu_key", "system_execution_notification_mode", "system_execution_notification_code"):
+    for name in (
+        "exe_err_feishu_key",
+        "system_execution_notification_mode",
+        "system_execution_notification_code",
+        "browser_title",
+    ):
         monkeypatch.setattr(cfg.settings, name, getattr(cfg.settings, name))
     app = FastAPI()
     app.include_router(init_module.router, prefix="/api/v1")
@@ -40,6 +45,7 @@ def test_init_status_never_returns_credential_values(client: TestClient, monkeyp
         "system_execution_notification_mode",
         "system_execution_notification_code",
         "environment",
+        "browser_title",
         "app_log_dir",
         "axile_log_rotation",
         "algorithm_modules",
@@ -215,6 +221,7 @@ def test_advanced_save_preserves_omitted_credentials(
     monkeypatch.setattr(cfg, "CONFIG_TOML_PATH", toml_path)
     monkeypatch.setattr(cfg.settings, "sqlalchemy_database_uri", "sqlite+aiosqlite:///custom.db")
     monkeypatch.setattr(cfg.settings, "exe_err_feishu_key", "existing-key")
+    monkeypatch.setattr(cfg.settings, "browser_title", "实盘 · axile")
     monkeypatch.setattr(init_module, "_restart_process", lambda: None)
 
     response = client.post("/api/v1/init/save", json={"app_log_dir": "./new-logs"})
@@ -224,6 +231,73 @@ def test_advanced_save_preserves_omitted_credentials(
     assert 'sqlalchemy_database_uri = "sqlite+aiosqlite:///custom.db"' in written
     assert 'exe_err_feishu_key = "existing-key"' in written
     assert 'app_log_dir = "./new-logs"' in written
+    assert 'browser_title = "实盘 · axile"' in written
+
+
+@pytest.mark.parametrize("title", ["  实盘 · axile  ", "", "   ", '<test>"\\标题'])
+def test_browser_title_persists_without_restart(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, title: str
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('exe_err_feishu_key = "keep-key"\n', encoding="utf-8")
+    monkeypatch.setattr(cfg, "CONFIG_TOML_PATH", path)
+    monkeypatch.setitem(cfg.Settings.model_config, "toml_file", str(path))
+    restarted = []
+    monkeypatch.setattr(init_module, "_restart_process", lambda: restarted.append(True))
+    assert cfg.Settings().browser_title == ""
+
+    response = client.patch("/api/v1/init/browser-title", json={"browser_title": title})
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert not restarted
+    assert cfg.settings.browser_title == title.strip()
+    assert client.get("/api/v1/init/status").json()["values"]["browser_title"] == title.strip()
+    reloaded = cfg.Settings()
+    assert reloaded.browser_title == title.strip()
+    assert reloaded.exe_err_feishu_key == "keep-key"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [{}, {"browser_title": None}, {"browser_title": "x" * 121}, {"browser_title": "ok", "environment": "local"}],
+)
+def test_browser_title_rejects_invalid_payload(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, payload: dict
+) -> None:
+    writes = []
+    monkeypatch.setattr(init_module, "update_config_toml_values", writes.append)
+    response = client.patch("/api/v1/init/browser-title", json=payload)
+    assert response.status_code == 422
+    assert not writes
+
+
+def test_browser_title_requires_initialization(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path = tmp_path / "missing.toml"
+    monkeypatch.setattr(cfg, "CONFIG_TOML_PATH", path)
+    response = client.patch("/api/v1/init/browser-title", json={"browser_title": "测试"})
+    assert response.status_code == 409
+    assert not path.exists()
+
+
+def test_browser_title_write_failure_keeps_runtime_value(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('browser_title = "原有标题"\n', encoding="utf-8")
+    monkeypatch.setattr(cfg, "CONFIG_TOML_PATH", path)
+    monkeypatch.setattr(cfg.settings, "browser_title", "原有标题")
+
+    def fail_write(_values: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(init_module, "update_config_toml_values", fail_write)
+    response = client.patch("/api/v1/init/browser-title", json={"browser_title": "新标题"})
+    assert response.status_code == 500
+    assert cfg.settings.browser_title == "原有标题"
+    assert path.read_text(encoding="utf-8") == 'browser_title = "原有标题"\n'
 
 
 @pytest.mark.parametrize("existing", [False, True])

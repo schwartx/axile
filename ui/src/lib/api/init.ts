@@ -3,6 +3,7 @@ import { apiGet, apiSend } from '@/lib/api/client'
 
 /** 初始化状态中可安全返回给浏览器的配置摘要。 */
 export interface InitStatusValues {
+  browser_title?: string
   sqlalchemy_database_configured: boolean
   exe_err_feishu_configured: boolean
   system_execution_notification_mode: 'default' | 'function'
@@ -16,6 +17,7 @@ export interface InitStatusValues {
 
 /** 向导提交的写入载荷；凭证只存在于用户当前输入中。 */
 export interface InitValues {
+  browser_title?: string
   sqlalchemy_database_uri: string
   /** 执行错误告警飞书机器人 key（系统级，区别于账户各自的 `feishu_key`）；空串表示不推送。 */
   exe_err_feishu_key: string
@@ -53,6 +55,7 @@ let cachedInitValues: InitValues | null = null
 /** 将安全状态摘要转换为可编辑草稿，凭证字段始终从空值开始。 */
 export function initValuesFromStatus(values: InitStatusValues): InitValues {
   return {
+    browser_title: values.browser_title ?? '',
     sqlalchemy_database_uri: '',
     exe_err_feishu_key: '',
     exe_err_feishu_configured: values.exe_err_feishu_configured,
@@ -77,6 +80,15 @@ export function initStatus(signal?: AbortSignal): Promise<InitStatus> {
 /** 同步读取上一次成功拉取的预填值；从未拉取成功时返回 `null`。 */
 export function peekInitValues(): InitValues | null {
   return cachedInitValues
+}
+
+/** 标题独立保存，不触发高级系统配置的重启流程。 */
+export function saveBrowserTitle(browserTitle: string): Promise<TestResult> {
+  const title = browserTitle.trim()
+  return apiSend<TestResult>('PATCH', '/init/browser-title', { browser_title: title }).then((result) => {
+    if (result.ok && cachedInitValues) cachedInitValues = { ...cachedInitValues, browser_title: title }
+    return result
+  })
 }
 
 /** 测试数据库连通性。 */
@@ -115,7 +127,7 @@ export function saveInit(values: ReturnType<typeof initSavePayload>): Promise<Te
 
 /** 高级设置只提交新输入的数据库地址，告警由独立表单维护。 */
 export function initSavePayload(values: InitValues, isEdit: boolean) {
-  const { exe_err_feishu_configured: _configured, ...editable } = values
+  const { exe_err_feishu_configured: _configured, browser_title: _title, ...editable } = values
   return {
     ...editable,
     sqlalchemy_database_uri: isEdit ? (values.sqlalchemy_database_uri.trim() || undefined) : values.sqlalchemy_database_uri,

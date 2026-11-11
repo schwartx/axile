@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, test } from 'bun:test'
 
-import { initStatus, peekInitValues, saveExecutionAlert, initSavePayload, initValuesFromStatus } from './init'
+import { initStatus, peekInitValues, saveBrowserTitle, saveExecutionAlert, initSavePayload, initValuesFromStatus } from './init'
 
 const originalFetch = globalThis.fetch
 
@@ -69,4 +69,39 @@ test('高级设置不提交系统告警或凭据状态字段', () => {
   expect(payload).not.toHaveProperty('system_execution_notification_mode')
   expect(payload).not.toHaveProperty('system_execution_notification_code')
   expect(payload).not.toHaveProperty('exe_err_feishu_configured')
+  expect(initSavePayload({ ...values, browser_title: '旧标题' }, true)).not.toHaveProperty('browser_title')
+})
+
+test('标题独立 PATCH 保存并更新缓存，清空可恢复默认', async () => {
+  const requests: Array<{ input: string; init?: RequestInit }> = []
+  const responses = [
+    { configured: true, environment: 'local', values: { ...values, browser_title: '旧标题' } },
+    { ok: true, message: 'saved' },
+    { ok: true, message: 'saved' },
+  ]
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    requests.push({ input: String(input), init })
+    return Response.json(responses.shift())
+  }) as typeof fetch
+  await initStatus()
+  expect(peekInitValues()?.browser_title).toBe('旧标题')
+  await saveBrowserTitle('  实盘 · axile  ')
+  expect(peekInitValues()?.browser_title).toBe('实盘 · axile')
+  expect(requests[1]?.input).toBe('/api/v1/init/browser-title')
+  expect(requests[1]?.init?.method).toBe('PATCH')
+  expect(requests[1]?.init?.body).toBe(JSON.stringify({ browser_title: '实盘 · axile' }))
+  await saveBrowserTitle('  ')
+  expect(peekInitValues()?.browser_title).toBe('')
+  expect(requests[2]?.init?.body).toBe(JSON.stringify({ browser_title: '' }))
+})
+
+test('标题写入失败不更新缓存', async () => {
+  const responses = [
+    Response.json({ configured: true, environment: 'local', values: { ...values, browser_title: '原有标题' } }),
+    Response.json({ detail: 'disk full' }, { status: 500 }),
+  ]
+  globalThis.fetch = (async () => responses.shift()!) as unknown as typeof fetch
+  await initStatus()
+  await expect(saveBrowserTitle('新标题')).rejects.toThrow('disk full')
+  expect(peekInitValues()?.browser_title).toBe('原有标题')
 })
