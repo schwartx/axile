@@ -407,10 +407,17 @@ async def submit_intent(
     async with account_lock(account_id):
         while True:
             try:
-                return await _submit_intent(account_id, kind, trigger_source, payload=payload, on_conflict=on_conflict)
+                result = await _submit_intent(
+                    account_id, kind, trigger_source, payload=payload, on_conflict=on_conflict
+                )
+                break
             except Exception as exc:
                 if exc.args[:1] != ("INTENT_CONFLICT",):
                     raise
+    # 上一笔执行可能在本次入队期间退出，新建和合并都需要唤醒。
+    if result.outcome in {"created", "coalesced"}:
+        _wake(account_id)
+    return result
 
 
 async def _coalesce(execution_id: str, account: AccountContext, payload: dict[str, object]) -> SubmitResult:
@@ -494,7 +501,6 @@ async def _submit_intent(
                 on_conflict=on_conflict,
             )
         sync_account_live(account_id)
-        _wake(account_id)
         return SubmitResult(outcome="created", execution_id=created.execution_id, account_id=account_id)
 
     if queued_kind in (ExecutionKind.REBALANCE, ExecutionKind.CLEAR_POSITIONS):
@@ -511,8 +517,6 @@ async def _submit_intent(
         payload=payload,
     )
     sync_account_live(account_id)
-    if not has_running:
-        _wake(account_id)
     return SubmitResult(outcome="created", execution_id=created.execution_id, account_id=account_id)
 
 

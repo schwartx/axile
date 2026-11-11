@@ -300,7 +300,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await monitor.close()
         scheduler.shutdown()
         await shutdown_dispatchers()
-        shutdown_worker_backend_manager()
+        await asyncio.to_thread(shutdown_worker_backend_manager)
         await native_call(_core.close_database, database_path())
         logger.warning("axile已经关闭!")
 

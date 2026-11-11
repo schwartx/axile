@@ -12,6 +12,8 @@ from threading import Lock, Thread
 from typing import cast
 from uuid import uuid4
 
+from loguru import logger
+
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.clock import clock_monotonic
 from axile.executor.instrument_catalog import InstrumentCatalog
@@ -36,6 +38,7 @@ from axile.server.execution.worker_backend.protocol import (
     WorkerReplayStatus,
     WorkerTerminationSignal,
 )
+from axile.server.execution.worker_backend.quota import QuotaMirror
 from axile.server.execution.worker_backend.worker import run_worker_backend_loop
 from axile.server.portfolio_function import PortfolioFunctionError, _normalize_target
 from axile.server.portfolio_runner import (
@@ -188,6 +191,7 @@ class _WorkerBackendHandle:
     catalog: CatalogSession | None = None
     monitor: RemoteMonitor | None = None
     orders: OrdersChannel | None = None
+    quota_mirror: QuotaMirror | None = None
     connection_binding: ConnectionBinding | None = None
     control_lock: Lock = field(default_factory=Lock)
     replay_lock: Lock = field(default_factory=Lock)
@@ -246,9 +250,10 @@ class WorkerBackendManager:
         parent_catalog, child_catalog = self._ctx.Pipe(duplex=True)
         parent_monitor, child_monitor = self._ctx.Pipe(duplex=True)
         parent_orders, child_orders = self._ctx.Pipe(duplex=True)
+        parent_quota, child_quota = self._ctx.Pipe(duplex=True)
         process = self._ctx.Process(
             target=run_worker_backend_loop,
-            args=(child_conn, account_id, child_control_conn, child_catalog, child_monitor, child_orders),
+            args=(child_conn, account_id, child_control_conn, child_catalog, child_monitor, child_orders, child_quota),
             name=f"axile-execution-worker-{account_id}",
             daemon=True,
         )
@@ -258,6 +263,7 @@ class WorkerBackendManager:
         child_catalog.close()
         child_monitor.close()
         child_orders.close()
+        child_quota.close()
         catalog = CatalogSession(cast("Connection", parent_catalog), self.instrument_catalog, enabled=False)
         channel, enabled, last_execution = self._catalog_accounts.get(account_id, ("", False, ""))
         catalog.configure(channel=channel, enabled=enabled, last_execution=last_execution)
@@ -269,6 +275,7 @@ class WorkerBackendManager:
             catalog=catalog,
             monitor=RemoteMonitor(cast("Connection", parent_monitor), account_id, process.is_alive),
             orders=OrdersChannel(cast("Connection", parent_orders)),
+            quota_mirror=QuotaMirror(cast("Connection", parent_quota), account_id, process),
         )
 
     def configure_catalog_account(self, account: AccountContext, *, last_execution: str = "") -> None:
@@ -664,6 +671,13 @@ class WorkerBackendManager:
 
     def _finish_worker_retirement(self, account_id: int, handle: _WorkerBackendHandle) -> None:
         """关闭结束后才解除录制控制跟踪，不把移出业务注册表当作已停录。"""
+        mirror = getattr(handle, "quota_mirror", None)
+        if mirror is not None:
+            try:
+                if mirror.recover():
+                    handle.quota_mirror = None
+            except Exception:
+                logger.exception("报单额度补写失败，重建 worker 前重试 account_id={}", account_id)
         with self._lock:
             self._finish_worker_retirement_locked(account_id, handle)
 
@@ -673,7 +687,7 @@ class WorkerBackendManager:
             self._retiring_workers.setdefault(account_id, []).append(handle)
 
     def _finish_worker_retirement_locked(self, account_id: int, handle: _WorkerBackendHandle) -> None:
-        if handle.process.is_alive():
+        if handle.process.is_alive() or getattr(handle, "quota_mirror", None) is not None:
             return
         remaining = [item for item in self._retiring_workers.get(account_id, ()) if item is not handle]
         if remaining:
@@ -688,23 +702,34 @@ class WorkerBackendManager:
     def _get_or_create_worker(
         self, account_id: int, request: WorkerBackendRequest | None = None
     ) -> _WorkerBackendHandle:
-        if request is not None:
-            self._check_worker_creation(request)
-        with self._lock:
-            handle = self._workers.get(account_id)
-            if handle is not None and self._is_handle_healthy(handle):
-                return handle
+        while True:
+            if request is not None:
+                self._check_worker_creation(request)
+            with self._lock:
+                handle = self._workers.get(account_id)
+                if handle is not None and self._is_handle_healthy(handle):
+                    return handle
+                if handle is not None:
+                    self._retire_worker_locked(account_id, handle)
+                retiring = list(self._retiring_workers.get(account_id, ()))
+                if handle is None and not any(getattr(item, "quota_mirror", None) is not None for item in retiring):
+                    handle = self._spawn_worker(account_id)
+                    self._workers[account_id] = handle
+                    return handle
 
-            if handle is not None:
-                self._retire_worker_locked(account_id, handle)
-                try:
+            # 退出和 SQLite 补写都不能占用所有账户共用的注册表锁。
+            try:
+                if handle is not None:
                     self._dispose_handle(handle)
-                finally:
-                    self._finish_worker_retirement_locked(account_id, handle)
-
-            handle = self._spawn_worker(account_id)
-            self._workers[account_id] = handle
-            return handle
+            finally:
+                for item in retiring:
+                    self._finish_worker_retirement(account_id, item)
+            with self._lock:
+                if any(
+                    getattr(item, "quota_mirror", None) is not None
+                    for item in self._retiring_workers.get(account_id, ())
+                ):
+                    raise WorkerBackendExecutionError("旧 worker 报单额度尚未恢复，暂不能重建", retryable=True)
 
     def _check_worker_creation(self, request: WorkerBackendRequest) -> None:
         """创建进程前检查主动断开意愿，后台准备和迟到的查询不能重新占用进程。"""
@@ -1054,10 +1079,10 @@ class WorkerBackendManager:
             handle.request_lock.release()
             # 旧会话先退出，防止同一账户在关闭期间另起连接。
             self._retire_worker_locked(account_id, handle)
-            try:
-                self._dispose_handle(handle)
-            finally:
-                self._finish_worker_retirement_locked(account_id, handle)
+        try:
+            self._dispose_handle(handle)
+        finally:
+            self._finish_worker_retirement(account_id, handle)
         return True
 
     async def drop_account(self, account_id: int) -> None:
@@ -1378,6 +1403,8 @@ class WorkerBackendManager:
             if handle.replay_draining and handle.process.is_alive():
                 handle.process.join()
                 self._finish_worker_retirement(account_id, handle)
+        if any(getattr(handle, "quota_mirror", None) is not None for _, handle in workers):
+            raise WorkerBackendExecutionError("关停时仍有报单额度未恢复")
 
     def close(self) -> None:
         """关闭所有多进程 worker，兼容 atexit 钩子。."""
