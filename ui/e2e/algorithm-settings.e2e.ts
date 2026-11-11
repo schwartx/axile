@@ -380,7 +380,7 @@ test('名称未知的文件先展示入口，点击后显示实际注册算法',
     expect(route.request().method()).toBe('POST')
     expect(route.request().postDataJSON()).toEqual({ directory: algorithmDirectory, file: 'breakeven_maker.py' })
     if (loads === 1) return route.fulfill({ status: 400, json: { detail: '缺少依赖：example' } })
-    return route.fulfill({ json: [{ name: 'BREAKEVEN-MAKER', label: '保本挂单', description: '', default_params: {}, params_schema: {}, channels: ['binance'], slots: null, builtin: false }] })
+    return route.fulfill({ json: [{ name: 'BREAKEVEN-MAKER', label: '保本挂单', description: '', default_params: {}, params_schema: {}, channels: ['ctp'], slots: null, builtin: false }] })
   })
   await page.getByRole('button', { name: '添加算法目录', exact: true }).click()
   const preview = page.getByRole('region', { name: '当前目录的算法' })

@@ -4,17 +4,18 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 jobs:
   release:
     runs-on: ubuntu-latest
-    env:
-      CARGO_INCREMENTAL: '0'
+    timeout-minutes: 20
     environment:
       name: pypi
       url: https://pypi.org/p/axile
     permissions:
       contents: read
+      actions: read
       id-token: write # PyPI Trusted Publishing (OIDC)，无需 PYPI_API_TOKEN
 
     steps:
@@ -31,23 +32,20 @@ jobs:
         curl -LsSf https://astral.sh/uv/install.sh | sh
         echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-    - uses: dtolnay/rust-toolchain@1.99.1
-    - name: Build native extension
+    - name: Reuse artifacts from the exact successful quality run
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: |
-        export CARGO_TARGET_DIR="$RUNNER_TEMP/axile-storage-target"
-        echo "CARGO_TARGET_DIR=$CARGO_TARGET_DIR" >> "$GITHUB_ENV"
-        cargo build --manifest-path rust/storage/Cargo.toml --release --locked --lib --features python
-    - name: Stage and verify native extension
-      run: uv run --no-project --with hatchling --with packaging python scripts/build_native_analysis.py --no-build --target-dir "$CARGO_TARGET_DIR"
-    - name: Run Rust unit tests
-      run: cargo test --manifest-path rust/storage/Cargo.toml --locked --lib
-
-    - name: Set up Bun
-      uses: oven-sh/setup-bun@v2
-      with:
-        bun-version: '1.4.0'
+        QUALITY_RUN_ID=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow code-quality.yml --commit "$GITHUB_SHA" --event push --limit 1 --json databaseId,status,conclusion --jq '.[0] | select(.status == "completed" and .conclusion == "success") | .databaseId')
+        if [ -z "$QUALITY_RUN_ID" ]; then
+          echo "::error::No successful Code Quality push run for $GITHUB_SHA"
+          exit 1
+        fi
+        gh run download "$QUALITY_RUN_ID" --repo "$GITHUB_REPOSITORY" --name axile-native-core --dir axile/server/_native
+        gh run download "$QUALITY_RUN_ID" --repo "$GITHUB_REPOSITORY" --name axile-web-ui --dir axile/server/_static
 
     - name: Verify tag matches project version
+      if: github.event_name == 'push'
       run: |
         TAG_VERSION="${GITHUB_REF_NAME#v}"
         PROJECT_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
@@ -57,17 +55,6 @@ jobs:
           exit 1
         fi
 
-    - name: Set up replay WASM tools
-      run: |
-        rustup target add wasm32-unknown-unknown
-        cargo install wasm-bindgen-cli --version 0.2.128 --locked
-
-    - name: Build Web UI
-      working-directory: ui
-      run: |
-        bun install --frozen-lockfile
-        bun run build
-
     - name: Build distributions
       run: |
         # The validated native extension belongs to this host's platform wheel.
@@ -76,7 +63,21 @@ jobs:
     - name: Audit and repair Linux wheel
       run: uv run --no-project --with auditwheel==6.8.2 --with patchelf auditwheel repair --plat auto --wheel-dir wheelhouse dist/*.whl
 
+    - name: Verify installed wheel in a clean environment
+      run: |
+        uv venv "$RUNNER_TEMP/axile-release-verify" --python 3.12
+        uv pip install --python "$RUNNER_TEMP/axile-release-verify/bin/python" wheelhouse/*.whl
+        "$RUNNER_TEMP/axile-release-verify/bin/python" -I scripts/verify_release_install.py
+        "$RUNNER_TEMP/axile-release-verify/bin/axile" --help
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: axile-release-wheel
+        path: wheelhouse/*.whl
+        if-no-files-found: error
+
     - name: Publish to PyPI
+      if: github.event_name == 'push'
       uses: pypa/gh-action-pypi-publish@release/v1
       with:
         packages-dir: wheelhouse/

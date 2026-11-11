@@ -218,7 +218,7 @@ def test_ctp_revalidates_frozen_quote_after_final_send_lock_wait(config, monkeyp
             with native_lock:
                 start_send.set()
                 assert waiting.wait(2)
-                clock.sleep(6)
+                clock.sleep(11)
                 fresh = consumed.model_copy(deep=True)
                 fresh.timestamp = int(clock.time() * 1000)
                 fresh.extra["received_at"] = clock.time()

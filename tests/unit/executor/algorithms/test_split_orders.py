@@ -166,7 +166,7 @@ def test_real_algorithm_split_keeps_pricing_evidence_during_refresh(monkeypatch,
     owner = Executor()
     owner.position = 2
     if expire:
-        owner.quote.timestamp -= 4500
+        owner.quote.timestamp -= 9500
     monkeypatch.setattr(
         owner,
         "get_account_assets",

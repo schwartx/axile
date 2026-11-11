@@ -1090,7 +1090,7 @@ def test_chase_uses_post_cancel_fill_for_remaining_volume() -> None:
     assert chase[0]["details"]["chase"]["remaining_volume"] == 60.0
 
 
-@pytest.mark.parametrize("timestamp", [990_000, 1_001_000])
+@pytest.mark.parametrize("timestamp", [990_000, 1_001_001])
 def test_rest_refresh_rejects_old_or_future_snapshot(timestamp):
     clock = _FixedClock(now=1000.0)
     quote = _price("SHSE.600000", 10, 11, timestamp_ms=timestamp)

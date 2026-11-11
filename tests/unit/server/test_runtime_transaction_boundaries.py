@@ -163,6 +163,9 @@ def test_session_prepare_reloads_after_waiting_for_runtime_lock(tmp_path, monkey
             class Manager:
                 configure_catalog_account = MagicMock()
 
+                async def drop_idle_account(self, account_id):
+                    return True
+
                 async def prepare_account(self, account):
                     _worker_can_write_and_checkpoint(path)
                     prepared.append(account.name)
