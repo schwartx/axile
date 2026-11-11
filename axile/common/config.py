@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import tomlkit
-from pydantic import UrlConstraints
+from pydantic import Field, UrlConstraints
 from pydantic_core import MultiHostUrl
 from pydantic_settings import (
     BaseSettings,
@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     ----------
     environment : Literal["local", "staging", "production"]
         当前运行环境标识。
+    browser_title : str
+        浏览器标签标题；为空时根据访问地址生成。
     sqlalchemy_database_uri : SqliteDsn
         SQLite 文件地址，字段名保留旧配置兼容。
     exe_err_feishu_key : str
@@ -84,6 +86,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
     environment: Literal["local", "staging", "production"] = "local"
+    browser_title: str = Field(default="", max_length=120)
 
     time_check_first_run: bool = False
 

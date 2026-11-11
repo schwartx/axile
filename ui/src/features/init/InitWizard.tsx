@@ -12,6 +12,7 @@ import { PythonFunctionEditor } from '@/components/ui/PythonFunctionEditor'
 import { Select } from '@/components/ui/Select'
 import { SettingsSaveBar } from '@/components/ui/SettingsSaveBar'
 import { AlgorithmExtensions } from '@/features/init/AlgorithmExtensions'
+import { BrowserTitleSetting } from '@/features/init/BrowserTitleSetting'
 import {
   normalizeStringList,
 } from '@/components/ui/stringList'
@@ -529,6 +530,7 @@ export function InitWizard({
                 <div className="text-[23px] font-[680] tracking-tight">
                   高级
                 </div>
+                <BrowserTitleSetting initialTitle={initial.browser_title ?? ''} />
                 <Section label="存储">
                   <Row label="数据库地址" hint="持久化" top span>
                     <div className="flex items-center gap-2">
