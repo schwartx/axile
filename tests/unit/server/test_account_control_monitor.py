@@ -66,6 +66,58 @@ def used(frame):
     return next(m["value"] for m in frame["metrics"] if m["operation"] == "place_order")
 
 
+def _quota_worker(connection, account_id, _control, _catalog, _monitor, _orders, quota_connection):
+    """运行真实额度 IPC，模拟两次放行后的 worker。"""
+    from axile.common.trade_channel import TradeChannel
+    from axile.executor.account_control.guard import AccountControlGuard
+    from axile.executor.account_control.presets import resolve_account_control_policy
+    from axile.executor.account_control.snapshot import AccountControlCounterSnapshot
+    from axile.server.execution.worker_backend.quota import QuotaClient
+
+    guard = AccountControlGuard(
+        account_id=account_id,
+        execution_id="quota-worker",
+        channel=TradeChannel.CTP,
+        policy=resolve_account_control_policy("default", None),
+        baseline=AccountControlCounterSnapshot(),
+    )
+    guard.counter_mirror = QuotaClient(quota_connection)
+    guard.begin_operation("place_order", symbol="IF2601").record_outcome("submitted")
+    guard.begin_operation("place_order", symbol="IF2601")
+    connection.send(guard.flush_records()[0])
+    connection.recv()
+
+
+def test_worker_recovers_mirrored_order_quota(monkeypatch):
+    from axile.server.execution.worker_backend import manager as manager_module
+    from axile.server.execution.worker_backend import quota
+
+    async def run():
+        async with database(monkeypatch) as (factory, account, _):
+            monkeypatch.setattr(quota, "SessionLocal", factory)
+            monkeypatch.setattr(manager_module, "run_worker_backend_loop", _quota_worker)
+            manager = manager_module.WorkerBackendManager()
+            handle = await asyncio.to_thread(manager._get_or_create_worker, account.id)
+
+            async def persisted():
+                async with factory() as db:
+                    statement = select(AccountControlCounterDelta).where(
+                        AccountControlCounterDelta.execution_id == "quota-worker"
+                    )
+                    return {row.delta_uid: row.delta_count for row in await db.scalars(statement)}
+
+            try:
+                assert await asyncio.to_thread(handle.connection.poll, 5)
+                deltas = handle.connection.recv()
+                assert await persisted() == {}
+                await asyncio.to_thread(manager._force_drop_worker, account.id, handle)
+                assert await persisted() == {delta.delta_uid: delta.delta_count for delta in deltas}
+            finally:
+                await asyncio.to_thread(manager.close)
+
+    asyncio.run(run())
+
+
 def test_reconnecting_to_expired_cache_does_not_make_monitor_values_fresh(monkeypatch):
     now = [10000]
     monkeypatch.setattr(monitor_module, "clock_now_ms", lambda: now[0])
