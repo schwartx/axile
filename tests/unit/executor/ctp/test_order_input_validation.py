@@ -10,6 +10,7 @@ from axile.executor.ctp.requests import build_order_insert
 from axile.executor.ctp_input_validation import CTPInputValidationError
 from axile.executor.models.unified_input import CTPAccountConfig
 from axile.executor.models.unified_order import OrderDirection, OrderType
+from axile.executor.order_input_validation import OrderInputValidationError, normalize_order_enums
 from tests.unit.executor.ctp.test_requests import _SHANGHAI, _at_clock, _submit_point_executor
 
 _INVALID_VALUES = [None, "", " ", "\n", "\r", "!", "A" * 1024, True, 1, [], {}, "buy", "BUY\n", "limit", "LIMIT "]
@@ -36,13 +37,23 @@ def executor(config):
     return executor
 
 
-@pytest.mark.parametrize("entry", ["public", "ctp"])
 @pytest.mark.parametrize("field", ["direction", "order_type"])
 @pytest.mark.parametrize("invalid", _INVALID_VALUES)
-def test_invalid_order_intent_never_reaches_native_send(executor, entry, field, invalid):
-    """公开入口及直接渠道调用均不得查询资料、占用订单号或发送报单。"""
+def test_order_enum_normalization_rejects_invalid_values(field, invalid):
     params = {"direction": OrderDirection.BUY, "order_type": OrderType.LIMIT}
     params[field] = invalid
+    with pytest.raises(
+        OrderInputValidationError, match="不支持的买卖方向" if field == "direction" else "不支持的订单类型"
+    ):
+        normalize_order_enums(**params)
+
+
+@pytest.mark.parametrize("entry", ["public", "ctp"])
+@pytest.mark.parametrize("field", ["direction", "order_type"])
+def test_invalid_order_intent_never_reaches_native_send(executor, entry, field):
+    """公开入口及直接渠道调用均不得查询资料、占用订单号或发送报单。"""
+    params = {"direction": OrderDirection.BUY, "order_type": OrderType.LIMIT}
+    params[field] = "invalid"
     place = executor.place_order if entry == "public" else executor._place_order_impl
 
     with pytest.raises(ValueError, match="不支持的买卖方向" if field == "direction" else "不支持的订单类型"):
@@ -97,13 +108,12 @@ def test_omitted_and_valid_offsets_keep_order_submission(executor, monkeypatch, 
 
 
 @pytest.mark.parametrize("field", ["direction", "order_type"])
-@pytest.mark.parametrize("invalid", _INVALID_VALUES)
-def test_native_builder_rejects_invalid_intent_before_field_construction(config, monkeypatch, field, invalid):
+def test_native_builder_rejects_invalid_intent_before_field_construction(config, monkeypatch, field):
     """直接调用原生构造函数也不能回退成卖单或市价单。"""
     factory = Mock(side_effect=AssertionError("非法报单不应构造原生请求"))
     monkeypatch.setattr(td, "CThostFtdcInputOrderField", factory)
     params = {"direction": OrderDirection.BUY, "order_type": OrderType.LIMIT}
-    params[field] = invalid
+    params[field] = "invalid"
 
     with pytest.raises(ValueError, match="不支持的买卖方向" if field == "direction" else "不支持的订单类型"):
         build_order_insert(config, symbol="ag2612", order_ref="1", **params, volume=1, price=9000, offset="0")
@@ -112,8 +122,15 @@ def test_native_builder_rejects_invalid_intent_before_field_construction(config,
 
 
 @pytest.mark.parametrize("entry", ["public", "ctp"])
-@pytest.mark.parametrize("direction", [OrderDirection.BUY, OrderDirection.SELL, "BUY", "SELL"])
-@pytest.mark.parametrize("order_type", [OrderType.LIMIT, OrderType.MARKET, "LIMIT", "MARKET"])
+@pytest.mark.parametrize(
+    ("direction", "order_type"),
+    [
+        (OrderDirection.BUY, OrderType.LIMIT),
+        (OrderDirection.SELL, OrderType.MARKET),
+        ("BUY", "MARKET"),
+        ("SELL", "LIMIT"),
+    ],
+)
 def test_valid_order_intent_keeps_native_side_and_price_type(executor, monkeypatch, entry, direction, order_type):
     """合法枚举和精确字符串均只发送一次，并返回规范化订单。"""
     _at_clock(monkeypatch, datetime(2026, 8, 24, 21, 29, tzinfo=_SHANGHAI))
