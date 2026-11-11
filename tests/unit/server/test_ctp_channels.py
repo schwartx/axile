@@ -57,7 +57,7 @@ def test_prepare_china_accounts_isolates_account_failures(
     monkeypatch.setattr(ctp_channels, "_started_china_channel_accounts", started)
 
     async def scenario():
-        async with runtime_database(tmp_path / "runtime.db"):
+        async with runtime_database(tmp_path / "runtime.db", wal=True):
             monkeypatch.setattr(ctp_channels, "get_worker_backend_manager", Manager)
             await ctp_channels.prepare_china_channel_accounts(mode)
 

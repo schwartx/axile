@@ -290,11 +290,11 @@ def _assert_api_contract() -> None:
             "backtest_weight_type backtest_fee_rate id copied_from_account_id copied_from_account_name name market "
             "trade_channel account_control_preset account_control_override account_configured connection_values "
             "is_started cron_expr gm_sessions replay_recording_enabled supplement has_pending_supplement remark brokerage weight_precision long_leverage "
-            "short_leverage algorithm empty_positions_algorithm trade_rules futures_close_policy forbidden_symbols "
+            "short_leverage algorithm algorithm_schedule empty_positions_algorithm trade_rules futures_close_policy forbidden_symbols "
             "risk_symbols feishu_configured execution_notification_code portfolio_id write_empty_record execution_timeout "
             "updated_at created_at archived_at runtime_sync notification_state connection execution_notification_status".split()
         )
-        assert set(account) == expected_fields
+        assert set(account) == expected_fields, set(account) ^ expected_fields
         assert account["account_configured"] and not account["feishu_configured"]
         assert account["connection_values"]["tq_password"] == credentials["tq_password"]
         account_id = account["id"]

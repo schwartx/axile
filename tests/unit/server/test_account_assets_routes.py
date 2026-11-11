@@ -14,7 +14,7 @@ from axile.server.execution.resident_connection import AccountConnectionUnavaila
 
 @pytest.fixture
 def route_dependencies(monkeypatch):
-    account = SimpleNamespace(id=41)
+    account = SimpleNamespace(id=41, archived_at=None)
     read = AsyncMock(return_value=account)
     save = AsyncMock(
         return_value=dict(id=7, account_id=41, source="manual", execution_id=None, created_at="clock-time")

@@ -63,7 +63,7 @@ test('工作区提供默认、时段和清仓入口，未选中的表单保留�
 
 test('当日与跨日保留摘要和编辑区的次日节点，收起时对辅助技术隐藏', () => {
   const render = (end: string) => renderToStaticMarkup(createElement(AlgorithmWorkbench, {
-    channel: 'binance', trade: rule().algorithm, empty: null, schedule: algorithmScheduleDraft([rule('09:30', end)]),
+    channel: 'ctp', trade: rule().algorithm, empty: null, schedule: algorithmScheduleDraft([rule('09:30', end)]),
     errors: {}, footer: null, saveBar: null, onTradeChange() {}, onEmptyChange() {}, onScheduleChange() {}, onValidationError() {},
   }))
   for (const [end, nextDay] of [['09:00', true], ['10:00', false], ['09:30', false], ['', false]] as const) {

@@ -50,6 +50,7 @@ def _account(*, started: bool = True) -> SimpleNamespace:
         cron_expr="30 9 * * *",
         trade_channel=TradeChannel.CTP,
         supplement=None,
+        archived_at=None,
     )
 
 

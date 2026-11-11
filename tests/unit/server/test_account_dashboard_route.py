@@ -93,6 +93,8 @@ def test_dashboard_counts_off_symbols_zero_when_lots_already_match(monkeypatch):
         "account_dashboard_context",
         {
             "live_sessions": account_crud.public_session_views(),
+            "archived": False,
+            "include_archived": False,
         },
     )
 

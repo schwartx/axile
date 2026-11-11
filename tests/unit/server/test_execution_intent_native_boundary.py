@@ -42,7 +42,11 @@ def test_failed_insert_never_publishes_a_memory_queue(monkeypatch: pytest.Monkey
         raise RuntimeError("commit failed")
 
     account = SimpleNamespace(
-        id=710, trade_channel=TradeChannel.CTP, gm_sessions=None, algorithm={"method": "SINGLE-MAKER"}
+        id=710,
+        trade_channel=TradeChannel.CTP,
+        gm_sessions=None,
+        algorithm={"method": "SINGLE-MAKER"},
+        algorithm_schedule=[],
     )
     monkeypatch.setattr(intents, "native_operation", failed_operation)
     try:
@@ -148,7 +152,11 @@ def test_native_supplement_rejection_keeps_its_domain_error(monkeypatch: pytest.
     native_error = _core.NativeError("SUPPLEMENT_NOT_RUNNABLE", "补发需求已取消或过期")
     payload = {"supplement_step_id": "expired-step"}
     account = SimpleNamespace(
-        id=710, trade_channel=TradeChannel.CTP, gm_sessions=None, algorithm={"method": "SINGLE-MAKER"}
+        id=710,
+        trade_channel=TradeChannel.CTP,
+        gm_sessions=None,
+        algorithm={"method": "SINGLE-MAKER"},
+        algorithm_schedule=[],
     )
 
     async def rejected(name, request):
