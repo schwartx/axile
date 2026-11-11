@@ -84,6 +84,19 @@ export function formatPlannedAt(iso: string, now = Date.now()): string {
   return `${plannedDate(target, current)} ${pad(target.hour)}:${pad(target.minute)}`
 }
 
+/** 已观测时间用北京时间的自然日和时分展示。 */
+export function formatObservedAt(iso: string, now = Date.now()): string {
+  const target = dateParts(iso)
+  const current = dateParts(now)
+  if (!target || !current) return '—'
+  const time = `${pad(target.hour)}:${pad(target.minute)}`
+  const daysAgo = dayNumber(current) - dayNumber(target)
+  if (daysAgo === 0) return `今天 ${time}`
+  if (daysAgo === 1) return `昨天 ${time}`
+  const year = target.year === current.year ? '' : `${target.year} 年 `
+  return `${year}${target.month} 月 ${target.day} 日 ${time}`
+}
+
 /** 北京时间日期，用作日期行的机器可读值。 */
 export function formatBeijingDate(iso: string): string {
   const parts = dateParts(iso)

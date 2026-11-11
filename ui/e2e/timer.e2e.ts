@@ -137,6 +137,53 @@ test('股票阶段开关传入预览，盘后保持禁用', async ({ page }) => 
   await expect(page.getByRole('switch', { name: '盘后定价交易', exact: true })).toBeDisabled()
 })
 
+test('快捷弹窗在桌面并排显示设置和预览，在窄屏改为单列', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.route('**/api/v1/**', route => route.abort())
+  await mockPreview(page)
+  await page.goto('/e2e/control.html?channel=gm')
+  await page.getByRole('button', { name: '调整自动执行' }).click()
+  const dialog = page.getByRole('dialog', { name: '调整定时任务', exact: true })
+  await dialog.getByRole('switch', { name: '自动调仓', exact: true }).click()
+  const settings = dialog.getByText('节奏', { exact: true })
+  const preview = dialog.getByText('下次排程', { exact: false })
+  const schedule = dialog.getByRole('list', { name: '未来排程' })
+  await expect(schedule.getByRole('listitem')).toHaveCount(4)
+  await expect(schedule).toBeInViewport({ ratio: 1 })
+  const settingsDesktop = (await settings.boundingBox())!
+  const previewDesktop = (await preview.boundingBox())!
+  expect(previewDesktop.x).toBeGreaterThanOrEqual(settingsDesktop.x + settingsDesktop.width)
+  expect(previewDesktop.y).toBe(settingsDesktop.y)
+  await expect(dialog.getByRole('link', { name: '更多节奏', exact: false })).toHaveAttribute('href', '/accounts/1/edit/timer')
+  await expect(dialog.getByRole('button', { name: '保存', exact: true })).toBeEnabled()
+
+  const minute = dialog.getByRole('group', { name: '早盘不可撤单阶段触发时间' }).getByRole('button', { name: '分', exact: true })
+  await minute.click()
+  const picker = page.getByRole('dialog', { name: '选择时刻', exact: true })
+  await picker.getByRole('option', { name: '24', exact: true }).click()
+  await expectTimeDigits(minute, '24')
+  await page.keyboard.press('Escape')
+  await expect(picker).toHaveCount(0)
+
+  await page.setViewportSize({ width: 1440, height: 650 })
+  const previewBeforeScroll = (await preview.boundingBox())!.y
+  const supplement = dialog.getByRole('group', { name: '补发设置' })
+  const supplementBeforeScroll = (await supplement.boundingBox())!.y
+  await supplement.scrollIntoViewIfNeeded()
+  expect((await supplement.boundingBox())!.y).toBeLessThan(supplementBeforeScroll)
+  expect((await preview.boundingBox())!.y).toBeCloseTo(previewBeforeScroll, 0)
+
+  await page.setViewportSize({ width: 375, height: 812 })
+  const settingsMobile = (await settings.boundingBox())!
+  const previewMobile = (await preview.boundingBox())!
+  expect(previewMobile.x).toBe(settingsMobile.x)
+  expect(previewMobile.y).toBeGreaterThan(settingsMobile.y + settingsMobile.height)
+  await schedule.scrollIntoViewIfNeeded()
+  await expect(schedule).toBeInViewport({ ratio: 1 })
+  await expect(dialog.getByRole('button', { name: '保存', exact: true })).toBeInViewport()
+})
+
 test('GM 触发时间在编辑页和快捷弹窗复用时间滚轮，仅允许 09:20–09:24', async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: 'reduce' })
   await page.route('**/api/v1/**', route => route.abort())

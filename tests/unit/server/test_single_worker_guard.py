@@ -91,18 +91,8 @@ def test_ensure_single_worker_rejects_multi_worker() -> None:
 
 
 def test_ensure_single_worker_allows_single_worker() -> None:
-    """workers=1 是正常单进程启动，必须放行。"""
+    """单 worker 启动和热重载的 Config.workers 均为 1，必须放行。"""
     config = _FakeUvicornConfig(workers=1)  # noqa: F841 - 供护栏回溯栈帧读取
-    ensure_single_worker()
-
-
-def test_ensure_single_worker_allows_reload_mode() -> None:
-    """--reload 也会 spawn 子进程，但其 Config.workers 恒为 1，不得误伤。
-
-    这是本护栏最重要的反向用例：uvicorn 热重载与多 worker 都产生子进程，
-    只有 workers 值能区分二者。
-    """
-    config = _FakeUvicornConfig(workers=1)  # noqa: F841 - 模拟 reload 子进程栈
     ensure_single_worker()
 
 

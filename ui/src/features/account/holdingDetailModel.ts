@@ -1,6 +1,6 @@
 import { currentHoldingPreview, type CurrentHoldingPreview } from '@/features/account/holdingPreview'
 import type { CancelReceipt, CurrentOrder, CurrentOrdersSnapshot } from '@/lib/api/orders'
-import type { Position, TargetSizingRow, TargetWeightSnapshot } from '@/types/api'
+import type { AccountRebalancePlanRow, Position, TargetSizingRow, TargetWeightSnapshot } from '@/types/api'
 
 const EPS = 1e-9
 const CN_EXCHANGES = new Set(['SHFE', 'DCE', 'CZCE', 'CFFEX', 'INE', 'GFEX'])
@@ -34,11 +34,33 @@ function nonnegative(value: unknown): number | null {
 
 export interface HoldingPreviewRow extends CurrentHoldingPreview {
   targetOnly?: boolean
+  quantityTarget?: AccountRebalancePlanRow
 }
 
 /** 已有持仓保留多空分行，追加尚未持有的非零目标，排序沿用持仓货值。 */
-export function holdingPreviewRows(positions: Position[], equity: number, target: TargetWeightSnapshot | null, observed: boolean): HoldingPreviewRow[] {
+export function holdingPreviewRows(
+  positions: Position[], equity: number, target: TargetWeightSnapshot | null, observed: boolean,
+  quantityPlan?: AccountRebalancePlanRow[],
+): HoldingPreviewRow[] {
   const rows: HoldingPreviewRow[] = currentHoldingPreview(positions, equity)
+  if (quantityPlan) {
+    const bySymbol = Object.fromEntries(quantityPlan.map(row => [row.symbol, row] as const))
+    const matched = new Set<AccountRebalancePlanRow>()
+    for (const row of rows) {
+      const quantityTarget = symbolEntry(bySymbol, row.symbol)
+      if (!quantityTarget) continue
+      row.quantityTarget = quantityTarget
+      matched.add(quantityTarget)
+    }
+    for (const quantityTarget of quantityPlan) {
+      if (matched.has(quantityTarget)) continue
+      const { symbol, current_quantity: current, target_quantity: wanted } = quantityTarget
+      rows.push({ key: `${symbol}:target`, symbol, direction: (current || wanted || 0) < 0 ? 'short' : 'long',
+        weight: null, volume: current == null ? null : Math.abs(current), availableVolume: current === 0 ? 0 : null,
+        value: null, quantityTarget })
+    }
+    return rows
+  }
   const weights = target?.target_mode === 'quantity' ? target.raw_targets ?? {} : target?.account_weights ?? target?.weights ?? {}
   for (const [symbol, weight] of Object.entries(weights)) {
     if (!Number.isFinite(weight) || Math.abs(weight) <= (target?.target_mode === 'quantity' ? 0 : EPS) || rows.some(row => sameHoldingSymbol(row.symbol, symbol))) continue

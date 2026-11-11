@@ -4,6 +4,7 @@ import { shanghaiLabel } from '@/features/history/costs'
 import { useAccountConnection } from '@/stores/liveConnection'
 import { useConnectedAssets } from '@/features/account/useConnectedAssets'
 import { RuntimeSyncStatus } from '@/features/account/RuntimeSyncStatus'
+import { AssetObservationTime } from '@/features/account/AssetObservationTime'
 import { AssetRefreshFeedback } from '@/features/account/AssetRefreshFeedback'
 import { AccountConnectionStatus } from '@/features/account/AccountConnectionStatus'
 import { AccountConnectionContext } from '@/lib/accountConnection'
@@ -12,7 +13,6 @@ import { AccountControlSummary } from '@/features/account/ControlMonitor'
 import { CurrentOrdersButton, CurrentOrdersDialog } from '@/features/account/CurrentOrders'
 import { useCurrentOrders } from '@/features/account/useCurrentOrders'
 import { HoldingsPreviewTable } from '@/features/account/HoldingsPreviewTable'
-import { HoldingsView } from '@/features/account/HoldingsView'
 import { HoldingDetailDialog } from '@/features/account/HoldingDetailDialog'
 import { holdingPreviewRows } from '@/features/account/holdingDetailModel'
 import { NotificationIndicator } from '@/features/account/NotificationIndicator'
@@ -214,7 +214,8 @@ export function AccountDetail({
   const holdingsCount = positionsObserved ? snapshotPositions.length : null
   const comparisonLoading = comparison.data === null && comparison.loading
   const comparisonError = comparison.error
-  const quantityTarget = (comparison.data?.target_mode ?? weights.data?.target_mode) === 'quantity'
+  const quantityComparison = comparison.data?.target_mode === 'quantity' ? comparison.data : null
+  const quantityTarget = !!quantityComparison || (comparison.data?.off_symbol_count == null && weights.data?.target_mode === 'quantity')
   const showComparisonPanel = !comparisonLoading && (!!latestAssets || !!weights.data?.calculated_at)
   // 账户级偏离与逐品种动作均取服务端同一份可执行计划。
   const plan = rebalancePlanOfServer(comparison.data)
@@ -224,8 +225,7 @@ export function AccountDetail({
       ? '暂无有效行情 · 偏离未计算'
       : rebalanceHeadline(comparison.data, holdingsCount)
   const targetCount = weights.data ? portfolioTargetSummary(weights.data).activeCount : 0
-  const turnover = quantityTarget ? null : rebalanceTurnover(plan)
-  const currentHoldings = holdingPreviewRows(positions, observedTotalAsset(latestAssets, item.total_asset), weights.data, positionsObserved)
+  const currentHoldings = holdingPreviewRows(positions, observedTotalAsset(latestAssets, item.total_asset), weights.data, positionsObserved, quantityComparison?.rows)
   const state = stateVerdict({ ...item, is_started: isStarted }, false)
   const gate = gateOf({ ...item, is_started: isStarted })
   // 执行态：服务端 live 优先，runner 仅首帧前乐观。queued ≠ 正在下单。
@@ -476,7 +476,7 @@ export function AccountDetail({
                 <span className="ml-1.5 text-[17px] font-medium text-ink-3">{displayCurrencyUnit(item.currency)}</span>
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-ink-3">
-                <span>{item.asset_observed_at ? `资产查询于 ${item.asset_observed_at}` : '尚未查询账户资产'}</span>
+                <span><AssetObservationTime observedAt={item.asset_observed_at} /></span>
             <Tooltip content={connection.status !== 'ready' ? '连接账户后可刷新资产' : '刷新账户资产'}>
               <span className="inline-flex">
                 <button
@@ -723,11 +723,11 @@ export function AccountDetail({
                 <Skeleton className="h-2 w-full" />
               </div>
               <div className="min-w-0 border-t border-line lg:border-t-0 lg:border-l lg:pl-5">
-                <HoldingsPreviewTable holdings={null} positionValueLabel={positionValueLabel} />
+                <HoldingsPreviewTable holdings={null} positionValueLabel={positionValueLabel} quantityMode={quantityTarget} />
               </div>
             </SkeletonGroup>
           ) : showComparisonPanel ? (
-            <div className={`grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.618fr)] ${comparison.data?.target_mode === 'quantity' ? '' : 'min-h-48'}`}>
+            <div className="grid min-h-48 gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.618fr)]">
               <div className="border-t border-line pt-3">
                 <div className={`text-[23px] font-[640] ${STATUS_TEXT_CLASS[driftLevel]}`}>
                   {driftHeadline}
@@ -740,27 +740,28 @@ export function AccountDetail({
                     <div className="mt-1 text-[14px] text-ink-2">
                       卖 {plan.sells} · 买 {plan.buys}{plan.flips > 0 ? ` · 翻向 ${plan.flips}` : ''}
                     </div>
-                    <div className="mt-4 flex items-baseline justify-between gap-3 text-[13.5px]">
-                      <span className="text-ink-2">预计换手</span>
-                      <span className="num font-medium text-ink-1">{turnover == null ? '暂不可计算' : `${turnover.toFixed(1)}%`}</span>
-                    </div>
-                    {!quantityTarget && <DriftBar rows={plan.rows} />}
+                    {!quantityTarget && (
+                      <>
+                        <div className="mt-4 flex items-baseline justify-between gap-3 text-[13.5px]">
+                          <span className="text-ink-2">预计换手</span>
+                          <span className="num font-medium text-ink-1">{rebalanceTurnover(plan).toFixed(1)}%</span>
+                        </div>
+                        <DriftBar rows={plan.rows} />
+                      </>
+                    )}
                   </>
                 )}
               </div>
               <div className="min-w-0 border-t border-line lg:border-t-0 lg:border-l lg:pl-5">
-                {comparison.data?.target_mode === 'quantity' ? <div tabIndex={0}
-                  className="quiet-scrollbar max-h-48 overflow-auto overscroll-contain focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-line">
-                  <HoldingsView positions={positions} executablePlan={comparison.data} target={{}} equity={observedTotalAsset(latestAssets, item.total_asset)}
-                    assetLabel={positionValueLabel} quantityLabel={channelDescriptor?.units?.quantity_label}
-                    onSelect={(symbol, keyboardOpened) => { setHoldingSelection({ accountId, symbol, keyboardOpened }) }} />
-                </div> : <HoldingsPreviewTable
+                <HoldingsPreviewTable
                   holdings={currentHoldings}
                   onSelect={(symbol, keyboardOpened) => { setHoldingSelection({ accountId, symbol, keyboardOpened }) }}
                   observed={positionsObserved}
                   currency={item.currency}
                   positionValueLabel={positionValueLabel}
-                />}
+                  quantityMode={quantityTarget}
+                  quantityLabel={channelDescriptor?.units?.quantity_label}
+                />
               </div>
             </div>
           ) : null}

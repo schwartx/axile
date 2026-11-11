@@ -229,33 +229,37 @@ function TimerQuickModalReady({
       ariaLabel="调整定时任务"
       onClose={onClose}
       closeDisabled={saving}
+      widthClassName="w-[480px] md:w-[900px]"
       footer={
-        <div className="mt-1 flex justify-end gap-2.5 border-t border-line px-5 py-3.5">
-          <button
-            type="button"
-            className="cursor-pointer rounded-[9px] border border-line bg-surface px-4 py-2 text-sm text-ink-2 disabled:opacity-45"
+        <div className="mt-1 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-line px-5 py-3.5">
+          <Link
+            to={`/accounts/${accountId}/edit/timer`}
+            className="text-[13.5px] font-semibold text-accent hover:underline"
             onClick={onClose}
-            disabled={saving}
           >
-            取消
-          </button>
-          <button
-            type="button"
-            className="cursor-pointer rounded-[9px] border border-ink-1 bg-ink-1 px-[18px] py-2 text-sm font-[550] text-surface disabled:opacity-45"
-            onClick={() => void save()}
-            disabled={saving || !dirty || Boolean(validationError)}
-          >
-            {saving ? '保存中…' : '保存'}
-          </button>
+            更多节奏 · 多时刻与自定义 →
+          </Link>
+          <div className="ml-auto flex gap-2.5">
+            <button
+              type="button"
+              className="cursor-pointer rounded-[9px] border border-line bg-surface px-4 py-2 text-sm text-ink-2 disabled:opacity-45"
+              onClick={onClose}
+              disabled={saving}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className="cursor-pointer rounded-[9px] border border-ink-1 bg-ink-1 px-[18px] py-2 text-sm font-[550] text-surface disabled:opacity-45"
+              onClick={() => void save()}
+              disabled={saving || !dirty || Boolean(validationError)}
+            >
+              {saving ? '保存中…' : '保存'}
+            </button>
+          </div>
         </div>
       }
     >
-      {fromComplex && (
-        <div className="mb-4 rounded-[10px] border-l-2 border-warn/60 bg-warn-tint/50 py-2 pl-3 pr-2 text-[13.5px] text-ink-2">
-          当前为高级或自定义节奏。在此保存将改为下方快捷预设；完整编辑请到账户编辑页。
-        </div>
-      )}
-
       <div className="space-y-5">
         <div className="flex items-center gap-3">
           <Switch ariaLabel="自动调仓" on={state.autoOn} onClick={() => patch({ autoOn: !state.autoOn })} />
@@ -272,85 +276,79 @@ function TimerQuickModalReady({
             state.autoOn ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
           }`}
         >
-          <div className="overflow-hidden">
-            <div className={`space-y-4 ${state.autoOn && autoOnFade ? 'panel-fade-in' : ''}`}>
-              <div>
-                <div className="mb-2 text-sm font-[640]">节奏</div>
-                <div className="flex flex-wrap gap-2">
-                  {PRESETS[market].map((p) => {
-                    const on = state.presetIds.includes(p.id)
-                    return (
-                      <button
-                        key={p.id}
-                        type="button"
-                        aria-pressed={on}
-                        onClick={() => pickPreset(p.id)}
-                        className={`min-w-[92px] rounded-[11px] border p-2.5 text-left ${presetCardT} ${
-                          on
-                            ? 'border-accent bg-accent-soft shadow-[inset_0_0_0_1px_var(--color-accent)]'
-                            : 'border-line bg-surface'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-2 text-sm font-[640]">
-                          <span>{p.label}</span>
-                          <Check size={13} aria-hidden="true" className={`shrink-0 ${on ? '' : 'invisible'}`} />
-                        </div>
-                        {p.sub && <div className="text-xs text-ink-3">{p.sub}</div>}
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-
-              {nightSchedule && (
-                <div className="flex items-center gap-3">
-                  <Switch
-                    ariaLabel={nightSchedule.label}
-                    on={state.nightOn}
-                    onClick={() => patch({ nightOn: !state.nightOn })}
-                  />
-                  <div className="min-w-0">
-                    <div className="text-sm font-[640]">{nightSchedule.label}</div>
-                    <div className="text-xs text-ink-3">{nightSchedule.range_label}</div>
+          <div className="min-h-0 overflow-clip">
+            <div className={`grid gap-4 md:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] md:gap-6 ${state.autoOn && autoOnFade ? 'panel-fade-in' : ''}`}>
+              <div className="min-w-0 space-y-4">
+                <div>
+                  <div className="mb-2 text-sm font-[640]">节奏</div>
+                  <div className="flex flex-wrap gap-2">
+                    {PRESETS[market].map((p) => {
+                      const on = state.presetIds.includes(p.id)
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          aria-pressed={on}
+                          onClick={() => pickPreset(p.id)}
+                          className={`min-w-[92px] rounded-[11px] border p-2.5 text-left ${presetCardT} ${
+                            on
+                              ? 'border-accent bg-accent-soft shadow-[inset_0_0_0_1px_var(--color-accent)]'
+                              : 'border-line bg-surface'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2 text-sm font-[640]">
+                            <span>{p.label}</span>
+                            <Check size={13} aria-hidden="true" className={`shrink-0 ${on ? '' : 'invisible'}`} />
+                          </div>
+                          {p.sub && <div className="text-xs text-ink-3">{p.sub}</div>}
+                        </button>
+                      )
+                    })}
                   </div>
                 </div>
-              )}
 
-              <GMSessionControls channel={tradeChannel} value={state.gm_sessions} onChange={(gm_sessions) => patch({ gm_sessions })} />
+                {nightSchedule && (
+                  <div className="flex items-center gap-3">
+                    <Switch
+                      ariaLabel={nightSchedule.label}
+                      on={state.nightOn}
+                      onClick={() => patch({ nightOn: !state.nightOn })}
+                    />
+                    <div className="min-w-0">
+                      <div className="text-sm font-[640]">{nightSchedule.label}</div>
+                      <div className="text-xs text-ink-3">{nightSchedule.range_label}</div>
+                    </div>
+                  </div>
+                )}
 
-              <SupplementControls
-                supN={state.supN}
-                supM={state.supM}
-                onN={(supN) => patch({ supN })}
-                onM={(supM) => patch({ supM })}
-              />
+                <GMSessionControls channel={tradeChannel} value={state.gm_sessions} onChange={(gm_sessions) => patch({ gm_sessions })} />
 
-              <div>
-                <div className="mb-1 text-sm font-[640]">
-                  下次排程 <span className="text-xs font-normal text-ink-3">预览 · 北京时间</span>
+                <SupplementControls
+                  supN={state.supN}
+                  supM={state.supM}
+                  onN={(supN) => patch({ supN })}
+                  onM={(supM) => patch({ supM })}
+                />
+              </div>
+
+              <div className="min-w-0 border-t border-line pt-4 md:border-t-0 md:border-l md:pt-0 md:pl-6">
+                <div className="md:sticky md:top-14">
+                  <div className="mb-1 text-sm font-[640]">
+                    下次排程 <span className="text-xs font-normal text-ink-3">预览 · 北京时间</span>
+                  </div>
+                  <div className="space-y-1" role="list" aria-label="未来排程">
+                    {preview?.items.map((item) => {
+                      const presentation = schedulePreviewItemPresentation(item, executionReasonText, nextSupplement?.interval_minutes)
+                      return <ScheduleTimeRow key={item.scheduled_at} scheduledAt={item.scheduled_at} stacked
+                        now={Date.parse(preview.evaluated_at)} tone={presentation.tone}
+                        trailing={[item.phase_label, presentation.text].filter(Boolean).join(' · ')} />
+                    }) ?? <span className="text-sm text-ink-3">{validationError ?? (cronNext ? '正在预览…' : '选择节奏后显示')}</span>}
+                  </div>
+                  <ErrorNotice intent="read" title="未来排程预览失败" error={previewError} />
                 </div>
-                <div className="space-y-1" role="list" aria-label="未来排程">
-                  {preview?.items.map((item) => {
-                    const presentation = schedulePreviewItemPresentation(item, executionReasonText, nextSupplement?.interval_minutes)
-                    return <ScheduleTimeRow key={item.scheduled_at} scheduledAt={item.scheduled_at}
-                      now={Date.parse(preview.evaluated_at)} tone={presentation.tone}
-                      trailing={[item.phase_label, presentation.text].filter(Boolean).join(' · ')} />
-                  }) ?? <span className="text-sm text-ink-3">{validationError ?? (cronNext ? '正在预览…' : '选择节奏后显示')}</span>}
-                </div>
-                <ErrorNotice intent="read" title="未来排程预览失败" error={previewError} />
               </div>
             </div>
           </div>
-        </div>
-
-        <div className="border-t border-line pt-3">
-          <Link
-            to={`/accounts/${accountId}/edit/timer`}
-            className="text-[13.5px] font-semibold text-accent hover:underline"
-            onClick={onClose}
-          >
-            更多节奏 · 多时刻与自定义 →
-          </Link>
         </div>
       </div>
       <ErrorNotice intent="mutation" embedded title="保存定时任务失败" error={saveError} variant="mutation" onRetry={save} />

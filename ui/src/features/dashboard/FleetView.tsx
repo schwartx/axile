@@ -3,6 +3,7 @@ import { useViewTransitionState } from 'react-router'
 import { ArrowUpRight, Copy, Plus } from 'lucide-react'
 import { CopyAccountDialog } from '@/features/account/CopyAccountDialog'
 import { AccountConnectionStatus } from '@/features/account/AccountConnectionStatus'
+import { AssetObservationTime } from '@/features/account/AssetObservationTime'
 import { cardPerformance, currentEquity } from '@/features/dashboard/performance'
 import { PerformanceStatus } from '@/features/dashboard/PerformanceStatus'
 import { Link, useNavigate } from '@/components/ui/nav'
@@ -130,7 +131,7 @@ function FleetCard({
         <PerformanceCurveLink accountId={item.account_id} summary={item.performance} source="fleet" width={120} height={34} />
       </div>
 
-      <div className="mt-1 text-xs text-ink-3">{item.asset_observed_at ? `资产查询于 ${item.asset_observed_at}` : '尚未查询账户资产'}</div>
+      <div className="mt-1 text-xs text-ink-3"><AssetObservationTime observedAt={item.asset_observed_at} /></div>
       <div className="mt-3 flex gap-2.5 border-t border-line pt-3 text-[14.5px]">
         <span className="min-w-14 flex-none text-ink-3">当前持仓</span>
         <span>{item.asset_observed_at ? holdingText(item.holdings_count, item.position_weights) : '持仓尚未查询'}</span>

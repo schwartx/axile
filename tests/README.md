@@ -58,6 +58,7 @@ uv run pytest tests/unit/channels/test_registry.py::test_duplicate_channel_regis
 
 ## 维护约定
 
+- UI 检查运行 lint、单元测试和构建；Playwright E2E 按需在本地运行。
 - 按业务行为确定测试归属。模型、helper、服务和路由覆盖同一普通场景时，优先保留能验证完整结果的
   用例；资金、数量、开平仓、撤单确认、成交去重、恢复隔离和事务一致性仍需独立覆盖失败边界。
 - 普通字段赋值、日志字符串拼法、内部方法调用顺序和第三方校验器的重复输入不作为独立回归目标。
