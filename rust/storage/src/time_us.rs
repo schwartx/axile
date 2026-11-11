@@ -168,14 +168,23 @@ pub(crate) fn parse(value: &str) -> Result<i64, String> {
     local.tm_min = value.minute() as i32;
     local.tm_sec = value.second() as i32;
     local.tm_isdst = -1;
+    // The Windows CRT's 64-bit time functions use i64 even when libc::time_t is narrower.
+    #[cfg(windows)]
+    unsafe extern "C" {
+        fn _mktime64(local: *mut libc::tm) -> i64;
+        fn _localtime64_s(local: *mut libc::tm, seconds: *const i64) -> libc::errno_t;
+    }
+    #[cfg(not(windows))]
     let seconds = unsafe { libc::mktime(&mut local) };
+    #[cfg(windows)]
+    let seconds = unsafe { _mktime64(&mut local) };
     if seconds == -1 {
         // -1 is also a valid instant; verify it before treating it as mktime failure.
         let mut check: libc::tm = unsafe { std::mem::zeroed() };
         #[cfg(unix)]
         let valid = !unsafe { libc::localtime_r(&seconds, &mut check) }.is_null();
         #[cfg(windows)]
-        let valid = unsafe { libc::localtime_s(&mut check, &seconds) } == 0;
+        let valid = unsafe { _localtime64_s(&mut check, &seconds) } == 0;
         #[cfg(not(any(unix, windows)))]
         let valid = false;
         if !valid
@@ -339,6 +348,14 @@ mod tests {
         assert!(from_millis(i64::MAX).is_err());
         assert!(parse("garbage").is_err());
     }
+
+    #[test]
+    fn naive_local_time_keeps_microseconds() {
+        let whole = parse("2026-01-15T12:00:00").unwrap();
+        let fractional = parse("2026-01-15T12:00:00.123456").unwrap();
+        assert_eq!(fractional - whole, 123_456);
+    }
+
     #[test]
     fn only_manifest_scalars_change_and_business_dates_stay_local() {
         let extra =
