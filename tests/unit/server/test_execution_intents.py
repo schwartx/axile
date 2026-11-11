@@ -249,6 +249,8 @@ def test_coalesced_manual_gm_request_does_not_renew_original_phase(monkeypatch):
 def test_submit_intent_coalesces_queued_rebalance(
     monkeypatch: pytest.MonkeyPatch, running: bool, memory_only: bool
 ) -> None:
+    wakes = []
+
     async def _run() -> tuple[SubmitResult, SubmitResult]:
         async with _intent_db(monkeypatch):
             if running:
@@ -258,6 +260,7 @@ def test_submit_intent_coalesces_queued_rebalance(
             first = await submit_intent(1, ExecutionKind.REBALANCE, "manual")
             if memory_only:
                 monkeypatch.setattr(intents_module, "load_active_intents", AsyncMock(return_value=(None, None)))
+            monkeypatch.setattr(intents_module, "_wake", wakes.append)
             second = await submit_intent(1, ExecutionKind.REBALANCE, "scheduler")
             return first, second
 
@@ -265,9 +268,11 @@ def test_submit_intent_coalesces_queued_rebalance(
     assert first.outcome == "created"
     assert second.outcome == "coalesced"
     assert second.execution_id == first.execution_id
+    assert wakes == [1]
 
 
 def test_submit_intent_recovers_from_concurrent_initial_insert(monkeypatch: pytest.MonkeyPatch) -> None:
+    wakes = []
     original_insert = intents_module._insert_intent
     first_call = True
 
@@ -298,11 +303,13 @@ def test_submit_intent_recovers_from_concurrent_initial_insert(monkeypatch: pyte
     async def _run() -> SubmitResult:
         async with _intent_db(monkeypatch):
             monkeypatch.setattr(intents_module, "_insert_intent", competing_insert)
+            monkeypatch.setattr(intents_module, "_wake", wakes.append)
             return await submit_intent(1, ExecutionKind.REBALANCE, "manual")
 
     result = asyncio.run(_run())
     assert result.outcome == "coalesced"
     assert result.execution_id is not None
+    assert wakes == [1]
 
 
 def test_cas_intent_status_rejects_stale_expected_status(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -366,17 +373,33 @@ def test_submit_intent_clear_conflicts_when_running(monkeypatch: pytest.MonkeyPa
 
 
 def test_submit_intent_rebalance_queues_behind_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    wakes = []
+    original_insert = intents_module._insert_intent
+
+    async def insert_after_previous_exit(**kwargs):
+        clear_running_execution(1, "exec-running")
+        return await original_insert(**kwargs)
+
+    def wake_after_unlock(account_id):
+        from axile.server.execution.supplements import account_lock
+
+        assert not account_lock(account_id).locked()
+        wakes.append(account_id)
+
     try:
         try_register_running_execution(1, "exec-running")
 
         async def _run() -> tuple[SubmitResult, str | None]:
             async with _intent_db(monkeypatch):
+                monkeypatch.setattr(intents_module, "_insert_intent", insert_after_previous_exit)
+                monkeypatch.setattr(intents_module, "_wake", wake_after_unlock)
                 result = await submit_intent(1, ExecutionKind.REBALANCE, "manual")
                 return result, get_queued_execution_id(1)
 
         result, queued_id = asyncio.run(_run())
         assert result.outcome == "created"
         assert queued_id == result.execution_id
+        assert wakes == [1]
     finally:
         clear_running_execution(1, "exec-running")
         queued_id = get_queued_execution_id(1)
@@ -384,7 +407,22 @@ def test_submit_intent_rebalance_queues_behind_running(monkeypatch: pytest.Monke
             clear_queued_execution(1, queued_id)
 
 
+def test_failed_submit_does_not_wake_dispatcher(monkeypatch):
+    wakes = []
+
+    async def run():
+        async with _intent_db(monkeypatch):
+            monkeypatch.setattr(intents_module, "_wake", wakes.append)
+            monkeypatch.setattr(intents_module, "_insert_intent", AsyncMock(side_effect=ValueError("insert failed")))
+            with pytest.raises(ValueError, match="insert failed"):
+                await submit_intent(1, ExecutionKind.REBALANCE, "manual")
+
+    asyncio.run(run())
+    assert wakes == []
+
+
 def test_cron_busy_returns_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
+    wakes = []
     try:
         try_register_running_execution(1, "exec-running")
         from axile.server.execution.registry import set_queued_execution
@@ -393,6 +431,7 @@ def test_cron_busy_returns_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
 
         async def _run() -> SubmitResult:
             async with _intent_db(monkeypatch):
+                monkeypatch.setattr(intents_module, "_wake", wakes.append)
                 return await submit_intent(
                     1,
                     ExecutionKind.REBALANCE,
@@ -403,6 +442,7 @@ def test_cron_busy_returns_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
         result = asyncio.run(_run())
         assert result.outcome == "skipped_busy"
         assert result.execution_id is None
+        assert wakes == []
     finally:
         clear_running_execution(1, "exec-running")
         clear_queued_execution(1, "exec-queued")

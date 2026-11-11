@@ -36,6 +36,7 @@ from axile.server.execution.resident_connection import (
 )
 from axile.server.execution.worker_backend.catalog import RemoteCatalogProvider
 from axile.server.execution.worker_backend.protocol import WorkerReplayConfig, WorkerTerminationSignal
+from axile.server.execution.worker_backend.quota import QuotaClient
 
 
 @dataclass
@@ -50,6 +51,7 @@ class _WorkerBackendState(ResidentConnectionState):
 
     request_active: bool = False
     catalog_provider: RemoteCatalogProvider | None = None
+    quota_client: QuotaClient | None = None
     requires_worker_restart: bool = False
     connection_collector: ConnectionCollector = field(default_factory=ConnectionCollector)
     termination_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -194,6 +196,7 @@ def _prepare_executor(
     termination_controller: ExecutionTerminationController | None = None,
     context_kind: AccountControlContextKind = AccountControlContextKind.EXECUTION,
     source: AccountControlSource = AccountControlSource.ALGORITHM,
+    quota_client: QuotaClient | None = None,
 ) -> None:
     """
     为当前请求准备执行器的审计与账户控制运行时。
@@ -224,6 +227,8 @@ def _prepare_executor(
         set_audit_sink(build_server_execution_audit_sink())
 
     guard = asyncio.run(build_account_control_guard(account, execution_id, context_kind=context_kind, source=source))
+    if guard is not None and quota_client is not None:
+        guard.counter_mirror = quota_client
     set_account_control_guard = getattr(executor, "set_account_control_guard", None)
     if callable(set_account_control_guard):
         set_account_control_guard(guard)
@@ -280,6 +285,7 @@ def _resolve_prepared_executor(
             termination_controller=termination_controller,
             context_kind=context_kind,
             source=source,
+            quota_client=state.quota_client,
         )
 
     def initialize(executor: object) -> None:

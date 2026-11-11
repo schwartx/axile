@@ -338,6 +338,7 @@ class AccountControlGuard:
         self.incomplete_control_dates: frozenset[str] = frozenset()
         self.counter_integrity_unavailable = False
         self._monitor_seq = 0
+        self.counter_mirror: Callable[[str, list[AccountControlCounterDeltaWrite]], None] | None = None
         self.monitor_outcome_sink: Callable[[AccountControlEventWrite], None] | None = None
         self._monitor_waits: dict[int, dict[str, object]] = {}
         self.account_id = account_id
@@ -735,6 +736,9 @@ class AccountControlGuard:
         resolved_attempt: AccountControlResolvedAttempt,
     ) -> AccountControlAttempt:
         track_symbol_scope = self._should_track_symbol_scope(operation=operation, symbol=symbol)
+        if operation == "place_order" and self.counter_mirror is not None:
+            window = resolved_attempt.context.window
+            self._mirror_order_counters(window, symbol if track_symbol_scope else None)
         self._apply_allowed_side_effects(
             operation=operation,
             symbol=symbol,
@@ -894,61 +898,62 @@ class AccountControlGuard:
             *self._build_symbol_counter_deltas(),
         ]
 
-    def _build_account_counter_deltas(self) -> list[AccountControlCounterDeltaWrite]:
+    def _mirror_order_counters(self, window: AccountControlWindow, symbol: str | None) -> None:
+        """报单放行前将即将占用的额度同步给主进程。"""
+        assert self.counter_mirror is not None
+        source = controlled_source(self, self.source)
+        deltas = []
+        for bucket_type, bucket_start in (
+            (AccountControlBucketType.MINUTE, window.minute_bucket_start),
+            (AccountControlBucketType.DAY, window.day_bucket_start),
+        ):
+            key = (window.control_date, bucket_type, bucket_start, "place_order")
+            count = self._account_counter_sources.get((key, source), 0) + 1
+            deltas.append(self._counter_delta(key, source, count))
+            if symbol is not None:
+                symbol_key = (window.control_date, symbol, bucket_type, bucket_start, "place_order")
+                count = self._symbol_counter_sources.get((symbol_key, source), 0) + 1
+                deltas.append(self._counter_delta(key, source, count, symbol))
+        self.counter_mirror(self.instance_id, deltas)
+
+    def _counter_delta(
+        self, key: AccountCounterKey, source: AccountControlSource, count: int, symbol: str | None = None
+    ) -> AccountControlCounterDeltaWrite:
         assert self.account_id is not None
         assert self.execution_id is not None
-        counter_deltas: list[AccountControlCounterDeltaWrite] = []
-        for key, source in sorted(self._account_counter_sources):
-            control_date, bucket_type, bucket_start, operation = key
-            delta_count = self._account_counter_sources[key, source]
-            counter_deltas.append(
-                AccountControlCounterDeltaWrite(
-                    account_id=self.account_id,
-                    execution_id=self.execution_id,
-                    context_kind=self.context_kind,
-                    source=source,
-                    control_date=control_date,
-                    bucket_type=bucket_type,
-                    bucket_start=bucket_start,
-                    scope_type=AccountControlScopeType.ACCOUNT,
-                    symbol=None,
-                    operation=operation,
-                    delta_count=delta_count,
-                    delta_uid=(
-                        f"{self.execution_id}:{self.instance_id}:{control_date}:{bucket_type.value}:{bucket_start}:"
-                        f"{AccountControlScopeType.ACCOUNT.value}:-:{operation}:{source.value}"
-                    ),
-                )
-            )
-        return counter_deltas
+        control_date, bucket_type, bucket_start, operation = key
+        scope = AccountControlScopeType.ACCOUNT if symbol is None else AccountControlScopeType.SYMBOL
+        return AccountControlCounterDeltaWrite(
+            account_id=self.account_id,
+            execution_id=self.execution_id,
+            context_kind=self.context_kind,
+            source=source,
+            control_date=control_date,
+            bucket_type=bucket_type,
+            bucket_start=bucket_start,
+            scope_type=scope,
+            symbol=symbol,
+            operation=operation,
+            delta_count=count,
+            delta_uid=(
+                f"{self.execution_id}:{self.instance_id}:{control_date}:{bucket_type.value}:{bucket_start}:"
+                f"{scope.value}:{symbol if symbol is not None else '-'}:{operation}:{source.value}"
+            ),
+        )
+
+    def _build_account_counter_deltas(self) -> list[AccountControlCounterDeltaWrite]:
+        return [
+            self._counter_delta(key, source, count)
+            for (key, source), count in sorted(self._account_counter_sources.items())
+        ]
 
     def _build_symbol_counter_deltas(self) -> list[AccountControlCounterDeltaWrite]:
-        assert self.account_id is not None
-        assert self.execution_id is not None
-        counter_deltas: list[AccountControlCounterDeltaWrite] = []
-        for key, source in sorted(self._symbol_counter_sources):
-            control_date, symbol, bucket_type, bucket_start, operation = key
-            delta_count = self._symbol_counter_sources[key, source]
-            counter_deltas.append(
-                AccountControlCounterDeltaWrite(
-                    account_id=self.account_id,
-                    execution_id=self.execution_id,
-                    context_kind=self.context_kind,
-                    source=source,
-                    control_date=control_date,
-                    bucket_type=bucket_type,
-                    bucket_start=bucket_start,
-                    scope_type=AccountControlScopeType.SYMBOL,
-                    symbol=symbol,
-                    operation=operation,
-                    delta_count=delta_count,
-                    delta_uid=(
-                        f"{self.execution_id}:{self.instance_id}:{control_date}:{bucket_type.value}:{bucket_start}:"
-                        f"{AccountControlScopeType.SYMBOL.value}:{symbol}:{operation}:{source.value}"
-                    ),
-                )
+        return [
+            self._counter_delta((date, bucket_type, bucket_start, operation), source, count, symbol)
+            for ((date, symbol, bucket_type, bucket_start, operation), source), count in sorted(
+                self._symbol_counter_sources.items()
             )
-        return counter_deltas
+        ]
 
     def _evaluate_enforcement(
         self,

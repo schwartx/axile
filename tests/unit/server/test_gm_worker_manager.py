@@ -943,7 +943,8 @@ def test_query_waiting_on_disconnected_worker_cannot_use_or_recreate_it(monkeypa
     manager = WorkerBackendManager()
     handle = _FakeHandle()
     manager._workers[2] = handle
-    monkeypatch.setattr(manager, "_is_manually_disconnected", lambda *_: True)
+    disconnected = [False]
+    monkeypatch.setattr(manager, "_is_manually_disconnected", lambda *_: disconnected[0])
     entered = Event()
     get_worker = manager._get_or_create_worker
     failures = []
@@ -968,6 +969,7 @@ def test_query_waiting_on_disconnected_worker_cannot_use_or_recreate_it(monkeypa
     thread.start()
     try:
         assert entered.wait(2)
+        disconnected[0] = True
         with manager._lock:
             manager._retire_worker_locked(2, handle)
     finally:
