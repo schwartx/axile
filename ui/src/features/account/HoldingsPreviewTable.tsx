@@ -2,6 +2,7 @@ import { OverflowText } from '@/components/ui/OverflowText'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { formatHoldingQuantity } from '@/features/account/holdingPreview'
 import type { HoldingPreviewRow } from '@/features/account/holdingDetailModel'
+import { quantityText, targetQuantityText } from '@/features/account/sizingEvidenceModel'
 import { fmtMoney, withCurrency } from '@/lib/format'
 
 /**
@@ -19,6 +20,8 @@ export function HoldingsPreviewTable({
   holdings,
   currency = '',
   positionValueLabel,
+  quantityMode = false,
+  quantityLabel = '',
   onSelect,
 }: {
   observed?: boolean
@@ -26,6 +29,8 @@ export function HoldingsPreviewTable({
   holdings: HoldingPreviewRow[] | null
   currency?: string
   positionValueLabel: string
+  quantityMode?: boolean
+  quantityLabel?: string
   onSelect?: (symbol: string, keyboardOpened: boolean) => void
 }) {
   return (
@@ -33,17 +38,17 @@ export function HoldingsPreviewTable({
       tabIndex={0}
       className="quiet-scrollbar h-48 min-w-0 overflow-y-auto overscroll-contain pr-2 [scrollbar-gutter:stable] focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-line"
     >
-      <table aria-label="当前持仓" className="w-full table-auto border-separate border-spacing-0">
+      <table aria-label={quantityMode ? '目标数量与持仓' : '当前持仓'} className="w-full table-auto border-separate border-spacing-0">
         <thead>
           <tr className="text-[12px] font-medium text-ink-3">
             <th scope="col" className={`${PREVIEW_TH} w-full border-b border-line text-left whitespace-nowrap`}>
               品种
             </th>
             <th scope="col" className={`${PREVIEW_TH} ${PREVIEW_NUMBER} border-b border-line`}>
-              仓位
+              {quantityMode ? '持仓/可用' : '仓位'}
             </th>
             <th scope="col" className={`${PREVIEW_TH} ${PREVIEW_NUMBER} border-b border-line`}>
-              持仓/可用
+              {quantityMode ? '目标数量' : '持仓/可用'}
             </th>
             <th scope="col" className={`${PREVIEW_TH} ${PREVIEW_NUMBER} border-b border-line`}>
               {positionValueLabel}
@@ -79,8 +84,11 @@ export function HoldingsPreviewTable({
               const dir = holding.direction === 'short' ? '空' : '多'
               const weight = holding.targetOnly ? (observed ? '空仓' : '未查询')
                 : holding.weight == null ? `${dir}—` : `${dir}${Math.abs(holding.weight).toFixed(1)}%`
-              const volume = formatHoldingQuantity(holding.volume)
-              const availableVolume = formatHoldingQuantity(holding.availableVolume)
+              const signedVolume = holding.direction === 'short' && holding.volume != null ? -holding.volume : holding.volume
+              const volume = quantityMode ? quantityText(signedVolume) : formatHoldingQuantity(holding.volume)
+              const availableVolume = quantityMode ? targetQuantityText(holding.availableVolume) : formatHoldingQuantity(holding.availableVolume)
+              const needsAdjustment = quantityMode && holding.quantityTarget?.aligned === false
+              const quantitiesCell = <td className={`num h-8 ${PREVIEW_NUMBER} text-ink-2`}>{volume}/{availableVolume}</td>
               const value = holding.value == null ? '—' : withCurrency(fmtMoney(holding.value), currency)
               return (
                 <tr key={holding.key} onClick={onSelect ? () => onSelect(holding.symbol, false) : undefined}
@@ -90,10 +98,12 @@ export function HoldingsPreviewTable({
                     className="block min-h-8 w-full cursor-pointer text-left focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-accent">
                     <OverflowText text={holding.symbol} className="block" />
                   </button> : <OverflowText text={holding.symbol} className="block" />}</td>
-                  <td className={`num h-8 ${PREVIEW_NUMBER} text-ink-2`}>{weight}</td>
-                  <td className={`num h-8 ${PREVIEW_NUMBER} text-ink-2`}>
-                    {volume}/{availableVolume}
+                  {quantityMode && quantitiesCell}
+                  <td className={`num h-8 ${PREVIEW_NUMBER} ${needsAdjustment ? 'font-semibold text-warn' : 'text-ink-2'}`}>
+                    {quantityMode ? quantityText(holding.quantityTarget?.target_quantity, quantityLabel) : weight}
+                    {needsAdjustment && <span className="sr-only"> · 待调整</span>}
                   </td>
+                  {!quantityMode && quantitiesCell}
                   <td className={`num h-8 ${PREVIEW_NUMBER} font-medium text-ink-1`}>{value}</td>
                 </tr>
               )

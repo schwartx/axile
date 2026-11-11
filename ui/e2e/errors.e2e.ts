@@ -734,6 +734,43 @@ test('switching execution while A is pending invalidates its late response and o
   expect(await copied(page)).toContain(raw('B'))
 })
 
+test('quantity overview shares the holdings layout and compares without market values', async ({ page }) => {
+  await defaults(page)
+  await page.route('**/api/v1/account/7/target_snapshot', route => route.fulfill({ json: {
+    ...snapshot, target_mode: 'quantity', raw_targets: { 'DCE.c2611': -3, XAUUSD: 0.015, m2701: 2 },
+  } }))
+  await page.route('**/api/v1/account/7/asset_snapshots*', route => route.fulfill({ json: {
+    data: [{ created_at: snapshot.calculated_at, assets: { total_asset: 100_000, positions: [
+      { symbol: 'c2611', direction: '空头', volume: 3, available_volume: 2, market_value: 12_000 },
+      { symbol: 'XAUUSD', direction: '多头', volume: 0.01, available_volume: 0.009 },
+    ] } }], count: 1,
+  } }))
+  await page.route('**/api/v1/account/7/rebalance_plan', route => route.fulfill({ json: {
+    target_mode: 'quantity', off_symbol_count: 2, rows: [
+      { symbol: 'DCE.c2611', current_quantity: -3, target_quantity: -3, action: 'aligned', side: 'none', aligned: true },
+      { symbol: 'XAUUSD', current_quantity: 0.01, target_quantity: 0.015, action: 'increase', side: 'buy', aligned: false },
+      { symbol: 'm2701', current_quantity: 0, target_quantity: 2, action: 'open', side: 'buy', aligned: false },
+    ],
+  } }))
+  await page.goto('/e2e/errors.html?mode=account')
+  const table = page.getByRole('table', { name: '目标数量与持仓' })
+  await expect(table.getByRole('columnheader')).toHaveText(['品种', '持仓/可用', '目标数量', '市值'])
+  const summary = page.getByText('2 只待调整', { exact: true })
+  await expect(summary).toBeVisible()
+  expect((await summary.boundingBox())!.x).toBeLessThan((await table.boundingBox())!.x)
+  await expect(page.getByText('预计换手', { exact: true })).toHaveCount(0)
+  const held = (symbol: string) => table.getByRole('row').filter({ has: page.getByRole('button', { name: `查看 ${symbol} 持仓与目标` }) })
+  const numericCells = (symbol: string) => held(symbol).getByRole('cell').filter({ hasNot: page.getByRole('button') })
+  await expect(numericCells('c2611')).toHaveText(['空3/2', '空3', '￥1.2万'])
+  await expect(numericCells('XAUUSD')).toHaveText(['多0.01/0.009', '多0.015 · 待调整', '—'])
+  await expect(numericCells('m2701')).toHaveText(['0/0', '多2 · 待调整', '—'])
+  await page.setViewportSize({ width: 416, height: 812 })
+  const narrowTable = (await table.boundingBox())!
+  expect(narrowTable.x + narrowTable.width).toBeLessThanOrEqual(416)
+  await held('XAUUSD').getByRole('button').press('Enter')
+  await expect(page.getByRole('dialog', { name: 'XAUUSD · 持仓与目标' })).toBeVisible()
+})
+
 test('a comparison-only failure has its own error and retry without hiding successful snapshot sources', async ({ page }) => {
   await defaults(page)
   let reads = 0
