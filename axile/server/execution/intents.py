@@ -462,7 +462,11 @@ async def submit_intent(
     from axile.server.execution.supplements import account_lock
 
     async with account_lock(account_id):
-        return await _submit_intent(account_id, kind, trigger_source, payload=payload, on_conflict=on_conflict)
+        result = await _submit_intent(account_id, kind, trigger_source, payload=payload, on_conflict=on_conflict)
+    # 上一笔执行的 dispatcher 可能在本次提交期间退出。
+    if result.outcome in {"created", "coalesced"}:
+        _wake(account_id)
+    return result
 
 
 async def _coalesce(execution_id: str, account_id: int, payload: dict[str, object]) -> SubmitResult:
@@ -549,7 +553,6 @@ async def _submit_intent(
                     on_conflict=on_conflict,
                 )
             _sync_live(account_id)
-            _wake(account_id)
             return SubmitResult(outcome="created", execution_id=created.execution_id, account_id=account_id)
         execution_id = queued.execution_id if queued is not None else cast("str", memory_queued_id)
         return await _coalesce(execution_id, account_id, payload)
@@ -598,7 +601,6 @@ async def _submit_intent(
             on_conflict=on_conflict,
         )
     _sync_live(account_id)
-    _wake(account_id)
     return SubmitResult(outcome="created", execution_id=created.execution_id, account_id=account_id)
 
 

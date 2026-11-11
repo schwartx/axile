@@ -546,6 +546,7 @@ def run_worker_backend_loop(
     catalog_connection: Connection | None = None,
     monitor_connection: Connection | None = None,
     orders_connection: Connection | None = None,
+    quota_connection: Connection | None = None,
 ) -> None:
     """运行多进程 worker 的阻塞请求循环.
 
@@ -558,9 +559,12 @@ def run_worker_backend_loop(
     """
     from axile.server.connection_state import ConnectionBinding
     from axile.server.core.log_config import setup_logging
+    from axile.server.execution.worker_backend.quota import QuotaClient
 
     setup_logging()
     state = _WorkerBackendState(account_id=account_id)
+    if quota_connection is not None:
+        state.quota_client = QuotaClient(quota_connection)
     if orders_connection is not None:
         from axile.server.execution.worker_backend.orders import serve_orders
 
@@ -627,6 +631,7 @@ def run_worker_backend_loop(
                 response.requires_worker_restart
                 or state.requires_worker_restart
                 or (catalog is not None and catalog.failed)
+                or (quota_connection is not None and quota_connection.closed)
             )
             # 先回响应，再按 shutdown 命令退出循环，保证主进程一定能收到确认消息。
             connection.send(response)
@@ -684,4 +689,6 @@ def run_worker_backend_loop(
             control_connection.close()
         except OSError:
             pass
+        if quota_connection is not None:
+            quota_connection.close()
         logger.info("worker 退出 | account_id={}", account_id)

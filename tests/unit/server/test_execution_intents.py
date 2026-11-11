@@ -274,17 +274,27 @@ def test_submit_intent_clear_conflicts_when_running(monkeypatch: pytest.MonkeyPa
 
 
 def test_submit_intent_rebalance_queues_behind_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    wakes: list[int] = []
+    original_insert = intents_module._insert_intent
+
+    async def insert_after_previous_exit(**kwargs):
+        clear_running_execution(1, "exec-running")
+        return await original_insert(**kwargs)
+
     try:
         try_register_running_execution(1, "exec-running")
 
         async def _run() -> tuple[SubmitResult, str | None]:
             async with _intent_db(monkeypatch):
+                monkeypatch.setattr(intents_module, "_insert_intent", insert_after_previous_exit)
+                monkeypatch.setattr(intents_module, "_wake", wakes.append)
                 result = await submit_intent(1, ExecutionKind.REBALANCE, "manual")
                 return result, get_queued_execution_id(1)
 
         result, queued_id = asyncio.run(_run())
         assert result.outcome == "created"
         assert queued_id == result.execution_id
+        assert wakes == [1]
     finally:
         clear_running_execution(1, "exec-running")
         queued_id = get_queued_execution_id(1)

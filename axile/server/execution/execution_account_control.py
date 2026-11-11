@@ -175,3 +175,9 @@ async def _flush_account_control_records(executor: object) -> None:
     else:
         if guard is not None:
             providers.finish(guard, committed=True)
+            mirror = getattr(guard, "counter_mirror", None)
+            if mirror is not None and any(delta.operation == "place_order" for delta in counter_deltas):
+                try:
+                    mirror(guard.instance_id, [])
+                except RuntimeError:
+                    logger.exception("额度已写入，主进程将在 worker 退出后按原键去重")
