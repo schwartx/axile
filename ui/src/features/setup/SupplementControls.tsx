@@ -16,7 +16,7 @@ export function SupplementControls({ supN, supM, onN, onM }: SupplementControlsP
   return (
     <div role="group" aria-label="补发设置" className="inline-flex max-w-full items-center rounded-[9px] border border-line bg-surface px-1.5 text-sm focus-within:border-accent">
       <span className="shrink-0 pl-1 text-ink-3">补发</span>
-      <OptionStepper appearance="inline" ariaLabel="补发次数" value={supN} options={[0, 1, 2, 3, 4]} onChange={onN}
+      <OptionStepper appearance="inline" ariaLabel="补发次数" value={supN} options={[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]} onChange={onN}
         unit="次" zeroLabel="不补" />
       <div inert={!enabled} aria-hidden={!enabled} className={`grid transition-[grid-template-columns] ${MOTION_LAYOUT} ${enabled ? 'grid-cols-[1fr]' : 'grid-cols-[0fr]'}`}>
         <div className="min-w-0 overflow-hidden">
