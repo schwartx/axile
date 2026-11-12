@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from loguru import logger
 
@@ -11,7 +12,6 @@ from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.server.asset_observations import is_asset_observation
 from axile.server.business_facts.assets import save_manual_asset_snapshot
 from axile.server.connection_state import connection_config_key
-from axile.server.db.models import AccountAssetSnapshotPublic
 from axile.server.db.models.account import AccountContext
 from axile.server.execution.registry import clear_account_asset_refresh, try_register_account_asset_refresh
 from axile.server.execution.worker_backend.manager import (
@@ -19,7 +19,7 @@ from axile.server.execution.worker_backend.manager import (
     get_worker_backend_manager,
 )
 
-_refreshes: dict[int, tuple[str, asyncio.Task[AccountAssetSnapshotPublic]]] = {}
+_refreshes: dict[int, tuple[str, asyncio.Task[dict[str, Any]]]] = {}
 
 
 class AccountAssetRefreshBusyError(RuntimeError):
@@ -34,7 +34,7 @@ async def query_account_assets(account: AccountContext) -> UnifiedAccountAssets:
         raise TimeoutError("账户资产查询超时") from exc
 
 
-async def _refresh_and_save(account: AccountContext) -> AccountAssetSnapshotPublic:
+async def _refresh_and_save(account: AccountContext) -> dict[str, Any]:
     """查询和校验成功后一次落库，失败保留旧快照并释放槽位。"""
     assert account.id is not None
     try:
@@ -43,12 +43,19 @@ async def _refresh_and_save(account: AccountContext) -> AccountAssetSnapshotPubl
             raise ValueError("渠道未返回可信账户资产")
         payload = assets.model_dump(mode="json")
         snapshot = await save_manual_asset_snapshot(account.id, payload)
-        return AccountAssetSnapshotPublic.model_validate({**snapshot, "assets": payload})
+        return {
+            "id": snapshot["id"],
+            "account_id": snapshot["account_id"],
+            "assets": payload,
+            "source": snapshot["source"],
+            "execution_id": snapshot["execution_id"],
+            "created_at": snapshot["created_at"],
+        }
     finally:
         clear_account_asset_refresh(account.id)
 
 
-async def refresh_account_assets(account: AccountContext) -> AccountAssetSnapshotPublic:
+async def refresh_account_assets(account: AccountContext) -> dict[str, Any]:
     """同账户同配置合并刷新；请求取消不取消已开始的查询与落库。"""
     account_id = account.id
     assert account_id is not None
@@ -61,7 +68,7 @@ async def refresh_account_assets(account: AccountContext) -> AccountAssetSnapsho
     task = asyncio.create_task(_refresh_and_save(account))
     _refreshes[account_id] = key, task
 
-    def completed(done: asyncio.Task[AccountAssetSnapshotPublic]) -> None:
+    def completed(done: asyncio.Task[dict[str, Any]]) -> None:
         if _refreshes.get(account_id) == (key, done):
             _refreshes.pop(account_id)
         if not done.cancelled():
@@ -90,7 +97,7 @@ async def reconcile_account_assets(account: AccountContext) -> dict[str, object]
             except AccountAssetRefreshBusyError:
                 # 显式核对继续等待执行/目标计算释放槽位，不在等待中访问渠道。
                 await clock_async_sleep(1)
-        return {"status": "updated", "snapshot_id": snapshot.id}
+        return {"status": "updated", "snapshot_id": snapshot["id"]}
     except Exception:
         logger.exception("联动持仓核对失败 account_id={}", account.id)
         return {"status": "failed", "message": "持仓核对失败，当前显示上次资产快照"}

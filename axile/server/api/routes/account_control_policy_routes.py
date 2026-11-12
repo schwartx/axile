@@ -66,7 +66,7 @@ def _compatible_presets(trade_channel: object) -> list[dict]:
     return result
 
 
-@router.get("/{account_id}/control/policy")
+@router.get("/{account_id}/control/policy", response_model=None)
 async def get_account_control_policy(
     account_id: int,
     preset_key: str | None = Query(default=None),

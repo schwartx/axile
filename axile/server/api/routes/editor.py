@@ -24,7 +24,7 @@ MAX_SESSIONS = 8
 _sessions: set[WebSocket] = set()
 
 
-@router.get("/source")
+@router.get("/source", response_model=None)
 async def python_source(uri: str) -> dict[str, str]:
     """只读打开 Python 环境与 Axile 包内的源码，禁止访问任意文件."""
     path = source_path(uri)
@@ -66,7 +66,7 @@ class ContractRequest(BaseModel):
     kind: EditorKind
 
 
-@router.post("/contract")
+@router.post("/contract", response_model=None)
 async def editor_contract(payload: ContractRequest) -> dict[str, list[dict[str, object]]]:
     """为编辑器返回入口函数诊断与类型标注修复。"""
     return check_editor_contract(payload.code, payload.kind)
@@ -86,7 +86,7 @@ async def stop_process(process: asyncio.subprocess.Process) -> None:
         await process.wait()
 
 
-@router.post("/format")
+@router.post("/format", response_model=None)
 async def format_python(payload: FormatRequest) -> dict[str, str]:
     """用固定 Ruff 配置格式化源码，保留语法错误原文供编辑器展示."""
     process = await asyncio.create_subprocess_exec(

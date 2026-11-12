@@ -8,7 +8,6 @@ import pytest
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.notification_context import ACCOUNT_CONTROL_WARNING_EVENT
 from axile.common.notification_function import NotificationFunctionResult
-from axile.server.db.models.system_notification import SystemNotificationStatePublic
 from axile.server.execution import notification_outbox, notification_state
 
 
@@ -122,11 +121,29 @@ def test_summary_wrappers_preserve_models_and_reject_unfinished_system_results(m
         return {"finished_at": "2026-10-23T12:00:00", "ok": False, "error": "timeout"}
 
     monkeypatch.setattr(notification_state, "native_operation_sync", operation)
-    result = SystemNotificationStatePublic(finished_at="2026-10-23T12:00:00", ok=False, error="timeout")
+    result = {
+        "finished_at": "2026-10-23T12:00:00",
+        "mode": None,
+        "event_type": None,
+        "execution_id": None,
+        "account_id": None,
+        "ok": False,
+        "error": "timeout",
+    }
     notification_state.record_system_notification_result(result)
-    assert calls[-1] == ("notifications_record_system", result.model_dump(mode="json"))
+    assert calls[-1] == ("notifications_record_system", result)
     notification_state.record_notification_result(2, "execution", "2026-10-23T13:00:00", True, None)
     assert calls[-1][0] == "notifications_record_account"
     assert calls[-1][1]["event_type"] == "execution.finished"
     with pytest.raises(ValueError, match="完成时间"):
-        notification_state.record_system_notification_result(SystemNotificationStatePublic())
+        notification_state.record_system_notification_result(
+            {
+                "finished_at": None,
+                "mode": None,
+                "event_type": None,
+                "execution_id": None,
+                "account_id": None,
+                "ok": None,
+                "error": None,
+            }
+        )

@@ -4,7 +4,6 @@ from typing import Optional
 
 from pydantic import ConfigDict, Field, field_validator
 
-from axile.executor.models.portfolio_target import TargetMode
 from axile.server.db.models.base import Model, now_str
 
 
@@ -97,32 +96,3 @@ class RunAndSavePortfolioRequest(Model):
     name: str = Field(min_length=1)
     custom_calc_py_code: str
     account_id: Optional[int] = None
-
-
-class ValidateCustomCalcResponse(Model):
-    """校验自定义组合脚本的响应载荷."""
-
-    valid: bool
-    target: Optional[dict[str, float]] = None
-    target_mode: TargetMode = "weight"
-    error: Optional[str] = None
-    traceback: Optional[str] = None
-    error_line: Optional[int] = None
-    error_offset: Optional[int] = None
-    error_type: Optional[str] = None
-    error_message: Optional[str] = None
-
-
-class PortfolioLitePublic(PortfolioBase):
-    """简化版组合信息, 不加载关系."""
-
-    id: Optional[int]
-    archived_at: str | None = None
-    updated_at: str
-    created_at: str
-
-
-class PortfolioListPublic(Model):
-    """轻量组合载荷的列表响应封装."""
-
-    data: list[PortfolioLitePublic]

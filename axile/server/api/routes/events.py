@@ -8,7 +8,7 @@ from axile.server.event_stream import stream_response
 router = APIRouter(prefix="/events", tags=["events"])
 
 
-@router.get("/stream")
+@router.get("/stream", response_model=None)
 async def events_stream(request: Request) -> StreamingResponse:
     """合并执行态与账户流控，各域分别发送全量、增量和错误。"""
     return stream_response(request)

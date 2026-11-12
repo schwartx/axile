@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any, Literal, cast
 
 from axile.executor.models.portfolio_target import TargetMode
-from axile.server.db.models import TargetSizingPublic, TargetWeightSnapshotPublic
 from axile.server.db.models.base import now_str
 from axile.server.native_store import native_operation
 
@@ -77,23 +76,35 @@ def target_snapshot_public(
     quantities: dict[str, float] | None = None,
     strategy_weights: dict[str, float] | None = None,
     account_weights: dict[str, float] | None = None,
-    sizing: TargetSizingPublic | None = None,
-) -> TargetWeightSnapshotPublic:
+    sizing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """将显式加载的快照转换为稳定的页面响应。"""
     if snapshot is None:
-        return TargetWeightSnapshotPublic()
+        return {
+            "weights": {},
+            "target_mode": "weight",
+            "raw_targets": {},
+            "quantities": None,
+            "strategy_weights": None,
+            "account_weights": None,
+            "sizing": None,
+            "calculated_at": None,
+            "source": None,
+            "execution_id": None,
+            "context_account_id": None,
+        }
     stored = snapshot.get("raw_weights") if weight_kind == "raw" else snapshot.get("normalized_weights")
     mode = snapshot.get("target_mode", "weight")
-    return TargetWeightSnapshotPublic(
-        target_mode=mode,
-        raw_targets=snapshot.get("raw_weights") or {},
-        weights=(weights if weights is not None else (stored or {})) if mode == "weight" else {},
-        quantities=quantities,
-        strategy_weights=strategy_weights if mode == "weight" else None,
-        account_weights=account_weights if mode == "weight" else None,
-        sizing=sizing,
-        calculated_at=snapshot["calculated_at"],
-        source=cast(Literal["manual", "execution"], snapshot["source"]),
-        execution_id=snapshot["execution_id"],
-        context_account_id=snapshot["account_id"],
-    )
+    return {
+        "weights": (weights if weights is not None else stored or {}) if mode == "weight" else {},
+        "target_mode": mode,
+        "raw_targets": snapshot.get("raw_weights") or {},
+        "quantities": quantities,
+        "strategy_weights": strategy_weights if mode == "weight" else None,
+        "account_weights": account_weights if mode == "weight" else None,
+        "sizing": sizing,
+        "calculated_at": snapshot["calculated_at"],
+        "source": cast(Literal["manual", "execution"], snapshot["source"]),
+        "execution_id": snapshot["execution_id"],
+        "context_account_id": snapshot["account_id"],
+    }

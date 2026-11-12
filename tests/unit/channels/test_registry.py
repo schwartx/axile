@@ -147,7 +147,7 @@ def test_plugins_default_to_process_and_reject_removed_thread_backend() -> None:
 
 def test_external_plugin_owns_its_schedule_configuration() -> None:
     from axile.channels.schedule_settings import normalize_schedule_options, validate_schedule_options
-    from axile.server.db.models.account import Account, AccountPublic, AccountSnapshot
+    from axile.server.db.models.account import Account, AccountSnapshot
 
     class VendorSchedule(BaseModel):
         model_config = ConfigDict(extra="forbid", frozen=True)
@@ -171,7 +171,9 @@ def test_external_plugin_owns_its_schedule_configuration() -> None:
     assert snapshot.channel_options == {"vendor-demo": {"delay": 2}}
     snapshot.channel_options["vendor-demo"]["delay"] = 9
     assert account.channel_options["vendor-demo"]["delay"] == 2
-    assert "channel_options" not in AccountPublic.model_fields
+    from tests.unit.server._native_read_views import account_view
+
+    assert "channel_options" not in account_view(account.model_copy(update={"id": 1}))
     for invalid in ({"delay": 0}, {"delay": 2, "unknown": True}):
         with pytest.raises(ValidationError):
             validate_schedule_options({"vendor-demo": invalid})
@@ -219,17 +221,17 @@ def test_capabilities_expose_descriptor_and_runtime_availability() -> None:
     list_channels()
     register_channel(_plugin(required_modules=("module_that_does_not_exist_for_axile_test",)))
 
-    capability = next(item for item in list_channel_capabilities() if item.channel == "vendor-demo")
+    capability = next(item for item in list_channel_capabilities() if item["channel"] == "vendor-demo")
 
-    assert capability.label == "Vendor Demo"
-    assert capability.currency == "USD"
-    assert capability.units.quantity_kind == "base_asset"
-    assert capability.units.quantity_max_decimals == 8
-    assert capability.ui.account_connect_lead == "填写供应商令牌。"
-    assert capability.ui.position_value_label == "市值"
-    assert capability.defaults.execution_timeout == 90
-    assert capability.account_form.fields[0].name == "token"
-    assert capability.portfolio.market_label == "Vendor"
-    assert capability.portfolio.example_symbols == ("DEMO",)
-    assert capability.available is False
-    assert capability.missing_packages == ["module_that_does_not_exist_for_axile_test"]
+    assert capability["label"] == "Vendor Demo"
+    assert capability["currency"] == "USD"
+    assert capability["units"]["quantity_kind"] == "base_asset"
+    assert capability["units"]["quantity_max_decimals"] == 8
+    assert capability["ui"]["account_connect_lead"] == "填写供应商令牌。"
+    assert capability["ui"]["position_value_label"] == "市值"
+    assert capability["defaults"]["execution_timeout"] == 90
+    assert capability["account_form"]["fields"][0]["name"] == "token"
+    assert capability["portfolio"]["market_label"] == "Vendor"
+    assert capability["portfolio"]["example_symbols"] == ["DEMO"]
+    assert capability["available"] is False
+    assert capability["missing_packages"] == ["module_that_does_not_exist_for_axile_test"]

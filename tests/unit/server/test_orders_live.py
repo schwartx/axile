@@ -58,10 +58,10 @@ def test_plain_reads_never_query_channel_and_config_change_is_unknown(monkeypatc
     command = AsyncMock(side_effect=AssertionError("普通读取不能访问渠道"))
     monkeypatch.setattr(account_orders, "_command", command)
     result = asyncio.run(account_orders.query_account_orders(account))
-    assert result.complete and result.count == 0
+    assert result["complete"] and result["count"] == 0
     account.account_config = {**account.account_config, "investor_id": "other"}
     result = asyncio.run(account_orders.query_account_orders(account))
-    assert not result.complete and result.count is None
+    assert not result["complete"] and result["count"] is None
     command.assert_not_called()
 
 
@@ -314,7 +314,7 @@ def test_late_manual_response_uses_new_executor_baseline_already_received(monkey
         orders_live.consume_orders_snapshot(rebuilt)
         release.set()
         result = await query
-        assert result.instance_id == f"{binding.instance_id}:2" and result.version == 1
+        assert result["instance_id"] == f"{binding.instance_id}:2" and result["version"] == 1
 
     asyncio.run(run())
 
@@ -322,7 +322,6 @@ def test_late_manual_response_uses_new_executor_baseline_already_received(monkey
 @pytest.mark.parametrize("command", ["query", "verify"])
 def test_command_terminal_outside_recent_window_survives_equal_version_mirror(command):
     from axile.server.account_orders_runtime import public_order, run_order_command
-    from axile.server.db.models.account_order import OrderCancelReceipt
 
     account, binding = session()
     book = AccountOrderBook()
@@ -345,15 +344,15 @@ def test_command_terminal_outside_recent_window_survives_equal_version_mirror(co
         orders_binding=binding,
     )
     state = account_orders._state(account)
-    state.receipts["r1"] = OrderCancelReceipt(
-        request_id="r1",
-        order_id="0",
-        symbol=terminal.symbol,
-        state="submitted",
-        message="等待回报",
-        requested_at="2026-10-15T10:04:00",
-        order=public_order(terminal.model_copy(update={"status": "部分成交"})),
-    )
+    state.receipts["r1"] = {
+        "request_id": "r1",
+        "order_id": "0",
+        "symbol": terminal.symbol,
+        "state": "submitted",
+        "message": "等待回报",
+        "requested_at": "2026-10-15T10:04:00",
+        "order": public_order(terminal.model_copy(update={"status": "部分成交"})),
+    }
     version = book.snapshot()["version"]
     result = run_order_command(executor, {"command": command, "tracked": [(terminal.symbol, "0")]})
     snapshot = sample_orders(worker, force=True)
@@ -370,10 +369,10 @@ def test_command_terminal_outside_recent_window_survives_equal_version_mirror(co
     selected = account_orders._latest_result(account, result)
     merged = account_orders._merge_snapshot(state, selected)
 
-    assert merged.cancellations[0].state == "terminal"
-    assert merged.cancellations[0].order.status == "已撤销"
-    assert merged.complete and merged.count == 0 and merged.data == []
-    assert merged.version == version
+    assert merged["cancellations"][0]["state"] == "terminal"
+    assert merged["cancellations"][0]["order"]["status"] == "已撤销"
+    assert merged["complete"] and merged["count"] == 0 and (merged["data"] == [])
+    assert merged["version"] == version
 
 
 @pytest.mark.parametrize("generation", [0, 1])

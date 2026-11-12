@@ -7,7 +7,7 @@ from typing import Literal
 from axile.server.db.models.base import Model
 
 
-class AccountRuntimeSyncPublic(Model):
+class AccountRuntimeSyncState(Model):
     """客户端可见的运行态同步状态。"""
 
     status: Literal["pending", "synchronized", "failed"]

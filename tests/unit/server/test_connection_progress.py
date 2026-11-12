@@ -95,17 +95,17 @@ def test_runtime_rejects_old_instances_and_sequences_and_keeps_tables_out_of_pub
             binding, 2, ConnectionObservation("connecting", clock_now_iso()), progress=tracker.snapshot(tables=True)
         )
         public = runtime.current_session(binding.account_id, binding.config_key)
-        assert public.progress.run_id == tracker.run.run_id
-        assert "tables" not in public.model_dump()["progress"]
+        assert public["progress"]["run_id"] == tracker.run.run_id
+        assert "tables" not in public["progress"]
         table = runtime.connection_table(binding.account_id, "config", tracker.run.run_id, "query_orders")
         assert table["rows"] == [["0001"]]
         stale = ConnectionProgressTracker("gm")
         runtime.observe_session(binding, 1, ConnectionObservation("ok", clock_now_iso()), progress=stale.snapshot())
-        assert runtime.current_session(binding.account_id, "config").progress.run_id == tracker.run.run_id
+        assert runtime.current_session(binding.account_id, "config")["progress"]["run_id"] == tracker.run.run_id
         replacement = ConnectionBinding(binding.account_id, "config", "second")
         runtime.register_session(replacement, lambda: True)
         runtime.observe_session(binding, 3, ConnectionObservation("ok", clock_now_iso()), progress=tracker.snapshot())
-        assert runtime.current_session(binding.account_id, "config").progress is None
+        assert runtime.current_session(binding.account_id, "config")["progress"] is None
         assert runtime.connection_table(binding.account_id, "config", tracker.run.run_id, "query_orders") is None
     finally:
         runtime.forget_session(binding.account_id)
@@ -123,10 +123,10 @@ def test_worker_exit_ends_running_progress_without_discarding_prior_steps():
         )
         runtime.end_session(binding, "执行器退出", failed=True)
         detail = runtime.current_session(binding.account_id, "config")
-        assert detail.status == "unavailable"
-        assert detail.progress.status == "failed"
-        assert detail.progress.steps[0].status == "passed"
-        assert detail.progress.steps[1].status == "failed"
-        assert detail.progress.steps[1].error.message == "执行器退出"
+        assert detail["status"] == "unavailable"
+        assert detail["progress"]["status"] == "failed"
+        assert detail["progress"]["steps"][0]["status"] == "passed"
+        assert detail["progress"]["steps"][1]["status"] == "failed"
+        assert detail["progress"]["steps"][1]["error"]["message"] == "执行器退出"
     finally:
         runtime.forget_session(binding.account_id)

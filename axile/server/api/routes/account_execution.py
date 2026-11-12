@@ -9,12 +9,12 @@ from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Response, status
 from loguru import logger
-from pydantic import ValidationError
 
 from axile.channels import get_channel
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionArtifactType, ExecutionTaskStatus
 from axile.executor.models.portfolio_target import PortfolioTarget, TargetMode
+from axile.executor.models.value_conversion import PriceValueConversion
 from axile.server._native import _core
 from axile.server.api.deps import HistoryPaginationDep, SchedDep
 from axile.server.api.routes.account_support import (
@@ -24,20 +24,7 @@ from axile.server.api.routes.account_support import (
 )
 from axile.server.api.routes.portfolio import resolve_portfolio_target
 from axile.server.business_facts.assets import latest_asset_snapshot
-from axile.server.db.models import (
-    AccountRebalancePlanPublic,
-    AccountRebalancePlanRowPublic,
-    ExecutionArtifactListPublic,
-    ExecutionEventListPublic,
-    ExecutionStatusPublic,
-    ExecutionTerminateRequest,
-    ExecutionTerminateResponse,
-    ExecutionTriggerResponse,
-    Portfolio,
-    TargetSizingPublic,
-    TargetSizingRowPublic,
-    TargetWeightSnapshotPublic,
-)
+from axile.server.db.models import ExecutionTerminateRequest, Portfolio
 from axile.server.error_details import exception_details
 from axile.server.execution.ctp_channels import reconcile_china_channel_account
 from axile.server.execution.lifecycle import enqueue_empty_positions, enqueue_execute_trade
@@ -65,21 +52,30 @@ from axile.server.target_weight_snapshots import (
 router = APIRouter()
 
 
-@router.get("/{account_id}/rebalance_plan", response_model=AccountRebalancePlanPublic)
-async def account_rebalance_plan(account_id: int) -> AccountRebalancePlanPublic:
+@router.get("/{account_id}/rebalance_plan", response_model=None)
+async def account_rebalance_plan(account_id: int) -> dict[str, Any]:
     """按当前渠道可执行规则返回账户持仓对照，不在前端重算偏离."""
     account = await _get_account_or_404(account_id)
     portfolio_id = await get_latest_portfolio_id_by_account_id(account_id)
     if portfolio_id is None:
-        return AccountRebalancePlanPublic()
+        return {
+            "rows": [],
+            "target_mode": "weight",
+            "off_symbol_count": None,
+            "observed_at": None,
+            "target_calculated_at": None,
+        }
     snapshot = await get_latest_account_target_snapshot(account_id, portfolio_id)
     assets_snapshot = await latest_asset_snapshot(account_id)
     target = None if snapshot is None else snapshot.get("normalized_weights")
     if snapshot is None or assets_snapshot is None or not isinstance(target, dict):
-        return AccountRebalancePlanPublic(
-            observed_at=None if assets_snapshot is None else assets_snapshot["created_at"],
-            target_calculated_at=None if snapshot is None else snapshot["calculated_at"],
-        )
+        return {
+            "rows": [],
+            "target_mode": "weight",
+            "off_symbol_count": None,
+            "observed_at": None if assets_snapshot is None else assets_snapshot["created_at"],
+            "target_calculated_at": None if snapshot is None else snapshot["calculated_at"],
+        }
     mode: TargetMode = snapshot.get("target_mode", "weight")
     assets = assets_snapshot["assets"]
     total_asset = assets.get("total_asset")
@@ -93,15 +89,18 @@ async def account_rebalance_plan(account_id: int) -> AccountRebalancePlanPublic:
             or any(not isinstance(pos, dict) or pos.get("market_value") is None for pos in positions)
         )
     ):
-        return AccountRebalancePlanPublic(
-            observed_at=assets_snapshot["created_at"],
-            target_calculated_at=snapshot["calculated_at"],
-        )
+        return {
+            "rows": [],
+            "target_mode": "weight",
+            "off_symbol_count": None,
+            "observed_at": assets_snapshot["created_at"],
+            "target_calculated_at": snapshot["calculated_at"],
+        }
     plugin = get_channel(account.trade_channel)
     if mode == "quantity":
         public_target = await _account_target_public(account, snapshot)
-        if public_target.quantities is not None:
-            target = public_target.quantities
+        if public_target["quantities"] is not None:
+            target = public_target["quantities"]
     plan = plan_executable_target(
         positions,
         target,
@@ -110,25 +109,25 @@ async def account_rebalance_plan(account_id: int) -> AccountRebalancePlanPublic:
         canonicalize_symbol=plugin.canonicalize_symbol,
         quantize_target_quantity=plugin.quantize_target_quantity,
     )
-    return AccountRebalancePlanPublic(
-        target_mode=mode,
-        rows=[
-            AccountRebalancePlanRowPublic(
-                symbol=row.symbol,
-                current_weight=row.current_weight,
-                target_weight=row.target_weight,
-                current_quantity=row.current_quantity,
-                target_quantity=row.target_quantity,
-                action=row.action,
-                side=row.side,
-                aligned=row.aligned,
-            )
+    return {
+        "rows": [
+            {
+                "symbol": row.symbol,
+                "current_weight": row.current_weight,
+                "target_weight": row.target_weight,
+                "current_quantity": row.current_quantity,
+                "target_quantity": row.target_quantity,
+                "action": row.action,
+                "side": row.side,
+                "aligned": row.aligned,
+            }
             for row in plan.rows
         ],
-        off_symbol_count=plan.off_symbol_count,
-        observed_at=assets_snapshot["created_at"],
-        target_calculated_at=snapshot["calculated_at"],
-    )
+        "target_mode": mode,
+        "off_symbol_count": plan.off_symbol_count,
+        "observed_at": assets_snapshot["created_at"],
+        "target_calculated_at": snapshot["calculated_at"],
+    }
 
 
 type _Canonicalize = Callable[[str], str]
@@ -137,7 +136,7 @@ type _Canonicalize = Callable[[str], str]
 @dataclass
 class _SizingEvidence:
     status: str
-    rows: dict[str, TargetSizingRowPublic] = field(default_factory=dict)
+    rows: dict[str, dict[str, Any]] = field(default_factory=dict)
     quantities: dict[str, float] | None = None
     sizing_execution_id: str | None = None
     sizing_calculated_at: str | None = None
@@ -169,12 +168,14 @@ def _canonical_weights_equal(
 
 
 def _complete_quantities(
-    rows: dict[str, TargetSizingRowPublic],
+    rows: dict[str, dict[str, Any]],
     account_weights: dict[str, float],
 ) -> dict[str, float] | None:
     if not rows or not set(account_weights).issubset(rows):
         return None
-    quantities = {symbol: float(row.target_quantity) for symbol, row in rows.items() if row.target_quantity is not None}
+    quantities = {
+        symbol: float(row["target_quantity"]) for symbol, row in rows.items() if row["target_quantity"] is not None
+    }
     if not set(account_weights).issubset(quantities):
         return None
     return quantities
@@ -188,9 +189,9 @@ def _sizing_rows_from_facts(
     account_weights: dict[str, float],
     target_context: dict[str, object],
     target_mode: TargetMode = "weight",
-) -> dict[str, TargetSizingRowPublic]:
+) -> dict[str, dict[str, Any]]:
     """从冻结换算列构造展示，不读取审计附件内重复保存的结果。"""
-    rows: dict[str, TargetSizingRowPublic] = {}
+    rows: dict[str, dict[str, Any]] = {}
     for map_key, raw_sizing in sizings.items():
         symbol = canonicalize(map_key)
         row = cast("dict[str, object]", dict(raw_sizing))
@@ -208,10 +209,45 @@ def _sizing_rows_from_facts(
         if target_mode == "quantity":
             row.update(strategy_weight=None, account_weight=None, account_multiplier=None, weight_precision=None)
         try:
-            rows[symbol] = TargetSizingRowPublic.model_validate(row)
-        except ValidationError:
+            if not isinstance(row.get("reason_code"), str):
+                continue
+            sizing_mode = row.get("sizing_mode", "weight")
+            status = row.get("status", "SIZED")
+            if not isinstance(sizing_mode, str) or not isinstance(status, str):
+                continue
+            public = {
+                "symbol": symbol,
+                "sizing_mode": sizing_mode,
+                "status": status,
+                "reason_code": row["reason_code"],
+                **{
+                    name: None if row.get(name) is None else float(cast(Any, row[name]))
+                    for name in (
+                        "strategy_weight",
+                        "account_weight",
+                        "account_multiplier",
+                        "weight_precision",
+                        "equity",
+                        "reference_price",
+                        "unit_multiplier",
+                        "unit_notional",
+                        "target_notional",
+                        "raw_quantity",
+                        "target_quantity",
+                        "current_quantity",
+                        "quantity_step",
+                        "min_quantity",
+                        "min_notional",
+                    )
+                },
+                "value_conversion": None
+                if row.get("value_conversion") is None
+                else PriceValueConversion.model_validate(row["value_conversion"]).model_dump(mode="json"),
+            }
+        except (TypeError, ValueError, OverflowError):
             # 不完整历史证据保持不可用；不得套用当前规则补填历史换算。
             continue
+        rows[symbol] = public
     return rows
 
 
@@ -223,7 +259,7 @@ async def _sizing_evidence_for_snapshot(
     account_weights: dict[str, float],
 ) -> _SizingEvidence:
     status = "pending_execution" if snapshot["source"] == "manual" or not snapshot["execution_id"] else "unavailable"
-    rows: dict[str, TargetSizingRowPublic] = {}
+    rows: dict[str, dict[str, Any]] = {}
     null_target_quantity = False
     inflight = False
     if snapshot["execution_id"]:
@@ -257,7 +293,7 @@ async def _sizing_evidence_for_snapshot(
             null_target_quantity = True
     elif rows:
         null_target_quantity = any(
-            symbol in rows and rows[symbol].target_quantity is None for symbol in account_weights
+            symbol in rows and rows[symbol]["target_quantity"] is None for symbol in account_weights
         )
 
     return _SizingEvidence(
@@ -274,10 +310,10 @@ async def _sizing_evidence_for_snapshot(
 async def _account_target_public(
     account: object,
     snapshot: dict[str, Any] | None,
-) -> TargetWeightSnapshotPublic:
+) -> dict[str, Any]:
     """返回账户权重与同权重最近一次完整数量换算证据."""
     if snapshot is None:
-        return TargetWeightSnapshotPublic()
+        return target_snapshot_public(None, weight_kind="normalized")
     plugin = get_channel(getattr(account, "trade_channel"))
     strategy_weights = _canonical_weight_map(snapshot.get("raw_weights"), plugin.canonicalize_symbol)
     account_weights = _canonical_weight_map(snapshot.get("normalized_weights"), plugin.canonicalize_symbol)
@@ -327,17 +363,17 @@ async def _account_target_public(
         quantities=evidence.quantities,
         strategy_weights=strategy_weights,
         account_weights=account_weights,
-        sizing=TargetSizingPublic(
-            status=cast("Any", evidence.status),
-            execution_id=evidence.sizing_execution_id,
-            calculated_at=evidence.sizing_calculated_at,
-            rows=evidence.rows,
-        ),
+        sizing={
+            "status": cast("Any", evidence.status),
+            "execution_id": evidence.sizing_execution_id,
+            "calculated_at": evidence.sizing_calculated_at,
+            "rows": evidence.rows,
+        },
     )
 
 
-@router.post("/execute/{account_id}", response_model=ExecutionTriggerResponse)
-async def execute(account_id: int) -> ExecutionTriggerResponse:
+@router.post("/execute/{account_id}", response_model=None)
+async def execute(account_id: int) -> dict[str, Any]:
     """异步触发立即执行，并返回可用于轮询的执行标识."""
     ensure_account_current(await _get_account_or_404(account_id))
 
@@ -364,27 +400,27 @@ async def execute(account_id: int) -> ExecutionTriggerResponse:
             status_code=status.HTTP_409_CONFLICT,
             detail=f"账户 {account_id} 已有调仓任务在执行中",
         )
-    return ExecutionTriggerResponse(
-        message="已与等待中的执行合并" if submitted.outcome == "coalesced" else "已触发",
-        execution_id=execution_id,
-        account_id=account_id,
-        accepted=submitted.outcome if submitted.outcome in {"created", "coalesced"} else "created",
-    )
+    return {
+        "message": "已与等待中的执行合并" if submitted.outcome == "coalesced" else "已触发",
+        "execution_id": execution_id,
+        "account_id": account_id,
+        "accepted": submitted.outcome if submitted.outcome in {"created", "coalesced"} else "created",
+    }
 
 
-@router.get("/{account_id}/target_snapshot", response_model=TargetWeightSnapshotPublic)
-async def account_target_snapshot(account_id: int) -> TargetWeightSnapshotPublic:
+@router.get("/{account_id}/target_snapshot", response_model=None)
+async def account_target_snapshot(account_id: int) -> dict[str, Any]:
     """只读账户当前绑定组合下最近成功计算的目标快照."""
     account = await _get_account_or_404(account_id)
     portfolio_id = await get_latest_portfolio_id_by_account_id(account_id)
     if portfolio_id is None:
-        return TargetWeightSnapshotPublic()
+        return target_snapshot_public(None, weight_kind="normalized")
     snapshot = await get_latest_account_target_snapshot(account_id, portfolio_id)
     return await _account_target_public(account, snapshot)
 
 
-@router.post("/{account_id}/target_snapshot/refresh", response_model=TargetWeightSnapshotPublic)
-async def refresh_account_target_snapshot(account_id: int) -> TargetWeightSnapshotPublic:
+@router.post("/{account_id}/target_snapshot/refresh", response_model=None)
+async def refresh_account_target_snapshot(account_id: int) -> dict[str, Any]:
     """按用户请求使用真实账户上下文重新计算并保存目标权重."""
     account = await _get_account_or_404(account_id)
     ensure_account_current(account)
@@ -420,8 +456,8 @@ async def refresh_account_target_snapshot(account_id: int) -> TargetWeightSnapsh
         clear_target_refresh(portfolio_id, account_id)
 
 
-@router.get("/executions/{execution_id}", response_model=ExecutionStatusPublic)
-async def execution_status(execution_id: str) -> ExecutionStatusPublic:
+@router.get("/executions/{execution_id}", response_model=None)
+async def execution_status(execution_id: str) -> dict[str, Any]:
     """查询指定执行标识对应的任务状态."""
     status_payload = await get_execution_status(execution_id)
     if status_payload is None:
@@ -430,15 +466,33 @@ async def execution_status(execution_id: str) -> ExecutionStatusPublic:
             detail="执行不存在",
         )
 
-    return ExecutionStatusPublic.model_validate(status_payload)
+    return {
+        "execution_id": status_payload["execution_id"],
+        "account_id": status_payload["account_id"],
+        "execution_kind": status_payload.get("execution_kind"),
+        "status": status_payload["status"],
+        "created_at": status_payload["created_at"],
+        "started_at": status_payload.get("started_at"),
+        "finished_at": status_payload.get("finished_at"),
+        "error": status_payload.get("error"),
+        "output_status": status_payload.get("output_status"),
+        "outcome": status_payload.get("outcome"),
+        "outcome_reason": status_payload.get("outcome_reason"),
+        "outcome_symbols": status_payload.get("outcome_symbols", []),
+        "record_id": status_payload.get("record_id"),
+        "is_success": status_payload.get("is_success"),
+        "cancel_requested_at": status_payload.get("cancel_requested_at"),
+        "cancel_reason": status_payload.get("cancel_reason"),
+        "terminate_mode": status_payload.get("terminate_mode"),
+    }
 
 
-@router.post("/{account_id}/terminate", response_model=ExecutionTerminateResponse)
+@router.post("/{account_id}/terminate", response_model=None)
 async def terminate_account_execution(
     account_id: int,
     payload: ExecutionTerminateRequest,
     response: Response,
-) -> ExecutionTerminateResponse:
+) -> dict[str, Any]:
     """终止账户当前正在运行的执行任务."""
     from axile.server.execution.supplements import account_lock
 
@@ -450,7 +504,7 @@ async def _terminate_account_execution(
     account_id: int,
     payload: ExecutionTerminateRequest,
     response: Response,
-) -> ExecutionTerminateResponse:
+) -> dict[str, Any]:
     """终止账户当前正在运行的执行任务."""
     await _get_account_or_404(account_id)
 
@@ -470,7 +524,7 @@ async def _terminate_account_execution(
     if state is None:
         if cancelled_supplement:
             response.status_code = status.HTTP_200_OK
-            return ExecutionTerminateResponse(message="已取消剩余补发", account_id=account_id)
+            return {"message": "已取消剩余补发", "account_id": account_id, "execution_id": None, "status": None}
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="账户当前没有活跃执行")
 
     response_status = status.HTTP_200_OK
@@ -478,15 +532,15 @@ async def _terminate_account_execution(
         response_status = status.HTTP_202_ACCEPTED
     response.status_code = response_status
 
-    return ExecutionTerminateResponse(
-        message="已受理终止请求",
-        account_id=account_id,
-        execution_id=state.execution_id,
-        status=state.status,
-    )
+    return {
+        "message": "已受理终止请求",
+        "account_id": account_id,
+        "execution_id": state.execution_id,
+        "status": state.status,
+    }
 
 
-@router.get("/executions/{execution_id}/detail")
+@router.get("/executions/{execution_id}/detail", response_model=None)
 async def execution_detail(execution_id: str, account_id: int) -> dict[str, object] | None:
     """按账户归属读取冻结事实，并临时计算执行详情。"""
     record = await native_operation(
@@ -497,7 +551,7 @@ async def execution_detail(execution_id: str, account_id: int) -> dict[str, obje
     return record["view"]
 
 
-@router.get("/executions/{execution_id}/events", response_model=ExecutionEventListPublic)
+@router.get("/executions/{execution_id}/events", response_model=None)
 async def execution_events(
     execution_id: str,
     pagination: HistoryPaginationDep,
@@ -509,7 +563,7 @@ async def execution_events(
     return Response(content=content, media_type="application/json")
 
 
-@router.get("/executions/{execution_id}/artifacts", response_model=ExecutionArtifactListPublic)
+@router.get("/executions/{execution_id}/artifacts", response_model=None)
 async def execution_artifacts(
     execution_id: str,
     pagination: HistoryPaginationDep,
@@ -522,13 +576,13 @@ async def execution_artifacts(
     return Response(content=content, media_type="application/json")
 
 
-@router.post("/empty_positions/{account_id}", response_model=ExecutionTriggerResponse)
+@router.post("/empty_positions/{account_id}", response_model=None)
 async def empty_all_positions(
     sched: SchedDep,
     account_id: int,
     algorithm_method: str | None = None,
     algorithm_params: str | None = None,
-) -> ExecutionTriggerResponse:
+) -> dict[str, Any]:
     """异步触发一键平仓，并返回可用于轮询的执行标识."""
     db_account = await _get_account_or_404(account_id)
     ensure_account_current(db_account)
@@ -573,9 +627,9 @@ async def empty_all_positions(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"账户 {account_id} 已有调仓任务在执行中",
         )
-    return ExecutionTriggerResponse(
-        message="已与等待中的清仓合并" if submitted.outcome == "coalesced" else "已触发清仓",
-        execution_id=execution_id,
-        account_id=account_id,
-        accepted=submitted.outcome if submitted.outcome in {"created", "coalesced"} else "created",
-    )
+    return {
+        "message": "已与等待中的清仓合并" if submitted.outcome == "coalesced" else "已触发清仓",
+        "execution_id": execution_id,
+        "account_id": account_id,
+        "accepted": submitted.outcome if submitted.outcome in {"created", "coalesced"} else "created",
+    }

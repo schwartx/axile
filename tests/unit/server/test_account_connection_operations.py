@@ -1,6 +1,7 @@
 """账户连接操作与交易任务、定时配置的边界。"""
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -29,7 +30,7 @@ def client(account, monkeypatch):
 
     async def connection_response(account_id):
         current = await get_account(account_id)
-        return Response(connection_view(current, detail=True).model_dump_json(), media_type="application/json")
+        return Response(json.dumps(connection_view(current, detail=True)), media_type="application/json")
 
     monkeypatch.setattr(routes, "account_connection", connection_response)
     monkeypatch.setattr(routes, "_get_account_or_404", get_account)
@@ -130,8 +131,8 @@ def test_resident_status_roundtrips_without_migration(status):
     register_session(binding, lambda: True)
     observe_session(binding, 1, observed)
     detail = connection_view(account, detail=True)
-    assert detail.status == ("unavailable" if status == "cooldown" else status)
-    assert detail.label == ("运行时状态" if status == "cooldown" else None)
+    assert detail["status"] == ("unavailable" if status == "cooldown" else status)
+    assert detail["label"] == ("运行时状态" if status == "cooldown" else None)
 
 
 def test_process_reconnect_forwards_force_without_execution_id(monkeypatch):

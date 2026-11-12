@@ -98,7 +98,9 @@ async def _export(profile: EvidenceProfile, include_logs: bool, **selection: Any
                 pass
 
 
-@router.get("/executions/{execution_id}/evidence", response_class=FileResponse, responses=_RESPONSES)
+@router.get(
+    "/executions/{execution_id}/evidence", response_class=FileResponse, responses=_RESPONSES, response_model=None
+)
 async def export_execution_evidence(
     execution_id: str,
     profile: EvidenceProfile = EvidenceProfile.SHAREABLE,
@@ -108,7 +110,7 @@ async def export_execution_evidence(
     return await _export(profile, include_logs, execution_id=execution_id)
 
 
-@router.get("/{account_id}/evidence", response_class=FileResponse, responses=_RESPONSES)
+@router.get("/{account_id}/evidence", response_class=FileResponse, responses=_RESPONSES, response_model=None)
 async def export_account_evidence(
     account_id: int,
     start_date: date,
@@ -126,7 +128,7 @@ async def export_account_evidence(
     return await _export(profile, include_logs, account_id=account_id, window=window)
 
 
-@router.post("/{account_id}/evidence", response_class=FileResponse, responses=_RESPONSES)
+@router.post("/{account_id}/evidence", response_class=FileResponse, responses=_RESPONSES, response_model=None)
 async def export_selected_execution_evidence(
     account_id: int,
     selection: EvidenceExecutionSelection,

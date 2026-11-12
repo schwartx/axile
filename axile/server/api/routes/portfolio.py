@@ -9,15 +9,7 @@ from loguru import logger
 from axile.channels import get_channel
 from axile.executor.models.portfolio_target import PortfolioTarget
 from axile.server._native import _core
-from axile.server.db.models import (
-    Portfolio,
-    PortfolioCreate,
-    PortfolioListPublic,
-    PortfolioUpdate,
-    TargetWeightSnapshotPublic,
-    ValidateCustomCalcRequest,
-    ValidateCustomCalcResponse,
-)
+from axile.server.db.models import Portfolio, PortfolioCreate, PortfolioUpdate, ValidateCustomCalcRequest
 from axile.server.db.models.account import AccountContext, AccountSnapshot
 from axile.server.db.models.base import now_str
 from axile.server.db.models.portfolio import RunAndSavePortfolioRequest
@@ -55,7 +47,7 @@ async def _portfolio_native(name: str, request: object) -> Any:
         raise HTTPException(status_code=http_status, detail=detail) from exc
 
 
-@router.post("/", status_code=status.HTTP_201_CREATED)
+@router.post("/", status_code=status.HTTP_201_CREATED, response_model=None)
 async def create_portfolio(portfolio: PortfolioCreate) -> Response:
     """创建一个由自定义函数计算目标权重的组合。"""
     try:
@@ -70,7 +62,7 @@ async def create_portfolio(portfolio: PortfolioCreate) -> Response:
     return Response(value, media_type="application/json", status_code=201)
 
 
-@router.get("/", response_model=PortfolioListPublic)
+@router.get("/", response_model=None)
 async def list_portfolios(archived: bool = False, include_archived: bool = False) -> Response:
     """获取组合列表。"""
     return Response(
@@ -81,7 +73,7 @@ async def list_portfolios(archived: bool = False, include_archived: bool = False
     )
 
 
-@router.get("/{portfolio_id:int}")
+@router.get("/{portfolio_id:int}", response_model=None)
 async def portfolio_info(portfolio_id: int) -> Response:
     """获取组合详情和当前绑定账户。"""
     return Response(
@@ -108,19 +100,19 @@ async def _set_portfolio_archived(portfolio_id: int, *, archived: bool) -> Respo
         clear_target_refresh(portfolio_id, None)
 
 
-@router.post("/{portfolio_id:int}/archive")
+@router.post("/{portfolio_id:int}/archive", response_model=None)
 async def archive_portfolio(portfolio_id: int) -> Response:
     """归档没有当前账户绑定的组合，保留源码和目标快照。"""
     return await _set_portfolio_archived(portfolio_id, archived=True)
 
 
-@router.post("/{portfolio_id:int}/restore")
+@router.post("/{portfolio_id:int}/restore", response_model=None)
 async def restore_portfolio(portfolio_id: int) -> Response:
     """恢复组合的可选状态，不启动绑定账户。"""
     return await _set_portfolio_archived(portfolio_id, archived=False)
 
 
-@router.delete("/{portfolio_id:int}")
+@router.delete("/{portfolio_id:int}", response_model=None)
 async def delete_portfolio(portfolio_id: int) -> Response:
     """删除未绑定账户的组合。"""
     return Response(
@@ -129,7 +121,7 @@ async def delete_portfolio(portfolio_id: int) -> Response:
     )
 
 
-@router.patch("/{portfolio_id:int}")
+@router.patch("/{portfolio_id:int}", response_model=None)
 async def update_portfolio(portfolio_id: int, portfolio: PortfolioUpdate) -> Response:
     """局部更新组合；自定义函数不可清空。"""
     try:
@@ -167,7 +159,7 @@ async def resolve_portfolio_target(portfolio: Portfolio, account: AccountContext
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, exception_details(exc, "目标计算失败")) from exc
 
 
-@router.get("/{portfolio_id:int}/target_snapshot", response_model=TargetWeightSnapshotPublic)
+@router.get("/{portfolio_id:int}/target_snapshot", response_model=None)
 async def portfolio_target_snapshot(portfolio_id: int) -> Response:
     """只读组合最近成功计算的原始目标快照。"""
     return Response(
@@ -176,8 +168,8 @@ async def portfolio_target_snapshot(portfolio_id: int) -> Response:
     )
 
 
-@router.post("/{portfolio_id:int}/target_snapshot/refresh", response_model=TargetWeightSnapshotPublic)
-async def refresh_portfolio_target_snapshot(portfolio_id: int) -> TargetWeightSnapshotPublic:
+@router.post("/{portfolio_id:int}/target_snapshot/refresh", response_model=None)
+async def refresh_portfolio_target_snapshot(portfolio_id: int) -> dict[str, Any]:
     """执行一次组合函数并持久化当前目标。"""
     context = await _portfolio_native("portfolio_operation", {"op": "context", "portfolio_id": portfolio_id})
     portfolio = Portfolio.model_validate(context["portfolio"])
@@ -215,7 +207,7 @@ async def _run_custom_calc_validation(
     custom_calc_py_code: str,
     *,
     leverage_overrides: dict[str, float] | None = None,
-) -> ValidateCustomCalcResponse:
+) -> dict[str, Any]:
     """在给定上下文中试跑自定义组合函数并返回结构化结果."""
     try:
         if account is None:
@@ -232,21 +224,33 @@ async def _run_custom_calc_validation(
             )
     except BaseException as exc:  # noqa: BLE001 - 校验接口统一返回执行器与 IPC 错误
         error = exc if isinstance(exc, PortfolioFunctionError) else _error_from_exception(exc)
-        return ValidateCustomCalcResponse(
-            valid=False,
-            error=str(error),
-            traceback=error.formatted_traceback,
-            error_line=error.error_line,
-            error_offset=error.error_offset,
-            error_type=error.error_type,
-            error_message=error.error_message,
-        )
+        return {
+            "valid": False,
+            "target": None,
+            "target_mode": "weight",
+            "error": str(error),
+            "traceback": error.formatted_traceback,
+            "error_line": error.error_line,
+            "error_offset": error.error_offset,
+            "error_type": error.error_type,
+            "error_message": error.error_message,
+        }
     target = PortfolioTarget.from_result(result)
-    return ValidateCustomCalcResponse(valid=True, target=target.targets, target_mode=target.mode)
+    return {
+        "valid": True,
+        "target": target.targets,
+        "target_mode": target.mode,
+        "error": None,
+        "traceback": None,
+        "error_line": None,
+        "error_offset": None,
+        "error_type": None,
+        "error_message": None,
+    }
 
 
-@router.post("/validate_custom_calc", response_model=ValidateCustomCalcResponse)
-async def validate_custom_calc(payload: ValidateCustomCalcRequest) -> ValidateCustomCalcResponse:
+@router.post("/validate_custom_calc", response_model=None)
+async def validate_custom_calc(payload: ValidateCustomCalcRequest) -> dict[str, Any]:
     """使用无账户或真实账户上下文试跑自定义组合函数。"""
     account = None
     overrides = payload.leverage_overrides.model_dump(exclude_none=True) if payload.leverage_overrides else {}
@@ -276,8 +280,8 @@ async def validate_custom_calc(payload: ValidateCustomCalcRequest) -> ValidateCu
         clear_account_asset_refresh(payload.account_id)
 
 
-@router.post("/{portfolio_id:int}/run_and_save", response_model=ValidateCustomCalcResponse)
-async def run_and_save_portfolio(portfolio_id: int, payload: RunAndSavePortfolioRequest) -> ValidateCustomCalcResponse:
+@router.post("/{portfolio_id:int}/run_and_save", response_model=None)
+async def run_and_save_portfolio(portfolio_id: int, payload: RunAndSavePortfolioRequest) -> dict[str, Any]:
     """只执行一次草稿；通过后由 Rust 原子保存组合与原始快照。"""
     update = PortfolioUpdate(name=payload.name, custom_calc_py_code=payload.custom_calc_py_code)
     if not try_register_target_refresh(portfolio_id, payload.account_id):
@@ -288,7 +292,7 @@ async def run_and_save_portfolio(portfolio_id: int, payload: RunAndSavePortfolio
         )
         account = AccountSnapshot.model_validate(context["account"]) if context["account"] is not None else None
         result = await _run_custom_calc_validation(account, payload.custom_calc_py_code)
-        if result.valid:
+        if result["valid"]:
             now = now_str()
             await _portfolio_native(
                 "portfolio_operation",
@@ -298,8 +302,8 @@ async def run_and_save_portfolio(portfolio_id: int, payload: RunAndSavePortfolio
                     "changes": update.model_dump(exclude_unset=True),
                     "updated_at": now,
                     "account_id": payload.account_id,
-                    "raw_weights": result.target,
-                    "target_mode": result.target_mode,
+                    "raw_weights": result["target"],
+                    "target_mode": result["target_mode"],
                     "normalized_weights": None,
                     "source": "manual",
                     "calculated_at": now,

@@ -26,20 +26,7 @@ from axile.server.api.routes.account_support import _get_account_or_404
 from axile.server.connection_runtime import public_session_views
 from axile.server.core.db import analysis_store
 from axile.server.cron import SCHEDULER_TIMEZONE, parse_cron_expr
-from axile.server.db.models import (
-    Account,
-    AccountCreate,
-    AccountDashboardItemPublic,
-    AccountDashboardPublic,
-    AccountListPublic,
-    AccountNextRunPublic,
-    AccountPublic,
-    AccountRuntimeSyncPublic,
-    AccountUpdate,
-    Message,
-    PortfolioAccountListPublic,
-)
-from axile.server.db.models.account_connection import AccountConnectionDetail
+from axile.server.db.models import Account, AccountCreate, AccountUpdate
 from axile.server.db.models.account_validation import _check_algorithm_channel_compat
 from axile.server.db.models.base import now_str
 from axile.server.execution.account_runtime_sync import reconcile_account_runtime
@@ -70,12 +57,10 @@ class AccountCopyRequest(BaseModel):
     name: str = Field(min_length=1)
 
 
-async def _account_response(account: dict[str, Any], sync: dict[str, Any]) -> AccountPublic:
+async def _account_response(account: dict[str, Any], sync: dict[str, Any]) -> dict[str, Any]:
     """对本次已提交快照复用原生展示规则，保留提交后运行态。"""
-    return AccountPublic.model_validate(
-        await _account_operation(
-            "account_public", {"account": account, "runtime_sync": sync, **_account_read_request()}
-        )
+    return await _account_operation(
+        "account_public", {"account": account, "runtime_sync": sync, **_account_read_request()}
     )
 
 
@@ -252,14 +237,14 @@ def _build_account_update_data(account: AccountUpdate) -> dict[str, object]:
 @router.post(
     "/",
     status_code=status.HTTP_201_CREATED,
-    response_model=AccountPublic,
+    response_model=None,
 )
 async def create_account(
     sched: SchedDep,
     account: AccountCreate,
     response: Response,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
-) -> AccountPublic:
+) -> dict[str, Any]:
     """创建账户."""
     try:
         if idempotency_key:
@@ -333,13 +318,13 @@ async def create_account(
     return await _account_response(db_account, sync)
 
 
-@router.post("/{account_id}/copy", status_code=status.HTTP_201_CREATED, response_model=AccountPublic)
+@router.post("/{account_id}/copy", status_code=status.HTTP_201_CREATED, response_model=None)
 async def copy_account(
     sched: SchedDep,
     account_id: int,
     request: AccountCopyRequest,
     response: Response,
-) -> AccountPublic:
+) -> dict[str, Any]:
     """在来源账户完全暂停后复制配置与初始组合绑定。"""
     async with account_runtime_lock(account_id):
         if not request.name.strip():
@@ -386,7 +371,7 @@ async def copy_account(
     return await _account_response(copied, sync)
 
 
-@router.get("/", response_model=AccountListPublic)
+@router.get("/", response_model=None)
 async def list_accounts(archived: bool = False, include_archived: bool = False) -> Response:
     """默认获取当前账户，可筛选已归档账户或读取全部。"""
     return Response(
@@ -405,10 +390,8 @@ def _safe_total_asset(assets: dict[str, Any]) -> float:
         return 0.0
 
 
-@router.get("/dashboard", response_model=AccountDashboardPublic)
-async def account_dashboard(
-    sched: SchedDep, archived: bool = False, include_archived: bool = False
-) -> AccountDashboardPublic:
+@router.get("/dashboard", response_model=None)
+async def account_dashboard(sched: SchedDep, archived: bool = False, include_archived: bool = False) -> dict[str, Any]:
     """
     仪表盘聚合: 一次性返回每个账户的舰队卡所需数据.
 
@@ -419,7 +402,7 @@ async def account_dashboard(
 
     Returns
     -------
-    AccountDashboardPublic
+    dict[str, Any]
         每个账户一项的聚合列表。
 
     Notes
@@ -433,7 +416,7 @@ async def account_dashboard(
         {"live_sessions": public_session_views(), "archived": archived, "include_archived": include_archived},
     )
     inputs = context["inputs"]
-    items: list[AccountDashboardItemPublic] = []
+    items: list[dict[str, Any]] = []
     for account in context["accounts"]:
         account_id = cast("int", account["id"])
         persisted = inputs[str(account_id)]
@@ -532,46 +515,46 @@ async def account_dashboard(
             ).off_symbol_count
 
         items.append(
-            AccountDashboardItemPublic(
-                account_id=account_id,
-                name=account["name"],
-                remark=account["remark"],
-                market=account["market"],
-                trade_channel=account["trade_channel"],
-                long_leverage=account["long_leverage"],
-                short_leverage=account["short_leverage"],
-                is_started=account["is_started"],
-                archived_at=account.get("archived_at"),
-                portfolio_id=persisted["portfolio_id"],
-                is_scheduled=job is not None,
-                next_run_time=next_run.isoformat() if next_run is not None else None,
-                total_asset=_safe_total_asset(assets),
-                currency=str(currency),
-                holdings_count=holdings_count,
-                position_weights=position_weights,
-                performance=performance,
-                connection=account["connection"],
-                asset_observed_at=latest_snapshot["created_at"] if latest_snapshot is not None else None,
-                previous_close=previous_close,
-                last_is_success=latest["is_success"] if latest is not None else None,
-                last_exec_at=latest["created_at"] if latest is not None else None,
-                last_output_status=last_output_status,
-                off_symbol_count=off_symbol_count,
-                running_execution_id=running_execution_id,
-                running_kind=running_kind,
-                running_phase=running_phase,
-                running_status=running_status,
-                pending_execution_id=pending_execution_id,
-                pending_kind=pending_kind,
-            )
+            {
+                "account_id": account_id,
+                "archived_at": account.get("archived_at"),
+                "connection": account["connection"],
+                "name": account["name"],
+                "remark": account["remark"],
+                "market": account["market"],
+                "trade_channel": account["trade_channel"],
+                "long_leverage": account["long_leverage"],
+                "short_leverage": account["short_leverage"],
+                "is_started": account["is_started"],
+                "portfolio_id": persisted["portfolio_id"],
+                "is_scheduled": job is not None,
+                "next_run_time": next_run.isoformat() if next_run is not None else None,
+                "total_asset": _safe_total_asset(assets),
+                "currency": str(currency),
+                "holdings_count": holdings_count,
+                "position_weights": position_weights,
+                "performance": performance,
+                "asset_observed_at": latest_snapshot["created_at"] if latest_snapshot is not None else None,
+                "previous_close": previous_close,
+                "last_is_success": latest["is_success"] if latest is not None else None,
+                "last_exec_at": latest["created_at"] if latest is not None else None,
+                "last_output_status": last_output_status,
+                "off_symbol_count": off_symbol_count,
+                "running_execution_id": running_execution_id,
+                "running_kind": running_kind,
+                "running_phase": running_phase,
+                "running_status": running_status,
+                "pending_execution_id": pending_execution_id,
+                "pending_kind": pending_kind,
+            }
         )
 
-    return AccountDashboardPublic(data=items)
+    return {"data": items}
 
 
 async def _set_account_archived(
     sched: SchedDep, account_id: int, response: Response, *, archived: bool
-) -> AccountPublic:
+) -> dict[str, Any]:
     """持久化归档意愿后复用运行态同步；同步失败仍保留禁止运行的真源。"""
     async with account_runtime_lock(account_id):
         if not try_register_account_asset_refresh(account_id):
@@ -590,20 +573,20 @@ async def _set_account_archived(
     return await _account_response(result, sync)
 
 
-@router.post("/{account_id}/archive", response_model=AccountPublic)
-async def archive_account(sched: SchedDep, account_id: int, response: Response) -> AccountPublic:
+@router.post("/{account_id}/archive", response_model=None)
+async def archive_account(sched: SchedDep, account_id: int, response: Response) -> dict[str, Any]:
     """归档已暂停且没有在途任务的账户，保留配置和历史。"""
     return await _set_account_archived(sched, account_id, response, archived=True)
 
 
-@router.post("/{account_id}/restore", response_model=AccountPublic)
-async def restore_account(sched: SchedDep, account_id: int, response: Response) -> AccountPublic:
+@router.post("/{account_id}/restore", response_model=None)
+async def restore_account(sched: SchedDep, account_id: int, response: Response) -> dict[str, Any]:
     """恢复归档账户，保持暂停，不自动连接或交易。"""
     return await _set_account_archived(sched, account_id, response, archived=False)
 
 
-@router.delete("/{account_id}")
-async def delete_account(sched: SchedDep, account_id: int) -> Message:
+@router.delete("/{account_id}", response_model=None)
+async def delete_account(sched: SchedDep, account_id: int) -> dict[str, Any]:
     """删除账户."""
     # 与对齐互斥，先等锁再读库，避免删除期间旧对齐把 worker 重新建立。
     async with account_runtime_lock(account_id):
@@ -613,12 +596,12 @@ async def delete_account(sched: SchedDep, account_id: int) -> Message:
         from axile.server.connection_runtime import forget_session
 
         forget_session(account_id)
-    return Message(message="成功删除账户")
+    return {"message": "成功删除账户"}
 
 
 @router.get(
     "/{account_id}",
-    response_model=AccountPublic,
+    response_model=None,
 )
 async def account_info(account_id: int) -> Response:
     """获取账户详情."""
@@ -628,7 +611,7 @@ async def account_info(account_id: int) -> Response:
     )
 
 
-@router.get("/{account_id}/connection", response_model=AccountConnectionDetail)
+@router.get("/{account_id}/connection", response_model=None)
 async def account_connection(account_id: int) -> Response:
     """只读取最新连接结果及完整详情，不触发 SDK。"""
     return Response(
@@ -641,12 +624,12 @@ async def account_connection(account_id: int) -> Response:
 
 @router.get(
     "/{account_id}/next_run_time",
-    response_model=AccountNextRunPublic,
+    response_model=None,
 )
 async def account_next_run_time(
     sched: SchedDep,
     account_id: int,
-) -> AccountNextRunPublic:
+) -> dict[str, Any]:
     """
     获取账户未来三次调度执行时间.
 
@@ -659,7 +642,7 @@ async def account_next_run_time(
 
     Returns
     -------
-    AccountNextRunPublic
+    dict[str, Any]
         账户的调度状态与未来触发时间。
 
     Raises
@@ -695,9 +678,9 @@ async def account_next_run_time(
         )
         now = clock_now(tz=SCHEDULER_TIMEZONE)
         times = {
-            item.scheduled_at
-            for item in preview.items
-            if item.action == "execute" and (item.base_scheduled_at is None or item.base_scheduled_at >= now)
+            item["scheduled_at"]
+            for item in preview["items"]
+            if item["action"] == "execute" and (item["base_scheduled_at"] is None or item["base_scheduled_at"] >= now)
         }
         times.update(
             datetime.fromisoformat(scheduled_at)
@@ -705,25 +688,25 @@ async def account_next_run_time(
             if datetime.fromisoformat(scheduled_at) > now
         )
         next_execution_times = [value.isoformat() for value in sorted(times)[:3]]
-    return AccountNextRunPublic(
-        account_id=account_id,
-        is_scheduled=job is not None,
-        next_run_time=next_run_times[0] if next_run_times else None,
-        next_run_times=next_run_times,
-        next_execution_times=next_execution_times,
-    )
+    return {
+        "account_id": account_id,
+        "is_scheduled": job is not None,
+        "next_run_time": next_run_times[0] if next_run_times else None,
+        "next_run_times": next_run_times,
+        "next_execution_times": next_execution_times,
+    }
 
 
 @router.patch(
     "/{account_id}",
-    response_model=AccountPublic,
+    response_model=None,
 )
 async def update_account(
     sched: SchedDep,
     account_id: int,
     account: AccountUpdate,
     response: Response,
-) -> AccountPublic:
+) -> dict[str, Any]:
     """更新账户."""
     from axile.server.execution.supplements import account_lock
 
@@ -745,7 +728,7 @@ async def _update_account(
     account_id: int,
     account: AccountUpdate,
     response: Response,
-) -> AccountPublic:
+) -> dict[str, Any]:
     """更新账户."""
     db_account = await _get_account_or_404(account_id)
     previous_sync = db_account.runtime_sync
@@ -864,7 +847,7 @@ async def _update_account(
     return await _account_response(db_account, sync)
 
 
-@router.get("/{account_id}/runtime-sync", response_model=AccountRuntimeSyncPublic)
+@router.get("/{account_id}/runtime-sync", response_model=None)
 async def account_runtime_sync_status(account_id: int) -> Response:
     """查询账户运行态对齐的失败原因与重试计数。"""
     return Response(
@@ -873,17 +856,24 @@ async def account_runtime_sync_status(account_id: int) -> Response:
     )
 
 
-@router.post("/{account_id}/runtime-sync/retry", response_model=AccountRuntimeSyncPublic)
+@router.post("/{account_id}/runtime-sync/retry", response_model=None)
 async def retry_account_runtime_sync(
     sched: SchedDep,
     account_id: int,
     response: Response,
-) -> AccountRuntimeSyncPublic:
+) -> dict[str, Any]:
     """显式重试账户 scheduler 和渠道 worker 的运行态对齐。"""
     sync = await _reconcile_committed_runtime(sched, account_id)
     if sync["status"] != "synchronized":
         response.status_code = status.HTTP_202_ACCEPTED
-    return AccountRuntimeSyncPublic.model_validate(sync)
+    return {
+        "status": sync["status"],
+        "revision": sync["revision"],
+        "attempts": sync["attempts"],
+        "last_error": sync.get("last_error"),
+        "last_attempt_at": sync.get("last_attempt_at"),
+        "synchronized_at": sync.get("synchronized_at"),
+    }
 
 
 async def _reconcile_committed_runtime(sched: SchedDep, account_id: int) -> dict[str, Any]:
@@ -894,7 +884,7 @@ async def _reconcile_committed_runtime(sched: SchedDep, account_id: int) -> dict
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="账户不存在") from exc
 
 
-@router.get("/execute_records/{account_id}")
+@router.get("/execute_records/{account_id}", response_model=None)
 async def list_execute_records(
     account_id: int,
     pagination: HistoryPaginationDep,
@@ -919,7 +909,7 @@ async def list_execute_records(
         raise HTTPException(503, detail={"code": error.args[0], "message": error.args[1]}) from error
 
 
-@router.get("/execute_records/{account_id}/{record_id}")
+@router.get("/execute_records/{account_id}/{record_id}", response_model=None)
 async def execute_record_detail(account_id: int, record_id: int) -> Response:
     """从同一原生读快照返回账户内执行的完整业务证据。"""
     try:
@@ -933,7 +923,7 @@ async def execute_record_detail(account_id: int, record_id: int) -> Response:
         raise HTTPException(503, detail={"code": error.args[0], "message": error.args[1]}) from error
 
 
-@router.get("/portfolio_records/{account_id}", response_model=PortfolioAccountListPublic)
+@router.get("/portfolio_records/{account_id}", response_model=None)
 async def list_portfolio_records(
     account_id: int,
     pagination: HistoryPaginationDep,

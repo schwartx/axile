@@ -1,6 +1,7 @@
 """四个原生 JSON 读取出口与原公开模型的行为对照。"""
 
 import json
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock
 
@@ -18,9 +19,7 @@ from axile.server._native import _core
 from axile.server.api.routes import account_crud, account_execution
 from axile.server.api.routes import init as init_routes
 from axile.server.core import db
-from axile.server.db.models import ExecutionArtifact, ExecutionArtifactPublic, ExecutionEvent, ExecutionEventPublic
-from axile.server.db.models.account_runtime_sync import AccountRuntimeSyncPublic
-from axile.server.db.models.system_notification import SystemNotificationStatePublic
+from axile.server.db.models import ExecutionArtifact, ExecutionEvent
 from tests.conftest import native_store_call
 from tests.sqlite_oracle import to_us, utc_time
 from tests.unit.server._execution_test_support import build_account
@@ -138,7 +137,37 @@ def test_event_fields_enums_and_error_promotion_match_public_model(client, nativ
             _event(native_database, {"business": [False, 0, None]}, event_uid=f"{field}-{value}", **{field: value})
     runtime_rows(native_database, "ALTER TABLE execution_event ADD COLUMN internal_only TEXT DEFAULT 'private'")
     before = _audit_rows(native_database, "execution_event")
-    expected = [ExecutionEventPublic.model_validate(row).model_dump(mode="json") for row in before]
+    expected = [
+        {
+            key: deepcopy(row[key])
+            for key in (
+                "id",
+                "execution_id",
+                "account_id",
+                "channel",
+                "algorithm",
+                "schema_version",
+                "event_uid",
+                "event_type",
+                "status",
+                "reason_family",
+                "reason_code",
+                "symbol",
+                "intent_id",
+                "order_id",
+                "client_order_id",
+                "ts_local_created",
+                "ts_exchange",
+                "ts_persisted",
+                "seq",
+                "details",
+            )
+        }
+        for row in before
+    ]
+    for item in expected:
+        if item["channel"] == "\u001c MY-PLUGIN-ΟΣ \u001f":
+            item["channel"] = "my-plugin-ος"
     for item, (_, error) in zip(expected, cases, strict=False):
         if error is not None:
             item["details"]["error"] = error
@@ -174,7 +203,20 @@ def test_artifact_projection_preserves_supported_attachment_contents(client, nat
         )
     runtime_rows(native_database, "ALTER TABLE execution_artifact ADD COLUMN internal_only TEXT DEFAULT 'private'")
     before = _audit_rows(native_database, "execution_artifact")
-    expected = [ExecutionArtifactPublic.model_validate(row).model_dump(mode="json") for row in before]
+    expected = [
+        {
+            key: deepcopy(row[key])
+            for key in (
+                "id",
+                "execution_id",
+                "artifact_type",
+                "schema_version",
+                "content",
+                "created_at",
+            )
+        }
+        for row in before
+    ]
     response = client.get("/account/executions/e1/artifacts")
     assert response.status_code == 200, response.text
     assert response.json() == {"data": expected, "count": len(before)}
@@ -232,7 +274,10 @@ def test_runtime_sync_keeps_only_public_fields_and_does_not_load_account(client,
     response = client.get("/account/1/runtime-sync")
     assert response.status_code == 200, response.text
     expected = _public_times(raw, ("last_attempt_at", "synchronized_at"))
-    assert response.json() == AccountRuntimeSyncPublic.model_validate(expected).model_dump(mode="json")
+    assert response.json() == {
+        key: expected[key]
+        for key in ("status", "revision", "attempts", "last_error", "last_attempt_at", "synchronized_at")
+    }
     assert dict(runtime_rows(native_database, "SELECT * FROM accountruntimesync")[0]) == raw
 
 
@@ -256,16 +301,24 @@ def test_runtime_sync_missing_account_and_initial_sync_keep_status_and_detail(cl
 def test_system_notification_empty_and_saved_results_match_public_model(client, native_database, ok):
     response = client.get("/init/execution-alert/result")
     assert response.status_code == 200
-    assert response.json() == SystemNotificationStatePublic().model_dump(mode="json")
-    result = SystemNotificationStatePublic(
-        finished_at="2026-10-24T01:02:03+08:00",
-        mode="function",
-        event_type="execution_timeout",
-        execution_id="e1",
-        account_id=1,
-        ok=ok,
-        error="发送失败" if ok is False else None,
-    ).model_dump(mode="json")
+    assert response.json() == {
+        "finished_at": None,
+        "mode": None,
+        "event_type": None,
+        "execution_id": None,
+        "account_id": None,
+        "ok": None,
+        "error": None,
+    }
+    result = {
+        "finished_at": "2026-10-24T01:02:03+08:00",
+        "mode": "function",
+        "event_type": "execution_timeout",
+        "execution_id": "e1",
+        "account_id": 1,
+        "ok": ok,
+        "error": "发送失败" if ok is False else None,
+    }
     native_store_call(native_database, "notifications_record_system", result)
     expected = result | {"finished_at": utc_time(result["finished_at"])}
     assert client.get("/init/execution-alert/result").json() == expected

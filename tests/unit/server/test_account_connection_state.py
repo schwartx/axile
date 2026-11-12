@@ -17,7 +17,7 @@ from axile.server import connection_state as service
 from axile.server.core import db
 from axile.server.db.models import Account
 from axile.server.db.models.account import AccountSnapshot
-from axile.server.db.models.account_connection import AccountConnectionDetail, AccountConnectionState
+from axile.server.db.models.account_connection import AccountConnectionState
 from axile.server.error_details import exception_details
 from axile.server.execution.worker_backend.worker_responses import _build_error_payload
 from axile.server.portfolio_function import _error_from_exception
@@ -118,11 +118,11 @@ def test_single_row_overwrite_recovery_and_restart(database):
     # 独立连接模拟服务重新读取，正常结果不保留任何旧错误。
     current = _account(path)
     detail = connection_view(current, detail=True)
-    assert detail.status == "uninitialized"
-    assert detail.last_failure.message == "最新错误"
-    assert detail.error is None
-    assert detail.message is None
-    assert detail.observed_at is None
+    assert detail["status"] == "uninitialized"
+    assert detail["last_failure"]["message"] == "最新错误"
+    assert detail["error"] is None
+    assert detail["message"] is None
+    assert detail["observed_at"] is None
 
 
 def test_old_instance_and_out_of_order_snapshots_cannot_overwrite(database):
@@ -215,7 +215,7 @@ def test_changed_config_rejects_old_runtime_and_clears_error(database):
         "account_update",
         {"account_id": 1, "patch": {"account_config": current.account_config}, "now": "2026-10-14T14:48:00.000000Z"},
     )
-    assert connection_view(current).status == "uninitialized"
+    assert connection_view(current)["status"] == "uninitialized"
     service.record_connection_observation(binding, 2, ConnectionObservation("ok", "2026-10-14T14:47:01.000000Z"))
     assert service.begin_connection_instance(account) is None
     assert service.begin_connection_instance(current) is not None
@@ -278,11 +278,11 @@ def test_connection_detail_route_is_read_only_and_account_dto_contains_summary(d
 
     before = _states(path)
     response = asyncio.run(account_crud.account_connection(1))
-    detail = AccountConnectionDetail.model_validate_json(response.body)
+    detail = json.loads(response.body)
     assert _states(path) == before
-    assert detail.last_failure.error["technical_detail"] == "1026"
+    assert detail["last_failure"]["error"]["technical_detail"] == "1026"
     summary = connection_view(current)
-    assert summary.status == "uninitialized" and summary.last_failure_at == "2026-10-14T14:47:00.000000Z"
+    assert summary["status"] == "uninitialized" and summary["last_failure_at"] == "2026-10-14T14:47:00.000000Z"
 
 
 def test_account_deletion_cascades_latest_state_and_rejects_late_callback(database):
@@ -311,8 +311,8 @@ def test_direct_and_worker_paths_keep_custom_snapshot_and_lightweight_dtos(datab
     }
     monitor.failed(RuntimeError("SDK 原始错误"), label="此前未注册的自由文案", presentation=content)
     current = _account(path)
-    summary = connection_view(current).model_dump()
-    detail = connection_view(current, detail=True).model_dump()
+    summary = connection_view(current)
+    detail = connection_view(current, detail=True)
     assert summary["label"] is None
     assert "error" not in summary and "presentation" not in summary
     assert detail["last_failure"]["presentation"]["title"] == "测试渠道自由详情"
@@ -403,8 +403,11 @@ def test_invalid_stored_presentation_cannot_hide_connection_detail(database):
             (json.dumps({"title": 123, "sections": "invalid"}),),
         )
     detail = connection_view(_account(path), detail=True)
-    assert detail.presentation is None
-    assert detail.last_failure.label == "有效标签" and detail.last_failure.error["technical_detail"] == "完整证据"
+    assert detail["presentation"] is None
+    assert (
+        detail["last_failure"]["label"] == "有效标签"
+        and detail["last_failure"]["error"]["technical_detail"] == "完整证据"
+    )
 
 
 def test_current_session_requires_live_worker_and_host_reconciliation(database, monkeypatch):
@@ -420,23 +423,23 @@ def test_current_session_requires_live_worker_and_host_reconciliation(database, 
     collector.observe(ConnectionObservation("ok", "2026-10-14T14:47:04.000000Z"))
     service.consume_connection_snapshot(collector.snapshot())
     detail = connection_view(_account(path), detail=True)
-    assert detail.status == "connecting"
-    assert detail.last_success_at is None
+    assert detail["status"] == "connecting"
+    assert detail["last_success_at"] is None
     collector.observe(ConnectionObservation("ok", "2026-10-14T14:47:05.000000Z", kind="access"))
     collector.observe_session(ConnectionObservation("ok", "2026-10-14T14:47:06.000000Z"))
     service.consume_connection_snapshot(collector.snapshot())
     detail = connection_view(_account(path), detail=True)
-    assert detail.status == "ready" and detail.worker_alive
-    assert detail.last_success_at == "2026-10-14T14:47:05.000000Z"
+    assert detail["status"] == "ready" and detail["worker_alive"]
+    assert detail["last_success_at"] == "2026-10-14T14:47:05.000000Z"
     now[0] = 6
-    assert connection_view(_account(path)).status == "unknown"
+    assert connection_view(_account(path))["status"] == "unknown"
     # Heartbeat repeats the same evidence, restoring freshness without inventing access success.
     service.consume_connection_snapshot(collector.snapshot())
     detail = connection_view(_account(path))
-    assert detail.status == "ready" and detail.last_success_at == "2026-10-14T14:47:05.000000Z"
+    assert detail["status"] == "ready" and detail["last_success_at"] == "2026-10-14T14:47:05.000000Z"
     alive[0] = False
     detail = connection_view(_account(path))
-    assert detail.status == "disconnected" and not detail.worker_alive
+    assert detail["status"] == "disconnected" and (not detail["worker_alive"])
 
 
 def test_recovered_history_survives_success_and_does_not_advertise_old_failure(database):
@@ -457,16 +460,16 @@ def test_recovered_history_survives_success_and_does_not_advertise_old_failure(d
     collector.observe_session(ConnectionObservation("ok", "2026-10-14T14:47:09.000000Z"))
     service.consume_connection_snapshot(collector.snapshot())
     detail = connection_view(_account(path), detail=True)
-    assert detail.status == "ready" and detail.error is None
-    assert detail.last_success_at == "2026-10-14T14:47:08.000000Z"
-    assert detail.last_failure.message == "native timeout"
+    assert detail["status"] == "ready" and detail["error"] is None
+    assert detail["last_success_at"] == "2026-10-14T14:47:08.000000Z"
+    assert detail["last_failure"]["message"] == "native timeout"
     collector.observe(ConnectionObservation("error", "2026-10-14T14:47:10.000000Z", "trade disconnected", {}))
     service.consume_connection_snapshot(collector.snapshot())
     detail = connection_view(_account(path), detail=True)
-    assert detail.status == "unavailable" and detail.message == "trade disconnected"
+    assert detail["status"] == "unavailable" and detail["message"] == "trade disconnected"
     collector.observe(ConnectionObservation("ok", "2026-10-14T14:47:11.000000Z"))
     service.consume_connection_snapshot(collector.snapshot())
-    assert connection_view(_account(path)).status == "unavailable"
+    assert connection_view(_account(path))["status"] == "unavailable"
 
 
 def test_timeout_ends_session_rejects_late_result_and_preserves_original_failure(database):
@@ -483,18 +486,18 @@ def test_timeout_ends_session_rejects_late_result_and_preserves_original_failure
     collector.observe_session(ConnectionObservation("ok", "2026-10-14T14:47:12.000000Z"))
     service.consume_connection_snapshot(collector.snapshot())
     detail = connection_view(_account(path), detail=True)
-    assert detail.status == "unavailable" and not detail.worker_alive
-    assert detail.retry_after_seconds > 0
-    assert detail.last_failure.error["technical_detail"] == "original timeout"
+    assert detail["status"] == "unavailable" and (not detail["worker_alive"])
+    assert detail["retry_after_seconds"] > 0
+    assert detail["last_failure"]["error"]["technical_detail"] == "original timeout"
     assert _state(path).instance_id == ""
     events = _notifications(path)
     assert len(events) == 1
     assert events[0]["context"]["error"]["message"] == "连接准备超时"
-    assert detail.error["connection_event_id"] == events[0]["id"]
+    assert detail["error"]["connection_event_id"] == events[0]["id"]
     newer = service.begin_connection_instance(account)
     runtime.register_session(newer, lambda: True)
     service.end_connection_instance(binding, "late old worker timeout", TimeoutError("late timeout"))
-    assert runtime.current_session(1, newer.config_key).status == "uninitialized"
+    assert runtime.current_session(1, newer.config_key)["status"] == "uninitialized"
     assert _state(path).instance_id == newer.instance_id
     assert len(_notifications(path)) == 1
 
@@ -510,7 +513,7 @@ def test_active_business_failure_does_not_change_connection(database):
     service.consume_connection_snapshot(collector.snapshot())
     # No connection event is published for a plain business rejection.
     assert "error_scope" not in exception_details(ValueError("余额不足"))
-    assert connection_view(_account(path)).status == "ready"
+    assert connection_view(_account(path))["status"] == "ready"
 
 
 def test_restart_revokes_old_instance_but_retains_history_and_manual_disconnect(database):
@@ -530,8 +533,8 @@ def test_restart_revokes_old_instance_but_retains_history_and_manual_disconnect(
     collector.observe_session(ConnectionObservation("ok", "2026-10-14T14:47:15.000000Z"))
     service.consume_connection_snapshot(collector.snapshot())
     detail = connection_view(_account(path), detail=True)
-    assert detail.status == "disconnected" and not detail.worker_alive
-    assert detail.last_success_at == "2026-10-14T14:47:13.000000Z" and detail.manually_disconnected
+    assert detail["status"] == "disconnected" and (not detail["worker_alive"])
+    assert detail["last_success_at"] == "2026-10-14T14:47:13.000000Z" and detail["manually_disconnected"]
     newer = service.begin_connection_instance(account)
     assert newer.manually_disconnected
 
@@ -549,10 +552,10 @@ def test_cooldown_elapsed_time_does_not_reset_with_heartbeats(database, monkeypa
         ConnectionObservation("cooldown", "2026-10-14T14:47:07.000000Z", error={"retry_after_seconds": 30})
     )
     service.consume_connection_snapshot(collector.snapshot())
-    assert runtime.current_session(1, binding.config_key).retry_after_seconds == 30
+    assert runtime.current_session(1, binding.config_key)["retry_after_seconds"] == 30
     now[0] = 10
     service.consume_connection_snapshot(collector.snapshot())
-    assert runtime.current_session(1, binding.config_key).retry_after_seconds == 20
+    assert runtime.current_session(1, binding.config_key)["retry_after_seconds"] == 20
 
 
 def _offline_session_worker(*args):
@@ -597,14 +600,14 @@ def test_real_process_session_reuse_disconnect_and_reconnect_without_broker(data
     async def run():
         await manager.prepare_account(snapshot)
         first = manager._workers[1].process.pid
-        assert status().status == "ready"
+        assert status()["status"] == "ready"
         await manager.get_account_assets(snapshot)
         assert manager._workers[1].process.pid == first
-        assert status().last_success_at is not None
+        assert status()["last_success_at"] is not None
         process = manager._workers[1].process
         await manager.disconnect_account(snapshot)
-        assert status().status == "disconnected" and status().manually_disconnected
-        assert not status().worker_alive and not process.is_alive()
+        assert status()["status"] == "disconnected" and status()["manually_disconnected"]
+        assert not status()["worker_alive"] and (not process.is_alive())
         assert not manager._workers
         await manager.disconnect_account(snapshot)
         assert not manager._workers
@@ -615,7 +618,7 @@ def test_real_process_session_reuse_disconnect_and_reconnect_without_broker(data
         with pytest.raises(AccountConnectionUnavailable, match="请先连接账户"):
             await manager.get_account_assets(snapshot)
         assert not manager._workers
-        assert status().status == "disconnected"
+        assert status()["status"] == "disconnected"
         with pytest.raises(AccountConnectionUnavailable, match="主动断开"):
             await manager.prepare_account(snapshot)
         assert not manager._workers
@@ -630,10 +633,10 @@ def test_real_process_session_reuse_disconnect_and_reconnect_without_broker(data
         await manager.disconnect_account(snapshot)
         assert not manager._workers
         await manager.prepare_account(snapshot, force_reconnect=True)
-        assert status().status == "ready" and not status().manually_disconnected
+        assert status()["status"] == "ready" and (not status()["manually_disconnected"])
         assert manager._workers[1].process.pid != first
         await manager.drop_account(1)
-        assert status().status == "disconnected"
+        assert status()["status"] == "disconnected"
 
     try:
         asyncio.run(run())
@@ -665,13 +668,13 @@ def test_monitor_failure_with_live_process_becomes_unknown_without_ending_sdk(da
     monitor.process_alive = lambda: True
     monitor._run()
     assert monitor.failed
-    assert runtime.current_session(1, binding.config_key).status == "ready"
+    assert runtime.current_session(1, binding.config_key)["status"] == "ready"
     now[0] = 6
-    assert runtime.current_session(1, binding.config_key).status == "unknown"
+    assert runtime.current_session(1, binding.config_key)["status"] == "unknown"
     runtime.observe_session(binding, 2, ConnectionObservation("ok", "2026-10-14T14:47:16.000000Z", kind="session"))
-    assert runtime.current_session(1, binding.config_key).status == "ready"
+    assert runtime.current_session(1, binding.config_key)["status"] == "ready"
     runtime.forget_session(1)
-    assert runtime.current_session(1, binding.config_key).status == "uninitialized"
+    assert runtime.current_session(1, binding.config_key)["status"] == "uninitialized"
 
 
 def test_concurrent_first_requests_share_one_worker_observation_identity(database, monkeypatch):
@@ -728,14 +731,14 @@ def test_host_cooldown_keeps_channel_presentation_and_original_evidence(database
     resident._failed(state, wrapped)
     service.consume_connection_snapshot(collector.snapshot())
     detail = connection_view(_account(path), detail=True)
-    assert detail.status == "unavailable"
-    assert detail.label == "渠道原始标签"
-    assert detail.presentation.title == "渠道明确的故障"
-    assert detail.last_failure.presentation.title == "渠道明确的故障"
-    assert detail.error["technical_detail"] == "native timeout"
-    assert "reporting_stack" in detail.error
-    assert "host wrapper" in detail.error["propagation_traceback"]
-    assert detail.retry_after_seconds > 0
+    assert detail["status"] == "unavailable"
+    assert detail["label"] == "渠道原始标签"
+    assert detail["presentation"]["title"] == "渠道明确的故障"
+    assert detail["last_failure"]["presentation"]["title"] == "渠道明确的故障"
+    assert detail["error"]["technical_detail"] == "native timeout"
+    assert "reporting_stack" in detail["error"]
+    assert "host wrapper" in detail["error"]["propagation_traceback"]
+    assert detail["retry_after_seconds"] > 0
 
 
 def test_ended_worker_read_gate_and_recovery_cooldown_survive_process_removal(database, monkeypatch):

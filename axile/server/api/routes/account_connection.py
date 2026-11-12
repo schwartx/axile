@@ -1,11 +1,11 @@
 """账户连接操作与调度启停分离；连接恢复不触发任何交易执行。"""
 
 import asyncio
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Response
 
 from axile.channels import get_channel
-from axile.executor.connection_progress import ConnectionTable
 from axile.server.api.routes.account_crud import account_connection
 from axile.server.api.routes.account_support import (
     _get_account_or_404,
@@ -13,7 +13,6 @@ from axile.server.api.routes.account_support import (
     ensure_account_current,
 )
 from axile.server.db.models.account import AccountContext
-from axile.server.db.models.account_connection import AccountConnectionDetail
 from axile.server.execution.registry import get_queued_execution_id, get_running_execution_id
 from axile.server.execution.runtime_locks import account_runtime_lock
 from axile.server.execution.worker_backend.manager import get_worker_backend_manager
@@ -57,13 +56,13 @@ async def _connection_operation(account_id: int, *, reconnect: bool, connect_acc
         return await account_connection(account_id)
 
 
-@router.post("/{account_id}/connection/reconnect", response_model=AccountConnectionDetail)
+@router.post("/{account_id}/connection/reconnect", response_model=None)
 async def reconnect_account(account_id: int) -> Response:
     """显式恢复连接，可绕过冷却；健康会话仍复用，不重放下单或撤单。"""
     return await _start_connection(account_id)
 
 
-@router.post("/{account_id}/connection/connect-account", response_model=AccountConnectionDetail)
+@router.post("/{account_id}/connection/connect-account", response_model=None)
 async def connect_trading_account(account_id: int) -> Response:
     """用户显式调用渠道登录能力，随后核对并恢复公共会话。"""
     return await _start_connection(account_id, connect_account=True)
@@ -89,14 +88,14 @@ async def _start_connection(account_id: int, *, connect_account: bool = False) -
     return await asyncio.shield(task)
 
 
-@router.post("/{account_id}/connection/disconnect", response_model=AccountConnectionDetail)
+@router.post("/{account_id}/connection/disconnect", response_model=None)
 async def disconnect_account(account_id: int) -> Response:
     """主动断开账户会话；定时任务的启停配置保持独立。"""
     return await _connection_operation(account_id, reconnect=False)
 
 
-@router.get("/{account_id}/connection/progress/{run_id}/steps/{step_id}/table", response_model=ConnectionTable)
-async def get_connection_table(account_id: int, run_id: str, step_id: str, response: Response) -> ConnectionTable:
+@router.get("/{account_id}/connection/progress/{run_id}/steps/{step_id}/table", response_model=None)
+async def get_connection_table(account_id: int, run_id: str, step_id: str, response: Response) -> dict[str, Any]:
     """读取本次连接阶段的记录快照，不访问柜台。"""
     from axile.server.connection_runtime import connection_table
     from axile.server.connection_state import connection_config_key
@@ -107,4 +106,4 @@ async def get_connection_table(account_id: int, run_id: str, step_id: str, respo
     table = connection_table(account_id, key, run_id, step_id)
     if table is None:
         raise HTTPException(404, "连接过程记录不存在或已被新连接替换")
-    return ConnectionTable.model_validate(table)
+    return table

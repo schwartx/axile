@@ -15,14 +15,14 @@ def ensure_ready() -> None:
         raise HTTPException(503, "时间检查服务尚未就绪")
 
 
-@router.get("")
+@router.get("", response_model=None)
 async def status() -> dict:
     """获取缓存状态及最近检查依据。"""
     ensure_ready()
     return service.snapshot()
 
 
-@router.put("/settings")
+@router.put("/settings", response_model=None)
 async def settings(config: TimeCheckSettings) -> dict:
     """保存后热更新调度，不自动发起检查。"""
     ensure_ready()
@@ -32,7 +32,7 @@ async def settings(config: TimeCheckSettings) -> dict:
         raise HTTPException(409, str(exc)) from exc
 
 
-@router.post("/run", status_code=202)
+@router.post("/run", status_code=202, response_model=None)
 async def run() -> dict:
     """启动或复用在途检查。"""
     ensure_ready()
@@ -45,7 +45,7 @@ class PreviewRequest(BaseModel):
     cron_expr: str = Field(min_length=1, max_length=10000)
 
 
-@router.post("/schedule-preview")
+@router.post("/schedule-preview", response_model=None)
 async def schedule_preview(payload: PreviewRequest) -> dict:
     """仅计算排程，不保存或查询外部时间。"""
     try:

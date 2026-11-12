@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from hashlib import sha256
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
@@ -20,7 +21,7 @@ from axile.common.config import API_V1_STR, PROJECT_NAME, is_configured, setting
 from axile.executor.account_control.exceptions import AccountControlConfigError
 from axile.executor.algorithms.core.base import list_algorithms_metadata
 from axile.executor.algorithms.core.loader import load_algorithm_modules
-from axile.server.algorithm_discovery import AlgorithmDirectory, discover_directory
+from axile.server.algorithm_discovery import discover_directory
 from axile.server.api.main import api_router
 from axile.server.compression import CompressionMiddleware
 from axile.server.core.log_config import setup_logging
@@ -120,24 +121,24 @@ def _get_directory_algorithm_modules(directory: Path) -> list[str]:
     return _directory_modules(discover_directory(package_dir))
 
 
-def _directory_modules(preview: AlgorithmDirectory) -> list[str]:
+def _directory_modules(preview: dict[str, Any]) -> list[str]:
     """只加载当前层声明了算法的文件，辅助模块由脚本自己的 import 负责。"""
-    if preview.discovery.issues:
-        issue = preview.discovery.issues[0]
-        raise ValueError(f"算法目录 {preview.path} / {issue.file}：{issue.message}")
-    if not preview.discovery.can_use:
+    if preview["discovery"]["issues"]:
+        issue = preview["discovery"]["issues"][0]
+        raise ValueError(f"算法目录 {preview['path']} / {issue['file']}：{issue['message']}")
+    if not preview["discovery"]["can_use"]:
         return []
-    directory = Path(preview.path)
+    directory = Path(preview["path"])
     import_root = str(directory.parent)
     if import_root not in sys.path:
         sys.path.insert(0, import_root)
-    files = sorted({algorithm.file for algorithm in preview.discovery.algorithms})
+    files = sorted({algorithm["file"] for algorithm in preview["discovery"]["algorithms"]})
     package = directory.name
     if not (directory / "__init__.py").is_file():
         # 平铺脚本使用独立命名空间，避免两个同名文件夹互相复用已导入模块。
-        package = f"_axile_algorithms_{sha256(preview.path.encode()).hexdigest()[:16]}"
+        package = f"_axile_algorithms_{sha256(preview['path'].encode()).hexdigest()[:16]}"
         namespace = ModuleType(package)
-        namespace.__dict__["__path__"] = [preview.path]
+        namespace.__dict__["__path__"] = [preview["path"]]
         sys.modules.setdefault(package, namespace)
     return [package if file == "__init__.py" else f"{package}.{Path(file).stem}" for file in files]
 
@@ -156,21 +157,21 @@ def _load_configured_algorithm_directories() -> list[str]:
         list_algorithms_metadata()
         load_algorithm_modules(modules)
         registered = {meta.name: meta for meta in list_algorithms_metadata()}
-        for declaration in preview.discovery.algorithms:
-            expected = Path(preview.path) / declaration.file
+        for declaration in preview["discovery"]["algorithms"]:
+            expected = Path(preview["path"]) / declaration["file"]
             matches = []
             for meta in registered.values():
                 module = sys.modules.get(getattr(meta.func, "__module__", ""))
                 origin = getattr(module, "__file__", None)
-                if origin and Path(origin).resolve() == expected and meta.func.__name__ == declaration.function:
-                    if not declaration.name or meta.name == declaration.name:
+                if origin and Path(origin).resolve() == expected and meta.func.__name__ == declaration["function"]:
+                    if not declaration["name"] or meta.name == declaration["name"]:
                         matches.append(meta)
             if not matches:
                 raise ValueError(
-                    f"算法 {declaration.name or declaration.function} 未由 {preview.path} / {declaration.file} 成功注册"
+                    f"算法 {declaration['name'] or declaration['function']} 未由 {preview['path']} / {declaration['file']} 成功注册"
                 )
-        loaded_directories.append(preview.path)
-        logger.info("已加载用户算法目录: {} -> {}", preview.path, ", ".join(modules))
+        loaded_directories.append(preview["path"])
+        logger.info("已加载用户算法目录: {} -> {}", preview["path"], ", ".join(modules))
     return loaded_directories
 
 

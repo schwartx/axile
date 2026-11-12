@@ -5,11 +5,8 @@ from typing import Any
 
 import sqlalchemy as sa
 
-from axile.server.db.models import ExecutionActivity
-from axile.server.db.models.schedule import ActivityExecutionRecord
 from tests.fixtures.rust_store.execution_rows import ExecuteRecord
 from tests.fixtures.rust_store.oracle_tables import table
-from tests.unit.server._execution_read_oracle import ExecuteRecordSummaryPublic
 from tests.unit.server._performance_costs_oracle import summarize
 
 asset_binding = table("business_asset_binding")
@@ -21,32 +18,33 @@ def _text_or_none(value: object) -> str | None:
 
 
 def _compact_execution_activity(
-    row: ExecuteRecord, summary: ExecuteRecordSummaryPublic, trades: list[dict], total: float | None
-) -> ExecutionActivity:
+    row: ExecuteRecord, summary: dict, trades: list[dict], total: float | None
+) -> dict[str, Any]:
     """列表只发布类型化头字段、摘要数字和结果权益。"""
     duration = row.execution_time
-    costs = summarize(trades) if summary.trade_count is not None else None
-    return ExecutionActivity(
-        occurred_at=row.created_at,
-        record=ActivityExecutionRecord(
-            id=row.id,
-            execution_id=row.execution_id,
-            created_at=row.created_at,
-            is_success=row.is_success,
-            status=_text_or_none(row.display_status),
-            task_status=_text_or_none(row.task_status),
-            error=_text_or_none(row.display_error),
-            outcome=_text_or_none(row.display_outcome),
-            outcome_reason=_text_or_none(row.display_outcome_reason),
-            reason_code=_text_or_none(row.reason_code),
-            execution_kind=_text_or_none(row.execution_kind),
-            symbol_results=summary.symbol_results or {},
-            total_asset=total,
-            summary=costs,
-            duration_sec=duration if duration is not None and duration >= 0 else None,
-            trade_count=summary.trade_count,
-        ),
-    )
+    costs = summarize(trades) if summary["trade_count"] is not None else None
+    return {
+        "kind": "execution",
+        "occurred_at": row.created_at,
+        "record": {
+            "id": row.id,
+            "execution_id": row.execution_id,
+            "created_at": row.created_at,
+            "is_success": row.is_success,
+            "status": _text_or_none(row.display_status),
+            "task_status": _text_or_none(row.task_status),
+            "error": _text_or_none(row.display_error),
+            "outcome": _text_or_none(row.display_outcome),
+            "outcome_reason": _text_or_none(row.display_outcome_reason),
+            "reason_code": _text_or_none(row.reason_code),
+            "execution_kind": _text_or_none(row.execution_kind),
+            "symbol_results": summary["symbol_results"] or {},
+            "total_asset": total,
+            "summary": costs,
+            "duration_sec": duration if duration is not None and duration >= 0 else None,
+            "trade_count": summary["trade_count"],
+        },
+    }
 
 
 async def read_result_asset_totals(session: Any, record_ids: Sequence[int]) -> dict[int, float | None]:

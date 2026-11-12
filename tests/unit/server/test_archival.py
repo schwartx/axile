@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from axile.server._native import _core
 from axile.server.api.routes import account_connection, account_crud, account_execution, portfolio
 from axile.server.core import db
-from axile.server.db.models import Portfolio, ValidateCustomCalcRequest, ValidateCustomCalcResponse
+from axile.server.db.models import Portfolio, ValidateCustomCalcRequest
 from tests.conftest import native_store_call
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server._runtime_db_support import runtime_rows
@@ -278,7 +278,17 @@ def test_account_script_trial_blocks_archival_until_finished(native_database, mo
         async def trial(*_args, **_kwargs):
             entered.set()
             await release.wait()
-            return ValidateCustomCalcResponse(valid=True, target={})
+            return {
+                "valid": True,
+                "target": {},
+                "target_mode": "weight",
+                "error": None,
+                "traceback": None,
+                "error_line": None,
+                "error_offset": None,
+                "error_type": None,
+                "error_message": None,
+            }
 
         monkeypatch.setattr(portfolio, "_run_custom_calc_validation", trial)
         task = asyncio.create_task(

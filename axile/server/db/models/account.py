@@ -1,6 +1,6 @@
 """账户与组合绑定数据库模型."""
 
-from typing import Annotated, Any, Dict, List, Literal, Optional
+from typing import Annotated, Any, Dict, List, Optional
 
 from pydantic import (
     BaseModel,
@@ -8,7 +8,6 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictBool,
-    computed_field,
     field_validator,
     model_validator,
 )
@@ -19,15 +18,13 @@ from axile.channels.schedule_settings import (
     normalize_schedule_options,
     validate_schedule_options,
 )
-from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.trade_channel import TradeChannel
 from axile.executor.futures_close_policy import FuturesClosePolicy
-from axile.executor.models.portfolio_target import TargetMode
 from axile.executor.models.unified_input import DEFAULT_EXECUTION_TIMEOUT_SECONDS
 from axile.server._native import _core
-from axile.server.db.models.account_connection import AccountConnectionPublic, AccountConnectionState
-from axile.server.db.models.account_notification import AccountNotificationState, AccountNotificationStatePublic
-from axile.server.db.models.account_runtime_sync import AccountRuntimeSyncPublic
+from axile.server.db.models.account_connection import AccountConnectionState
+from axile.server.db.models.account_notification import AccountNotificationState
+from axile.server.db.models.account_runtime_sync import AccountRuntimeSyncState
 from axile.server.db.models.account_settings import SupplementSettings
 from axile.server.db.models.account_validation import (
     _validate_algorithm_config,
@@ -189,7 +186,7 @@ class Account(AccountSnapshot):
     has_pending_supplement: bool = Field(default=False, exclude=True)
     notification_state: AccountNotificationState | None = Field(default=None, exclude=True)
     connection_state: AccountConnectionState | None = Field(default=None, exclude=True)
-    runtime_sync: AccountRuntimeSyncPublic | None = Field(default=None, exclude=True)
+    runtime_sync: AccountRuntimeSyncState | None = Field(default=None, exclude=True)
 
     @field_validator("algorithm")
     def _check_algorithm_field(cls, value: dict[str, Any]) -> dict[str, Any]:
@@ -198,226 +195,6 @@ class Account(AccountSnapshot):
 
 
 type AccountContext = AccountSnapshot
-
-
-class AccountPublic(Model):
-    """账户读取响应。
-
-    与持久化模型分离。渠道声明的连接字段包含密码与密钥，供编辑回显；
-    webhook 仅返回是否已配置。
-    """
-
-    backtest_weight_type: WeightType = "ts"
-    backtest_fee_rate: FeeRate = 0.0
-    id: Optional[int]
-    copied_from_account_id: Optional[int] = None
-    copied_from_account_name: Optional[str] = None
-    archived_at: str | None = None
-    name: str
-    market: str
-    trade_channel: TradeChannel
-    account_control_preset: str
-    account_control_override: AccountControlOverrideData | None = None
-    account_configured: bool = False
-    connection_values: dict[str, Any] = Field(default_factory=dict)
-    is_started: bool
-    cron_expr: str
-    gm_sessions: GMSessionSettings | None = None
-    supplement: SupplementSettings | None = None
-    has_pending_supplement: bool = False
-    remark: Optional[str] = None
-    brokerage: str
-    weight_precision: float
-    long_leverage: Optional[float] = None
-    short_leverage: Optional[float] = None
-    algorithm: Dict[str, Any]
-    algorithm_schedule: AlgorithmSchedule = Field(default_factory=list)
-    empty_positions_algorithm: Optional[Dict[str, Any]] = None
-    trade_rules: Optional[Dict[str, Any]] = None
-    futures_close_policy: FuturesClosePolicy = Field(default_factory=FuturesClosePolicy)
-    forbidden_symbols: Optional[List[str]] = None
-    risk_symbols: Optional[List[str]] = None
-    feishu_configured: bool = False
-    execution_notification_code: str | None = None
-    portfolio_id: Optional[int] = None
-    write_empty_record: Optional[int] = None
-    replay_recording_enabled: StrictBool = False
-    execution_timeout: int
-    updated_at: str
-    created_at: str
-    runtime_sync: AccountRuntimeSyncPublic | None = None
-    notification_state: AccountNotificationStatePublic | None = None
-    connection: AccountConnectionPublic = Field(default_factory=AccountConnectionPublic)
-
-    @computed_field
-    @property
-    def execution_notification_status(self) -> Literal["none", "default", "function"]:
-        """按已保存源码区分通知方式；Webhook 配置不改变通知状态。"""
-        code = (self.execution_notification_code or "").strip()
-        if not code:
-            return "none"
-        if code == DEFAULT_ACCOUNT_NOTIFICATION_CODE.strip():
-            return "default"
-        return "function"
-
-
-class AccountListPublic(Model):
-    """账户载荷的列表响应封装."""
-
-    data: List[AccountPublic]
-
-
-class AccountNextRunPublic(Model):
-    """账户未来调度执行时间的响应载荷.
-
-    Attributes
-    ----------
-    account_id : int
-        账户 ID。
-    is_scheduled : bool
-        当前是否存在对应的调度任务（账户已启动且已绑定组合时才有）。
-    next_run_time : Optional[str]
-        下一次执行时间的 ISO8601 字符串；无调度任务或任务无下次触发时为 ``None``。
-    next_run_times : List[str]
-        未来最多三次执行时间的 ISO8601 字符串，按时间升序排列。
-    next_execution_times : List[str]
-        按交易日历过滤后，未来最多三次实际执行时间。
-    """
-
-    account_id: int
-    is_scheduled: bool
-    next_run_time: Optional[str] = None
-    next_run_times: List[str] = Field(default_factory=list)
-    next_execution_times: List[str] = Field(default_factory=list)
-
-
-class AccountDashboardItemPublic(Model):
-    """仪表盘聚合中的单账户项.
-
-    一次性把舰队卡所需数据拼齐，避免前端对每个账户分别请求下次执行、执行记录等。
-    权益与持仓取自该账户最近一次持久化的资产快照。
-
-    Attributes
-    ----------
-    account_id : int
-        账户 ID。
-    name : str
-        账户名称。
-    remark : Optional[str]
-        账户备注；未填写时为 ``None``。
-    market : str
-        市场。
-    trade_channel : TradeChannel
-        交易渠道。
-    long_leverage : Optional[float]
-        配置的做多杠杆；未设置为 ``None``。
-    short_leverage : Optional[float]
-        配置的做空杠杆；未设置为 ``None``。
-    is_started : bool
-        是否已启动自动执行。
-    portfolio_id : Optional[int]
-        当前绑定的组合 ID；未绑定为 ``None``。
-    is_scheduled : bool
-        是否存在对应的调度任务。
-    next_run_time : Optional[str]
-        下一次执行时间的 ISO8601 字符串；无调度或无下次触发时为 ``None``。
-    total_asset : float
-        最近一次快照的账户总权益。
-    currency : str
-        权益计价币种。
-    holdings_count : Optional[int]
-        最近一次快照的持仓品种数；未取得有效持仓列表时为 ``None``。
-    position_weights : List[float]
-        最近一次快照各持仓的市值（降序，最多 12 项），用于持仓分布条。
-    performance : dict
-        已发布的全区间绩效，金额、日收益与曲线同版。
-    asset_observed_at : Optional[str]
-        最近一次账户资产观测时间；无快照时为 ``None``。
-    previous_close : Optional[float]
-        该观测日之前的绩效日末权益；无观测或无更早绩效时为 ``None``。
-    last_is_success : Optional[int]
-        最近一次执行是否成功（1/0）；无记录时为 ``None``。
-    last_exec_at : Optional[str]
-        最近一次执行的时间戳；无记录时为 ``None``。
-    last_output_status : Optional[str]
-        最近一次执行器输出状态（``SUCCEEDED`` / ``BLOCKED`` / ``FAILED`` 等）；无记录时为 ``None``。
-    off_symbol_count : Optional[int]
-        持仓相对目标待调整的品种数；缺少快照或目标时为 ``None``，不无证推定 0。
-    running_execution_id : Optional[str]
-        当前正在运行的执行链路标识；账户此刻无在途执行时为 ``None``。
-        取自执行并发锁（唯一真源），使前端能看见调度器/他端发起的执行。
-    running_kind : Optional[str]
-        当前在途执行的种类（如 ``rebalance``/``clear_positions``）；无在途执行时为 ``None``。
-    running_phase : Optional[str]
-        当前在途执行的阶段标签（``triggered``/``snapshot``/``planning``/``executing``/
-        ``settling`` 之一，见 :data:`axile.server.execution.live.PHASE_ORDER`）；无在途执行时为 ``None``。
-    """
-
-    account_id: int
-    archived_at: str | None = None
-    connection: AccountConnectionPublic = Field(default_factory=AccountConnectionPublic)
-    name: str
-    remark: Optional[str] = None
-    market: str
-    trade_channel: TradeChannel
-    long_leverage: Optional[float] = None
-    short_leverage: Optional[float] = None
-    is_started: bool
-    portfolio_id: Optional[int] = None
-    is_scheduled: bool
-    next_run_time: Optional[str] = None
-    total_asset: float
-    currency: str
-    holdings_count: Optional[int]
-    position_weights: List[float]
-    performance: dict[str, Any]
-    asset_observed_at: Optional[str] = None
-    previous_close: Optional[float] = None
-    last_is_success: Optional[int] = None
-    last_exec_at: Optional[str] = None
-    last_output_status: Optional[str] = None
-    off_symbol_count: Optional[int] = None
-    running_execution_id: Optional[str] = None
-    running_kind: Optional[str] = None
-    running_phase: Optional[str] = None
-    running_status: Optional[str] = None
-    pending_execution_id: Optional[str] = None
-    pending_kind: Optional[str] = None
-
-
-class AccountDashboardPublic(Model):
-    """仪表盘聚合响应.
-
-    Attributes
-    ----------
-    data : List[AccountDashboardItemPublic]
-        每个账户一项的聚合列表。
-    """
-
-    data: List[AccountDashboardItemPublic]
-
-
-class AccountRebalancePlanRowPublic(Model):
-    """账户可执行持仓对照中的一个规范化品种."""
-
-    symbol: str
-    current_weight: Optional[float]
-    target_weight: Optional[float]
-    current_quantity: Optional[float] = None
-    target_quantity: Optional[float] = None
-    action: str
-    side: str
-    aligned: bool
-
-
-class AccountRebalancePlanPublic(Model):
-    """同一资产与目标快照下的可执行持仓对照."""
-
-    rows: List[AccountRebalancePlanRowPublic] = Field(default_factory=list)
-    target_mode: TargetMode = "weight"
-    off_symbol_count: Optional[int] = None
-    observed_at: Optional[str] = None
-    target_calculated_at: Optional[str] = None
 
 
 class AccountUpdate(Model):
@@ -484,14 +261,3 @@ class PortfolioAccountBase(Model):
     account_id: int
     portfolio_id: Optional[int]
     created_at: str = Field(default_factory=now_str)
-
-
-class PortfolioAccountPublic(PortfolioAccountBase):
-    """账户与组合绑定记录的公开表示."""
-
-
-class PortfolioAccountListPublic(Model):
-    """账户与组合绑定记录的列表响应封装."""
-
-    data: List[PortfolioAccountPublic]
-    count: int

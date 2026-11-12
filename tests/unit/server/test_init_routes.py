@@ -202,7 +202,7 @@ def test_save_rechecks_algorithm_directory_before_writing(
         script.write_text("@register_algorithm('TEST')\ndef run(e, i): pass\n", encoding="utf-8")
         from axile.server.algorithm_discovery import discover_directory
 
-        assert discover_directory(directory).discovery.can_use
+        assert discover_directory(directory)["discovery"]["can_use"]
         script.unlink()
     elif kind == "invalid-encoding":
         script.write_bytes(b"\xff")

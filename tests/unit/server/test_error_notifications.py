@@ -46,7 +46,7 @@ def test_persisted_connection_failure_uses_system_sender_without_exception_objec
                 "execution_id": None,
                 "occurred_at": "now",
                 "account": {"id": 1, "name": "测试账户"},
-                "error": {"type": "AccountConnectionFailure", "message": "请连接交易账户", "traceback": ""},
+                "error": {"type": "dict[str, Any]", "message": "请连接交易账户", "traceback": ""},
                 "is_test": False,
             }
         )

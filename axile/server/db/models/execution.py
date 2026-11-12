@@ -1,6 +1,6 @@
 """执行记录与执行审计数据库模型."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from pydantic import Field
 
@@ -9,9 +9,7 @@ from axile.domain.execution import (
     ExecutionArtifactType,
     ExecutionEventStatus,
     ExecutionEventType,
-    ExecutionKind,
     ExecutionReasonFamily,
-    ExecutionTaskStatus,
     ExecutionTerminateMode,
 )
 from axile.server.db.models.base import (
@@ -66,14 +64,6 @@ class ExecuteRecordBase(Model):
     termination_cancel_count: int | None = Field(default=None, exclude=True)
 
 
-class ExecuteRecordPublic(ExecuteRecordBase):
-    """执行记录的公开表示."""
-
-    id: Optional[int]
-    account_id: int
-    created_at: str
-
-
 class ExecutionEventBase(Model):
     """持久化执行审计事件的共用字段."""
 
@@ -104,19 +94,6 @@ class ExecutionEvent(ExecutionEventBase):
     id: Optional[int] = Field(default=None)
 
 
-class ExecutionEventPublic(ExecutionEventBase):
-    """持久化执行审计事件的公开表示."""
-
-    id: Optional[int]
-
-
-class ExecutionEventListPublic(Model):
-    """执行事件的分页列表响应."""
-
-    data: List[ExecutionEventPublic]
-    count: int
-
-
 class ExecutionArtifactBase(Model):
     """持久化执行审计附件的共用字段."""
 
@@ -133,67 +110,8 @@ class ExecutionArtifact(ExecutionArtifactBase):
     id: Optional[int] = Field(default=None)
 
 
-class ExecutionArtifactPublic(ExecutionArtifactBase):
-    """持久化执行附件的公开表示."""
-
-    id: Optional[int]
-
-
-class ExecutionArtifactListPublic(Model):
-    """执行附件的分页列表响应."""
-
-    data: List[ExecutionArtifactPublic]
-    count: int
-
-
-class ExecutionTriggerResponse(Model):
-    """异步入队执行任务后返回的响应."""
-
-    message: str
-    execution_id: str
-    account_id: int
-    accepted: str = "created"
-
-
 class ExecutionTerminateRequest(Model):
     """请求终止后台执行任务时的入参."""
 
     reason: Optional[str] = None
     mode: ExecutionTerminateMode = Field(default=ExecutionTerminateMode.GRACEFUL)
-
-
-class ExecutionTerminateResponse(Model):
-    """终止请求受理后的响应."""
-
-    message: str
-    account_id: int
-    execution_id: str | None = None
-    status: ExecutionTaskStatus | None = None
-
-
-class ExecutionStatusPublic(Model):
-    """轮询接口使用的公开执行状态载荷."""
-
-    execution_id: str
-    account_id: int
-    execution_kind: Optional[ExecutionKind] = None
-    status: ExecutionTaskStatus
-    created_at: str
-    started_at: Optional[str] = None
-    finished_at: Optional[str] = None
-    error: Optional[str] = None
-    output_status: Optional[str] = None
-    outcome: Optional[str] = None
-    outcome_reason: Optional[str] = None
-    outcome_symbols: list[str] = Field(default_factory=list)
-    record_id: Optional[int] = None
-    is_success: Optional[int] = None
-    cancel_requested_at: Optional[str] = None
-    cancel_reason: Optional[str] = None
-    terminate_mode: Optional[ExecutionTerminateMode] = None
-
-
-class Message(Model):
-    """变更类接口使用的简单消息封装."""
-
-    message: str

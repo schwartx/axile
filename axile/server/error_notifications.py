@@ -20,7 +20,6 @@ from axile.common.notification_function import NotificationFunctionResult, run_n
 from axile.common.quota_warning_card import build_quota_warning_card
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.server.db.models.account import AccountContext
-from axile.server.db.models.system_notification import SystemNotificationStatePublic
 from axile.server.execution.notification_state import record_system_notification_result
 
 
@@ -209,21 +208,21 @@ async def send_system_notification(context: dict[str, object]) -> NotificationFu
 async def _record_system_result(context: dict, mode: str, result: NotificationFunctionResult) -> None:
     """系统告警共用发送摘要，保存失败不改变原发送结果。"""
     account = context.get("account") or {}
-    state = SystemNotificationStatePublic(
-        finished_at=clock_now().isoformat(),
-        mode=mode,
-        event_type=context["event_type"],
-        execution_id=context.get("execution_id"),
-        account_id=account.get("id"),
-        ok=result.ok,
-        error=result.error,
-    )
+    state = {
+        "finished_at": clock_now().isoformat(),
+        "mode": mode,
+        "event_type": context["event_type"],
+        "execution_id": context.get("execution_id"),
+        "account_id": account.get("id"),
+        "ok": result.ok,
+        "error": result.error,
+    }
     try:
         await asyncio.to_thread(record_system_notification_result, state)
     except Exception as exc:
         # 摘要写入失败不能反过来改变交易或发送结果。
         loguru.logger.warning("保存系统告警结果失败: {}", exc)
-    loguru.logger.info("系统执行通知完成 execution_id={} mode={} ok={}", state.execution_id, mode, result.ok)
+    loguru.logger.info("系统执行通知完成 execution_id={} mode={} ok={}", state["execution_id"], mode, result.ok)
 
 
 def build_system_notification_context(

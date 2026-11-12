@@ -1,6 +1,7 @@
 """账户当前委托查询及逐笔撤单接口。"""
 
 from datetime import date, datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Query, Response
@@ -12,12 +13,7 @@ from axile.server._native import _core
 from axile.server.account_orders import cancel_account_order, query_account_activity, query_account_orders
 from axile.server.api.routes.account_support import _get_account_or_404, _get_account_snapshot_or_404
 from axile.server.core.db import analysis_store
-from axile.server.db.models.account_order import (
-    AccountActivityPublic,
-    AccountOrdersPublic,
-    OrderCancelReceipt,
-    OrderCancelRequest,
-)
+from axile.server.db.models.account_order import OrderCancelRequest
 from axile.server.execution.resident_connection import AccountConnectionUnavailable
 from axile.server.order_submissions import submission_window
 from axile.server.submission_monitor import (
@@ -28,7 +24,7 @@ from axile.server.submission_monitor import (
 router = APIRouter()
 
 
-@router.get("/{account_id}/orders/monitor", response_model=dict)
+@router.get("/{account_id}/orders/monitor", response_model=None)
 async def submission_monitor(account_id: int) -> Response:
     """读取今日原生报撤监测；不发送任何柜台请求。"""
     from axile.executor.account_control.presets import resolve_account_control_policy
@@ -46,7 +42,7 @@ async def submission_monitor(account_id: int) -> Response:
     return Response(content=content, media_type="application/json")
 
 
-@router.put("/{account_id}/orders/monitor")
+@router.put("/{account_id}/orders/monitor", response_model=None)
 async def update_submission_monitor(account_id: int, payload: SubmissionMonitorUpdate) -> dict:
     """立即保存并重评估监测阈值，不改变风控额度或触发交易。"""
     from axile.executor.account_control.presets import resolve_account_control_policy
@@ -58,7 +54,7 @@ async def update_submission_monitor(account_id: int, payload: SubmissionMonitorU
     return await save_submission_monitor(account_id, payload, policy.timezone)
 
 
-@router.get("/{account_id}/orders/submissions")
+@router.get("/{account_id}/orders/submissions", response_model=None)
 async def order_submissions(
     account_id: int,
     control_date: date,
@@ -79,13 +75,13 @@ async def order_submissions(
     return Response(content=content, media_type="application/json")
 
 
-@router.get("/{account_id}/orders/activity", response_model=AccountActivityPublic)
+@router.get("/{account_id}/orders/activity", response_model=None)
 async def recent_activity(
     account_id: int,
     refresh: bool = Query(False),
     symbol: str | None = Query(None, min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_.:/-]+$"),
     limit: int = Query(100, ge=1, le=500),
-) -> AccountActivityPublic:
+) -> dict[str, Any]:
     """读取账户近期委托与成交，查询范围及失败独立返回。"""
     account = await _get_account_snapshot_or_404(account_id)
     try:
@@ -100,12 +96,12 @@ async def recent_activity(
         raise HTTPException(502, detail="近期交易记录查询失败，请稍后核对") from exc
 
 
-@router.get("/{account_id}/orders", response_model=AccountOrdersPublic)
+@router.get("/{account_id}/orders", response_model=None)
 async def current_orders(
     account_id: int,
     refresh: bool = Query(False),
     reconciliation_id: str | None = Query(None, pattern=r"^[0-9a-f]{32}$"),
-) -> AccountOrdersPublic:
+) -> dict[str, Any]:
     """读取整个账户的未完成委托；读取失败不能作为零挂单证明。"""
     account = await _get_account_snapshot_or_404(account_id)
     if reconciliation_id is not None and refresh:
@@ -126,8 +122,8 @@ async def current_orders(
     return result
 
 
-@router.post("/{account_id}/orders/cancel", response_model=OrderCancelReceipt, status_code=202)
-async def cancel_order(account_id: int, payload: OrderCancelRequest) -> OrderCancelReceipt:
+@router.post("/{account_id}/orders/cancel", response_model=None, status_code=202)
+async def cancel_order(account_id: int, payload: OrderCancelRequest) -> dict[str, Any]:
     """受理单笔撤单；202 及 submitted 均不表示柜台已完成撤单。"""
     account = await _get_account_snapshot_or_404(account_id)
     try:

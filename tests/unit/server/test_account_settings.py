@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from axile.server.core import db
 from axile.server.db.models import Account, AccountNotificationState, AccountSnapshot, AccountUpdate
-from axile.server.db.models.account import AccountCreate, AccountPublic
+from axile.server.db.models.account import AccountCreate
 from axile.server.execution import notification_state
 from tests.conftest import native_store_call
 from tests.sqlite_oracle import utc_time
@@ -47,7 +47,7 @@ def test_replay_recording_models_default_false_and_patch_preserves_omission():
     account = Account(**account_data())
     assert account.replay_recording_enabled is False
     assert AccountSnapshot.model_validate(account.model_dump()).replay_recording_enabled is False
-    assert AccountPublic.model_validate(account.model_dump()).replay_recording_enabled is False
+    assert account_view(account)["replay_recording_enabled"] is False
     create_data = account_data()
     create_data.pop("id")
     assert AccountCreate(**create_data).replay_recording_enabled is False
@@ -63,14 +63,14 @@ def test_replay_recording_models_default_false_and_patch_preserves_omission():
         account_data() | {"runtime_sync": {"revision": 7}, "replay_config_version": 8}
     )
     assert snapshot.replay_config_version == 8
-    assert "replay_config_version" not in AccountPublic.model_fields
+    assert "replay_config_version" not in account_view(account)
     assert "replay_config_version" not in AccountCreate.model_fields
 
 
 @pytest.mark.parametrize("value", [None, 0, 1, "true", "false"])
 def test_replay_recording_models_reject_non_boolean(value):
     account = Account(**account_data()).model_dump()
-    for model in (Account, AccountSnapshot, AccountPublic):
+    for model in (Account, AccountSnapshot):
         with pytest.raises(ValidationError, match="replay_recording_enabled"):
             model.model_validate(account | {"replay_recording_enabled": value})
     with pytest.raises(ValidationError, match="replay_recording_enabled"):
@@ -182,7 +182,7 @@ def test_public_response_exposes_success_summary_without_credentials():
     account.notification_state = AccountNotificationState(
         account_id=1, execution_id="exec-1", last_success_at="2026-09-30T10:00:00"
     )
-    public = account_view(account).model_dump(mode="json")
+    public = account_view(account)
     assert public["notification_state"]["execution_id"] == "exec-1"
     assert public["notification_state"]["last_success_at"] == "2026-09-30T10:00:00"
     assert public["notification_state"]["last_attempt_ok"] is None

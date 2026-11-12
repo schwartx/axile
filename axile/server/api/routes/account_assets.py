@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, Query, Response, status
 from loguru import logger
 from starlette.concurrency import run_in_threadpool
@@ -11,17 +13,14 @@ from axile.server.account_assets import AccountAssetRefreshBusyError
 from axile.server.account_assets import refresh_account_assets as refresh_assets
 from axile.server.api.routes.account_support import _get_account_or_404, ensure_account_current
 from axile.server.core.db import analysis_store
-from axile.server.db.models import (
-    AccountAssetSnapshotPublic,
-)
 from axile.server.error_details import exception_details
 from axile.server.execution.resident_connection import AccountConnectionUnavailable
 
 router = APIRouter()
 
 
-@router.post("/{account_id}/assets/refresh", response_model=AccountAssetSnapshotPublic)
-async def refresh_account_assets(account_id: int) -> AccountAssetSnapshotPublic:
+@router.post("/{account_id}/assets/refresh", response_model=None)
+async def refresh_account_assets(account_id: int) -> dict[str, Any]:
     """从交易渠道查询并持久化账户最新资产快照."""
     account = await _get_account_or_404(account_id)
     ensure_account_current(account)
@@ -55,7 +54,7 @@ async def refresh_account_assets(account_id: int) -> AccountAssetSnapshotPublic:
         ) from exc
 
 
-@router.get("/{account_id}/asset_snapshots")
+@router.get("/{account_id}/asset_snapshots", response_model=None)
 async def list_account_asset_snapshots(
     account_id: int,
     skip: int = Query(default=0, ge=0, le=2**63 - 1),

@@ -23,7 +23,7 @@ from tests.unit.server._business_facts_test_support import (
     seed_historical_input,
     sql,
 )
-from tests.unit.server._execution_read_oracle import ExecuteRecordSummaryPublic
+from tests.unit.server._execution_read_oracle import execution_summary
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server._journal_oracle import _compact_execution_activity
 from tests.unit.server._native_read_views import read_execution_input
@@ -95,16 +95,16 @@ def test_missing_projection_keeps_counts_unknown(database):
 def test_activity_distinguishes_unknown_from_explicit_no_trades(known):
     """未知成本摘要保持空值，已投影的零成交仍是明确的零。"""
     record = ExecuteRecord(id=1, account_id=1, is_success=0)
-    summary = ExecuteRecordSummaryPublic.model_validate(record)
+    summary = execution_summary(record)
     if known:
-        summary.trade_count = 0
+        summary["trade_count"] = 0
     activity = _compact_execution_activity(record, summary, [], None)
-    assert activity.record.trade_count == (0 if known else None)
+    assert activity["record"]["trade_count"] == (0 if known else None)
     if known:
-        assert activity.record.summary is not None
-        assert activity.record.summary["count"] == 0
+        assert activity["record"]["summary"] is not None
+        assert activity["record"]["summary"]["count"] == 0
     else:
-        assert activity.record.summary is None
+        assert activity["record"]["summary"] is None
 
 
 def test_activity_symbol_query_uses_projected_columns_and_account_scope(database):
@@ -197,7 +197,7 @@ def test_target_sizing_uses_immutable_audit_input_context(database):
         )
     )
     assert evidence.status == "available"
-    assert evidence.rows["rb2610"].weight_precision == 0.01
+    assert evidence.rows["rb2610"]["weight_precision"] == 0.01
     assert asyncio.run(read_execution_input(record["input_id"])) == terminal_input
 
 
@@ -226,7 +226,7 @@ def test_account_deletion_clears_only_its_execution_facts(database, monkeypatch)
     other = persist_result(database, {}, account_id=2, execution_id="keep-other", is_success=1)
 
     message = asyncio.run(account_crud.delete_account(sched=SimpleNamespace(), account_id=1))
-    assert message.message == "成功删除账户"
+    assert message["message"] == "成功删除账户"
     remaining = {row["id"] for row in rows(database, "executerecord")}
     assert other["id"] in remaining
     assert record["id"] not in remaining

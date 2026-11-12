@@ -9,7 +9,7 @@ from multiprocessing import get_context
 from multiprocessing.connection import Connection
 from multiprocessing.context import SpawnContext, SpawnProcess
 from threading import Lock, Thread
-from typing import cast
+from typing import Any, cast
 from uuid import uuid4
 
 from loguru import logger
@@ -25,7 +25,6 @@ from axile.executor.termination import ExecutionTerminated, ExecutionTermination
 from axile.server.account_control.ipc import RemoteMonitor
 from axile.server.connection_state import ConnectionBinding
 from axile.server.db.models.account import AccountContext, AccountSnapshot
-from axile.server.db.models.account_connection import AccountConnectionPublic
 from axile.server.db.models.base import now_str
 from axile.server.execution.worker_backend.catalog import CatalogSession
 from axile.server.execution.worker_backend.orders import OrdersChannel
@@ -1034,11 +1033,11 @@ class WorkerBackendManager:
     ) -> dict[str, object]:
         """创建或复用账户 Worker 中的长连接执行器。"""
         current = self._current_session(account)
-        if not force_reconnect and not current.worker_alive and current.retry_after_seconds:
+        if not force_reconnect and not current["worker_alive"] and current["retry_after_seconds"]:
             from axile.server.execution.resident_connection import AccountConnectionUnavailable
 
             raise AccountConnectionUnavailable(
-                "账户连接恢复冷却中，请稍后重试", retry_after=current.retry_after_seconds
+                "账户连接恢复冷却中，请稍后重试", retry_after=current["retry_after_seconds"]
             )
         request = WorkerBackendRequest(
             request_id=uuid4().hex,
@@ -1152,7 +1151,7 @@ class WorkerBackendManager:
             handle.request_lock.release()
 
     @staticmethod
-    def _current_session(account: AccountContext) -> AccountConnectionPublic:
+    def _current_session(account: AccountContext) -> dict[str, Any]:
         from axile.server.connection_runtime import current_session
         from axile.server.connection_state import connection_config_key
 
@@ -1166,9 +1165,9 @@ class WorkerBackendManager:
         from axile.server.execution.resident_connection import AccountConnectionUnavailable
 
         current = WorkerBackendManager._current_session(account)
-        if not current.worker_alive or current.status != "ready":
+        if not current["worker_alive"] or current["status"] != "ready":
             raise AccountConnectionUnavailable(
-                "账户尚未连接或会话未就绪，请先连接账户", retry_after=current.retry_after_seconds
+                "账户尚未连接或会话未就绪，请先连接账户", retry_after=current["retry_after_seconds"]
             )
 
     @staticmethod

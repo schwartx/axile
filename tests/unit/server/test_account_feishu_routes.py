@@ -110,7 +110,7 @@ def test_notification_trial_key_matches_mode_without_saving(monkeypatch, supplie
                 ),
             )
         )
-        assert result.ok is True
+        assert result["ok"] is True
         assert captured[-1]["feishu_key"] == (None if custom else supplied.get("feishu_key", key))
         assert account.feishu_key == key
         assert account.execution_notification_code is None

@@ -11,15 +11,12 @@ from axile.domain.execution import ExecutionArtifactType, ExecutionEventType
 from axile.server.db.models import (
     Account,
     AccountCreate,
-    AccountPublic,
     AccountSnapshot,
     AccountUpdate,
-    ExecuteRecordPublic,
     ExecutionArtifact,
     ExecutionEvent,
     Portfolio,
     PortfolioCreate,
-    PortfolioLitePublic,
     PortfolioUpdate,
 )
 from tests.fixtures.rust_store.execution_rows import ExecuteRecord
@@ -127,7 +124,9 @@ def test_account_snapshot_and_validated_patch_do_not_mutate_original():
 
 def test_public_models_read_attributes_without_exposing_credentials():
     account = Account.model_validate(account_data())
-    public = AccountPublic.model_validate(account).model_dump(mode="json")
+    from tests.unit.server._native_read_views import account_view
+
+    public = account_view(account)
     assert public["is_started"] is True
     assert public["weight_precision"] == 0.01
     assert public["execution_notification_status"] == "none"
@@ -157,10 +156,10 @@ def test_account_models_accept_long_execution_timeout(timeout):
 def test_portfolio_preserves_source_and_rejects_clearing_code():
     source = "\ndef calculate_portfolio(context):\n    return {}\n"
     portfolio = Portfolio(name="组合", market="期货", custom_calc_py_code=source)
-    public = PortfolioLitePublic.model_validate(portfolio)
-    assert public.custom_calc_py_code == source
-    assert public.description is None
-    assert public.id is None
+    public = portfolio.model_dump(mode="json")
+    assert public["custom_calc_py_code"] == source
+    assert public["description"] is None
+    assert public["id"] is None
     assert portfolio.created_at
     assert PortfolioUpdate().model_dump(exclude_unset=True) == {}
     for code in (None, "", " \n"):
@@ -173,7 +172,7 @@ def test_portfolio_preserves_source_and_rejects_clearing_code():
 def test_execution_records_preserve_zero_null_and_hidden_evidence():
     record = ExecuteRecord(account_id=1, is_success=0, success=False, technical_detail="internal")
     other = ExecuteRecord(account_id=1, is_success=0)
-    public = ExecuteRecordPublic.model_validate(record).model_dump(mode="json")
+    public = record.model_dump(mode="json")
     assert record.execution_id != other.execution_id
     assert public["is_success"] == 0
     assert public["success"] is False

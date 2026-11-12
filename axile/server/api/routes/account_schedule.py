@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
-from typing import Annotated, Literal
+from datetime import datetime
+from typing import Annotated, Any
 
 from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-not-found]
 from fastapi import APIRouter, HTTPException, Query, Response, status
@@ -22,8 +22,6 @@ from axile.server.db.models.account_settings import SupplementSettings
 from axile.server.supplement_plan import plan_supplements
 from axile.server.trading_calendar import (
     CalendarDecisionStatus,
-    CalendarSkipReason,
-    CalendarUnavailableReason,
     evaluate_channel_calendar_moment,
     schedule_windows,
 )
@@ -43,47 +41,6 @@ class SchedulePreviewRequest(BaseModel):
     )
     after: AwareDatetime | None = None
     limit: int = Field(default=5, ge=1, le=100)
-
-
-class SchedulePreviewCalendar(BaseModel):
-    """排程预览对应渠道的轻量日历摘要。"""
-
-    requirement: Literal["required", "not_required"]
-    availability: Literal["available", "unavailable", "not_required"]
-    unavailable_reason: CalendarUnavailableReason | None = None
-    calendar_id: str | None = None
-    label: str | None = None
-    coverage_start: date | None = None
-    coverage_end: date | None = None
-
-
-class SchedulePreviewItem(BaseModel):
-    """单个未来 Cron 触发点及其轻量日历动作。"""
-
-    scheduled_at: datetime
-    base_scheduled_at: datetime | None = None
-    index: int = 0
-    effective_count: int = 0
-    is_last: bool = True
-    calendar_day: date
-    calendar_status: CalendarDecisionStatus
-    action: Literal["execute", "skip"]
-    unavailable_reason: CalendarUnavailableReason | None = None
-    calendar_id: str | None = None
-    label: str | None = None
-    reason_code: CalendarSkipReason | None = None
-    phase_label: str | None = None
-
-
-class SchedulePreviewResponse(BaseModel):
-    """账户排程预览响应。"""
-
-    timezone: Literal["Asia/Shanghai"] = "Asia/Shanghai"
-    evaluated_at: datetime
-    calendar: SchedulePreviewCalendar
-    items: list[SchedulePreviewItem]
-    next_cursor: datetime | None = None
-    has_more: bool = False
 
 
 def _field_error(field: str, message: str) -> HTTPException:
@@ -120,21 +77,29 @@ def _next_schedule_times(
     return result
 
 
-def _calendar_summary(channel: TradeChannel, current: datetime) -> SchedulePreviewCalendar:
+def _calendar_summary(channel: TradeChannel, current: datetime) -> dict[str, Any]:
     """返回渠道当前使用的 Shinny 日历摘要。"""
     declaration = get_channel(str(channel)).descriptor.calendar
     if declaration is None:
-        return SchedulePreviewCalendar(requirement="not_required", availability="not_required")
+        return {
+            "requirement": "not_required",
+            "availability": "not_required",
+            "unavailable_reason": None,
+            "calendar_id": None,
+            "label": None,
+            "coverage_start": None,
+            "coverage_end": None,
+        }
     decision = evaluate_channel_calendar_moment(channel, current)
-    return SchedulePreviewCalendar(
-        requirement="required",
-        availability=("unavailable" if decision.status is CalendarDecisionStatus.UNAVAILABLE else "available"),
-        unavailable_reason=decision.unavailable_reason,
-        calendar_id=declaration.calendar_id,
-        label=declaration.label,
-        coverage_start=SHINNY_COVERAGE_START,
-        coverage_end=SHINNY_COVERAGE_END,
-    )
+    return {
+        "requirement": "required",
+        "availability": "unavailable" if decision.status is CalendarDecisionStatus.UNAVAILABLE else "available",
+        "unavailable_reason": decision.unavailable_reason,
+        "calendar_id": declaration.calendar_id,
+        "label": declaration.label,
+        "coverage_start": SHINNY_COVERAGE_START,
+        "coverage_end": SHINNY_COVERAGE_END,
+    }
 
 
 def _phase_label(channel: TradeChannel, moment: datetime) -> str | None:
@@ -144,7 +109,7 @@ def _phase_label(channel: TradeChannel, moment: datetime) -> str | None:
     return GM_SPECIAL_WINDOWS[phase][2] if phase in GM_SPECIAL_WINDOWS else None
 
 
-def _selected_base_preview(payload: SchedulePreviewRequest, base: datetime) -> SchedulePreviewItem:
+def _selected_base_preview(payload: SchedulePreviewRequest, base: datetime) -> dict[str, Any]:
     """只重算已有基础触发的补发摘要，保持原时间点及日历动作。"""
     local_time = base.astimezone(SCHEDULER_TIMEZONE)
     decision = evaluate_channel_calendar_moment(
@@ -156,24 +121,25 @@ def _selected_base_preview(payload: SchedulePreviewRequest, base: datetime) -> S
         points, _ = plan_supplements(
             payload.trade_channel, payload.cron_expr, payload.supplement, local_time, payload.gm_sessions
         )
-    return SchedulePreviewItem(
-        scheduled_at=local_time,
-        phase_label=_phase_label(payload.trade_channel, local_time),
-        base_scheduled_at=local_time,
-        effective_count=len(points) - 1,
-        is_last=len(points) == 1,
-        calendar_day=decision.day,
-        calendar_status=decision.status,
-        action="skip" if skipped else "execute",
-        unavailable_reason=decision.unavailable_reason,
-        calendar_id=decision.calendar_id,
-        label=decision.label,
-        reason_code=decision.reason_code,
-    )
+    return {
+        "scheduled_at": local_time,
+        "base_scheduled_at": local_time,
+        "index": 0,
+        "effective_count": len(points) - 1,
+        "is_last": len(points) == 1,
+        "calendar_day": decision.day,
+        "calendar_status": decision.status,
+        "action": "skip" if skipped else "execute",
+        "unavailable_reason": decision.unavailable_reason,
+        "calendar_id": decision.calendar_id,
+        "label": decision.label,
+        "reason_code": decision.reason_code,
+        "phase_label": _phase_label(payload.trade_channel, local_time),
+    }
 
 
-@router.post("/schedule-preview", response_model=SchedulePreviewResponse)
-async def schedule_preview(payload: SchedulePreviewRequest) -> SchedulePreviewResponse:
+@router.post("/schedule-preview", response_model=None)
+async def schedule_preview(payload: SchedulePreviewRequest) -> dict[str, Any]:
     """按时间游标只读预览未来 Cron 触发点及其交易日历动作。"""
     try:
         get_channel(str(payload.trade_channel))
@@ -184,7 +150,14 @@ async def schedule_preview(payload: SchedulePreviewRequest) -> SchedulePreviewRe
     evaluated_at = clock_now(tz=SCHEDULER_TIMEZONE)
     calendar = _calendar_summary(payload.trade_channel, evaluated_at)
     if is_blank_cron_expr(payload.cron_expr):
-        return SchedulePreviewResponse(evaluated_at=evaluated_at, calendar=calendar, items=[])
+        return {
+            "timezone": "Asia/Shanghai",
+            "evaluated_at": evaluated_at,
+            "calendar": calendar,
+            "items": [],
+            "next_cursor": None,
+            "has_more": False,
+        }
     try:
         triggers = effective_triggers(payload.cron_expr, payload.trade_channel, payload.gm_sessions)
     except ValueError as exc:
@@ -192,11 +165,14 @@ async def schedule_preview(payload: SchedulePreviewRequest) -> SchedulePreviewRe
 
     if payload.scheduled_ats is not None:
         bases = sorted({value.astimezone(SCHEDULER_TIMEZONE) for value in payload.scheduled_ats})
-        return SchedulePreviewResponse(
-            evaluated_at=evaluated_at,
-            calendar=calendar,
-            items=[_selected_base_preview(payload, base) for base in bases],
-        )
+        return {
+            "timezone": "Asia/Shanghai",
+            "evaluated_at": evaluated_at,
+            "calendar": calendar,
+            "items": [_selected_base_preview(payload, base) for base in bases],
+            "next_cursor": None,
+            "has_more": False,
+        }
 
     start = payload.after.astimezone(SCHEDULER_TIMEZONE) if payload.after is not None else evaluated_at
     scheduled = _next_schedule_times(
@@ -243,33 +219,36 @@ async def schedule_preview(payload: SchedulePreviewRequest) -> SchedulePreviewRe
             payload.trade_channel, local_time, windows=schedule_windows(payload.trade_channel, payload.gm_sessions)
         )
         items.append(
-            SchedulePreviewItem(
-                scheduled_at=local_time,
-                phase_label=_phase_label(payload.trade_channel, local_time),
+            {
+                "scheduled_at": local_time,
+                "base_scheduled_at": None,
+                "index": 0,
+                "effective_count": 0,
+                "is_last": True,
+                "calendar_day": decision.day,
+                "calendar_status": decision.status,
+                "action": "skip"
+                if decision.status in {CalendarDecisionStatus.AVAILABLE_CLOSED, CalendarDecisionStatus.UNAVAILABLE}
+                else "execute",
+                "unavailable_reason": decision.unavailable_reason,
+                "calendar_id": decision.calendar_id,
+                "label": decision.label,
+                "reason_code": decision.reason_code,
+                "phase_label": _phase_label(payload.trade_channel, local_time),
                 **metadata.get(scheduled_at, {}),
-                calendar_day=decision.day,
-                calendar_status=decision.status,
-                action=(
-                    "skip"
-                    if decision.status in {CalendarDecisionStatus.AVAILABLE_CLOSED, CalendarDecisionStatus.UNAVAILABLE}
-                    else "execute"
-                ),
-                unavailable_reason=decision.unavailable_reason,
-                calendar_id=decision.calendar_id,
-                label=decision.label,
-                reason_code=decision.reason_code,
-            )
+            }
         )
-    return SchedulePreviewResponse(
-        evaluated_at=evaluated_at,
-        calendar=calendar,
-        items=items,
-        next_cursor=items[-1].scheduled_at if items else None,
-        has_more=has_more,
-    )
+    return {
+        "timezone": "Asia/Shanghai",
+        "evaluated_at": evaluated_at,
+        "calendar": calendar,
+        "items": items,
+        "next_cursor": items[-1]["scheduled_at"] if items else None,
+        "has_more": has_more,
+    }
 
 
-@router.get("/{account_id}/activity/symbols")
+@router.get("/{account_id}/activity/symbols", response_model=None)
 async def account_activity_symbols(
     account_id: int,
     since: str,
@@ -288,7 +267,7 @@ async def account_activity_symbols(
         raise HTTPException(503, detail={"code": error.args[0], "message": error.args[1]}) from error
 
 
-@router.get("/{account_id}/activity")
+@router.get("/{account_id}/activity", response_model=None)
 async def account_activity(
     account_id: int,
     skip: int = Query(0, ge=0, le=2**63 - 1),
@@ -306,12 +285,4 @@ async def account_activity(
         raise HTTPException(503, detail={"code": error.args[0], "message": error.args[1]}) from error
 
 
-__all__ = [
-    "SchedulePreviewCalendar",
-    "SchedulePreviewItem",
-    "SchedulePreviewRequest",
-    "SchedulePreviewResponse",
-    "account_activity",
-    "account_activity_symbols",
-    "router",
-]
+__all__ = ["SchedulePreviewRequest", "account_activity", "account_activity_symbols", "router"]

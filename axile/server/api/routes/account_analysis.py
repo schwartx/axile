@@ -46,25 +46,25 @@ async def _query(account_id: int, command: str, **query):
         raise HTTPException(status, detail={"code": code, "message": message}) from error
 
 
-@router.get("/analysis/{account_id}/status")
+@router.get("/analysis/{account_id}/status", response_model=None)
 async def get_status(account_id: AccountId):
     """只读取源版本、计算版本与任务状态。"""
     return await _query(account_id, "status")
 
 
-@router.get("/analysis/{account_id}")
+@router.get("/analysis/{account_id}", response_model=None)
 async def get_chart(account_id: AccountId, query: Annotated[AnalysisQuery, Query()]):
     """返回日级成果及按需读取的展示数据。"""
     return await _query(account_id, "chart", **query.model_dump(exclude_none=True))
 
 
-@router.get("/analysis/{account_id}/costs")
+@router.get("/analysis/{account_id}/costs", response_model=None)
 async def get_costs(account_id: AccountId, query: Annotated[CostQuery, Query()]):
     """按请求范围从规范事实计算成本和明细，不写派生副本。"""
     return await _query(account_id, "costs", **query.model_dump(exclude_none=True))
 
 
-@router.get("/analysis/{account_id}/execution/{record_id}")
+@router.get("/analysis/{account_id}/execution/{record_id}", response_model=None)
 async def get_detail(
     account_id: AccountId, record_id: Annotated[int, Path(gt=0, le=2**63 - 1)], query: Annotated[DetailQuery, Query()]
 ):
@@ -72,7 +72,7 @@ async def get_detail(
     return await _query(account_id, "detail", record_id=record_id, **query.model_dump(exclude_none=True))
 
 
-@router.post("/analysis/{account_id}/refresh", status_code=202)
+@router.post("/analysis/{account_id}/refresh", status_code=202, response_model=None)
 async def refresh(account_id: AccountId):
     """请求重放，不影响交易执行。"""
     await _query(account_id, "status")

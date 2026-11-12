@@ -35,7 +35,7 @@ from axile.server.target_weight_snapshots import get_latest_account_target_snaps
 router = APIRouter()
 
 
-@router.get("/{account_id}/notification/default")
+@router.get("/{account_id}/notification/default", response_model=None)
 def get_default_account_notification(account_id: int) -> dict[str, str]:
     """提供可恢复的默认飞书执行通知函数源码。"""
     return {"code": DEFAULT_ACCOUNT_NOTIFICATION_CODE}
@@ -55,15 +55,6 @@ class AccountNotificationFunctionTestRequest(BaseModel):
     code: str
     event_type: Literal["execution.finished", "supplement.cancelled"] = "execution.finished"
     feishu_key: str | None = None
-
-
-class AccountFeishuTestResult(BaseModel):
-    """账户飞书通知测试结果."""
-
-    ok: bool
-    message: str
-    error_line: int | None = None
-    traceback: str | None = None
 
 
 class _TestNotificationSource:
@@ -272,24 +263,27 @@ async def _build_test_card(
     return build_execute_results_feishu_card(source, output)
 
 
-@router.post("/{account_id}/feishu/test", response_model=AccountFeishuTestResult)
+@router.post("/{account_id}/feishu/test", response_model=None)
 async def test_account_feishu(
     account_id: int,
     payload: AccountFeishuTestRequest,
-) -> AccountFeishuTestResult:
+) -> dict[str, Any]:
     """使用账户当前资产、目标快照与页面草稿推送样例执行结果卡片。"""
     account = await _get_account_or_404(account_id)
     key = payload.feishu_key.strip() or account.feishu_key or ""
     if not key:
-        return AccountFeishuTestResult(ok=False, message="请先配置飞书 Webhook")
+        return {"ok": False, "message": "请先配置飞书 Webhook", "error_line": None, "traceback": None}
     card = await _build_test_card(account)
     try:
         await asyncio.to_thread(push_feishu_card, card, key)
     except Exception as exc:  # noqa: BLE001 - 统一转为可展示的联通测试结果
-        return AccountFeishuTestResult(
-            ok=False, message=f"推送失败：{exc}", traceback=str(exception_details(exc)["traceback"])
-        )
-    return AccountFeishuTestResult(ok=True, message="样例卡片已发送，请在群内确认。")
+        return {
+            "ok": False,
+            "message": f"推送失败：{exc}",
+            "error_line": None,
+            "traceback": str(exception_details(exc)["traceback"]),
+        }
+    return {"ok": True, "message": "样例卡片已发送，请在群内确认。", "error_line": None, "traceback": None}
 
 
 async def _load_notification_preview_context(
@@ -316,22 +310,27 @@ async def _load_notification_preview_context(
     return context
 
 
-@router.post("/{account_id}/notification/test", response_model=AccountFeishuTestResult)
+@router.post("/{account_id}/notification/test", response_model=None)
 async def test_account_notification_function(
     account_id: int,
     payload: AccountNotificationFunctionTestRequest,
-) -> AccountFeishuTestResult:
+) -> dict[str, Any]:
     """复用最近一次执行的真实快照，在独立进程中运行页面草稿函数。"""
     account = await _get_account_or_404(account_id)
     key = payload.feishu_key if "feishu_key" in payload.model_fields_set else account.feishu_key
     if payload.code.strip() and payload.code.strip() != DEFAULT_ACCOUNT_NOTIFICATION_CODE.strip():
         key = None
     if payload.code.strip() == DEFAULT_ACCOUNT_NOTIFICATION_CODE.strip() and not key:
-        return AccountFeishuTestResult(ok=False, message="请返回基本信息页配置飞书 Webhook")
+        return {"ok": False, "message": "请返回基本信息页配置飞书 Webhook", "error_line": None, "traceback": None}
     try:
         context = await _load_notification_preview_context(account)
     except ValueError as exc:
-        return AccountFeishuTestResult(ok=False, message=str(exc), traceback=str(exception_details(exc)["traceback"]))
+        return {
+            "ok": False,
+            "message": str(exc),
+            "error_line": None,
+            "traceback": str(exception_details(exc)["traceback"]),
+        }
     if payload.event_type == "supplement.cancelled":
         context = {
             "event_id": "supplement:test:cancelled",
@@ -350,9 +349,9 @@ async def test_account_notification_function(
             "last_execution_at": (context.get("execution") or {}).get("notified_at"),
         }
     result = await asyncio.to_thread(run_notification_function, payload.code, context, feishu_key=key)
-    return AccountFeishuTestResult(
-        ok=result.ok,
-        message="已使用最近一次执行快照试跑成功" if result.ok else result.error or "运行失败",
-        error_line=getattr(result, "error_line", None),
-        traceback=getattr(result, "traceback", None),
-    )
+    return {
+        "ok": result.ok,
+        "message": "已使用最近一次执行快照试跑成功" if result.ok else result.error or "运行失败",
+        "error_line": getattr(result, "error_line", None),
+        "traceback": getattr(result, "traceback", None),
+    }

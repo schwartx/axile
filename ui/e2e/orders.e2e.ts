@@ -739,7 +739,7 @@ test(`activity view restores per-account tabs, filters and scroll before the fir
   await expect(dialog.getByRole('button', { name: '最近成交', exact: true })).toHaveAttribute('aria-pressed', 'true')
   await expect(dialog.getByRole('button', { name: '品种', exact: true })).toContainText('SHFE.ag2612')
   await expect(dialog.locator('[data-record-placeholder]')).toHaveCount(1)
-  await expect(dialog.getByRole('status')).toHaveText('正在恢复记录位置…')
+  await expect(dialog.getByRole('status').filter({ hasText: '正在恢复记录位置…' })).toHaveText('正在恢复记录位置…')
   await page.evaluate(() => {
     const frames: { top: number; left: number }[] = []
     Object.assign(window, { restoredFrames: frames, trackRestoration: true })
@@ -905,7 +905,7 @@ for (const reducedMotion of ['reduce', 'no-preference'] as const) {
     await expect(dialog.getByRole('button', { name: '操作异常', exact: true })).toHaveAttribute('aria-pressed', 'true')
     await expect(dialog.getByRole('button', { name: '品种', exact: true })).toContainText('SHFE.rb2610')
     await expect(dialog.locator('[data-record-placeholder]')).toHaveCount(1)
-    await expect(dialog.getByRole('status')).toHaveText('正在恢复记录位置…')
+    await expect(dialog.getByRole('status').filter({ hasText: '正在恢复记录位置…' })).toHaveText('正在恢复记录位置…')
     await expect(dialog.locator('[data-swap-current] table')).not.toBeVisible()
     release()
     gate = null

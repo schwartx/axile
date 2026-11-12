@@ -327,17 +327,17 @@ def test_schedule_preview_returns_raw_cron_points_with_cursor(monkeypatch: pytes
         limit=2,
     )
     response = asyncio.run(account_schedule.schedule_preview(payload))
-    assert [item.scheduled_at.isoformat() for item in response.items] == [
+    assert [item["scheduled_at"].isoformat() for item in response["items"]] == [
         "2026-08-26T09:30:00+08:00",
         "2026-08-27T09:30:00+08:00",
     ]
-    assert response.next_cursor == response.items[-1].scheduled_at
-    assert response.has_more is True
+    assert response["next_cursor"] == response["items"][-1]["scheduled_at"]
+    assert response["has_more"] is True
 
     continued = asyncio.run(
-        account_schedule.schedule_preview(payload.model_copy(update={"after": response.next_cursor}))
+        account_schedule.schedule_preview(payload.model_copy(update={"after": response["next_cursor"]}))
     )
-    assert continued.items[0].scheduled_at.isoformat() == "2026-08-28T09:30:00+08:00"
+    assert continued["items"][0]["scheduled_at"].isoformat() == "2026-08-28T09:30:00+08:00"
 
 
 @pytest.mark.parametrize(
@@ -396,9 +396,9 @@ def test_gm_schedule_preview_and_trigger_share_selected_phases(
             )
         )
     )
-    assert preview.items[0].action == ("execute" if expected else "skip")
+    assert preview["items"][0]["action"] == ("execute" if expected else "skip")
     if hour == 9 and minute == 15:
-        assert preview.items[0].phase_label == "早盘集合竞价 · 可撤单"
+        assert preview["items"][0]["phase_label"] == "早盘集合竞价 · 可撤单"
 
 
 def test_gm_auction_with_supplements_uses_serialized_session_settings(monkeypatch):
