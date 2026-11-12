@@ -1003,6 +1003,14 @@ fn symbols(conn: &Connection, id: &Value, result: &mut Object) -> Result<(), Str
                 };
                 if name == "symbol_results" {
                     if let Some(view) = item.as_object_mut() {
+                        // 0036 的扩展证据保存新增字段，读取时恢复交易与持仓的独立结论。
+                        for key in ["start_volume", "expected_volume", "position_confirmed"] {
+                            if let Some(value) =
+                                row["audit_evidence"]["unrecognized_fields"].get(key)
+                            {
+                                view.insert(key.into(), value.clone());
+                            }
+                        }
                         availability(view, &row, &["target_volume", "final_volume"])?;
                         for (field, source, specs, flag) in [
                             ("sizing", &sizings, SIZING, "sizing_recorded"),

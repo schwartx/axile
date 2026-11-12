@@ -776,8 +776,7 @@ def ctp_target_pos_task_algorithm(executor: ExecutorProtocol, algorithm_input: A
             executor.logger.info(f"等待 {tracker.get_pending_count()} 个订单完成...")
             tracker.wait_for_completion(timeout=max_wait_seconds)
 
-        # 最终是否达标以重新拉取的账户资产为准，而不是依赖本地订单累计推断；
-        # 这样可以覆盖交易所异步回报延迟、部分成交和通道侧补单等情况。
+        # 持仓快照与订单成交分别核对，渠道快照不能覆盖已确认成交。
         final_account_assets, final_net_position, explicit_error = read_final_position(
             executor,
             lambda assets: sum(
@@ -786,8 +785,6 @@ def ctp_target_pos_task_algorithm(executor: ExecutorProtocol, algorithm_input: A
                 if p.symbol == symbol
             ),
         )
-        if explicit_error:
-            tracker.explicit_error = explicit_error
         target_reached = final_net_position == target_volume
         target_gap = target_volume - final_net_position
 
@@ -807,6 +804,7 @@ def ctp_target_pos_task_algorithm(executor: ExecutorProtocol, algorithm_input: A
             target_volume,
             orders,
             trades,
+            position_error=explicit_error,
             **tracker.outcome_inputs(),
         )
         return AlgorithmResult(
@@ -851,8 +849,6 @@ def ctp_target_pos_task_algorithm(executor: ExecutorProtocol, algorithm_input: A
         )
         if not tracker.explicit_error:
             tracker.record_exception(e, "持仓调整")
-        if explicit_error:
-            tracker.explicit_error = explicit_error
         orders, trades = tracker.get_all_orders(), tracker.get_all_trades()
         return AlgorithmResult(
             **summarize_outcome(
@@ -861,6 +857,7 @@ def ctp_target_pos_task_algorithm(executor: ExecutorProtocol, algorithm_input: A
                 algorithm_input.target_volume,
                 orders,
                 trades,
+                position_error=explicit_error,
                 **tracker.outcome_inputs(),
             ),
             orders=orders,

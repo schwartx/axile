@@ -39,6 +39,9 @@ export interface SymbolChain {
   after: number
   observedBefore: number | null
   observedAfter: number | null
+  positionPending: boolean
+  queriedAfter: number | null
+  expectedAfter: number | null
   /** 意图带号目标量。 */
   target: number | null
   algorithm: string | null
@@ -163,7 +166,11 @@ export function executionHeadline(
   if (model.task?.status === 'QUEUED') return { level: 'neutral', text: '等待执行' }
   if (model.task?.status === 'RUNNING') return { level: 'neutral', text: '执行中' }
   if (model.task?.status === 'TERMINATING') return { level: 'neutral', text: '正在终止' }
-  return { level: model.conclusion.warning ? 'warn' : 'neutral', text: model.conclusion.text }
+  const pending = model.symbols.some(symbol => symbol.positionPending)
+  return {
+    level: model.conclusion.warning || pending ? 'warn' : 'neutral',
+    text: model.conclusion.text + (pending ? ' · 执行结束时持仓待核对' : ''),
+  }
 }
 
 type Dict = Record<string, unknown>
@@ -373,6 +380,9 @@ function buildSymbolChain(
     after,
     observedBefore: asNum(recon.before),
     observedAfter: asNum(recon.after),
+    positionPending: recon.position_confirmed === false,
+    queriedAfter: asNum(recon.position_observed),
+    expectedAfter: asNum(recon.expected_volume),
     target,
     algorithm: decision?.algorithm ?? null,
     ordersCount: decision?.ordersCount ?? null,
@@ -524,7 +534,12 @@ function symbolPhase(s: SymbolChain): 'reduce' | 'increase' | 'both' | 'none' {
 function phaseNode(key: string, label: string, group: SymbolChain[], gateHint: string): SpineNode {
   const reached = group.filter((s) => s.reached === true).length
   const anyBroken = group.some((s) => s.broken)
-  const detail = `并行 ${group.length} 只 · ${reached}/${group.length} 到位${gateHint}`
+  const pending = group.filter(s => s.positionPending).length
+  const confirmed = group.length - pending
+  const positions = pending
+    ? `${confirmed ? `${reached}/${confirmed} 到位 · ` : ''}${pending} 只持仓待核对`
+    : `${reached}/${group.length} 到位`
+  const detail = `并行 ${group.length} 只 · ${positions}${gateHint}`
   return { key, label, detail, time: '', status: anyBroken ? 'WARNING' : 'SUCCESS', broken: anyBroken }
 }
 

@@ -331,8 +331,6 @@ def twap(
         teardown_order_tracker(executor, tracker, None)
 
     account_assets, final_volume, explicit_error = read_final_position(executor, executor.get_current_volume)
-    if explicit_error:
-        tracker.explicit_error = explicit_error
     orders = tracker.get_all_orders()
     trades = tracker.get_all_trades()
 
@@ -347,6 +345,7 @@ def twap(
             target_volume,
             orders,
             trades,
+            position_error=explicit_error,
             **tracker.outcome_inputs(),
         ),
         orders=orders,

@@ -327,6 +327,12 @@ function SymbolChainRow({
       </div>
 
       {/* 决策 + 成交 */}
+      {s.positionPending && (
+        <div className="num mt-0.5 text-[13px] text-warn">
+          执行结束时持仓待核对 · 渠道查询 {fmtPosition(s.queriedAfter, units)}
+          {s.expectedAfter != null && <span> · 待核对仓位 {fmtPosition(s.expectedAfter, units)}</span>}
+        </div>
+      )}
       {s.side !== 'none' && s.filled !== 0 && (
         <div className="num mt-0.5 text-[13.5px] text-ink-3">
           {s.algorithm && <span>{s.algorithm} · </span>}

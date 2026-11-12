@@ -98,9 +98,11 @@ def test_production_positions_aggregate_and_reach_target(reverse_rows, reverse_p
             params=CTPTargetPosTaskParams(max_wait_seconds=1),
         ),
     )
-    assert result.status.value == ("NOOP" if target == 2 else "PARTIAL")
-    assert result.final_volume == 2
-    assert result.status == (ExecutionStatus.NOOP if target == 2 else ExecutionStatus.PARTIAL)
+    assert result.status == (ExecutionStatus.NOOP if target == 2 else ExecutionStatus.SUCCEEDED)
+    assert result.final_volume == (2 if target == 2 else None)
+    if target != 2:
+        assert result.expected_volume == target
+        assert result.position_confirmed is False
     assert result.memory["current_net_position"] == result.memory["final_net_position"] == 2
     assert result.memory["execution_details"]["rb2610_adjustment"]["current_net"] == 2
     assert [(order.direction, order.volume, order.extra["offset_flag"]) for order in executor.orders] == (
@@ -121,10 +123,12 @@ def test_final_check_does_not_accept_first_direction_as_net():
             params=CTPTargetPosTaskParams(max_wait_seconds=1),
         ),
     )
-    assert result.status == ExecutionStatus.PARTIAL
+    assert result.status == ExecutionStatus.SUCCEEDED
     assert result.memory["final_net_position"] == 2
     assert result.memory["target_reached"] is False
-    assert result.status.value == "PARTIAL"
+    assert result.final_volume is None
+    assert result.expected_volume == 5
+    assert result.position_confirmed is False
 
 
 @pytest.mark.parametrize("indices,expected", [([], (0, 0, 0)), ([0], (5, 0, 5)), ([1], (0, 3, -3))])
@@ -769,9 +773,11 @@ def test_target_pos_task_does_not_claim_flat_when_final_snapshot_is_unavailable(
             symbol="rb2610", target_volume=0, trade_rule={}, params=CTPTargetPosTaskParams(max_wait_seconds=1)
         ),
     )
-    assert result.status == ExecutionStatus.PARTIAL
+    assert result.status == ExecutionStatus.SUCCEEDED
+    assert result.expected_volume == 0
+    assert result.position_confirmed is False
     assert result.final_volume is None
-    assert result.error == "最终持仓尚未确认"
+    assert result.error is None
     assert result.orders == executor.orders
     assert result.trades
 

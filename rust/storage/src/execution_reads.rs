@@ -274,6 +274,28 @@ fn target_sizing(connection: &Connection, request: &Value) -> Result<Value, Anal
 
 fn read_on(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {
     match text(request, "op")? {
+        "pending_positions" => {
+            // 新字段由既有审计证据无损保存；每个品种只采用最近一次持仓核对结论。
+            let mut statement = connection.prepare(
+                "WITH latest AS (
+                    SELECT s.map_key,s.audit_evidence,
+                           row_number() OVER (PARTITION BY s.map_key ORDER BY r.id DESC) AS rank
+                    FROM executerecord r JOIN execution_symbol_result s ON s.record_id=r.id
+                    WHERE r.account_id=?1 AND s.node_kind='object'
+                      AND json_type(s.audit_evidence,'$.unrecognized_fields.expected_volume') IN ('integer','real')
+                ) SELECT map_key,json_extract(audit_evidence,'$.unrecognized_fields.expected_volume')
+                  FROM latest WHERE rank=1
+                    AND json_extract(audit_evidence,'$.unrecognized_fields.position_confirmed')=0"
+            ).map_err(sql)?;
+            let rows = statement
+                .query_map([integer(request, "account_id")?], |row| {
+                    Ok((row.get::<_, String>(0)?, json!(row.get::<_, f64>(1)?)))
+                })
+                .map_err(sql)?
+                .collect::<Result<Map<_, _>, _>>()
+                .map_err(sql)?;
+            Ok(Value::Object(rows))
+        }
         "detail" => {
             let Some(record) = record_on(
                 connection,

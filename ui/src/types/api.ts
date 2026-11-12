@@ -980,6 +980,10 @@ export interface SymbolTca {
 export interface SymbolReconciliation {
   symbol: string
   status: string | null
+  start_volume?: number | null
+  expected_volume?: number | null
+  position_confirmed?: boolean | null
+  position_observed?: number | null
   /** 意图带号目标持仓量。 */
   target: number | null
   /** 本次带号成交量（买正卖负）。 */

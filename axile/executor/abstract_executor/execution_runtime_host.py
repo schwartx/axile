@@ -52,6 +52,7 @@ class AbstractExecutorExecutionRuntimeHostMixin:
         from axile.executor.account_orders import AccountOrderBook
 
         executor.account_orders = AccountOrderBook()
+        executor.pending_positions = {}
         executor._runtime_bindings = ExecutionRuntimeBindings()
         executor._active_execution_runtime = None
         executor._execution_query_runtime_bridge = ExecutionQueryRuntimeBridge(executor)

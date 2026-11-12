@@ -16,6 +16,7 @@ from axile.server.execution.notification_assets import load_notification_snapsho
 from axile.server.execution.records import append_error_execute_record, append_execute_record_from_output
 from axile.server.execution.worker_backend.manager import get_worker_backend_manager
 from axile.server.execution_audit import append_execution_event
+from axile.server.native_store import native_operation
 from axile.server.utils import trade_channel_check
 
 
@@ -73,6 +74,9 @@ async def _run_clear_positions(
                 "short_leverage": account.short_leverage,
             },
             "extra": {
+                "pending_positions": await native_operation(
+                    "execution_read", {"op": "pending_positions", "account_id": account.id}
+                ),
                 "audit": {
                     "execution_id": execution_id,
                     "account_id": account.id,
@@ -80,7 +84,7 @@ async def _run_clear_positions(
                     "algorithm": resolved_algorithm.get("method", "SINGLE-MAKER"),
                     "trigger_source": "empty_positions",
                     "execution_kind": "clear_positions",
-                }
+                },
             },
         }
         audit_input = sanitize_execution_input(empty_kwargs)
