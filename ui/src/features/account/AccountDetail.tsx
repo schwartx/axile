@@ -6,6 +6,7 @@ import { useConnectedAssets } from '@/features/account/useConnectedAssets'
 import { RuntimeSyncStatus } from '@/features/account/RuntimeSyncStatus'
 import { AssetObservationTime } from '@/features/account/AssetObservationTime'
 import { AssetRefreshFeedback } from '@/features/account/AssetRefreshFeedback'
+import { AssetRefreshStatus } from '@/features/account/AssetRefreshStatus'
 import { AccountConnectionStatus } from '@/features/account/AccountConnectionStatus'
 import { AccountConnectionContext } from '@/lib/accountConnection'
 import { runtimeSyncMessage, useAccountRuntimeSync } from '@/features/account/useAccountRuntimeSync'
@@ -132,7 +133,11 @@ export function AccountDetail({
   const channelDescriptor = useChannelDescriptor(item.trade_channel)
   const [holdingSelection, setHoldingSelection] = useState<{ accountId: number; symbol: string; keyboardOpened: boolean } | null>(null)
   const selectedSymbol = holdingSelection?.accountId === accountId ? holdingSelection.symbol : null
-  const currentOrders = useCurrentOrders(accountId)
+  const currentOrders = useCurrentOrders(accountId, () => {
+    void refreshAssetSnapshots()
+    void refreshComparison()
+    onDashboardRefresh?.()
+  })
   const channelSchedule = channelDescriptor?.schedule
   const scheduleKind = channelSchedule?.kind
   // 组合名：领域 store 已在应用根加载（PortfolioLite 带 name），取名不增请求；未加载/找不到退回 #id。
@@ -162,6 +167,11 @@ export function AccountDetail({
     useCallback((s: AbortSignal) => getAccountAssetSnapshots(accountId, { limit: 1 }, s), [accountId]),
     { queryKey: `account:${accountId}:asset-snapshots:1`, intervalMs: 10000 },
   )
+  const assetSnapshotId = assetSnapshots.data?.data[0]?.id
+  const observeAssetSnapshot = currentOrders.observeAssetSnapshot
+  useEffect(() => {
+    if (assetSnapshotId != null) observeAssetSnapshot(assetSnapshotId)
+  }, [assetSnapshotId, observeAssetSnapshot])
 
   const portfolioId = account.data?.portfolio_id ?? item.portfolio_id ?? null
   // 目标改取账户级「执行器口径」权重（后端已叠加杠杆与精度），与含杠杆的真实持仓同尺。
@@ -703,6 +713,7 @@ export function AccountDetail({
           <div className="mb-3 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
             <div className="mr-auto flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
               <h3 className="flex-none text-[14px] font-semibold text-ink-2">持仓 vs 目标</h3>
+              <AssetRefreshStatus result={currentOrders.assetRefresh} />
               {targetSnapshotControl}
             </div>
             <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">

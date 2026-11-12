@@ -101,11 +101,20 @@ async def recent_activity(
 
 
 @router.get("/{account_id}/orders", response_model=AccountOrdersPublic)
-async def current_orders(account_id: int, refresh: bool = Query(False)) -> AccountOrdersPublic:
+async def current_orders(
+    account_id: int,
+    refresh: bool = Query(False),
+    reconciliation_id: str | None = Query(None, pattern=r"^[0-9a-f]{32}$"),
+) -> AccountOrdersPublic:
     """读取整个账户的未完成委托；读取失败不能作为零挂单证明。"""
     account = await _get_account_snapshot_or_404(account_id)
+    if reconciliation_id is not None and refresh:
+        raise HTTPException(422, detail="读取核对结果不能同时发起新核对")
     try:
-        result = await query_account_orders(account, refresh=refresh)
+        if reconciliation_id is not None:
+            result = await query_account_orders(account, reconciliation_id=reconciliation_id)
+        else:
+            result = await query_account_orders(account, refresh=refresh)
     except AccountConnectionUnavailable as exc:
         headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after else None
         raise HTTPException(503, detail=exc.execution_error, headers=headers) from exc

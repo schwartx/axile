@@ -2,9 +2,10 @@ import { useCallback, useRef, useState } from 'react'
 import { useReadWarningDelay } from '@/features/account/useReadWarningDelay'
 import { getAccountAssetSnapshots, refreshAccountAssets } from '@/lib/api/accounts'
 import { usePolling } from '@/lib/hooks/usePolling'
+import type { AccountAssetRefresh } from '@/lib/api/orders'
 
 /** 持仓页签轮询已存快照；仅点击核对时查询渠道，断线仍可查看上次观测。 */
-export function usePositionRecords(accountId: number, instanceId: string, enabled: boolean, connectionReady: boolean) {
+export function usePositionRecords(accountId: number, instanceId: string, enabled: boolean, connectionReady: boolean, onReconcile?: () => (result: AccountAssetRefresh) => void) {
   const query = usePolling(useCallback((signal: AbortSignal) => getAccountAssetSnapshots(accountId, { limit: 1 }, signal), [accountId]), {
     queryKey: `position-records:${accountId}:${instanceId}`, enabled, retainDataWhenDisabled: true, intervalMs: 5000,
   })
@@ -19,11 +20,18 @@ export function usePositionRecords(accountId: number, instanceId: string, enable
     if (!connectionReady || busy.current) return
     busy.current = true
     setManual({ identity, refreshing: true, error: null })
+    const finish = onReconcile?.()
     try {
-      await refreshAccountAssets(accountId)
-      if (currentIdentity.current === identity) await query.refresh()
+      const snapshot = await refreshAccountAssets(accountId)
+      finish?.({ status: 'updated', snapshot_id: snapshot.id })
+      if (currentIdentity.current === identity) {
+        await query.refresh()
+      }
     } catch (error) {
-      if (currentIdentity.current === identity) setManual({ identity, refreshing: false, error })
+      finish?.({ status: 'failed', message: '本次持仓核对未完成，当前显示上次资产快照' })
+      if (currentIdentity.current === identity) {
+        setManual({ identity, refreshing: false, error })
+      }
     } finally {
       busy.current = false
       if (currentIdentity.current === identity) setManual(value => ({ ...value, refreshing: false }))

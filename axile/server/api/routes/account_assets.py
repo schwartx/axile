@@ -7,19 +7,14 @@ from loguru import logger
 from starlette.concurrency import run_in_threadpool
 
 from axile.server._native import _core
-from axile.server.account_assets import query_account_assets
+from axile.server.account_assets import AccountAssetRefreshBusyError
+from axile.server.account_assets import refresh_account_assets as refresh_assets
 from axile.server.api.routes.account_support import _get_account_or_404, ensure_account_current
-from axile.server.asset_observations import is_asset_observation
-from axile.server.business_facts.assets import save_manual_asset_snapshot
 from axile.server.core.db import analysis_store
 from axile.server.db.models import (
     AccountAssetSnapshotPublic,
 )
 from axile.server.error_details import exception_details
-from axile.server.execution.registry import (
-    clear_account_asset_refresh,
-    try_register_account_asset_refresh,
-)
 from axile.server.execution.resident_connection import AccountConnectionUnavailable
 
 router = APIRouter()
@@ -30,19 +25,13 @@ async def refresh_account_assets(account_id: int) -> AccountAssetSnapshotPublic:
     """从交易渠道查询并持久化账户最新资产快照."""
     account = await _get_account_or_404(account_id)
     ensure_account_current(account)
-    if not try_register_account_asset_refresh(account_id):
+    try:
+        return await refresh_assets(account)
+    except AccountAssetRefreshBusyError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="账户正在执行或刷新资产，请稍后再试",
-        )
-
-    try:
-        assets = await query_account_assets(account)
-        if not is_asset_observation(assets.model_dump()):
-            raise ValueError("渠道未返回可信账户资产")
-        payload = assets.model_dump(mode="json")
-        snapshot = await save_manual_asset_snapshot(account_id, payload)
-        return AccountAssetSnapshotPublic.model_validate({**snapshot, "assets": payload})
+            detail=str(exc),
+        ) from exc
     except AccountConnectionUnavailable as exc:
         headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after else None
         raise HTTPException(
@@ -64,8 +53,6 @@ async def refresh_account_assets(account_id: int) -> AccountAssetSnapshotPublic:
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=exception_details(exc, "账户权益查询失败"),
         ) from exc
-    finally:
-        clear_account_asset_refresh(account_id)
 
 
 @router.get("/{account_id}/asset_snapshots")

@@ -5,21 +5,25 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import uuid4
 
 from loguru import logger
 
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.clock import clock_now_iso
 from axile.executor.ctp_input_validation import validate_cancel_id
+from axile.server.account_assets import reconcile_account_assets
 from axile.server.connection_state import connection_config_key
 from axile.server.db.models.account import AccountContext
 from axile.server.db.models.account_order import (
     AccountActivityPublic,
+    AccountAssetRefreshPublic,
     AccountOrderPublic,
     AccountOrdersPublic,
     OrderCancelReceipt,
     OrderCancelRequest,
 )
+from axile.server.execution.registry import get_running_execution_id
 from axile.server.native_store import native_operation
 
 
@@ -29,6 +33,7 @@ class _OrdersState:
     receipts: dict[str, OrderCancelReceipt] = field(default_factory=dict)
     cached: AccountOrdersPublic | None = None
     refresh_task: asyncio.Task | None = None
+    reconciliations: dict[str, AccountAssetRefreshPublic] = field(default_factory=dict)
 
 
 _states: dict[int, tuple[str, _OrdersState]] = {}
@@ -114,7 +119,7 @@ async def _query(account: AccountContext, state: _OrdersState, refresh: bool) ->
         result = await _command(account, {"command": "query", "tracked": tracked})
         snapshot = await _snapshot_result(account, state, _latest_result(account, result))
         orders_hub.changed(account.id)
-        return snapshot
+    return snapshot
 
 
 def _latest_result(account: AccountContext, result: dict[str, Any]) -> dict[str, Any]:
@@ -163,14 +168,66 @@ async def _link_executions(account: AccountContext, result: AccountOrdersPublic)
             order.execution_id = linked.get((order.symbol, order.order_id))
 
 
-async def query_account_orders(account: AccountContext, *, refresh: bool = False) -> AccountOrdersPublic:
+async def query_account_orders(
+    account: AccountContext, *, refresh: bool = False, reconciliation_id: str | None = None
+) -> AccountOrdersPublic:
     """普通读取只使用镜像；显式核对复用已有独立委托操作通路。"""
     if not refresh:
-        return await _query(account, _state(account), False)
+        state = _state(account)
+        snapshot = await _query(account, state, False)
+        if reconciliation_id is not None:
+            snapshot.asset_refresh = state.reconciliations.get(reconciliation_id) or AccountAssetRefreshPublic(
+                status="failed", reconciliation_id=reconciliation_id, message="核对任务已失效，请重新核对"
+            )
+        return snapshot
     state = _state(account)
     if state.refresh_task is None or state.refresh_task.done():
-        state.refresh_task = _background(_query(account, state, True))
-    return await asyncio.wait_for(asyncio.shield(state.refresh_task), timeout=35)
+        state.refresh_task = _background(_refresh_orders(account, state))
+    return await asyncio.shield(state.refresh_task)
+
+
+async def _refresh_orders(account: AccountContext, state: _OrdersState) -> AccountOrdersPublic:
+    """HTTP 断开后仍完成记录核对和持仓落库，共用原有等待预算。"""
+    deadline = asyncio.get_running_loop().time() + 35
+
+    async def records() -> tuple[AccountOrdersPublic, asyncio.Task]:
+        snapshot = (await _query(account, state, True)).model_copy(deep=True)
+        # 补查随记录任务启动，HTTP 等待超时也不会断开后续持仓核对。
+        return snapshot, _background(_reconcile_assets(account, deadline))
+
+    snapshot, reconciliation = await asyncio.wait_for(asyncio.shield(_background(records())), timeout=35)
+    snapshot.asset_refresh = await asyncio.shield(reconciliation)
+    return snapshot
+
+
+async def _reconcile_assets(account: AccountContext, deadline: float) -> AccountAssetRefreshPublic:
+    """先核对记录再查询持仓；耗尽原有预算后继续落库，不占用委托锁。"""
+    state = _state(account)
+    identity = uuid4().hex
+    pending = AccountAssetRefreshPublic(
+        status="pending", reconciliation_id=identity, message="持仓仍在核对，完成后自动保存，请稍后查看"
+    )
+    state.reconciliations[identity] = pending
+
+    async def reconcile() -> AccountAssetRefreshPublic:
+        result = (await reconcile_account_assets(account)).model_copy(update={"reconciliation_id": identity})
+        state.reconciliations[identity] = result
+        # 保留最近 50 个终态，正在等待的核对不能被淘汰。
+        ended = [key for key, value in state.reconciliations.items() if value.status != "pending"]
+        for key in ended[:-50]:
+            state.reconciliations.pop(key)
+        return result
+
+    task = _background(reconcile())
+    assert account.id is not None
+    if get_running_execution_id(account.id) is not None:
+        pending.message = "账户正在执行，结束后继续核对持仓"
+        return pending
+    try:
+        remaining = max(0, deadline - asyncio.get_running_loop().time())
+        return await asyncio.wait_for(asyncio.shield(task), timeout=remaining)
+    except TimeoutError:
+        return pending
 
 
 async def query_account_activity(
@@ -178,16 +235,24 @@ async def query_account_activity(
 ) -> AccountActivityPublic:
     """复用账户委托通路读取近期记录；仅显式核对访问渠道。"""
     state = _state(account)
+    deadline = asyncio.get_running_loop().time() + 35
 
-    async def query() -> AccountActivityPublic:
+    async def records() -> tuple[AccountActivityPublic, asyncio.Task | None]:
         async with state.lock:
             result = await _command(
                 account, {"command": "activity", "refresh": refresh, "symbol": symbol, "limit": limit}
             )
-            return AccountActivityPublic.model_validate(result)
+            snapshot = AccountActivityPublic.model_validate(result)
+        return snapshot, _background(_reconcile_assets(account, deadline)) if refresh else None
 
-    task = _background(query())
-    return await asyncio.wait_for(asyncio.shield(task), timeout=35)
+    async def query() -> AccountActivityPublic:
+        task = _background(records())
+        snapshot, reconciliation = await asyncio.wait_for(asyncio.shield(task), timeout=35)
+        if reconciliation is not None:
+            snapshot.asset_refresh = await asyncio.shield(reconciliation)
+        return snapshot
+
+    return await asyncio.shield(_background(query()))
 
 
 async def _cancel(account: AccountContext, state: _OrdersState, payload: OrderCancelRequest) -> OrderCancelReceipt:

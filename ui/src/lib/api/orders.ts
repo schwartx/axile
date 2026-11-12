@@ -32,6 +32,13 @@ export interface CancelReceipt {
   order: CurrentOrder | null
 }
 
+export interface AccountAssetRefresh {
+  status: 'updated' | 'pending' | 'failed'
+  reconciliation_id?: string | null
+  snapshot_id?: number | null
+  message?: string | null
+}
+
 export interface CurrentOrdersSnapshot {
   data: CurrentOrder[]
   count: number | null
@@ -41,10 +48,17 @@ export interface CurrentOrdersSnapshot {
   version?: number
   error?: string | null
   cancellations: CancelReceipt[]
+  asset_refresh?: AccountAssetRefresh | null
 }
 
 export function getCurrentOrders(accountId: number, signal?: AbortSignal, refresh = false): Promise<CurrentOrdersSnapshot> {
   return apiGet(`/account/${accountId}/orders${refresh ? '?refresh=true' : ''}`, signal)
+}
+
+export async function getAccountReconciliation(accountId: number, identity: string, signal?: AbortSignal): Promise<AccountAssetRefresh> {
+  const result = await apiGet<CurrentOrdersSnapshot>(`/account/${accountId}/orders?reconciliation_id=${encodeURIComponent(identity)}`, signal)
+  if (!result.asset_refresh || result.asset_refresh.reconciliation_id !== identity) throw new Error('核对结果身份不符，请重新核对')
+  return result.asset_refresh
 }
 
 export function cancelCurrentOrder(accountId: number, order: CurrentOrder, requestId: string): Promise<CancelReceipt> {
@@ -87,6 +101,7 @@ export interface OperationFailure {
 }
 
 export interface AccountActivity {
+  asset_refresh?: AccountAssetRefresh | null
   channel?: string
   orders: CurrentOrder[]
   ended_orders?: CurrentOrder[]

@@ -109,6 +109,35 @@ def test_recent_activity_gateway_error_does_not_disclose_channel_exception(clien
     assert "secret" not in response.text
 
 
+def test_reconciliation_status_read_validates_identity_and_never_requests_refresh(client, monkeypatch):
+    from axile.server.db.models.account_order import AccountAssetRefreshPublic
+
+    identity = "a" * 32
+    calls = []
+
+    async def read(_account, **kwargs):
+        calls.append(kwargs)
+        return AccountOrdersPublic(
+            data=[],
+            count=0,
+            sampled_at="now",
+            asset_refresh=AccountAssetRefreshPublic(
+                status="updated",
+                reconciliation_id=identity,
+                snapshot_id=7,
+            ),
+        )
+
+    monkeypatch.setattr(routes, "query_account_orders", read)
+    response = client.get(f"/account/1/orders?reconciliation_id={identity}")
+    assert response.status_code == 200
+    assert response.json()["asset_refresh"]["snapshot_id"] == 7
+    assert calls == [{"reconciliation_id": identity}]
+    assert client.get("/account/1/orders?reconciliation_id=bad").status_code == 422
+    assert client.get(f"/account/1/orders?reconciliation_id={identity}&refresh=true").status_code == 422
+    assert len(calls) == 1
+
+
 def test_current_orders_link_history_by_symbol_and_order_id(monkeypatch, tmp_path):
     from tests.conftest import native_store_call
 

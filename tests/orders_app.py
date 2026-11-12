@@ -27,11 +27,13 @@ from axile.executor.account_activity import AccountActivityBook
 from axile.executor.account_orders import AccountOrderBook
 from axile.executor.algorithms.utils.clock import clock_now_iso
 from axile.executor.connection_state import ConnectionObservation
+from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
-from axile.server import account_orders, connection_runtime
+from axile.server import account_assets, account_orders, connection_runtime
 from axile.server.account_control.ipc import RemoteMonitor, serve
 from axile.server.account_orders_runtime import run_order_command
 from axile.server.api.routes.account_orders import router
+from axile.server.business_facts.assets import latest_asset_snapshot
 from axile.server.connection_state import ConnectionBinding, ConnectionCollector, connection_config_key
 from axile.server.event_stream import stream_response
 from axile.server.execution.worker_backend.order_monitor import sample_orders
@@ -109,7 +111,20 @@ async def lifespan(_app):
     )
     assert receipt["account"]["id"] == account.id
     previous_command = account_orders._command
+    previous_assets_query = account_assets.query_account_assets
     account_orders._command = command
+
+    async def query_assets(_account):
+        return UnifiedAccountAssets.model_validate(
+            {
+                **position_snapshot(_account.id)["assets"],
+                "total_asset": 200000,
+                "available_cash": 95000,
+                "market_value": 105000,
+            }
+        )
+
+    account_assets.query_account_assets = query_assets
     connection_runtime.register_session(binding, lambda: True)
     collector.observe_session(ConnectionObservation("ok", clock_now_iso()))
     book.replace([native_order()], book.begin_sync())
@@ -125,6 +140,7 @@ async def lifespan(_app):
         thread.join(timeout=1)
         connection_runtime.forget_session(account.id)
         account_orders._command = previous_command
+        account_assets.query_account_assets = previous_assets_query
 
 
 app = FastAPI(lifespan=lifespan)
@@ -186,11 +202,14 @@ def position_snapshot(account_id: int) -> dict:
 
 @app.get("/api/v1/account/{account_id}/asset_snapshots")
 async def saved_position_snapshots(account_id: int):
-    return {"data": [position_snapshot(account_id)], "count": 1}
+    saved = await latest_asset_snapshot(account_id)
+    return {"data": [saved or position_snapshot(account_id)], "count": 1}
 
 
 @app.post("/api/v1/account/{account_id}/assets/refresh")
 async def refresh_position_snapshot(account_id: int):
+    if account_id == account.id:
+        return await account_assets.refresh_account_assets(account)
     return position_snapshot(account_id)
 
 
