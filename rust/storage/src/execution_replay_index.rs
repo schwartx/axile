@@ -9,8 +9,8 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBeha
 use serde_json::Value;
 
 use crate::execution_replay::{
-    digest, failure, identifier, io_error, CatalogRecording, PartDescriptor, ReplayResult,
-    CONTEXT_LIMIT, JS_SAFE, SCAN_BYTES,
+    digest, failure, identifier, io_error, sync_directory, CatalogRecording, PartDescriptor,
+    ReplayResult, CONTEXT_LIMIT, JS_SAFE, SCAN_BYTES,
 };
 use crate::execution_replay_block::{count_chunks, read_block, BlockRecord, CommittedBlock};
 
@@ -186,9 +186,7 @@ impl BlockIndex {
         )
         .map_err(io_error)?;
         if let Some(directory) = path.parent() {
-            File::open(directory)
-                .and_then(|dir| dir.sync_all())
-                .map_err(io_error)?;
+            sync_directory(directory)?;
         }
         Ok(Self { db })
     }
