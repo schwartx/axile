@@ -255,8 +255,11 @@ pub(crate) fn reconciliation(result: &Value, before: &Value) -> Value {
     if let Some(results) = result["symbol_results"].as_object() {
         for (symbol, value) in results.iter().filter(|(_, v)| v.is_object()) {
             let before_qty = observed(before, &before_positions, symbol);
-            let after_qty = observed(after, &after_positions, symbol)
-                .or_else(|| number(&value["final_volume"]));
+            let after_qty = if value["reason_code"] == "COMMON.POSITION.UNCONFIRMED" {
+                None
+            } else {
+                observed(after, &after_positions, symbol).or_else(|| number(&value["final_volume"]))
+            };
             symbols.push(symbol_row(
                 symbol,
                 value,
@@ -324,4 +327,35 @@ pub(crate) fn build(result: &Value, before: &Value) -> Value {
             .collect::<Vec<_>>());
     }
     view
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unconfirmed_position_hides_attainment_but_preserves_fills() {
+        let view = reconciliation(
+            &json!({
+                "account_assets": {"source": "real", "positions": []},
+                "symbol_results": {
+                    "A": {
+                        "reason_code": "COMMON.POSITION.UNCONFIRMED",
+                        "target_volume": 1000,
+                        "final_volume": null,
+                        "orders": [{"direction": "BUY", "filled_volume": 1000}]
+                    },
+                    "B": {"target_volume": 1000, "final_volume": 0}
+                }
+            }),
+            &json!({"source": "real", "positions": []}),
+        );
+        let pending = &view["symbols"][0];
+        assert_eq!(pending["filled"], 1000.0);
+        assert!(pending["after"].is_null());
+        assert!(pending["reached"].is_null());
+        assert!(pending["attained_ratio"].is_null());
+        assert_eq!(view["symbols"][1]["after"], 0.0);
+        assert_eq!(view["symbols"][1]["reached"], false);
+    }
 }
