@@ -19,4 +19,5 @@ test('未知阶段不冒充触发，失败事件不推进到对账', async () =>
   expect(phaseLabel('new-phase')).toBe('进度待同步')
   expect(laterPhase('executing', 'planning')).toBe('executing')
   expect(executionEventPhase([{ event_type: 'target_computed' }, { event_type: 'execution_failed' }])).toBe('planning')
+  expect(executionEventPhase([{ event_type: 'target_computed' }, { event_type: 'execution_completed' }], true)).toBe('planning')
 })

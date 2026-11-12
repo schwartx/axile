@@ -31,13 +31,14 @@ export function phaseLabel(phase: string | null | undefined): string {
 }
 
 /** 从已保存的生命周期与订单事件恢复最后确认阶段，不从结果行猜进度。 */
-export function executionEventPhase(events: { event_type: string }[]): string {
+export function executionEventPhase(events: { event_type: string }[], sessionClosed = false): string {
   const phases: Record<string, string> = {
     execution_started: 'triggered', input_snapshotted: 'snapshot', target_computed: 'planning',
     order_submitted: 'executing', order_acknowledged: 'executing', order_terminal: 'executing',
     execution_completed: 'settling',
   }
-  return events.reduce((phase, event) => laterPhase(phase, phases[event.event_type]), '')
+  return events.reduce((phase, event) => sessionClosed && event.event_type === 'execution_completed'
+    ? phase : laterPhase(phase, phases[event.event_type]), '')
 }
 
 /** 同一执行只采用更靠后的已知阶段。 */

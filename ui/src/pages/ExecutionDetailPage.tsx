@@ -185,6 +185,7 @@ function SnapshotNote({ m, assetLabel }: { m: ExecutionDetailModel; assetLabel: 
   const h = m.header
   if (m.task == null || isActiveExecution(m.task.status)) return <p className="mt-2 text-[13px] text-ink-3">执行后将展示资产变化与持仓核对结果。</p>
   if (m.task.status === 'FAILED' && m.task.started_at == null) return null
+  if (m.conclusion.sessionScope === 'all' && h.sourcePosition === 'unavailable') return <p className="mt-2 text-[13px] text-ink-3">本次因非交易时段跳过，未采集执行后账户快照。</p>
   const posBad = isDegradedSnapshotSource(h.sourcePosition)
   const eqBad = isDegradedSnapshotSource(h.sourceEquity)
   if (!posBad && !eqBad) return null
@@ -600,12 +601,13 @@ export function ExecutionDetailPage() {
   const orderStreamConnected = useLiveOrders(s => s.connected)
   const liveOrders = orderSnapshot?.data.filter(order => order.execution_id === executionId) ?? []
   const model = hasAnyData ? buildExecutionDetail(rawEvents, artifacts.data?.data ?? [], status.data, detail.data, liveOrders) : null
-  const eventPhase = executionEventPhase(rawEvents)
+  const sessionClosed = model?.conclusion.sessionScope === 'all'
+  const eventPhase = executionEventPhase(rawEvents, sessionClosed)
   const observedPhase = laterPhase(eventPhase, laterPhase(status.data?.progress?.phase, isLive && active ? running?.phase : null))
   const lastPhase = useRef({ executionId, phase: '' })
   if (lastPhase.current.executionId !== executionId) lastPhase.current = { executionId, phase: '' }
   lastPhase.current.phase = laterPhase(lastPhase.current.phase, observedPhase)
-  const phase = lastPhase.current.phase
+  const phase = sessionClosed ? eventPhase : lastPhase.current.phase
   const executionStreamConnected = useLiveExecStore(s => s.connected)
   const progressStale = isLive && executionStreamConnected
     ? Boolean(running?.progressStale) : Boolean(status.data?.progress?.stale || status.stale)
@@ -654,7 +656,7 @@ export function ExecutionDetailPage() {
         {model && (
           <>
             <TargetChangeView m={model} />
-            {model.symbols.length > 0 ? (
+            {model.symbols.length > 0 && !sessionClosed ? (
               <>
                 <div className="mb-2 text-xs font-semibold tracking-wide text-ink-3">{active ? '逐只执行进展' : '逐只结果'}</div>
                 {model.symbols.filter(s => model.conclusion.sessionScope === 'partial' || model.conclusion.state !== 'PARTIAL' || model.conclusion.symbols.length === 0 || model.conclusion.symbols.includes(s.symbol)).map((s) => {
@@ -678,7 +680,7 @@ export function ExecutionDetailPage() {
               <p className="text-[14px] text-ink-3">
                 {model.task?.status === 'FAILED' && model.task.started_at == null
                   ? '执行未进入执行链路，未产生逐只结果和账户快照。'
-                  : active ? '正在准备本次执行，目标和委托信息将陆续显示。' : '本次执行未产生逐只对账。'}
+                  : sessionClosed ? '本次未下单，无逐品种执行结果。' : active ? '正在准备本次执行，目标和委托信息将陆续显示。' : '本次执行未产生逐只对账。'}
               </p>
             )}
             <Spine m={model} />

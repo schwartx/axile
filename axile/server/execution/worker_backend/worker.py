@@ -21,6 +21,7 @@ from axile.executor.models.portfolio_target import PortfolioTarget
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import UnifiedStandardOutput
+from axile.executor.session_closed import session_closed_scope
 from axile.executor.termination import ExecutionTerminated
 from axile.server.context import Context, ContextSettings, PortfolioExecutor
 from axile.server.db.models.account import AccountSnapshot
@@ -344,9 +345,10 @@ def _handle_execute_trade(
                 **({"notification_snapshot": notification_snapshot} if notification_snapshot else {}),
             ),
         )
-        state.progress.report(request.execution_id, "settling")
         replay_end_reason = str(output.status)
         result = _dump_output_payload(output)
+        if session_closed_scope(result) != "all":
+            state.progress.report(request.execution_id, "settling")
         _append_success_audit(
             account=account,
             execution_id=request.execution_id,
@@ -453,9 +455,10 @@ def _handle_empty_positions(
                 **empty_kwargs,
             ),
         )
-        state.progress.report(request.execution_id, "settling")
         replay_end_reason = str(output.status)
         result = _dump_output_payload(output)
+        if session_closed_scope(result) != "all":
+            state.progress.report(request.execution_id, "settling")
         _append_success_audit(
             account=account,
             execution_id=request.execution_id,
