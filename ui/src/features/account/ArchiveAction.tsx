@@ -2,18 +2,20 @@ import { useRef, useState } from 'react'
 import { Archive, ArchiveRestore } from 'lucide-react'
 import { ConfirmModal, type ConfirmSpec } from '@/components/ui/ConfirmModal'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
+import { Tooltip } from '@/components/ui/Tooltip'
 import { setAccountArchived } from '@/lib/api/accounts'
 import { setPortfolioArchived } from '@/lib/api/portfolios'
 import { useToastStore } from '@/stores/ui'
 
 /** 账户和组合共用归档确认；服务端负责准入及运行态同步。 */
-export function ArchiveAction({ kind, id, name, archivedAt, onChanged, className }: {
+export function ArchiveAction({ kind, id, name, archivedAt, onChanged, className, iconOnly = false }: {
   kind: 'account' | 'portfolio'
   id: number
   name: string
   archivedAt?: string | null
   onChanged: () => void | Promise<void>
   className?: string
+  iconOnly?: boolean
 }) {
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null)
   const [error, setError] = useState<Error | null>(null)
@@ -24,6 +26,7 @@ export function ArchiveAction({ kind, id, name, archivedAt, onChanged, className
   const noun = kind === 'account' ? '账户' : '组合'
   const verb = archived ? '恢复' : '归档'
   const Icon = archived ? ArchiveRestore : Archive
+  const label = busy ? `${verb}中…` : `${verb}${noun}`
 
   const change = async () => {
     if (locked.current) return
@@ -49,9 +52,12 @@ export function ArchiveAction({ kind, id, name, archivedAt, onChanged, className
     }
   }
 
-  return <div>
-    <button type="button" disabled={busy}
-      className={className ?? 'inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-sm text-ink-2 hover:bg-fill disabled:opacity-40'}
+  return <div className={iconOnly ? 'relative w-8 shrink-0' : undefined}>
+    <Tooltip content={label}>
+    <button type="button" disabled={busy} aria-label={label}
+      className={className ?? (iconOnly
+        ? 'grid h-8 w-8 cursor-pointer place-items-center rounded-lg border border-line text-ink-2 enabled:hover:border-ink-3/40 enabled:hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-45'
+        : 'inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-sm text-ink-2 hover:bg-fill disabled:opacity-40')}
       onClick={() => setConfirm({
         title: `${verb}${noun}`,
         body: archived
@@ -60,9 +66,12 @@ export function ArchiveAction({ kind, id, name, archivedAt, onChanged, className
         okText: verb,
         onConfirm: () => void change(),
       })}>
-      <Icon size={16} className="shrink-0" aria-hidden /><span>{busy ? `${verb}中…` : `${verb}${noun}`}</span>
+      <Icon size={iconOnly ? 14 : 16} className="shrink-0" aria-hidden />{!iconOnly && <span>{label}</span>}
     </button>
-    <ErrorNotice intent="mutation" title={`${verb}${noun}失败`} error={error} variant="compact" />
+    </Tooltip>
+    <div className={iconOnly ? 'absolute right-0 top-full z-10 mt-1 w-64 rounded-lg bg-surface' : undefined}>
+      <ErrorNotice intent="mutation" title={`${verb}${noun}失败`} error={error} variant="compact" />
+    </div>
     <ConfirmModal spec={confirm} onClose={() => setConfirm(null)} />
   </div>
 }

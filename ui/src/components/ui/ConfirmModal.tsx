@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 
 export interface ConfirmSpec {
   title: string
@@ -66,7 +67,7 @@ export function ConfirmModal({
     }
   }, [open, danger])
 
-  return (
+  const content = (
     <>
       <div
         className={`fixed inset-0 z-[35] bg-scrim transition-opacity duration-150 ${
@@ -120,4 +121,6 @@ export function ConfirmModal({
       </div>
     </>
   )
+  // 避免父卡片的 transform 将固定定位限制在卡片内。
+  return typeof document === 'undefined' ? content : createPortal(content, document.body)
 }

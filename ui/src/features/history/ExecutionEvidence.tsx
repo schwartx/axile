@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import { Segmented } from '@/components/ui/Segmented'
-import { withViewTransition } from '@/lib/viewTransition'
 import { amount, quantityText } from '@/features/history/costs'
 import { snapshotPositions, quantityUnit } from '@/features/history/executionEvidenceModel'
 import type { ExecutionDetailModel } from '@/features/account/executionDetail'
@@ -20,7 +19,7 @@ export function ExecutionEvidence({ model, units, currency, view: controlledView
   const flat = after?.length === 0
   const state = flat ? hasFill ? '执行后空仓' : before?.length === 0 ? '持续空仓' : '执行后空仓' : after ? `执行后持仓 ${new Set(after.map(p => p.symbol)).size} 个品种` : '持仓状态未知'
   return <div data-testid="execution-evidence" className="pb-2">
-    <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><span className="text-sm">{state}</span><Segmented size="sm" value={view} options={[{ value: 'actions', label: '本次调仓' }, { value: 'positions', label: '全部持仓' }]} onChange={value => withViewTransition(() => setView(value))} /></div>
+    <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><span className="text-sm">{state}</span><Segmented size="sm" value={view} options={[{ value: 'actions', label: '本次调仓' }, { value: 'positions', label: '全部持仓' }]} onChange={setView} /></div>
     <div className="overflow-x-auto">{view === 'positions' ? after == null ? <p className="py-3 text-ink-3">执行后持仓快照缺失或不可用</p> : after.length === 0 ? <p className="py-3 text-ink-3">执行后空仓</p> : <table className={tableClass}><thead className="text-ink-3"><tr><th>品种</th><th>方向</th><th>执行后持仓</th></tr></thead><tbody>{after.map((p, i) => <tr key={`${p.symbol}:${i}`} className="border-t border-line"><td>{p.symbol}</td><td>{p.direction || '—'}</td><td>{quantityText(p.volume)} {quantityUnit(units, p.symbol, currency)}</td></tr>)}</tbody></table>
       : <><table className={tableClass}><thead className="text-ink-3"><tr><th>品种 / 动作</th><th>执行前 → 目标 → 执行后</th><th>距目标差额</th><th>计划净交易 / 实际净成交</th><th>到达中间价 → 成交均价</th><th>滑点损耗 BP</th><th>结果</th></tr></thead><tbody>{involved.map(s => {
         const unit = quantityUnit(units, s.symbol, currency)

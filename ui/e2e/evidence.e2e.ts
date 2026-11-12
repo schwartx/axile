@@ -15,6 +15,105 @@ async function visit(page: Page, entry = '/accounts/7/executions/A') {
 }
 test.beforeEach(async ({ page }) => { page.on('pageerror', error => { throw error }) })
 
+test('执行记录中的持仓视图与成交方向切换不触发整页过渡', async ({ page }, info) => {
+  await defaults(page)
+  const created = '2026-10-15T10:00:00'
+  const result = { status: 'SUCCEEDED', symbol_results: { TEST: { status: 'SUCCEEDED', target_volume: 1,
+    sizing: { unit_multiplier: 1 }, first_tick: { last_price: 10 }, orders: [], trades: [
+      { trade_id: 'BUY', trade_price: 10, trade_volume: 2, trade_time: created, extra: { direction: 'BUY' } },
+      { trade_id: 'SELL', trade_price: 10, trade_volume: 1, trade_time: created, extra: { direction: 'SELL' } },
+    ] } } }
+  await page.route('**/api/v1/account/7/activity?**', route => route.fulfill({ json: { count: 1, data: [{
+    kind: 'execution', occurred_at: created, record: { id: 1, execution_id: 'A', created_at: created,
+      status: 'SUCCEEDED', is_success: 1, trade_count: 2, summary: null, duration_sec: 1, symbol_results: result.symbol_results },
+  }] } }))
+  await page.route('**/api/v1/account/executions/A/detail?**', route => route.fulfill({ json: result }))
+  await page.route('**/api/v1/account/executions/A/artifacts?**', route => route.fulfill({ json: { count: 1, data: [{
+    id: 1, artifact_type: 'account_snapshot', content: { source: 'real', account_assets: {
+      positions: [{ symbol: 'TEST', volume: 1, direction: '多头' }],
+    } },
+  }] } }))
+  await visit(page, '/accounts/7/executions?range=custom&from=2026-10-15&to=2026-10-15')
+  await page.getByRole('button', { name: '展开执行 1', exact: true }).click()
+  const evidence = page.getByTestId('execution-evidence')
+  const trades = page.getByTestId('journal-trades')
+  await expect(evidence.getByRole('button', { name: '本次调仓', exact: true })).toBeVisible()
+  await expect(trades.locator('tbody tr')).toHaveCount(2)
+  await page.evaluate(() => {
+    const original = document.startViewTransition.bind(document)
+    Object.assign(window, { journalTransitionCalls: 0 })
+    document.startViewTransition = (...args) => {
+      (window as unknown as { journalTransitionCalls: number }).journalTransitionCalls++
+      return original(...args)
+    }
+  })
+  for (let i = 0; i < 3; i++) {
+    await evidence.getByRole('button', { name: '全部持仓', exact: true }).click()
+    await expect(evidence.getByRole('columnheader', { name: '执行后持仓', exact: true })).toBeVisible()
+    await evidence.getByRole('button', { name: '本次调仓', exact: true }).click()
+    await expect(evidence.getByRole('columnheader', { name: '品种 / 动作', exact: true })).toBeVisible()
+    for (const side of ['买入', '卖出', '全部方向']) {
+      const button = trades.getByRole('button', { name: side, exact: true })
+      await button.click()
+      await expect(button).toHaveAttribute('aria-pressed', 'true')
+      await expect(trades.locator('tbody tr')).toHaveCount(side === '全部方向' ? 2 : 1)
+    }
+  }
+  expect(await page.evaluate(() => (window as unknown as { journalTransitionCalls: number }).journalTransitionCalls)).toBe(0)
+  await page.screenshot({ path: info.outputPath('journal-local-switches.png'), fullPage: true })
+})
+
+for (const width of [1280, 320]) test(`错误详情入口与原因同组，${width}px布局可读并保留原文`, async ({ page }, info) => {
+  const raw = '目标未完成: 当前持仓=0.062，目标持仓=1.401'
+  const executionId = 'e43d101225e5487ca290cbe4f3b24019'
+  await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', { value: { writeText: async (text: string) => {
+    (window as unknown as { copiedId: string }).copiedId = text
+  } } }))
+  await defaults(page, 'FAILED')
+  await page.route(`**/api/v1/account/executions/${executionId}`, route => route.fulfill({ json: {
+    execution_id: executionId, account_id: 7, status: 'FAILED', output_status: 'PARTIAL', error: raw,
+    created_at: '2026-10-15T10:00:00', started_at: '2026-10-15T10:00:00', finished_at: '2026-10-15T10:00:20',
+  } }))
+  await page.setViewportSize({ width, height: 800 })
+  await visit(page, `/accounts/7/executions/${executionId}`)
+  await page.evaluate(dark => document.documentElement.classList.toggle('dark', dark), width === 1280)
+  const reason = page.getByText('持仓未达目标：0.062 / 1.401', { exact: true })
+  const notice = reason.locator('..')
+  const opener = notice.getByRole('button', { name: '查看错误详情 ›', exact: true })
+  await expect(opener).toBeVisible()
+  await expect(page.getByRole('button', { name: '查看错误详情', exact: true })).toHaveCount(0)
+  const identity = page.getByLabel(`执行 ID：${executionId}`, { exact: true })
+  await expect(identity).toContainText('e43d10…4019')
+  const identityBox = (await identity.boundingBox())!
+  const headlineBox = (await page.getByText('执行未全部完成', { exact: true }).boundingBox())!
+  if (width < 640) expect(identityBox.y).toBeGreaterThanOrEqual(headlineBox.y + headlineBox.height)
+  else {
+    expect(identityBox.x).toBeGreaterThan(headlineBox.x + headlineBox.width)
+    expect(Math.abs(identityBox.y - headlineBox.y)).toBeLessThan(6)
+  }
+  await identity.focus()
+  await expect(page.getByRole('tooltip')).toContainText(executionId)
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('tooltip')).toBeHidden()
+  const textBox = (await reason.boundingBox())!
+  const buttonBox = (await opener.boundingBox())!
+  if (width < 640) expect(buttonBox.y).toBeGreaterThanOrEqual(textBox.y + textBox.height)
+  else {
+    expect(buttonBox.x).toBeGreaterThan(textBox.x + textBox.width)
+    expect(buttonBox.x - textBox.x - textBox.width).toBeLessThan(24)
+    expect(Math.abs(buttonBox.y - textBox.y)).toBeLessThan(5)
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.screenshot({ path: info.outputPath(`error-details-inline-${width}.png`), fullPage: true })
+  await opener.click()
+  const dialog = page.getByRole('dialog', { name: '执行错误详情', exact: true })
+  await expect(dialog).toContainText(raw)
+  await dialog.getByRole('button', { name: '关闭详情', exact: true }).click()
+  await expect(opener).toBeFocused()
+  await page.getByRole('button', { name: '复制执行 ID', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => (window as unknown as { copiedId: string }).copiedId)).toBe(executionId)
+})
+
 test('execution page exports running evidence as a sharing ZIP with a truthful completion notice', async ({ page }) => {
   await defaults(page)
   await visit(page)

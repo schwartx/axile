@@ -138,6 +138,109 @@ test('组合归档失败可重试，切换归档列表可查看只读详情并�
   expect(writes).toEqual(['POST /api/v1/portfolio/1/archive', 'POST /api/v1/portfolio/1/archive', 'POST /api/v1/portfolio/1/restore'])
 })
 
+test('卡片内归档确认相对视口居中且遮罩覆盖全页', async ({ page }, info) => {
+  const writes = await mockArchive(page)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.goto('/e2e/archival.html')
+  const archive = page.getByRole('button', { name: '归档组合', exact: true })
+  const card = page.locator('.rounded-card').filter({ has: archive })
+  await card.evaluate(element => { element.style.transform = 'translateY(-1px)' })
+  await archive.click()
+  const dialog = page.getByRole('dialog').filter({ has: page.getByText('归档组合', { exact: true }) })
+  await expect(dialog).toBeVisible()
+  await expect.poll(async () => {
+    const box = (await dialog.boundingBox())!
+    return Math.abs(box.x + box.width / 2 - 640) + Math.abs(box.y + box.height / 2 - 400)
+  }).toBeLessThan(2)
+  const scrim = page.locator('.bg-scrim.opacity-100')
+  await expect(scrim).toHaveCount(1)
+  expect(await scrim.boundingBox()).toEqual({ x: 0, y: 0, width: 1280, height: 800 })
+  await page.screenshot({ path: info.outputPath('archive-confirm-viewport.png'), fullPage: true })
+  await page.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(archive).toBeFocused()
+  expect(writes).toEqual([])
+})
+
+test('删除组合列出归档账户并建议归档，失败后可重试且不发送删除', async ({ page }, info) => {
+  const writes = await mockArchive(page)
+  let archivedReads = 0
+  await page.route('**/api/v1/account/dashboard?archived=true', route => {
+    archivedReads++
+    return route.fulfill({ json: { data: [
+    { account_id: 7, name: '历史账户甲', portfolio_id: 1, archived_at: '2026-11-09T01:00:00Z', trade_channel: 'ctp', market: '期货' },
+    { account_id: 8, name: '历史账户乙', portfolio_id: 1, archived_at: '2026-11-09T01:00:00Z', trade_channel: 'ctp', market: '期货' },
+    { account_id: 9, name: '无关账户', portfolio_id: 2, archived_at: '2026-11-09T01:00:00Z', trade_channel: 'ctp', market: '期货' },
+    ] } })
+  })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/e2e/archival.html')
+  await expect(page.getByText('未绑定', { exact: true })).toBeVisible()
+  await expect(page.getByText('历史账户甲')).toHaveCount(0)
+  await expect(page.getByText('建议归档组合，保留配置与绑定。')).toHaveCount(0)
+  expect(archivedReads).toBe(0)
+  await page.getByRole('button', { name: '删除组合', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '无法删除组合', exact: true })
+  await expect(dialog.getByText('以下已归档账户仍绑定「商品趋势」：')).toBeVisible()
+  expect(archivedReads).toBe(1)
+  await expect(dialog.getByRole('link', { name: /历史账户甲/ })).toHaveAttribute('href', '/accounts/7')
+  await expect(dialog.getByRole('link', { name: /历史账户乙/ })).toHaveAttribute('href', '/accounts/8')
+  await expect(dialog.getByText('#7 · 已归档')).toBeVisible()
+  await expect(dialog.getByText('#8 · 已归档')).toBeVisible()
+  await expect(dialog.getByText('无关账户')).toHaveCount(0)
+  await expect(dialog.getByText('建议归档组合，保留配置与绑定。')).toBeVisible()
+  await expect(dialog.getByRole('button', { name: '归档组合', exact: true })).toBeInViewport()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  await page.screenshot({ path: info.outputPath('archived-bindings-narrow.png'), fullPage: true })
+  await dialog.getByRole('button', { name: '归档组合', exact: true }).click()
+  await expect(dialog.getByRole('alert')).toContainText('归档组合失败')
+  await dialog.getByRole('button', { name: '归档组合', exact: true }).click()
+  await expect(dialog).toBeHidden()
+  await expect(page.getByText('还没有组合', { exact: true })).toBeVisible()
+  expect(writes).toEqual(['POST /api/v1/portfolio/1/archive', 'POST /api/v1/portfolio/1/archive'])
+})
+
+test('点击删除时绑定查询失败则中止，重新点击可重试', async ({ page }) => {
+  const writes = await mockArchive(page)
+  let reject = true
+  await page.route('**/api/v1/account/dashboard?archived=true', route => {
+    if (reject) {
+      reject = false
+      return route.fulfill({ status: 503, json: { detail: '读取失败' } })
+    }
+    return route.fulfill({ json: { data: [] } })
+  })
+  await page.goto('/e2e/archival.html')
+  await expect(page.getByText('未绑定', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '删除组合', exact: true }).click()
+  await expect(page.getByRole('alert')).toContainText('读取失败')
+  await expect(page.getByText('删除「商品趋势」。此操作不可撤销。')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '删除组合', exact: true })).toBeEnabled()
+  await page.getByRole('button', { name: '删除组合', exact: true }).click()
+  await expect(page.getByText('删除「商品趋势」。此操作不可撤销。')).toBeVisible()
+  expect(writes).toEqual([])
+})
+
+test('未归档账户仍绑定时列出所有绑定且不建议直接归档', async ({ page }) => {
+  const writes = await mockArchive(page)
+  await page.route('**/api/v1/account/dashboard?archived=true', route => route.fulfill({ json: { data: [
+    { account_id: 7, name: '历史账户甲', portfolio_id: 1, archived_at: '2026-11-09T01:00:00Z', trade_channel: 'ctp', market: '期货' },
+  ] } }))
+  await page.goto('/e2e/archival.html')
+  await expect(page.getByText('未绑定', { exact: true })).toBeVisible()
+  await page.evaluate(async () => {
+    const domainPath = '/src/stores/domain.ts'
+    const { useDomainStore } = await import(domainPath)
+    useDomainStore.setState({ accounts: [{ account_id: 10, name: '当前账户', portfolio_id: 1, trade_channel: 'ctp', market: '期货' }] })
+  })
+  await page.getByRole('button', { name: '删除组合', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '无法删除组合', exact: true })
+  await expect(dialog.getByRole('link', { name: /当前账户/ })).toHaveAttribute('href', '/accounts/10')
+  await expect(dialog.getByRole('link', { name: /历史账户甲/ })).toHaveAttribute('href', '/accounts/7')
+  await expect(dialog.getByRole('button', { name: '归档组合', exact: true })).toHaveCount(0)
+  await expect(dialog.getByText('请先在未归档账户中改绑或解绑。')).toBeVisible()
+  expect(writes).toEqual([])
+})
+
 for (const suffix of ['?account', '?account&edit']) test(`归档账户旧链接${suffix}只读且不发送运行请求`, async ({ page }, info) => {
   const writes = await mockArchive(page)
   await page.goto(`/e2e/archival.html${suffix}`)

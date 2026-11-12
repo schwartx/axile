@@ -5,7 +5,6 @@ import { ChevronDown, ExternalLink } from 'lucide-react'
 import { Segmented } from '@/components/ui/Segmented'
 import { Link } from '@/components/ui/nav'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
-import { withViewTransition } from '@/lib/viewTransition'
 import { usePolling } from '@/lib/hooks/usePolling'
 import { getActivitySymbols } from '@/lib/api/accounts'
 import { getPerformanceCosts, type CostPage, type CostQuery } from '@/lib/api/performance'
@@ -86,7 +85,7 @@ function TradeList({ accountId, scope, trades, expansion, update, currency, unit
   const pending = scope ? poll.loading : !!loading
   return <div className="py-3" data-testid="journal-trades">
     <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-ink-3"><span>{scoped ? '区间内成交' : '逐笔成交'} · {(scope && !poll.data) || pending ? '—' : count} 笔</span>
-      <Segmented size="sm" ariaLabel="成交方向" value={expansion.side} options={SIDES} onChange={side => withViewTransition(() => update({ ...expansion, side, count: 20, cursors: [undefined] }))} /></div>
+      <Segmented size="sm" ariaLabel="成交方向" value={expansion.side} options={SIDES} onChange={side => update({ ...expansion, side, count: 20, cursors: [undefined] })} /></div>
     <ErrorNotice intent="read" title="成交读取失败" hasData={poll.data != null} error={poll.error} onRetry={poll.refresh} />
     {pending && <p role="status" className="py-3 text-xs text-ink-3">成交读取中</p>}
     <TradeTable trades={shown} currency={currency} units={units} detailLink={detailLink} />
