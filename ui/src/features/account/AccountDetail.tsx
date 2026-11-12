@@ -422,7 +422,7 @@ export function AccountDetail({
         evidence={[...accountEvidence, { label: 'execution_id', value: runner.executionId ?? '' }, { label: '最后已知状态', value: runner.lastStatus?.status ?? '已受理' }]} />
       {/* Hero */}
       <Card className="p-3">
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <div className="flex min-w-0 flex-wrap items-center gap-3">
             <BackLink to="/" label="返回所有账户" />
             {/* 与舰队卡 / 组合行 / 编辑页标题名配对做共享元素 FLIP（平移 + 微缩）。 */}
@@ -436,9 +436,9 @@ export function AccountDetail({
             <Chip style={nameVt ? { viewTransitionName: `account-channel-${accountId}` } : undefined}>
               {channelLabel(item.trade_channel, item.market)}
             </Chip>
-            {gate.gate === 'paused' && <Chip>{gate.label}</Chip>}
-            <AccountConnectionStatus accountId={accountId} />
           </div>
+          {gate.gate === 'paused' && <Chip>{gate.label}</Chip>}
+          <AccountConnectionStatus accountId={accountId} />
           <AccountActions
             archiveAction={(className) => <ArchiveAction kind="account" id={accountId} name={item.name} className={className}
               onChanged={async () => { await onDashboardRefresh?.(); await account.refresh() }} />}
@@ -475,168 +475,162 @@ export function AccountDetail({
           </div>
         )}
 
-        <div>
-          <div className="grid grid-cols-1 items-center gap-4 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-            <div className="min-w-0">
-              {/* 当前权益独立于历史绩效金额。 */}
-              <div
-                className="num text-[35px] leading-tight font-[640] tracking-tight"
+        <div className="mt-1.5 text-[14.5px] text-ink-2">
+          {'组合 '}
+          {portfolioId != null ? (
+            <Link
+              to={`/portfolios/${portfolioId}/edit`}
+              className="inline-flex min-w-0 max-w-60 align-middle font-semibold text-accent hover:underline"
+            >
+              {/* 组合名是自由文本、长度无界：槽位截断 + hover 原地播全名。 */}
+              <OverflowText className="min-w-0" text={portfolioName ?? `#${portfolioId}`} />
+            </Link>
+          ) : (
+            <span className="align-middle text-ink-3">未绑定</span>
+          )}
+          <Tooltip content={portfolioId != null ? '更换组合' : '绑定组合'}>
+            <span className="ml-0.5 inline-flex align-middle">
+              <Link
+                to={`/accounts/${accountId}/edit/portfolio`}
+                aria-label={portfolioId != null ? '更换组合' : '绑定组合'}
+                className="grid h-5 w-5 place-items-center rounded-md text-ink-3 hover:bg-fill hover:text-ink-1"
               >
+                <ArrowLeftRight size={13} aria-hidden />
+              </Link>
+            </span>
+          </Tooltip>
+        </div>
+        <div className="mt-2 flex flex-wrap items-end gap-x-6 gap-y-2">
+          <div className="min-w-0 max-w-full shrink-0 [--number-flow-mask-height:0.08em]">
+            {/* 当前权益独立于历史绩效金额。 */}
+            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+              <div className="num whitespace-nowrap text-[35px] leading-none font-[640] tracking-tight">
                 {equity == null ? '—' : <NumberTicker value={equity} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} />}
                 <span className="ml-1.5 text-[17px] font-medium text-ink-3">{displayCurrencyUnit(item.currency)}</span>
               </div>
-              <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-ink-3">
-                <span><AssetObservationTime observedAt={item.asset_observed_at} /></span>
-            <Tooltip content={connection.status !== 'ready' ? '连接账户后可刷新资产' : '刷新账户资产'}>
-              <span className="inline-flex">
-                <button
-                  type="button"
-                  onClick={onRefreshAssets}
-                  disabled={refreshingAssets || connectedAssets.refreshing || connection.status !== 'ready'}
-                  aria-label={refreshingAssets || connectedAssets.refreshing ? '正在查询账户资产' : '刷新账户资产'}
-                  title={connection.status !== 'ready' ? '连接账户后可刷新资产' : '刷新账户资产'}
-                  className="grid h-6 w-6 cursor-pointer place-items-center rounded-md text-ink-3 hover:bg-fill hover:text-ink-1 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
-                >
-                  <RefreshCw
-                    size={14}
-                    className={refreshingAssets || connectedAssets.refreshing ? 'animate-spin motion-reduce:animate-none' : undefined}
-                  />
-                </button>
-              </span>
-            </Tooltip>
-                <AssetRefreshFeedback accountId={accountId} manualError={assetRefreshError} automaticError={connectedAssets.error} />
-              </div>
-              <div className="mt-1.5 text-[14.5px] text-ink-2">
-                <span className="inline-flex items-baseline">
-                  {pct == null ? <span>{dayLabel} —</span> : (
-                    <span className={`num ${pct > 0 ? 'text-up' : pct < 0 ? 'text-down' : 'text-ink-2'}`}>
-                      {dayLabel} {pct >= 0 ? '+' : '−'}
-                      <NumberTicker value={Math.abs(pct)} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />
-                    </span>
-                  )}
-                  <PerformanceStatus status={item.performance?.status} />
-                </span>
-                {' · 组合 '}
-                {portfolioId != null ? (
-                  <Link
-                    to={`/portfolios/${portfolioId}/edit`}
-                    className="inline-flex min-w-0 max-w-60 align-middle font-semibold text-accent hover:underline"
-                  >
-                    {/* 组合名是自由文本、长度无界：槽位截断 + hover 原地播全名。 */}
-                    <OverflowText className="min-w-0" text={portfolioName ?? `#${portfolioId}`} />
-                  </Link>
-                ) : (
-                  <span className="align-middle text-ink-3">未绑定</span>
-                )}
-                <Tooltip content={portfolioId != null ? '更换组合' : '绑定组合'}>
-                  <span className="ml-0.5 inline-flex align-middle">
-                    <Link
-                      to={`/accounts/${accountId}/edit/portfolio`}
-                      aria-label={portfolioId != null ? '更换组合' : '绑定组合'}
-                      className="grid h-5 w-5 place-items-center rounded-md text-ink-3 hover:bg-fill hover:text-ink-1"
-                    >
-                      <ArrowLeftRight size={13} aria-hidden />
-                    </Link>
+              <span className="inline-flex items-baseline whitespace-nowrap text-[14.5px] text-ink-2">
+                {pct == null ? <span>{dayLabel} —</span> : (
+                  <span className={`num ${pct > 0 ? 'text-up' : pct < 0 ? 'text-down' : 'text-ink-2'}`}>
+                    {dayLabel} {pct >= 0 ? '+' : '−'}
+                    <NumberTicker value={Math.abs(pct)} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />
                   </span>
-                </Tooltip>
-              </div>
+                )}
+                <PerformanceStatus status={item.performance?.status} />
+              </span>
             </div>
-            {/* 仅账户累计收益线展开；专用导航关闭此次金额/标题共享过渡。 */}
-            <div className="flex min-w-0 items-center justify-end">
-              <PerformanceCurveLink accountId={accountId} summary={item.performance} source="detail" width={200} height={64} />
+            <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-ink-3">
+              <span><AssetObservationTime observedAt={item.asset_observed_at} /></span>
+              <Tooltip content={connection.status !== 'ready' ? '连接账户后可刷新资产' : '刷新账户资产'}>
+                <span className="inline-flex">
+                  <button
+                    type="button"
+                    onClick={onRefreshAssets}
+                    disabled={refreshingAssets || connectedAssets.refreshing || connection.status !== 'ready'}
+                    aria-label={refreshingAssets || connectedAssets.refreshing ? '正在查询账户资产' : '刷新账户资产'}
+                    title={connection.status !== 'ready' ? '连接账户后可刷新资产' : '刷新账户资产'}
+                    className="grid h-6 w-6 cursor-pointer place-items-center rounded-md text-ink-3 hover:bg-fill hover:text-ink-1 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
+                  >
+                    <RefreshCw
+                      size={14}
+                      className={refreshingAssets || connectedAssets.refreshing ? 'animate-spin motion-reduce:animate-none' : undefined}
+                    />
+                  </button>
+                </span>
+              </Tooltip>
+              <AssetRefreshFeedback accountId={accountId} manualError={assetRefreshError} automaticError={connectedAssets.error} />
             </div>
+          </div>
+          <div className="ml-auto flex min-w-0 justify-end">
+            <PerformanceCurveLink accountId={accountId} summary={item.performance} source="detail" width={200} height={48} />
           </div>
         </div>
 
-        {/* 最近执行：结论与记录摘要共享一行，窄屏按完整信息组换行。 */}
-        <div className="mt-2 flex flex-wrap items-center justify-between gap-x-6 gap-y-1.5">
-        <div
-          className={`relative inline-flex max-w-full min-w-0 items-center gap-2 text-[14px] font-semibold tracking-tight transition-[padding-left] duration-[440ms] ease-[cubic-bezier(.4,0,.2,1)] motion-reduce:transition-none ${
-            isBusy ? 'pl-[18px]' : 'pl-0'
-          } ${isTerminating ? 'text-warn' : isBusy ? 'text-accent' : idleStatusTextClass}${
-            statusNavId ? ' cursor-pointer hover:opacity-80' : ''
-          }`}
-          role={statusNavId ? 'link' : undefined}
-          tabIndex={statusNavId ? 0 : undefined}
-          title={latestExecId ? latestOutcome?.text || '查看执行详情' : undefined}
-          onClick={goStatusNav}
-          onKeyDown={
-            goStatusNav
-              ? (e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault()
-                    goStatusNav()
+        <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-1 text-[13px] text-ink-3">
+            {latestRecord && latestOutcome ? (
+              <div>
+                {formatRecentExecution(latestRecord.created_at, Date.now())}
+                {latestOutcome.symbolCount != null && latestOutcome.symbolCount > 0 ? ` · ${latestOutcome.symbolCount} 个品种` : ''}
+                {latestOutcome.tradeCount == null ? ' · 成交信息未获取' : latestOutcome.tradeCount > 0 ? ` · ${latestOutcome.tradeCount} 笔成交` : ' · 未记录成交'}
+              </div>
+            ) : <ScheduleSummary lastExecutedAt={null} nextRunAt={nextRun.data?.next_execution_times[0] ?? null} />}
+          </div>
+          <div
+            className={`relative inline-flex max-w-full min-w-0 items-center gap-2 text-[14px] font-semibold tracking-tight transition-[padding-left] duration-[440ms] ease-[cubic-bezier(.4,0,.2,1)] motion-reduce:transition-none ${
+              isBusy ? 'pl-[18px]' : 'pl-0'
+            } ${isTerminating ? 'text-warn' : isBusy ? 'text-accent' : idleStatusTextClass}${
+              statusNavId ? ' cursor-pointer hover:opacity-80' : ''
+            }`}
+            role={statusNavId ? 'link' : undefined}
+            tabIndex={statusNavId ? 0 : undefined}
+            title={latestExecId ? latestOutcome?.text || '查看执行详情' : undefined}
+            onClick={goStatusNav}
+            onKeyDown={
+              goStatusNav
+                ? (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      goStatusNav()
+                    }
                   }
-                }
-              : undefined
-          }
-        >
-          {/* 圆点绝对定位、落进 padding-left 腾出的 18px 里：进执行时靠容器 padding 过渡把正文
-              「温和推开」而非被撞开；圆点自身不占 flow、不推挤。my-auto 竖直居中（走 margin，
-              不占 transform，避让 exec-breathe 的 scale）。 */}
-          {isBusy && (
-            <span className="exec-dot absolute left-0 top-0 bottom-0 my-auto h-2.5 w-2.5" aria-hidden />
-          )}
-          {/*
-           * exec-flow 必须挂在真正有文字节点的层（textClassName），不能套在槽外：
-           * background-clip:text + 透明字色只对「本元素自己的字」生效，套父级会让字消失。
-           * 颜色也随 textClassName 按层快照（墨随句走）：旧句以旧色褪——琥珀告警句
-           * 退场途中不会被瞬时染蓝；父级色只供箭头/相位副标等当前态元素。
-           */}
-          <InkRewrite
-            text={statusHeadline}
-            tone="prose"
-            fluid
-            className="min-w-0"
-            textClassName={
-              isTerminating
-                ? 'text-warn'
-                : isActivelyExecuting
-                  ? 'text-accent exec-flow'
-                  : isBusy
-                    ? 'text-accent'
-                    : idleStatusTextClass
+                : undefined
             }
-          />
-          {/* 相位副标：外壳 phase-grow 让入场 footprint 宽度 0→内容（grid-fr，箭头随 reflow 挪、
-              进执行那刻不被瞬时占位顶跳）；内层 phase-enter 管 opacity 淡入。相位词逐步推进走
-              label 档日记换字（触发→冻结输入→算目标→下单→对账），宽变由内层 InkRewrite fluid 自理。
-              首帧不播、纯 opacity 无 blur，不与主句流光抢；「·」静态钉住只重写相位词。 */}
-          {isActivelyExecuting && (
-            <span className="phase-grow">
-              <span className="phase-enter inline-flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap text-[16px] font-medium text-ink-2">
-                <span aria-hidden>·</span>
-                <InkRewrite text={phaseLabel(live?.phase)} tone="label" fluid />
+          >
+            {/* 圆点绝对定位、落进 padding-left 腾出的 18px 里：进执行时靠容器 padding 过渡把正文
+                「温和推开」而非被撞开；圆点自身不占 flow、不推挤。my-auto 竖直居中（走 margin，
+                不占 transform，避让 exec-breathe 的 scale）。 */}
+            {isBusy && (
+              <span className="exec-dot absolute left-0 top-0 bottom-0 my-auto h-2.5 w-2.5" aria-hidden />
+            )}
+            {/*
+             * exec-flow 必须挂在真正有文字节点的层（textClassName），不能套在槽外：
+             * background-clip:text + 透明字色只对「本元素自己的字」生效，套父级会让字消失。
+             * 颜色也随 textClassName 按层快照（墨随句走）：旧句以旧色褪——琥珀告警句
+             * 退场途中不会被瞬时染蓝；父级色只供箭头/相位副标等当前态元素。
+             */}
+            <InkRewrite
+              text={statusHeadline}
+              tone="prose"
+              fluid
+              className="min-w-0"
+              textClassName={
+                isTerminating
+                  ? 'text-warn'
+                  : isActivelyExecuting
+                    ? 'text-accent exec-flow'
+                    : isBusy
+                      ? 'text-accent'
+                      : idleStatusTextClass
+              }
+            />
+            {/* 相位副标：外壳 phase-grow 让入场 footprint 宽度 0→内容（grid-fr，箭头随 reflow 挪、
+                进执行那刻不被瞬时占位顶跳）；内层 phase-enter 管 opacity 淡入。相位词逐步推进走
+                label 档日记换字（触发→冻结输入→算目标→下单→对账），宽变由内层 InkRewrite fluid 自理。
+                首帧不播、纯 opacity 无 blur，不与主句流光抢；「·」静态钉住只重写相位词。 */}
+            {isActivelyExecuting && (
+              <span className="phase-grow">
+                <span className="phase-enter inline-flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap text-[16px] font-medium text-ink-2">
+                  <span aria-hidden>·</span>
+                  <InkRewrite text={phaseLabel(live?.phase)} tone="label" fluid />
+                </span>
               </span>
-            </span>
-          )}
-          {isActivelyExecuting && live?.pendingExecutionId ? (
-            <span className="text-[16px] font-medium text-ink-2">· 结束后再调一次</span>
-          ) : null}
-          {/* 可点暗示：执行中用生命体征箭头；失败「需要看看」用静止 →，色随父级琥珀。
-              箭头纯 inline、只跟随 reflow（不再挂 transform-FLIP）：上游全走 CSS 布局过渡
-              （槽宽 + 圆点 padding），箭头随之连续挪——单一范式，无采样、无自激。
-              exec-arrow 自体漂移只在 running 时挂在此层。 */}
-          {statusNavId && (
-            <span
-              className={`inline-block text-[16px] font-medium ${isActivelyExecuting ? 'exec-arrow' : ''}`}
-              aria-hidden
-            >
-              →
-            </span>
-          )}
-        </div>
-        <div className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-1 text-[13px] text-ink-3">
-          {latestRecord && latestOutcome ? (
-            <div>
-              {formatRecentExecution(latestRecord.created_at, Date.now())}
-              {latestOutcome.symbolCount != null && latestOutcome.symbolCount > 0 ? ` · ${latestOutcome.symbolCount} 个品种` : ''}
-              {latestOutcome.tradeCount == null ? ' · 成交信息未获取' : latestOutcome.tradeCount > 0 ? ` · ${latestOutcome.tradeCount} 笔成交` : ' · 未记录成交'}
-            </div>
-          ) : <ScheduleSummary lastExecutedAt={null} nextRunAt={nextRun.data?.next_execution_times[0] ?? null} />}
-          {acc && <NotificationIndicator account={acc} executionId={latestRecord?.execution_id ?? null} />}
-        </div>
-
+            )}
+            {isActivelyExecuting && live?.pendingExecutionId ? (
+              <span className="text-[16px] font-medium text-ink-2">· 结束后再调一次</span>
+            ) : null}
+            {/* 可点暗示：执行中用生命体征箭头；失败「需要看看」用静止 →，色随父级琥珀。
+                箭头纯 inline、只跟随 reflow（不再挂 transform-FLIP）：上游全走 CSS 布局过渡
+                （槽宽 + 圆点 padding），箭头随之连续挪——单一范式，无采样、无自激。
+                exec-arrow 自体漂移只在 running 时挂在此层。 */}
+            {statusNavId && (
+              <span
+                className={`inline-block text-[16px] font-medium ${isActivelyExecuting ? 'exec-arrow' : ''}`}
+                aria-hidden
+              >
+                →
+              </span>
+            )}
+          </div>
         </div>
 
         <div
@@ -704,6 +698,9 @@ export function AccountDetail({
             onActivate={(event) => activateAlgorithm('empty', event)}
           />
           <AccountControlSummary accountId={accountId} />
+          {acc && <div className="ml-auto flex items-center">
+            <NotificationIndicator account={acc} executionId={latestRecord?.execution_id ?? null} />
+          </div>}
         </div>
       </Card>
       <CopyAccountDialog accountId={accountId} name={item.name} isStarted={isStarted} isBusy={isBusy} open={copyOpen} onClose={() => setCopyOpen(false)} />

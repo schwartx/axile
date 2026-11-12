@@ -75,6 +75,24 @@ test.beforeEach(async ({ page }) => {
   await clipboard(page)
 })
 
+test('observed equity keeps number animation padding compact above the asset timestamp', async ({ page }, testInfo) => {
+  await defaults(page)
+  await mockConnectionSnapshot(page, { status: 'ready', observed_at: null, message: null, error: null })
+  await page.route('**/api/v1/account/dashboard', route => route.fulfill({ json: { data: [{
+    ...dashboardItem, total_asset: 99625.52, asset_observed_at: new Date().toISOString(),
+  }] } }))
+  await page.goto('/e2e/errors.html?mode=outage')
+  const ticker = page.locator('number-flow-react').first()
+  await expect(ticker).toBeVisible()
+  const dimensions = await ticker.evaluate(element => ({
+    height: element.getBoundingClientRect().height,
+    fontSize: parseFloat(getComputedStyle(element).fontSize),
+  }))
+  expect(dimensions.height).toBeLessThanOrEqual(dimensions.fontSize + 6)
+  await expect(page.getByText(/^资产查询于/)).toBeVisible()
+  await page.screenshot({ path: testInfo.outputPath('compact-observed-equity.png') })
+})
+
 test('all first-read network failures share one global notice and recover without writes', async ({ page }) => {
   await defaults(page)
   let offline = true
