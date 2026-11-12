@@ -28,29 +28,61 @@ async function mock(page: Page, options: { legacy?: boolean; unsynced?: boolean;
   await page.route('**/api/v1/account/*/orders**', route => route.fulfill({ json: orders }))
 }
 
-test('quantity rows align symbol text with quantities with and without buttons', async ({ page }, testInfo) => {
+test('quantity details share the ruler layout with responsive rows and optional symbol buttons', async ({ page }, testInfo) => {
   await mock(page, { emptyOrders: true })
   await page.addInitScript(() => Object.assign(window, { holdingsPlan: {
-    target_mode: 'quantity', off_symbol_count: 0,
+    target_mode: 'quantity', off_symbol_count: 1,
     observed_at: null, target_calculated_at: null,
-    rows: [['513090.SH', 1800], ['513050.SH', 34700]].map(([symbol, quantity]) => ({
+    rows: [['513090.SH', 1800, 1800], ['513050.SH', 8600, 7500]].map(([symbol, current, wanted]) => ({
       symbol, current_weight: null, target_weight: null,
-      current_quantity: quantity, target_quantity: quantity, aligned: true, action: 'aligned', side: 'none',
+      current_quantity: current, target_quantity: wanted, aligned: current === wanted,
+      action: current === wanted ? 'aligned' : 'reduce', side: current === wanted ? 'none' : 'sell',
     })),
+  } }))
+  await page.route('**/api/v1/account/*/target_snapshot', route => route.fulfill({ json: {
+    ...target, target_mode: 'quantity', weights: {},
+    raw_targets: { '513090.SH': 1800, '513050.SH': 7599 },
+    sizing: { ...target.sizing, rows: { '513050.SH': {
+      ...evidence, symbol: '513050.SH', sizing_mode: 'quantity', strategy_weight: null, account_weight: null,
+      raw_quantity: 7599, target_quantity: 7500, current_quantity: 8600,
+      quantity_step: 100, reason_code: 'COMMON.SIZING.QUANTIZED',
+    } } },
   } }))
   for (const plain of [false, true]) {
     await page.goto(`/e2e/holdings.html${plain ? '?plain' : ''}`)
-    const table = page.getByRole('table', { name: '目标数量与持仓' })
-    await expect(table.getByRole('cell')).toHaveCount(6)
-    for (const width of [800, 416]) {
+    const view = page.getByRole('region', { name: '目标数量与持仓' })
+    await expect(view.getByText('2 只', { exact: false }).first()).toBeVisible()
+    await expect(view.getByText('数量标尺逐品种缩放，不代表资金权重', { exact: false })).toBeVisible()
+    await expect(view.getByText('实际 多8,600股', { exact: true })).toBeVisible()
+    await expect(view.getByText('待调整', { exact: false })).toBeVisible()
+    for (const width of [1280, 800, 416]) {
       await page.setViewportSize({ width, height: 600 })
-      for (const row of await table.getByRole('row').filter({ has: page.getByRole('cell') }).all()) {
-        const centers = await row.locator('.overflow-text-static, [role="cell"].num').evaluateAll(nodes =>
-          nodes.map(node => { const box = node.getBoundingClientRect(); return box.y + box.height / 2 }))
-        expect(Math.max(...centers) - Math.min(...centers)).toBeLessThan(1)
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+      const row = view.locator('.border-t').filter({ hasText: '513050.SH' })
+      const columns = await row.locator(':scope > div').evaluateAll(nodes => nodes.map(node => {
+        const box = node.getBoundingClientRect()
+        return { x: box.x, y: box.y, right: box.right }
+      }))
+      expect(columns).toHaveLength(4)
+      if (width === 1280) {
+        expect(columns[0].x).toBeLessThan(columns[1].x)
+        expect(columns[1].right).toBeLessThanOrEqual(columns[2].x)
+        expect(columns[2].right).toBeLessThanOrEqual(columns[3].x)
+        await expect(view.getByText('数量目标 → 可执行目标', { exact: true })).toBeVisible()
+      } else if (width === 416) {
+        expect(columns[1].x).toBe(columns[2].x)
+        expect(columns[2].y).toBeGreaterThan(columns[1].y)
+        expect(columns[3].y).toBeGreaterThan(columns[2].y)
       }
-      if (!plain && width === 800) await table.screenshot({ path: testInfo.outputPath('quantity-alignment.png') })
+      if (!plain && width !== 800) await view.screenshot({ path: testInfo.outputPath(`quantity-${width}.png`) })
     }
+    const explanation = view.getByRole('button', { name: /多7,599股 → 多7,500股/ })
+    await explanation.click()
+    await expect(explanation).toHaveAttribute('aria-expanded', 'true')
+    await expect(view.getByText('直接数量目标 多7,599股', { exact: true })).toBeVisible()
+    await explanation.click()
+    await expect(explanation).toHaveAttribute('aria-expanded', 'false')
+    await expect(view.getByRole('button', { name: '查看 513050.SH 持仓与目标' })).toHaveCount(plain ? 0 : 1)
   }
 })
 

@@ -17,8 +17,8 @@ function pctLabel(pct: number): string {
   return `${pct > 0 ? '多' : '空'}${Math.abs(pct).toFixed(1)}%`
 }
 
-function dirCls(pct: number): string {
-  if (Math.abs(pct) < 0.05) return 'text-ink-1'
+function dirCls(pct: number | null, quantityMode: boolean): string {
+  if (pct == null || (quantityMode ? pct === 0 : Math.abs(pct) < 0.05)) return 'text-ink-1'
   return pct > 0 ? 'text-up' : 'text-down'
 }
 
@@ -27,37 +27,46 @@ function axisX(value: number, scale: number): number {
 }
 
 /** 零锚持仓标尺：实心段配合斜纹调整段，翻向时分别表示目标侧与当前侧。 */
-function PositionRuler({ row, scale }: { row: RebalanceRow; scale: number }) {
+function PositionRuler({ row, scale, quantityLabel }: {
+  row: { cur: number | null; tgt: number | null; action: RebalanceRow['action'] }
+  scale: number
+  quantityLabel?: string
+}) {
+  const quantityMode = quantityLabel !== undefined
+  const label = (value: number | null) => quantityMode ? quantityText(value, quantityLabel) : value == null ? '—' : pctLabel(value)
   const zero = axisX(0, scale)
-  const current = axisX(row.cur, scale)
-  const target = axisX(row.tgt, scale)
+  const current = axisX(row.cur ?? 0, scale)
+  const target = axisX(row.tgt ?? 0, scale)
   const flip = row.action === 'flip'
   const aligned = row.action === 'aligned'
   const deepColor = flip ? 'bg-warn' : 'bg-accent'
   const lightColor = flip ? 'bg-warn-mid' : 'bg-accent-mid'
 
-  let deep: { lo: number; hi: number }
-  let light: { lo: number; hi: number }
-  if (flip) {
-    deep = { lo: Math.min(zero, target), hi: Math.max(zero, target) }
-    light = { lo: Math.min(zero, current), hi: Math.max(zero, current) }
-  } else {
-    const near = Math.abs(row.cur) <= Math.abs(row.tgt) ? current : target
-    const far = Math.abs(row.cur) <= Math.abs(row.tgt) ? target : current
-    deep = { lo: Math.min(zero, near), hi: Math.max(zero, near) }
-    light = { lo: Math.min(near, far), hi: Math.max(near, far) }
+  let deep = { lo: zero, hi: zero }
+  let light = { lo: zero, hi: zero }
+  // 缺少任一数量时不画对照段，避免把未知持仓表现为空仓。
+  if (row.cur != null && row.tgt != null) {
+    if (flip) {
+      deep = { lo: Math.min(zero, target), hi: Math.max(zero, target) }
+      light = { lo: Math.min(zero, current), hi: Math.max(zero, current) }
+    } else {
+      const near = Math.abs(row.cur) <= Math.abs(row.tgt) ? current : target
+      const far = Math.abs(row.cur) <= Math.abs(row.tgt) ? target : current
+      deep = { lo: Math.min(zero, near), hi: Math.max(zero, near) }
+      light = { lo: Math.min(near, far), hi: Math.max(near, far) }
+    }
   }
 
   return (
     <div className="min-w-0">
-      <div className="num mb-1.5 whitespace-nowrap text-center text-[12px] leading-none">
-        <span className="text-ink-3">当前 </span>
-        <span className={`font-semibold ${dirCls(row.cur)}`}>{pctLabel(row.cur)}</span>
+      <div className={`num mb-1.5 text-center text-[12px] ${quantityMode ? 'leading-5' : 'whitespace-nowrap leading-none'}`}>
+        <span className="inline-block whitespace-nowrap"><span className="text-ink-3">当前 </span>
+          <span className={`font-semibold ${dirCls(row.cur, quantityMode)}`}>{label(row.cur)}</span></span>
         {!aligned && (
-          <>
+          <span className="inline-block whitespace-nowrap">
             <span className="text-ink-3"> → 目标 </span>
-            <span className={`font-medium ${dirCls(row.tgt)}`}>{pctLabel(row.tgt)}</span>
-          </>
+            <span className={`font-medium ${dirCls(row.tgt, quantityMode)}`}>{label(row.tgt)}</span>
+          </span>
         )}
       </div>
       <div className="relative h-4">
@@ -117,6 +126,7 @@ export function HoldingsView({
   assetLabel,
   sizing = null,
   quantityLabel = '',
+  rawTargets = {},
   onSelect,
 }: {
   positions: Position[]
@@ -127,79 +137,65 @@ export function HoldingsView({
   assetLabel: string
   sizing?: TargetSizing | null
   quantityLabel?: string
+  rawTargets?: Record<string, number>
   onSelect?: (symbol: string, keyboardOpened: boolean) => void
 }) {
   const plan = rebalancePlanOfServer(executablePlan)
+  const quantityMode = executablePlan?.target_mode === 'quantity'
+  const rows = quantityMode ? executablePlan.rows.map(row => ({
+    symbol: row.symbol, cur: row.current_quantity, tgt: row.target_quantity,
+    action: row.aligned ? 'aligned' as const : row.action,
+  })) : plan.rows
   const scale = plan.rows.reduce((max, row) => Math.max(max, Math.abs(row.cur), Math.abs(row.tgt)), 0)
   const actual = currentQuantities(positions)
   const available = sizing?.status === 'available'
-  const quantizedAligned = plan.rows.filter((row) => {
+  const quantizedAligned = rows.filter((row) => {
     const evidence = sizing?.rows[row.symbol]
     return row.action === 'aligned' && isQuantizedZero(evidence)
   }).length
-  const ordinaryAligned = plan.rows.length - plan.off - quantizedAligned
-  const heldCount = positions.filter((position) => Math.abs(signedPositionQuantity(position) ?? 0) > QTY_EPS).length
+  const ordinaryAligned = rows.filter(row => row.action === 'aligned').length - quantizedAligned
+  const heldCount = quantityMode ? rows.filter(row => Math.abs(row.cur ?? 0) > QTY_EPS).length
+    : positions.filter((position) => Math.abs(signedPositionQuantity(position) ?? 0) > QTY_EPS).length
+  const holdingsUnknown = quantityMode && rows.some(row => row.cur == null)
 
-  if (executablePlan?.target_mode === 'quantity') {
-    return <table aria-label="目标数量与持仓" className="w-full table-auto border-separate border-spacing-0">
-      <thead className="sticky top-0 z-[1] bg-surface">
-        <tr className="text-[12px] text-ink-3">
-          <th scope="col" className="h-8 w-full border-b border-line text-left font-medium">代码</th>
-          <th scope="col" className="h-8 whitespace-nowrap border-b border-line pl-3 text-right font-medium">当前数量</th>
-          <th scope="col" className="h-8 whitespace-nowrap border-b border-line pl-3 text-right font-medium">目标数量</th>
-          <th scope="col" className="h-8 whitespace-nowrap border-b border-line pl-3 text-left font-medium">状态</th>
-        </tr>
-      </thead>
-      <tbody>
-        {executablePlan.rows.map(row => <tr key={row.symbol} className="text-[13px]">
-          <td className="h-9 w-full max-w-0 border-b border-line">{onSelect ? <button type="button" aria-haspopup="dialog" aria-label={`查看 ${row.symbol} 持仓与目标`}
-            onClick={event => onSelect(row.symbol, event.detail === 0)}
-            className="flex min-h-8 w-full items-center cursor-pointer text-left hover:text-accent focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-accent">
-            <OverflowText text={row.symbol} />
-          </button> : <OverflowText text={row.symbol} />}</td>
-          <td className="num h-9 whitespace-nowrap border-b border-line pl-3 text-right">{quantityText(row.current_quantity, quantityLabel)}</td>
-          <td className="num h-9 whitespace-nowrap border-b border-line pl-3 text-right">{quantityText(row.target_quantity, quantityLabel)}</td>
-          <td className={`h-9 whitespace-nowrap border-b border-line pl-3 text-[12px] ${row.aligned ? 'text-ink-3' : 'font-medium text-warn'}`}>{row.aligned ? '到位' : '待调整'}</td>
-        </tr>)}
-      </tbody>
-    </table>
-  }
-  if (plan.rows.length === 0) {
+  if (rows.length === 0) {
     return <p className="text-[14px] text-ink-2">当前空仓，且无目标持仓。</p>
   }
 
   return (
-    <>
+    <section aria-label={quantityMode ? '目标数量与持仓' : '目标权重与持仓'}>
       <div className="text-[14px] text-ink-2">
-        {plan.rows.length} 只
+        {rows.length} 只
         {ordinaryAligned > 0 && <span> · {ordinaryAligned} 到位</span>}
         {quantizedAligned > 0 && <span className="text-ink-3"> · {quantizedAligned} 量化为0</span>}
       </div>
       <div className="num mt-1 mb-3 text-[12.5px] text-ink-3">
-        当前 {heldCount === 0 ? '空仓' : `持有 ${heldCount} 只`}
+        当前 {holdingsUnknown ? '持仓待确认' : heldCount === 0 ? '空仓' : `持有 ${heldCount} 只`}
         {equity > 0 && (
           <>
             {' · '}{assetLabel} {fmtMoney(equity)}
             {currency && ` ${displayCurrencyUnit(currency)}`}
           </>
         )}
-        {' · '}净敞口 {signedPct(plan.netExposure)} → 目标 {signedPct(plan.targetNet)}
+        {quantityMode ? <span> · 数量标尺逐品种缩放，不代表资金权重</span>
+          : <> · 净敞口 {signedPct(plan.netExposure)} → 目标 {signedPct(plan.targetNet)}</>}
       </div>
 
       <div className="hidden grid-cols-[minmax(88px,0.55fr)_minmax(220px,1.2fr)_minmax(240px,1.45fr)_minmax(140px,0.8fr)] gap-4 py-1.5 text-[12px] text-ink-3 md:grid">
         <span>代码</span>
         <span className="text-center">空 ◄ 0 ► 多</span>
-        <span>账户目标 → 可执行目标</span>
+        <span>{quantityMode ? '数量目标 → 可执行目标' : '账户目标 → 可执行目标'}</span>
         <span className="text-right">实际持仓</span>
       </div>
 
-      {plan.rows.map((row) => {
+      {rows.map((row) => {
         const evidence = sizing?.rows[row.symbol]
-        const current = actual.get(row.symbol) ?? 0
+        const current = quantityMode ? row.cur : actual.get(row.symbol) ?? 0
         const aligned = row.action === 'aligned'
         const quantized = isQuantizedZero(evidence)
         const actualText = quantityText(current, quantityLabel)
-        const state = aligned ? (quantized ? '无需下单' : '到位') : '待调整'
+        const state = quantityMode && (row.cur == null || row.tgt == null) ? '待确认'
+          : aligned ? (quantized ? '无需下单' : '到位') : '待调整'
 
         return (
           <div
@@ -207,20 +203,25 @@ export function HoldingsView({
             className="grid grid-cols-[minmax(82px,0.55fr)_minmax(0,1.8fr)] gap-x-3 border-t border-line py-3 md:grid-cols-[minmax(88px,0.55fr)_minmax(220px,1.2fr)_minmax(240px,1.45fr)_minmax(140px,0.8fr)] md:gap-x-4"
           >
             <div className="min-w-0 self-center">
-              <OverflowText className="text-[14px] font-medium" text={row.symbol} />
+              {onSelect ? <button type="button" aria-haspopup="dialog" aria-label={`查看 ${row.symbol} 持仓与目标`}
+                onClick={event => onSelect(row.symbol, event.detail === 0)}
+                className="flex min-h-8 w-full cursor-pointer items-center text-left hover:text-accent focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-accent">
+                <OverflowText className="text-[14px] font-medium" text={row.symbol} />
+              </button> : <OverflowText className="text-[14px] font-medium" text={row.symbol} />}
             </div>
             <div className="min-w-0 self-center">
-              <PositionRuler row={row} scale={scale} />
+              <PositionRuler row={row} scale={quantityMode ? Math.max(Math.abs(row.cur ?? 0), Math.abs(row.tgt ?? 0)) : scale}
+                quantityLabel={quantityMode ? quantityLabel : undefined} />
             </div>
             <div className="col-start-2 min-w-0 md:col-start-auto">
               {available && evidence ? (
                 <SizingEvidence row={evidence} quantityLabel={quantityLabel} currency={currency} />
               ) : (
                 <div className="num min-h-8 py-1.5 text-[13.5px] text-ink-2">
-                  {weightText(target[row.symbol] ?? 0)}
+                  {quantityMode ? quantityText(evidence?.raw_quantity ?? rawTargets[row.symbol], quantityLabel) : weightText(target[row.symbol] ?? 0)}
                   <span className="text-ink-3">
                     {' → '}
-                    {executableTargetFallbackText(sizing?.status, evidence, quantityLabel)}
+                    {quantityMode ? quantityText(row.tgt, quantityLabel) : executableTargetFallbackText(sizing?.status, evidence, quantityLabel)}
                   </span>
                 </div>
               )}
@@ -232,6 +233,6 @@ export function HoldingsView({
           </div>
         )
       })}
-    </>
+    </section>
   )
 }
