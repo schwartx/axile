@@ -12,10 +12,10 @@ import { PHASES, phaseIndex } from '@/features/dashboard/execProgress'
  * phase : string
  *     当前阶段键（见 execProgress.PHASES）。
  */
-export function PhaseBar({ phase }: { phase: string }) {
+export function PhaseBar({ phase, running = true, stale = false }: { phase: string | null; running?: boolean; stale?: boolean }) {
   const cur = phaseIndex(phase)
   return (
-    <div className="mt-3 flex items-center">
+    <div role="group" aria-label="执行阶段" className="mt-3 flex items-center">
       {PHASES.map((p, i) => {
         const done = i < cur
         const active = i === cur
@@ -25,11 +25,13 @@ export function PhaseBar({ phase }: { phase: string }) {
               {/* 左连接线（首列无） */}
               {i > 0 && <div className={`h-0.5 flex-1 ${i <= cur ? 'bg-accent' : 'bg-line'}`} />}
               <div
+                aria-current={active ? 'step' : undefined}
+                aria-label={p.label}
                 className={`h-2.5 w-2.5 flex-none rounded-full ${
                   done
                     ? 'bg-accent'
                     : active
-                      ? 'bg-accent shadow-[0_0_0_3px_var(--color-accent-soft)] animate-pulse'
+                      ? `bg-accent ${running && !stale ? 'shadow-[0_0_0_3px_var(--color-accent-soft)] motion-safe:animate-pulse' : ''}`
                       : 'border-2 border-border-strong bg-surface'
                 }`}
               />

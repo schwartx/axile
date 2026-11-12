@@ -444,3 +444,31 @@ def test_server_notification_captures_without_sending_or_changing_trade(monkeypa
     assert sent == []
     if not capture_fails:
         assert result.extra["server_notification_context"]["account"]["mark"] == "original-channel-mark"
+
+
+def test_progress_enters_settling_only_after_both_dispatch_phases(monkeypatch):
+    from types import SimpleNamespace
+
+    executor = _LifecycleRecorderExecutor()
+    seen = []
+    executor.set_progress_observer(seen.append)
+    engine = ExecutionEngine(executor)
+    assets = executor.get_account_assets()
+    planning = SimpleNamespace(plans=[], planning_failures=[], account_assets=assets)
+    dispatch = SimpleNamespace(phase_one_tasks=[object()], phase_two_plans=[object()], direct_results=[])
+    monkeypatch.setattr(engine, "_build_symbol_algorithm_plans", lambda value: planning)
+    monkeypatch.setattr(engine, "_build_dispatch_phases", lambda value: dispatch)
+    monkeypatch.setattr(engine, "_prepare_account_for_symbol_dispatch", lambda value: None)
+
+    def dispatch_phase(*args, **kwargs):
+        assert seen == ["planning", "executing"]
+        # 两阶段之间也会读取持仓，但不能把整轮进度提前改成对账。
+        engine._settle_result_positions([])
+        assert seen[-1] == "executing"
+        return []
+
+    monkeypatch.setattr(engine, "_run_phase_one_dispatch", dispatch_phase)
+    monkeypatch.setattr(engine, "_run_phase_two_dispatch", dispatch_phase)
+    monkeypatch.setattr(engine, "_read_result_assets", lambda: (assets, None))
+    engine._run_symbol_algorithms(_standard_input())
+    assert seen == ["planning", "executing", "settling"]

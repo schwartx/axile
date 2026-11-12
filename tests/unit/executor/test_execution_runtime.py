@@ -231,3 +231,20 @@ def test_late_account_order_metadata_and_audit_do_not_recreate_finished_runtime(
         audit_context=context,
     )
     assert executor.get_active_execution_runtime() is None
+
+
+def test_progress_observer_rebinds_and_failures_do_not_escape():
+    executor = _RuntimeExecutor()
+    seen = []
+    executor.set_progress_observer(seen.append)
+    runtime = executor.prepare_execution_runtime()
+    runtime.report_progress("planning")
+
+    def fail(_phase):
+        raise RuntimeError("observer failed")
+
+    executor.set_progress_observer(fail)
+    runtime.report_progress("executing")
+    executor.set_progress_observer(None)
+    runtime.report_progress("settling")
+    assert seen == ["planning"]

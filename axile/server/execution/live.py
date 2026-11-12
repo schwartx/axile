@@ -3,13 +3,11 @@
 
 Notes
 -----
-本模块把「账户当前正在跑哪个 execution、跑到哪个阶段」做成可被读接口与 SSE
-共享的单一真源。事件经 :func:`axile.server.execution_audit.append_execution_event`
-这一唯一漏斗流入 :meth:`ExecutionLiveHub.publish`，据此推进阶段并向所有订阅者广播。
+主服务中的镜像与 registry 同处一个 ASGI 进程。账户 worker 的真实阶段经既有
+监控 IPC 采样后合入此镜像；审计事件继续保留原有持久化与广播入口。任务终态
+由主服务生命周期结算，worker 的进度采样不能释放运行槽位。
 
-**单进程单 worker 假设**：进度镜像与订阅者队列均为内存态，与
-:mod:`axile.server.execution.registry` 的并发锁同处一进程才成立。一旦部署为多
-worker，本模块与那把并发锁会一并失效，须迁移到 Redis pub/sub + DB running 标志。
+多 ASGI 进程部署仍不受支持，镜像与 registry 均为主服务进程内状态。
 
 线程安全：事件可能经 ``append_execution_event_sync`` 在**独立线程 + 独立事件
 循环**上产生（见 :func:`axile.server.execution_audit._run_coroutine_sync`），故
@@ -27,6 +25,8 @@ from dataclasses import dataclass
 from uuid import uuid4
 
 from axile.domain.execution import ExecutionEventType
+from axile.executor.algorithms.utils.clock import clock_monotonic
+from axile.server.connection_state import ConnectionBinding
 from axile.server.db.models import now_str
 
 # 阶段序：索引越大越靠后，用于「单调不回退」。对应前端五步阶段条
@@ -52,8 +52,6 @@ _PHASE_BY_EVENT: dict[ExecutionEventType, str] = {
     ExecutionEventType.ORDER_ACKNOWLEDGED: "executing",
     ExecutionEventType.ORDER_TERMINAL: "executing",
     ExecutionEventType.EXECUTION_COMPLETED: "settling",
-    ExecutionEventType.EXECUTION_FAILED: "settling",
-    ExecutionEventType.EXECUTION_TERMINATED: "settling",
 }
 
 # 终态事件 → 终态状态。
@@ -88,6 +86,9 @@ class _Progress:
     updated_at: str
     pending_execution_id: str | None = None
     pending_kind: str | None = None
+    sampled_at: float | None = None
+    worker_version: int = -1
+    worker_instance: str | None = None
 
 
 class ExecutionLiveHub:
@@ -107,6 +108,7 @@ class ExecutionLiveHub:
         self._lock = threading.Lock()
         self._stream_id = uuid4().hex
         self._version = 0
+        self._progress_expiry: dict[int, asyncio.TimerHandle] = {}
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """绑定主事件循环（应在服务启动 lifespan 内调用）。"""
@@ -212,12 +214,78 @@ class ExecutionLiveHub:
                 kind=kind,
                 phase=keep_phase,
                 status=status,
-                updated_at=now_str(),
+                updated_at=cur.updated_at if cur is not None and cur.execution_id == execution_id else now_str(),
+                sampled_at=cur.sampled_at
+                if cur is not None and cur.execution_id == execution_id
+                else clock_monotonic(),
+                worker_version=cur.worker_version if cur is not None and cur.execution_id == execution_id else -1,
+                worker_instance=cur.worker_instance if cur is not None and cur.execution_id == execution_id else None,
                 pending_execution_id=pending_execution_id,
                 pending_kind=pending_kind,
             )
             self._progress[account_id] = prog
             self._broadcast_locked({"type": "event", **self._as_dict(prog)})
+
+    def consume_progress(self, binding: ConnectionBinding, frame: dict[str, object]) -> None:
+        """接受当前实例的采样；阶段不回退，任务状态仍由父进程结算。"""
+        from axile.server.connection_runtime import matches_session
+
+        phase, version = frame.get("phase"), frame.get("version")
+        if phase not in PHASE_ORDER or type(version) is not int or version < 0:
+            return
+        if not isinstance(frame.get("changed_at"), str) or not matches_session(binding):
+            return
+        with self._lock:
+            cur = self._progress.get(binding.account_id)
+            if (
+                cur is None
+                or cur.execution_id != frame.get("execution_id")
+                or cur.status not in {STATUS_RUNNING, STATUS_TERMINATING}
+                or not matches_session(binding)
+            ):
+                return
+            if cur.worker_instance == binding.instance_id and version < cur.worker_version:
+                return
+            stale = cur.sampled_at is not None and clock_monotonic() - cur.sampled_at > 5
+            next_phase = _later_phase(cur.phase, str(phase))
+            changed = next_phase != cur.phase or cur.worker_instance != binding.instance_id or stale
+            if next_phase != cur.phase:
+                cur.updated_at = str(frame["changed_at"])
+            cur.phase, cur.sampled_at = next_phase, clock_monotonic()
+            cur.worker_version, cur.worker_instance = version, binding.instance_id
+            if changed:
+                self._broadcast_locked({"type": "event", **self._as_dict(cur)})
+            loop = self._loop
+            if loop is not None and not loop.is_closed():
+                loop.call_soon_threadsafe(self._arm_progress_expiry, binding.account_id, cur.execution_id)
+
+    def _arm_progress_expiry(self, account_id: int, execution_id: str) -> None:
+        if timer := self._progress_expiry.pop(account_id, None):
+            timer.cancel()
+        if self._loop is not None:
+            self._progress_expiry[account_id] = self._loop.call_later(
+                5.01, self._expire_progress, account_id, execution_id
+            )
+
+    def _expire_progress(self, account_id: int, execution_id: str) -> None:
+        self._progress_expiry.pop(account_id, None)
+        with self._lock:
+            cur = self._progress.get(account_id)
+            if (
+                cur is not None
+                and cur.execution_id == execution_id
+                and cur.status in _LIVE_STATUS
+                and cur.sampled_at is not None
+                and clock_monotonic() - cur.sampled_at > 5
+            ):
+                self._broadcast_locked({"type": "event", **self._as_dict(cur)})
+
+    def execution_progress(self, account_id: int, execution_id: str) -> dict[str, object] | None:
+        """读取指定执行的实时阶段，不把下一笔执行的阶段返回给历史页面。"""
+        value = self.progress_for(account_id)
+        if value is None or value["execution_id"] != execution_id:
+            return None
+        return {"phase": value["phase"], "updated_at": value["ts"], "stale": value["progress_stale"]}
 
     def snapshot(self) -> list[dict[str, object]]:
         """返回当前所有仍在运行或排队的账户进度（SSE 首帧 / 冷渲染用）。"""
@@ -287,12 +355,13 @@ class ExecutionLiveHub:
             "pending_execution_id": prog.pending_execution_id,
             "pending_kind": prog.pending_kind,
             "ts": prog.updated_at,
+            "progress_stale": prog.sampled_at is not None and clock_monotonic() - prog.sampled_at > 5,
         }
 
     def _fanout(self, frame: dict[str, object]) -> None:
         """把一帧投递到主循环线程再分发给订阅者（跨线程安全）。"""
         loop = self._loop
-        if loop is None:
+        if loop is None or loop.is_closed():
             return
         loop.call_soon_threadsafe(self._deliver, frame)
 
@@ -323,6 +392,20 @@ class ExecutionLiveHub:
             cur = self._progress.get(account_id)
             if cur is not None and cur.execution_id == execution_id:
                 del self._progress[account_id]
+
+
+def consume_worker_progress(frame: dict[str, object] | None) -> None:
+    """监控入口只接收带实际实例身份的小快照，不访问数据库或渠道。"""
+    if not isinstance(frame, dict):
+        return
+    binding, snapshot = frame.get("binding"), frame.get("snapshot")
+    if not isinstance(binding, dict) or not isinstance(snapshot, dict):
+        return
+    try:
+        identity = ConnectionBinding(**binding)
+    except (TypeError, ValueError):
+        return
+    live_hub.consume_progress(identity, snapshot)
 
 
 # 模块级单例。

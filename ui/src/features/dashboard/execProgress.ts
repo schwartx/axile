@@ -18,16 +18,36 @@ export const PHASES = [
 
 export type PhaseKey = (typeof PHASES)[number]['key']
 
-/** 阶段键 → 索引；未知/空阶段回落到 0（触发）。 */
+/** 阶段键 → 索引；未知阶段保持未知。 */
 export function phaseIndex(phase: string | null | undefined): number {
   const i = PHASES.findIndex((p) => p.key === phase)
-  return i < 0 ? 0 : i
+  return i
 }
 
 /** 阶段键 → 进行时文案（用于「正在执行 · X」）。queued 不是五步之一。 */
 export function phaseLabel(phase: string | null | undefined): string {
   if (phase === 'queued') return '等待开跑'
-  return PHASES[phaseIndex(phase)]?.label ?? '触发'
+  return PHASES[phaseIndex(phase)]?.label ?? '进度待同步'
+}
+
+/** 从已保存的生命周期与订单事件恢复最后确认阶段，不从结果行猜进度。 */
+export function executionEventPhase(events: { event_type: string }[]): string {
+  const phases: Record<string, string> = {
+    execution_started: 'triggered', input_snapshotted: 'snapshot', target_computed: 'planning',
+    order_submitted: 'executing', order_acknowledged: 'executing', order_terminal: 'executing',
+    execution_completed: 'settling',
+  }
+  return events.reduce((phase, event) => laterPhase(phase, phases[event.event_type]), '')
+}
+
+/** 同一执行只采用更靠后的已知阶段。 */
+export function laterPhase(current: string | null | undefined, incoming: string | null | undefined): string {
+  return phaseIndex(incoming) > phaseIndex(current) ? incoming! : current ?? ''
+}
+
+/** 单笔任务终态优先于可能迟到的实时运行帧。 */
+export function isActiveExecution(status: string | null | undefined): boolean {
+  return status === 'QUEUED' || status === 'RUNNING' || status === 'TERMINATING'
 }
 
 /** 是否处于真正下单（阶段条、禁用清仓/刷新）。 */

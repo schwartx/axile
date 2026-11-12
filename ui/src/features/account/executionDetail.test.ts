@@ -723,3 +723,25 @@ it('完整成交且持仓待核对时保留完成结论与渠道查询值', () =
   expect(model.spine.some(node => node.detail.includes('持仓待核对'))).toBe(true)
   expect(model.spine.some(node => node.detail.includes('0/1 到位'))).toBe(false)
 })
+
+
+it('运行中展示已有目标和部分成交，累计委托快照不重复计数或推断最终持仓', () => {
+  const task = { execution_id: 'e', status: 'RUNNING' } as ExecutionStatus
+  const artifacts = [art('standard_input', { input: { curr_target: { A: 0.5, B: 0.5 } } }),
+    art('account_snapshot_before', { source: 'real', account_assets: { source: 'real', positions: [null,
+      { symbol: 'A', volume: 2, direction: '多头' }, { symbol: 'A', volume: 5, direction: '空头' },
+    ] } })]
+  const event = ev({ symbol: 'A', order_id: 'O', event_type: 'order_submitted', details: {
+    order: { direction: 'BUY', volume: 10, filled_volume: 2, status: '部分成交' },
+  } })
+  const live = { symbol: 'A', order_id: 'O', direction: 'BUY', volume: 10, filled_volume: 3, status: '部分成交' } as import('@/lib/api/orders').CurrentOrder
+  const model = buildExecutionDetail([event], artifacts, task, null, [live])
+  expect(model.symbols.map(s => s.symbol)).toEqual(['A', 'B'])
+  expect(model.symbols[0]).toMatchObject({ filled: 3, side: 'buy', observedBefore: -3, target: null, observedAfter: null, reached: null, inProgress: true })
+  expect(model.symbols[0]!.orders).toHaveLength(1)
+  expect(model.spine.some(node => node.key.startsWith('phase'))).toBe(false)
+  const result = buildExecutionDetail([event], artifacts, { ...task, status: 'SUCCEEDED' }, {
+    symbol_results: { A: { status: 'SUCCEEDED', target_volume: 10, final_volume: 10, filled: 10 } },
+  }, [live])
+  expect(result.symbols[0]).toMatchObject({ filled: 10, target: 10, observedAfter: 10, inProgress: false })
+})

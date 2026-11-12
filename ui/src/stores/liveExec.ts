@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { laterPhase } from '@/features/dashboard/execProgress'
 import type { AccountDashboardItem } from '@/types/api'
 
 /**
@@ -25,6 +26,7 @@ export interface RunEntry {
   pendingKind: string | null
   /** 本地最近更新时刻（ms），供对账 STALE 守卫。 */
   updatedAt: number
+  progressStale?: boolean
 }
 
 /** SSE 帧（snapshot 列表项 / event 单帧同构）。 */
@@ -33,6 +35,7 @@ export interface RunFrame {
   execution_id: string
   kind: string | null
   phase: string
+  progress_stale?: boolean
   status: string
   pending_execution_id?: string | null
   pending_kind?: string | null
@@ -81,7 +84,8 @@ function toEntry(frame: RunFrame, updatedAt: number, prev?: RunEntry): RunEntry 
   return {
     executionId: frame.execution_id,
     kind: frame.kind ?? (prev?.executionId === frame.execution_id ? prev.kind : null),
-    phase: frame.phase,
+    phase: prev?.executionId === frame.execution_id ? laterPhase(prev.phase, frame.phase) : frame.phase,
+    progressStale: frame.progress_stale ?? false,
     status: frame.status,
     pendingExecutionId: pending.id,
     pendingKind: pending.kind,
@@ -133,7 +137,7 @@ export const useLiveExecStore = create<LiveExecState>((set) => ({
             next.set(a.account_id, {
               executionId: a.running_execution_id,
               kind: a.running_kind ?? null,
-              phase: a.running_phase ?? (status === 'queued' ? 'queued' : 'triggered'),
+              phase: a.running_phase ?? (status === 'queued' ? 'queued' : ''),
               status,
               pendingExecutionId: a.pending_execution_id ?? null,
               pendingKind: a.pending_kind ?? null,
@@ -144,7 +148,7 @@ export const useLiveExecStore = create<LiveExecState>((set) => ({
             next.set(a.account_id, {
               ...existing,
               kind: existing.kind ?? a.running_kind ?? null,
-              phase: advancesStatus ? (a.running_phase ?? existing.phase) : existing.phase,
+              phase: status === 'queued' ? existing.phase : laterPhase(existing.phase, a.running_phase),
               status: advancesStatus ? status : existing.status,
               pendingExecutionId: pendingOf(a, existing).id,
               pendingKind: pendingOf(a, existing).kind,
