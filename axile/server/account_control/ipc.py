@@ -24,6 +24,7 @@ def serve(
     account_id: int,
     connection_snapshot: Callable[[], dict[str, object] | None] | None = None,
     orders_snapshot: Callable[[], dict[str, Any] | None] | None = None,
+    execution_snapshot: Callable[[], dict[str, object] | None] | None = None,
 ) -> None:
     """Worker 监控线程只读取当前进程的 guard。"""
     try:
@@ -39,6 +40,11 @@ def serve(
                     result = {**(result or {}), "orders": orders_snapshot()}
                 except Exception:
                     logger.exception("worker 委托内存采样失败")
+            if execution_snapshot is not None:
+                try:
+                    result = {**(result or {}), "execution": execution_snapshot()}
+                except Exception:
+                    logger.exception("worker 执行进度采样失败")
             connection.send(result)
     except (EOFError, OSError):
         pass
@@ -80,6 +86,12 @@ class RemoteMonitor:
                     from axile.server.orders_live import consume_orders_snapshot
 
                     consume_orders_snapshot(frame.get("orders"))
+                    from axile.server.execution.live import consume_worker_progress
+
+                    try:
+                        consume_worker_progress(frame.get("execution"))
+                    except Exception:
+                        logger.exception("worker 执行进度接收失败")
                     frame = frame["flow"]
                 if frame is None or not frame.get("monitor_error"):
                     self.frame = frame

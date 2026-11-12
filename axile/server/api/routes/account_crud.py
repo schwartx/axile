@@ -465,7 +465,7 @@ async def account_dashboard(sched: SchedDep, archived: bool = False, include_arc
             running_status = (
                 "terminating" if task_state is not None and task_state.status.value == "TERMINATING" else "running"
             )
-            running_phase = "triggered"
+            running_phase = None
             pending_execution_id = queued_execution_id
             if queued_execution_id is not None:
                 queued_state = get_execution_task_state(queued_execution_id)

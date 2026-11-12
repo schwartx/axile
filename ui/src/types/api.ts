@@ -861,6 +861,7 @@ export interface ExecutionStatus {
   execution_id: string
   account_id: number
   execution_kind: 'rebalance' | 'clear_positions' | null
+  progress?: { phase: string | null; updated_at: string | null; stale: boolean } | null
   status: ExecutionTaskStatus
   created_at: string
   started_at: string | null

@@ -300,6 +300,7 @@ def _handle_execute_trade(
     audit_input = cast(dict[str, object], request.payload["audit_input"])
     notification_snapshot = cast("dict[str, object] | None", request.payload.get("notification_snapshot"))
     executor = None
+    state.progress.begin(request.execution_id, state.connection_collector.binding)
     termination_controller = _activate_worker_termination(state, request.execution_id)
     normalized_symbol_fields: dict[str, object] | None = None
     replay_end_reason = "completed"
@@ -321,6 +322,7 @@ def _handle_execute_trade(
         begin_worker_replay_execution(state, request.execution_id, tuple(standard_input.curr_target))
         normalized_symbol_fields = {field: getattr(standard_input, field) for field in _SYMBOL_FIELDS}
         audit_input = {**audit_input, **sanitize_execution_input(standard_input.to_dict())}
+        state.progress.report(request.execution_id, "snapshot")
         before_account_assets = _capture_before_account_snapshot(executor)
         _append_trade_pre_execute_audit(
             account=account,
@@ -342,6 +344,7 @@ def _handle_execute_trade(
                 **({"notification_snapshot": notification_snapshot} if notification_snapshot else {}),
             ),
         )
+        state.progress.report(request.execution_id, "settling")
         replay_end_reason = str(output.status)
         result = _dump_output_payload(output)
         _append_success_audit(
@@ -412,6 +415,7 @@ def _handle_empty_positions(
     audit_input = cast(dict[str, object], request.payload["audit_input"])
     notification_snapshot = cast("dict[str, object] | None", request.payload.get("notification_snapshot"))
     executor = None
+    state.progress.begin(request.execution_id, state.connection_collector.binding)
     termination_controller = _activate_worker_termination(state, request.execution_id)
     replay_end_reason = "completed"
     from axile.server.execution.worker_backend.replay import begin_worker_replay_execution, end_worker_replay_execution
@@ -425,6 +429,7 @@ def _handle_empty_positions(
             audit_context=audit_context,
             termination_controller=termination_controller,
         )
+        state.progress.report(request.execution_id, "snapshot")
         before_account_assets = _capture_before_account_snapshot(executor)
         positions = before_account_assets.get("positions", []) if before_account_assets is not None else []
         positions = positions if isinstance(positions, list) else []
@@ -448,6 +453,7 @@ def _handle_empty_positions(
                 **empty_kwargs,
             ),
         )
+        state.progress.report(request.execution_id, "settling")
         replay_end_reason = str(output.status)
         result = _dump_output_payload(output)
         _append_success_audit(
@@ -653,6 +659,7 @@ def run_worker_backend_loop(
                 account_id,
                 lambda: state.connection_collector.snapshot(),
                 lambda: sample_orders(state),
+                state.progress.snapshot,
             ),
             daemon=True,
             name=f"axile-worker-monitor-{account_id}",

@@ -1,7 +1,9 @@
 import { shanghaiLabel } from '@/features/history/costs'
 import { isDegradedSnapshotSource } from '@/features/account/accountSnapshot'
 import { lossClass } from '@/features/history/costs'
-import { useCallback } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { executionEventPhase, isActiveExecution, laterPhase, phaseIndex } from '@/features/dashboard/execProgress'
+import { useLiveOrders } from '@/stores/liveOrders'
 import { useLocation, useParams } from 'react-router'
 import { Card } from '@/components/ui/Card'
 import { SkeletonLines } from '@/components/ui/Skeleton'
@@ -37,7 +39,7 @@ import { PhaseBar } from '@/features/dashboard/PhaseBar'
 import { accountAssetTerms, positionValueLabelOf } from '@/features/dashboard/display'
 import { useDomainStore } from '@/stores/domain'
 import { useChannelDescriptor } from '@/stores/channels'
-import { useRunning } from '@/stores/liveExec'
+import { useLiveExecStore, useRunning } from '@/stores/liveExec'
 import type { ChannelCapability, ExecOrder, ExecutionArtifact, ExecutionEvent, ExecutionStatus } from '@/types/api'
 
 /** 触发来源文案。 */
@@ -181,7 +183,8 @@ function Header({
  */
 function SnapshotNote({ m, assetLabel }: { m: ExecutionDetailModel; assetLabel: string }) {
   const h = m.header
-  if (m.task?.status === 'FAILED' && m.task.started_at == null) return null
+  if (m.task == null || isActiveExecution(m.task.status)) return <p className="mt-2 text-[13px] text-ink-3">执行后将展示资产变化与持仓核对结果。</p>
+  if (m.task.status === 'FAILED' && m.task.started_at == null) return null
   const posBad = isDegradedSnapshotSource(h.sourcePosition)
   const eqBad = isDegradedSnapshotSource(h.sourceEquity)
   if (!posBad && !eqBad) return null
@@ -291,7 +294,7 @@ function SymbolChainRow({
     )
   const result = executionRecordView({ status: s.status })
   const normalSkip = s.action === 'skipped' && !s.broken
-  const outcome = { cls: result.warning ? 'text-warn' : 'text-ink-3', node: normalSkip ? '休市跳过' : result.title }
+  const outcome = { cls: result.warning ? 'text-warn' : 'text-ink-3', node: s.inProgress ? '执行中 · 持仓待核对' : normalSkip ? '休市跳过' : s.status == null ? '结果待确认' : result.title }
   const sideText = s.side === 'sell' ? '卖' : s.side === 'buy' ? '买' : ''
   const driftNotable = Math.abs(s.drift) > 1e-6
   // 浮盈：当前水平取 after（无则回退 before）。未成交时前→后 Δ 纯为行情漂移、与执行无关，
@@ -317,7 +320,7 @@ function SymbolChainRow({
           <SizingEvidence row={s.sizing} quantityLabel={units.quantity_label} currency={currency} />
         </div>
       ) : !normalSkip && (
-        <div className="mt-1 text-[12.5px] text-warn">当时未记录换算依据</div>
+        <div className={`mt-1 text-[12.5px] ${s.inProgress ? 'text-ink-3' : 'text-warn'}`}>{s.inProgress ? '等待目标数量换算证据' : '当时未记录换算依据'}</div>
       )}
       <div className="num mt-0.5 text-[13px] text-ink-3">
         实际 {fmtPosition(s.observedBefore, units)} → {fmtPosition(s.observedAfter, units)}
@@ -563,12 +566,19 @@ export function ExecutionDetailPage() {
   // 结束后回落到一次性取数（静态取证）。
   const running = useRunning(accountId)
   const isLive = running != null && running.executionId === executionId
-  const pollMs = isLive ? 2500 : 0
+  const [settledId, setSettledId] = useState<string | null>(null)
   const status = usePolling(statusFetcher, {
     queryKey: `execution:${executionId ?? 'missing'}:status`,
-    intervalMs: pollMs,
+    intervalMs: settledId === executionId ? 0 : 2500,
     enabled: Boolean(executionId),
   })
+  const taskStatus = status.data?.status
+  const active = taskStatus == null || isActiveExecution(taskStatus)
+  // 切到终态会将证据轮询间隔改为 0；usePolling 在此变化后再读取一次最终证据。
+  const pollMs = active ? 2500 : 0
+  useEffect(() => {
+    if (taskStatus && !isActiveExecution(taskStatus)) setSettledId(executionId ?? null)
+  }, [executionId, taskStatus])
   const events = usePolling(eventsFetcher, {
     queryKey: `execution:${executionId ?? 'missing'}:events`,
     intervalMs: pollMs,
@@ -586,7 +596,19 @@ export function ExecutionDetailPage() {
   const loading = status.loading && events.loading && artifacts.loading
   const rawEvents = events.data?.data ?? []
   const hasAnyData = status.data != null || events.data != null || artifacts.data != null
-  const model = hasAnyData ? buildExecutionDetail(rawEvents, artifacts.data?.data ?? [], status.data, detail.data) : null
+  const orderSnapshot = useLiveOrders(s => s.frames[accountId])
+  const orderStreamConnected = useLiveOrders(s => s.connected)
+  const liveOrders = orderSnapshot?.data.filter(order => order.execution_id === executionId) ?? []
+  const model = hasAnyData ? buildExecutionDetail(rawEvents, artifacts.data?.data ?? [], status.data, detail.data, liveOrders) : null
+  const eventPhase = executionEventPhase(rawEvents)
+  const observedPhase = laterPhase(eventPhase, laterPhase(status.data?.progress?.phase, isLive && active ? running?.phase : null))
+  const lastPhase = useRef({ executionId, phase: '' })
+  if (lastPhase.current.executionId !== executionId) lastPhase.current = { executionId, phase: '' }
+  lastPhase.current.phase = laterPhase(lastPhase.current.phase, observedPhase)
+  const phase = lastPhase.current.phase
+  const executionStreamConnected = useLiveExecStore(s => s.connected)
+  const progressStale = isLive && executionStreamConnected
+    ? Boolean(running?.progressStale) : Boolean(status.data?.progress?.stale || status.stale)
 
   return (
     <section>
@@ -618,14 +640,12 @@ export function ExecutionDetailPage() {
       {model && <Header m={model} currency={currency} assetLabel={assetTerms.shortLabel} />}
 
       {/* 运行中：顶部给一条确定态阶段条作一瞥总览；逐事件细节仍在下方脊柱。 */}
-      {isLive && running && running.status === 'queued' && (
-        <div className="mt-3 text-[15px] text-ink-2">已受理，等待开跑</div>
-      )}
-      {isLive && running && (running.status === 'running' || running.status === 'terminating') && (
-        <div className="mt-3">
-          <PhaseBar phase={running.phase} />
-        </div>
-      )}
+      {status.data?.status === 'QUEUED' && <div className="mt-3 text-[15px] text-ink-2">已受理，等待开跑</div>}
+      <PhaseBar phase={phase} running={active && status.data?.status !== 'QUEUED'} stale={progressStale} />
+      {active && <p role="status" className="mt-2 text-[13px] text-ink-3">
+        {progressStale ? '进度更新中断，显示最后确认的阶段。' : phaseIndex(phase) < 0 ? '进度待同步' : ''}
+        {liveOrders.length > 0 && (!orderStreamConnected || !orderSnapshot?.complete) && ' 委托更新中断，显示最后确认的委托。'}
+      </p>}
 
       <Card className="mt-4 px-6 py-5">
         {loading && <SkeletonLines rows={5} />}
@@ -636,7 +656,7 @@ export function ExecutionDetailPage() {
             <TargetChangeView m={model} />
             {model.symbols.length > 0 ? (
               <>
-                <div className="mb-2 text-xs font-semibold tracking-wide text-ink-3">逐只结果</div>
+                <div className="mb-2 text-xs font-semibold tracking-wide text-ink-3">{active ? '逐只执行进展' : '逐只结果'}</div>
                 {model.symbols.filter(s => model.conclusion.sessionScope === 'partial' || model.conclusion.state !== 'PARTIAL' || model.conclusion.symbols.length === 0 || model.conclusion.symbols.includes(s.symbol)).map((s) => {
                   const symbolUnits = quantityDisplayUnits(units)
                   return (
@@ -658,7 +678,7 @@ export function ExecutionDetailPage() {
               <p className="text-[14px] text-ink-3">
                 {model.task?.status === 'FAILED' && model.task.started_at == null
                   ? '执行未进入执行链路，未产生逐只结果和账户快照。'
-                  : '本次执行未产生逐只对账。'}
+                  : active ? '正在准备本次执行，目标和委托信息将陆续显示。' : '本次执行未产生逐只对账。'}
               </p>
             )}
             <Spine m={model} />

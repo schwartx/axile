@@ -35,6 +35,7 @@ from axile.server.execution.resident_connection import (
     reuse_resident_connection,
 )
 from axile.server.execution.worker_backend.catalog import RemoteCatalogProvider
+from axile.server.execution.worker_backend.progress import WorkerExecutionProgress
 from axile.server.execution.worker_backend.protocol import WorkerReplayConfig, WorkerTerminationSignal
 from axile.server.execution.worker_backend.quota import QuotaClient
 
@@ -50,6 +51,7 @@ class _WorkerBackendState(ResidentConnectionState):
     """
 
     request_active: bool = False
+    progress: WorkerExecutionProgress = field(default_factory=WorkerExecutionProgress)
     catalog_provider: RemoteCatalogProvider | None = None
     quota_client: QuotaClient | None = None
     requires_worker_restart: bool = False
@@ -277,6 +279,9 @@ def _resolve_prepared_executor(
 
     def prepare(executor: object) -> None:
         _configure_executor_resources(state, account, executor)
+        set_progress = getattr(executor, "set_progress_observer", None)
+        if callable(set_progress):
+            set_progress((lambda phase: state.progress.report(execution_id, phase)) if execution_id else None)
         _prepare_executor(
             executor=executor,
             account=account,
@@ -402,6 +407,7 @@ def _finalize_executor(executor: object | None) -> None:
         ("set_account_control_guard", None),
         ("set_termination_controller", None),
         ("set_audit_sink", None),
+        ("set_progress_observer", None),
         ("set_audit_context", {}),
     )
     for setter_name, value in request_bindings:

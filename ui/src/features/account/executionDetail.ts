@@ -4,6 +4,9 @@ import { catalogEvidence } from '@/features/history/executionErrorAdapter'
 import { executionOutcome, isSessionClosedSkip, outcomeOf, type OutcomeView } from '@/features/account/executionOutcome'
 import { isDegradedSnapshotSource } from '@/features/account/accountSnapshot'
 import { recordOrders } from './recordOrders'
+import type { CurrentOrder } from '@/lib/api/orders'
+import { isActiveExecution } from '@/features/dashboard/execProgress'
+import { holdingBook } from '@/features/account/holdingDetailModel'
 /**
  * 把执行事件流 + 附件组合成「执行详情」视图模型（纯函数，与组件解耦、便于测试）。
  *
@@ -23,6 +26,7 @@ import type {
   ExecutionStatus,
   SymbolTca,
   TargetSizingRow,
+  Position,
 } from '@/types/api'
 
 /** 逐只动作分类（描述这次执行对该品种做了什么）。 */
@@ -31,6 +35,7 @@ export type ChainAction = 'reduce' | 'increase' | 'open' | 'close' | 'flip' | 'a
 /** 单只执行子链：意图→决策→下单→成交→到位，附带浮盈与断点。 */
 export interface SymbolChain {
   symbol: string
+  inProgress?: boolean
   status?: string | null
   action: ChainAction
   /** 执行前带号持仓。 */
@@ -365,6 +370,7 @@ function buildSymbolChain(
     reason = asStr(recon.outcome_reason) || skipReason || '非交易时段，已正常跳过'
   }
 
+  const filled = asNum(recon.filled) ?? 0
   const terminalStatus = order?.terminalStatus ?? null
   const canceled = terminalStatus === '已撤销' || terminalStatus === '已拒绝'
   if (canceled && !reason) reason = terminalStatus ?? ''
@@ -374,6 +380,7 @@ function buildSymbolChain(
 
   return {
     symbol,
+    inProgress: recon.inProgress === true,
     status: asStr(recon.status) || null,
     action,
     before,
@@ -386,8 +393,8 @@ function buildSymbolChain(
     target,
     algorithm: decision?.algorithm ?? null,
     ordersCount: decision?.ordersCount ?? null,
-    side: order?.side ?? 'none',
-    filled: asNum(recon.filled) ?? 0,
+    side: order?.side ?? (filled > 0 ? 'buy' : filled < 0 ? 'sell' : 'none'),
+    filled,
     filledValue: asNum(recon.filled_value),
     valueCurrency: asStr(recon.value_currency) || null,
     priceCurrency: asStr(recon.native_currency) || null,
@@ -615,12 +622,13 @@ function buildSpine(
       broken: false,
     })
   }
-  if (symbols.length > 0) {
-    const phase1 = symbols.filter((s) => {
+  const results = symbols.filter(symbol => symbol.status != null)
+  if (results.length > 0) {
+    const phase1 = results.filter((s) => {
       const p = symbolPhase(s)
       return p === 'reduce' || p === 'both'
     })
-    const phase2 = symbols.filter((s) => {
+    const phase2 = results.filter((s) => {
       const p = symbolPhase(s)
       return p === 'increase' || p === 'both'
     })
@@ -630,8 +638,8 @@ function buildSpine(
     }
     // 全部到位无动作（aligned）时也给一个标记，别让脊柱在此断档。
     if (phase1.length === 0 && phase2.length === 0) {
-      const skipped = symbols.filter(s => s.action === 'skipped' && !s.broken).length
-      nodes.push({ key: 'phase', label: '逐只执行', detail: skipped ? `${skipped} 只休市跳过` : `${symbols.length} 只无变动`, time: '', status: 'INFO', broken: false })
+      const skipped = results.filter(s => s.action === 'skipped' && !s.broken).length
+      nodes.push({ key: 'phase', label: '逐只执行', detail: skipped ? `${skipped} 只休市跳过` : `${results.length} 只无变动`, time: '', status: 'INFO', broken: false })
     }
   }
   if (afterContent) {
@@ -669,6 +677,66 @@ function buildSpine(
   return nodes
 }
 
+/** 结果摘要尚未生成时，用已有目标、订单和事件建立逐只过程行。 */
+function provisionalRows(events: ExecutionEvent[], artifacts: ExecutionArtifact[], liveOrders: CurrentOrder[], before: Dict | null): Dict[] {
+  const input = asDict(artifactContent(artifacts, AT.standardInput)?.input)
+  const target = artifactContent(artifacts, AT.target)
+  const targets = asDict(target?.curr_target) ?? asDict(input?.curr_target) ?? {}
+  const quantityMode = (target?.target_mode ?? input?.target_mode) === 'quantity'
+  const rows = new Map<string, Dict>()
+  const ensure = (symbol: string) => {
+    let row = rows.get(symbol)
+    if (!row) { row = { symbol, inProgress: true, reached: null }; rows.set(symbol, row) }
+    return row
+  }
+  for (const symbol of Object.keys(targets)) {
+    const row = ensure(symbol)
+    if (quantityMode) row.target = asNum(targets[symbol])
+  }
+  const orders = new Map<string, Dict>()
+  for (const event of events) {
+    if (!event.symbol) continue
+    const row = ensure(event.symbol)
+    const details = asDict(event.details)
+    const decision = asDict(details?.decision)
+    if (decision?.target_volume != null) row.target = asNum(decision.target_volume)
+    if (details?.sizing) row.sizing = details.sizing
+    if (decision?.status && ['symbol_decision_made', 'symbol_skipped'].includes(event.event_type)) {
+      row.status = decision.status
+      row.error = eventError(event)
+      row.inProgress = false
+    }
+    const order = asDict(details?.order)
+    if (event.order_id && order) orders.set(`${event.symbol}:${event.order_id}`, {
+      ...orders.get(`${event.symbol}:${event.order_id}`), ...order, symbol: event.symbol, order_id: event.order_id,
+      status: order.terminal_status ?? order.status,
+    })
+  }
+  for (const order of liveOrders) {
+    ensure(order.symbol)
+    const key = `${order.symbol}:${order.order_id}`
+    const previous = orders.get(key)
+    // 已保存的终态不被更早的运行中委托快照覆盖。
+    if (!previous || !['已成交', '已撤销', '已拒绝', '已过期'].includes(asStr(previous.status))) orders.set(key, { ...order })
+  }
+  const positions = (Array.isArray(before?.positions) ? before.positions : []).filter(position => asDict(position) != null) as Position[]
+  const grouped = new Map<string, Dict[]>()
+  for (const order of orders.values()) {
+    const symbol = asStr(order.symbol)
+    const group = grouped.get(symbol) ?? []
+    group.push(order)
+    grouped.set(symbol, group)
+  }
+  for (const [symbol, row] of rows) {
+    const own = grouped.get(symbol) ?? []
+    const book = holdingBook(positions, symbol, Array.isArray(before?.positions))
+    row.before = book.long.volume == null || book.short.volume == null ? null : book.long.volume - book.short.volume
+    row.orders = recordOrders({ orders: own })
+    row.filled = own.reduce((sum, order) => sum + ({ buy: 1, sell: -1, none: 0 }[orderSide(asStr(order.direction))]) * (asNum(order.filled_volume) ?? 0), 0)
+  }
+  return [...rows.values()]
+}
+
 /**
  * 由事件流与附件组合出执行详情视图模型.
  *
@@ -680,6 +748,7 @@ export function buildExecutionDetail(
   artifacts: ExecutionArtifact[],
   task: ExecutionStatus | null = null,
   summary: Record<string, unknown> | null = null,
+  liveOrders: CurrentOrder[] = [],
 ): ExecutionDetailModel {
   const started = eventAt(events, 'execution_started')
   const startedAt = started?.ts_local_created ?? null
@@ -698,14 +767,18 @@ export function buildExecutionDetail(
   const pnlAfter = pnlBySymbol(afterAssets)
 
   const recordedSymbols = asDict(summary?.symbol_results)
-  const detailRows = recordedSymbols ? Object.entries(recordedSymbols).map(([symbol, value]) => {
+  const recordedRows = recordedSymbols ? Object.entries(recordedSymbols).map(([symbol, value]) => {
     const result = asDict(value) ?? {}
     const evidence = recon?.symbols.find(row => row.symbol === symbol)
     return { ...evidence, ...result, symbol, target: result.target_volume ?? evidence?.target,
       orders: Array.isArray(result.orders) ? recordOrders(result) : evidence?.orders ?? [] }
   }) : recon?.symbols ?? []
-  const symbols: SymbolChain[] = detailRows.map((s) => {
-    const row = { ...s } as Record<string, unknown>
+  const bySymbol = new Map<string, Record<string, unknown>>(
+    provisionalRows(events, artifacts, liveOrders, beforeAssets).map(row => [String(row.symbol), row]),
+  )
+  for (const row of recordedRows) bySymbol.set(row.symbol, { ...bySymbol.get(row.symbol), ...row, inProgress: false })
+  const symbols: SymbolChain[] = [...bySymbol.values()].map((s) => {
+    const row = { ...s, inProgress: s.inProgress === true && isActiveExecution(task?.status) } as Record<string, unknown>
     if (isDegradedSnapshotSource(srcBefore)) row.before = null
     if (isDegradedSnapshotSource(srcAfter)) {
       const final = asNum(row.final_volume)

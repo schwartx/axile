@@ -73,6 +73,7 @@ class ExecutionRuntimeBindings:
 
     audit_context: dict[str, object] = field(default_factory=dict)
     audit_sink: ExecutionAuditSink | None = None
+    progress_observer: Callable[[str], None] | None = None
     account_control_guard: AccountControlGuard | None = None
     termination_controller: ExecutionTerminationController | None = None
 
@@ -298,6 +299,15 @@ class ExecutionRuntime:
         """读取当前 terminate 原因."""
         active = self._current_termination()
         return None if active is None else active.reason
+
+    def report_progress(self, phase: str) -> None:
+        """报告当前阶段；观测失败不能改变执行结果。"""
+        observer = self.bindings.progress_observer
+        if observer is not None:
+            try:
+                observer(phase)
+            except Exception as exc:
+                self.logger.warning(f"执行进度更新失败: {exc}")
 
     def next_audit_seq(self) -> int:
         """获取本次 execution 内单调递增的审计序号."""

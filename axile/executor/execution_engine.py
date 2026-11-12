@@ -341,6 +341,7 @@ class ExecutionEngine:
         self._account_snapshot = None
         self._owner.handle_termination_checkpoint()
         # planning 阶段只做“算清楚每个 symbol 应该做什么”，不真正触发算法执行。
+        self._runtime.report_progress("planning")
         planning = self._build_symbol_algorithm_plans(standard_input)
         pending = standard_input.extra.get("pending_positions", {})
         if not isinstance(pending, dict) or any(
@@ -385,6 +386,8 @@ class ExecutionEngine:
                     if plan.symbol not in direct_symbols
                 ],
             ]
+        if dispatch_phases.phase_one_tasks or dispatch_phases.phase_two_plans:
+            self._runtime.report_progress("executing")
         phase_one_results = self._run_phase_one_dispatch(dispatch_phases.phase_one_tasks)
         # 第二阶段只有在第一阶段没有未成功结果时才继续，避免边减仓失败边开新仓。
         phase_two_results = self._run_phase_two_dispatch(
@@ -399,6 +402,7 @@ class ExecutionEngine:
             *phase_one_results,
             *phase_two_results,
         ]
+        self._runtime.report_progress("settling")
         merged_results = self._merge_symbol_algorithm_results(results)
         if self._account_snapshot is None:
             merged_results = self._settle_result_positions(merged_results)

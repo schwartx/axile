@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING
 
 from axile.executor.abstract_executor.execution_runtime_host import _executor
@@ -67,6 +67,10 @@ class AbstractExecutorExecutionAuditFacadeMixin:
             审计输出 sink；传入 ``None`` 表示当前执行不输出审计。
         """
         _executor(self)._update_runtime_binding("audit_sink", sink)
+
+    def set_progress_observer(self, observer: Callable[[str], None] | None) -> None:
+        """绑定本次执行的内存进度观察者，传入 None 解除绑定。"""
+        _executor(self)._update_runtime_binding("progress_observer", observer)
 
     def next_audit_seq(self) -> int:
         """

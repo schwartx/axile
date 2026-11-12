@@ -252,3 +252,14 @@ test('reconcile 显式 pending_execution_id null 会清掉 pending', () => {
   ])
   expect(useLiveExecStore.getState().running.get(8)?.pendingExecutionId).toBeNull()
 })
+
+
+test('running 轮询推进阶段，迟到 SSE 和旧轮询均不能回退', () => {
+  useLiveExecStore.setState({ running: new Map([[8, run({ executionId: 'e-8', phase: 'planning' })]]) })
+  const account = { account_id: 8, running_execution_id: 'e-8', running_status: 'running', running_phase: 'executing' } as import('@/types/api').AccountDashboardItem
+  useLiveExecStore.getState().reconcile([account])
+  expect(useLiveExecStore.getState().running.get(8)?.phase).toBe('executing')
+  useLiveExecStore.getState().reconcile([{ ...account, running_phase: 'planning' }])
+  useLiveExecStore.getState().applyEvent({ account_id: 8, execution_id: 'e-8', phase: 'snapshot', status: 'running', kind: 'rebalance' })
+  expect(useLiveExecStore.getState().running.get(8)?.phase).toBe('executing')
+})
