@@ -240,6 +240,8 @@ fn symbol_row(
     };
     json!({"symbol":symbol,"status":result["status"],"error":result["error"],
         "outcome":result["outcome"],"outcome_reason":result["outcome_reason"],"final_volume":result["final_volume"],
+        "start_volume":result["start_volume"],"expected_volume":result["expected_volume"],
+        "position_confirmed":result["position_confirmed"],
         "target":target,"filled":filled,"filled_value":value,"value_currency":currency_or("value_currency"),
         "filled_native_value":native,"native_currency":currency_or("price_currency"),"avg_price":average,
         "before":before,"after":after,"moved":moved,"drift":moved.map(|m|m-filled),
@@ -255,18 +257,16 @@ pub(crate) fn reconciliation(result: &Value, before: &Value) -> Value {
     if let Some(results) = result["symbol_results"].as_object() {
         for (symbol, value) in results.iter().filter(|(_, v)| v.is_object()) {
             let before_qty = observed(before, &before_positions, symbol);
-            let after_qty = if value["reason_code"] == "COMMON.POSITION.UNCONFIRMED" {
+            let pending = value["position_confirmed"] == false
+                || value["reason_code"] == "COMMON.POSITION.UNCONFIRMED";
+            let after_qty = if pending {
                 None
             } else {
                 observed(after, &after_positions, symbol).or_else(|| number(&value["final_volume"]))
             };
-            symbols.push(symbol_row(
-                symbol,
-                value,
-                before_qty,
-                after_qty,
-                &after["currency"],
-            ));
+            let mut row = symbol_row(symbol, value, before_qty, after_qty, &after["currency"]);
+            row["position_observed"] = json!(observed(after, &after_positions, symbol));
+            symbols.push(row);
         }
     }
     json!({"account":{"equity_before":equity(before),"equity_after":equity(after),
@@ -340,7 +340,9 @@ mod tests {
                 "account_assets": {"source": "real", "positions": []},
                 "symbol_results": {
                     "A": {
-                        "reason_code": "COMMON.POSITION.UNCONFIRMED",
+                        "status": "SUCCEEDED",
+                        "expected_volume": 1000,
+                        "position_confirmed": false,
                         "target_volume": 1000,
                         "final_volume": null,
                         "orders": [{"direction": "BUY", "filled_volume": 1000}]
@@ -352,6 +354,9 @@ mod tests {
         );
         let pending = &view["symbols"][0];
         assert_eq!(pending["filled"], 1000.0);
+        assert_eq!(pending["status"], "SUCCEEDED");
+        assert_eq!(pending["position_observed"], 0.0);
+        assert_eq!(pending["expected_volume"], 1000);
         assert!(pending["after"].is_null());
         assert!(pending["reached"].is_null());
         assert!(pending["attained_ratio"].is_null());

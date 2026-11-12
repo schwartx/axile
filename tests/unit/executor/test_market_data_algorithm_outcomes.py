@@ -275,8 +275,13 @@ def test_market_block_then_final_position_query_failure_is_plain_failure(
     result = resolve_algorithm(algorithm_name, session)(session, AlgorithmInput(SYMBOL, 2, {}, params=params))
 
     assert result.status == (ExecutionStatus.PARTIAL if progress else ExecutionStatus.FAILED)
-    assert result.error == "最终持仓查询失败，具体原因未确认"
-    assert result.reason_code is result.reason_family is result.final_volume is None
+    if progress:
+        assert "行情已过期" in result.error
+        assert result.reason_code == "COMMON.MARKET_DATA.UNAVAILABLE"
+    else:
+        assert result.error == "最终持仓查询失败，具体原因未确认"
+        assert result.reason_code is result.reason_family is None
+    assert result.final_volume is None
     assert len(result.orders) == len(result.trades) == len(owner.submissions) == int(progress)
     assert result.outcome_reason == result.error
     assert owner.order_callbacks == owner.trade_callbacks == owner.price_callbacks == []

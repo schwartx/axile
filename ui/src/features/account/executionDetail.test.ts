@@ -700,3 +700,26 @@ it.each(['PARTIAL', 'FAILED'])('算法观测 900、收尾观测 500 时，持仓
   expect(model.header.reachedCount).toBe(1)
   expect(result.final_volume).toBe(900)
 })
+
+
+it('完整成交且持仓待核对时保留完成结论与渠道查询值', () => {
+  const { events, artifacts, summary } = baseFixture()
+  const rows = (summary.reconciliation as { symbols: Record<string, unknown>[] }).symbols
+  Object.assign(rows[0], {
+    status: 'SUCCEEDED', position_confirmed: false, expected_volume: 2.599,
+    position_observed: 4.393, after: null, reached: null, attained_ratio: null,
+  })
+  const model = buildExecutionDetail(events, artifacts, null, summary)
+  const symbol = model.symbols[0]
+  expect(symbol.positionPending).toBe(true)
+  expect(symbol.queriedAfter).toBe(4.393)
+  expect(symbol.expectedAfter).toBe(2.599)
+  expect(symbol.observedAfter).toBeNull()
+  expect(symbol.attainedRatio).toBeNull()
+  expect(symbol.reached).toBeNull()
+  expect(symbol.broken).toBe(false)
+  expect(model.conclusion.state).toBe('SUCCEEDED')
+  expect(executionHeadline(model).text).toContain('持仓待核对')
+  expect(model.spine.some(node => node.detail.includes('持仓待核对'))).toBe(true)
+  expect(model.spine.some(node => node.detail.includes('0/1 到位'))).toBe(false)
+})

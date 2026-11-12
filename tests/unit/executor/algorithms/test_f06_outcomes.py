@@ -37,6 +37,8 @@ class RecoveryRequired(RuntimeError):
         ("partial", ExecutionStatus.PARTIAL),
         ("unknown_cancel", ExecutionStatus.PARTIAL),
         ("filled", ExecutionStatus.SUCCEEDED),
+        ("filled_stale", ExecutionStatus.SUCCEEDED),
+        ("filled_query_failed", ExecutionStatus.SUCCEEDED),
         ("noop", ExecutionStatus.NOOP),
         ("recovery", None),
         ("final_query_failed", ExecutionStatus.PARTIAL),
@@ -87,9 +89,13 @@ def test_algorithm_outcome(monkeypatch, module, case, expected, termination_at=N
         if case == "recovery":
             raise RecoveryRequired("rebuild session")
         volume[0] = {"filled": 2, "partial": 1}.get(case, 0)
-        status = {"filled": OrderStatus.FILLED, "partial": OrderStatus.CANCELED, "timeout": OrderStatus.CANCELED}.get(
-            case, OrderStatus.PENDING
-        )
+        status = {
+            "filled": OrderStatus.FILLED,
+            "filled_stale": OrderStatus.FILLED,
+            "filled_query_failed": OrderStatus.FILLED,
+            "partial": OrderStatus.CANCELED,
+            "timeout": OrderStatus.CANCELED,
+        }.get(case, OrderStatus.PENDING)
         order = UnifiedOrder(
             order_id="1",
             symbol="rb2610",
@@ -98,10 +104,10 @@ def test_algorithm_outcome(monkeypatch, module, case, expected, termination_at=N
             volume=2,
             price=101,
             status=status,
-            filled_volume=volume[0],
+            filled_volume=2 if case in {"filled_stale", "filled_query_failed"} else volume[0],
         )
         orders.append(order)
-        if case == "final_query_failed":
+        if case in {"final_query_failed", "filled_query_failed"}:
             executor.get_account_assets.side_effect = RuntimeError("native query failed")
         if case == "final_query_terminated":
             executor.get_account_assets.side_effect = ExecutionTerminated(reason="stop", mode="graceful")
@@ -323,6 +329,12 @@ def _assert_result_evidence(result, expected, case, volume, orders):
         assert result.final_volume is None
         assert result.orders == orders
         assert result.error == "最终持仓查询失败，具体原因未确认"
+    if case in {"filled_stale", "filled_query_failed"}:
+        assert result.expected_volume == 2
+        assert result.start_volume == 0
+        assert result.final_volume is None
+        assert result.position_confirmed is False
+        assert result.error is None
     if case == "reject":
         assert result.error == "报单失败，具体原因未确认"
     if case == "risk_block":

@@ -302,10 +302,10 @@ def test_direct_quantity_survives_equity_change_between_phases(monkeypatch):
 
 @pytest.mark.parametrize("channel", ["gm", "ctp"])
 @pytest.mark.parametrize("settled", [True, False])
-def test_full_buy_fills_wait_for_one_shared_account_snapshot(monkeypatch, channel, settled):
+def test_full_buy_fills_complete_without_waiting_for_account_snapshot(monkeypatch, channel, settled):
     before = assets(sell=0, buy=0)
     after = assets(sell=500, buy=1400) if settled else before
-    e = engine([before, before, before, after], channel)
+    e = engine([before, after], channel)
 
     def dispatch(tasks):
         rows = []
@@ -333,15 +333,17 @@ def test_full_buy_fills_wait_for_one_shared_account_snapshot(monkeypatch, channe
     output = e.run(request)
 
     delays = [call.args[0] for call in e._runtime.sleep_or_terminate.call_args_list]
-    assert delays == ([0.5, 1.0] if settled else [0.5, 1.0, 2.0])
-    assert e._owner.account_assets_calls == 2 + len(delays)
-    assert output.status == (ExecutionStatus.SUCCEEDED if settled else ExecutionStatus.PARTIAL)
-    assert output.error == (None if settled else "2 个品种成交已确认，最终持仓尚未确认")
+    assert delays == []
+    assert e._owner.account_assets_calls == 2
+    assert output.status == ExecutionStatus.SUCCEEDED
+    assert output.error is None
     for symbol, target in [(SELL, 500), (BUY, 1400)]:
         row = output.symbol_results[symbol]
         assert row.orders[0].filled_volume == target
         assert row.final_volume == (target if settled else None)
-        assert row.reason_code == (None if settled else "COMMON.POSITION.UNCONFIRMED")
+        assert row.reason_code is None
+        assert row.expected_volume == target
+        assert row.position_confirmed is settled
     e._owner.reconcile_terminal_order.assert_not_called()
 
 
@@ -349,7 +351,7 @@ def test_full_buy_fills_wait_for_one_shared_account_snapshot(monkeypatch, channe
 def test_confirm_reduction_before_opening_without_reusing_stale_position(monkeypatch, settled):
     before = assets(sell=900)
     after = assets() if settled else before
-    e = engine([before, before, after, assets(buy=1400)], channel="gm")
+    e = engine([before, after, assets(buy=1400)], channel="gm")
     if not settled:
         e._runtime.deadline_remaining_seconds.return_value = 0.25
     dispatched = []
@@ -368,7 +370,65 @@ def test_confirm_reduction_before_opening_without_reusing_stale_position(monkeyp
     assert output.symbol_results[SELL].final_volume == (500 if settled else None)
     assert output.symbol_results[BUY].status == (ExecutionStatus.SUCCEEDED if settled else ExecutionStatus.BLOCKED)
     if settled:
-        e._runtime.sleep_or_terminate.assert_called_once_with(0.5)
-    else:
-        assert output.symbol_results[SELL].reason_code == "COMMON.POSITION.UNCONFIRMED"
         e._runtime.sleep_or_terminate.assert_not_called()
+    else:
+        assert output.symbol_results[SELL].status == ExecutionStatus.SUCCEEDED
+        assert output.symbol_results[SELL].position_confirmed is False
+        assert "持仓尚待核对" in output.symbol_results[BUY].error
+        e._runtime.sleep_or_terminate.assert_not_called()
+
+
+@pytest.mark.parametrize("restored", [False, True])
+def test_unconfirmed_fills_block_next_execution_until_snapshot_matches(monkeypatch, restored):
+    before = assets(sell=0)
+    e = engine([before, before, before, assets(sell=500), assets(sell=500)])
+    filled = result(start=0, observed=0, target=500, filled=500, direction=OrderDirection.BUY)
+    dispatch = Mock(side_effect=lambda tasks: [filled] if tasks else [])
+    monkeypatch.setattr(e, "_run_prepared_symbol_algorithms", dispatch)
+    request = inputs(e, buy=False)
+    first = e.run(request)
+    assert first.status == ExecutionStatus.SUCCEEDED
+    assert first.symbol_results[SELL].position_confirmed is False
+    if restored:
+        e._owner.pending_positions.clear()
+        request.extra["pending_positions"] = {SELL: 500}
+    second = e.run(request)
+    assert second.status == ExecutionStatus.BLOCKED
+    assert second.symbol_results[SELL].expected_volume == 500
+    assert sum(bool(call.args[0]) for call in dispatch.call_args_list) == 1
+    third = e.run(request)
+    assert third.status == ExecutionStatus.NOOP
+    assert third.symbol_results[SELL].position_confirmed is True
+    assert not e._owner.pending_positions
+    assert sum(bool(call.args[0]) for call in dispatch.call_args_list) == 1
+
+
+def test_actual_algorithm_start_overrides_planning_position(monkeypatch):
+    e = engine([assets(sell=900), assets(sell=800)])
+    fill = result(start=800, observed=800, target=500, filled=300)
+
+    def dispatch(tasks):
+        if not tasks:
+            return []
+        fill.sizing = tasks[0].sizing
+        return [fill]
+
+    monkeypatch.setattr(e, "_run_prepared_symbol_algorithms", dispatch)
+    output = e.run(inputs(e, buy=False))
+    assert output.status == ExecutionStatus.SUCCEEDED
+    assert output.symbol_results[SELL].sizing.current_quantity == 900
+    assert output.symbol_results[SELL].start_volume == 800
+    assert output.symbol_results[SELL].expected_volume == 500
+    assert output.symbol_results[SELL].position_confirmed is False
+
+
+def test_final_query_failure_does_not_replace_execution_error(monkeypatch):
+    e = engine([assets(sell=900)])
+    monkeypatch.setattr(
+        e._owner, "get_account_assets", Mock(side_effect=[assets(sell=900), RuntimeError("query failed")])
+    )
+    monkeypatch.setattr(e, "_run_prepared_symbol_algorithms", lambda tasks: [result(error="撤单失败")] if tasks else [])
+    output = e.run(inputs(e, buy=False))
+    assert output.status == ExecutionStatus.PARTIAL
+    assert output.error == "撤单失败"
+    assert output.symbol_results[SELL].error == "撤单失败"

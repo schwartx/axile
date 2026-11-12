@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from math import isfinite
@@ -16,8 +16,7 @@ from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, Exe
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.algorithms.core.base import AlgorithmInput, resolve_algorithm
 from axile.executor.algorithms.exceptions import execution_error_message
-from axile.executor.algorithms.utils.outcome import TARGET_NOT_REACHED, OutcomeSummary, summarize_outcome
-from axile.executor.constants.order_status import OrderStatus
+from axile.executor.algorithms.utils.outcome import TARGET_NOT_REACHED, summarize_outcome
 from axile.executor.execution_runtime import ExecutionRuntime
 from axile.executor.execution_session import ExecutionSession
 from axile.executor.market_data_validation import MarketDataUnavailableError
@@ -29,7 +28,7 @@ from axile.executor.models.execution_result import (
 )
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets, is_degraded_snapshot_source
 from axile.executor.models.unified_input import UnifiedStandardInput
-from axile.executor.models.unified_order import OrderDirection, UnifiedOrder
+from axile.executor.models.unified_order import UnifiedOrder
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.models.unified_price import UnifiedPriceData, clone_price_data
 from axile.executor.order_cancellation import CancelNotAllowedError
@@ -46,8 +45,6 @@ type AuditContext = ObjectDict
 type OrderAuditMetadata = ObjectDict
 type TradeRule = ObjectDict
 type TargetVolumeValue = int | float
-
-_POSITION_UNCONFIRMED = "COMMON.POSITION.UNCONFIRMED"
 
 
 # 品种执行状态 → 审计事件状态的映射；成功/无操作记 SUCCESS，部分/阻塞记 WARNING，失败记 ERROR。
@@ -144,8 +141,6 @@ def _derive_dispatch_error(
         return f"部分品种休市，{len(failed_results)} 个品种未处理"
     if len(failed_results) == 1 and failed_results[0].error:
         return failed_results[0].error
-    if all(result.reason_code == _POSITION_UNCONFIRMED for result in failed_results):
-        return f"{len(failed_results)} 个品种成交已确认，最终持仓尚未确认"
     if status == ExecutionStatus.BLOCKED:
         reasons = {result.error for result in failed_results}
         if len(reasons) == 1 and failed_results[0].error:
@@ -268,10 +263,35 @@ class ExecutionEngine:
         self._owner = owner
         self._runtime = runtime or owner.require_execution_runtime()
         self._account_snapshot: tuple[UnifiedAccountAssets, str | None] | None = None
+        self._resolved_positions: dict[str, float] = {}
 
     def run(self, standard_input: UnifiedStandardInput) -> UnifiedStandardOutput:
         """执行通用编排流程."""
+        self._resolved_positions = {}
         results = self._run_symbol_algorithms(standard_input)
+        by_symbol = {result.symbol: result for result in results}
+        for symbol, expected in self._resolved_positions.items():
+            if symbol not in by_symbol:
+                results.append(
+                    AlgorithmResult(
+                        symbol=symbol,
+                        algorithm="POSITION-CONFIRMATION",
+                        status=ExecutionStatus.NOOP,
+                        final_volume=expected,
+                        expected_volume=expected,
+                        position_confirmed=True,
+                    )
+                )
+            elif (
+                by_symbol[symbol].expected_volume is None
+                and not by_symbol[symbol].orders
+                and not by_symbol[symbol].trades
+            ):
+                by_symbol[symbol].expected_volume = expected
+                by_symbol[symbol].position_confirmed = True
+        for result in results:
+            if result.expected_volume is not None and result.position_confirmed is False:
+                self._owner.pending_positions[result.symbol] = result.expected_volume
         return self._create_standard_output_from_results(standard_input, results)
 
     def _run_symbol_algorithm(self, task: _PreparedSymbolAlgorithm) -> AlgorithmResult:
@@ -322,6 +342,21 @@ class ExecutionEngine:
         self._owner.handle_termination_checkpoint()
         # planning 阶段只做“算清楚每个 symbol 应该做什么”，不真正触发算法执行。
         planning = self._build_symbol_algorithm_plans(standard_input)
+        pending = standard_input.extra.get("pending_positions", {})
+        if not isinstance(pending, dict) or any(
+            not isinstance(symbol, str)
+            or not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not isfinite(value)
+            for symbol, value in pending.items()
+        ):
+            raise ValueError("待核对持仓证据无效")
+        self._owner.pending_positions.update(pending)
+        blocked = self._pending_position_results(planning.account_assets)
+        if blocked:
+            self._account_snapshot = planning.account_assets, None
+            self._emit_symbol_decision_events(standard_input, blocked)
+            return blocked
         # dispatch 阶段把计划拆成可直接返回的 NOOP、第一阶段减仓、第二阶段开仓三类。
         dispatch_phases = self._build_dispatch_phases(planning)
         try:
@@ -366,13 +401,35 @@ class ExecutionEngine:
         ]
         merged_results = self._merge_symbol_algorithm_results(results)
         if self._account_snapshot is None:
-            # 穿零调仓的两腿起始持仓不同，核对最后一腿的成交与目标。
-            latest_results = {result.symbol: result for result in results}
-            merged_results = self._settle_result_positions(merged_results, latest_results.values())
+            merged_results = self._settle_result_positions(merged_results)
         else:
-            merged_results = self._reconcile_result_positions(merged_results, self._account_snapshot[0], set())
+            merged_results = self._reconcile_result_positions(merged_results, self._account_snapshot[0])
         self._emit_symbol_decision_events(standard_input, merged_results)
         return merged_results
+
+    def _pending_position_results(self, assets: UnifiedAccountAssets) -> list[AlgorithmResult]:
+        """上一轮仓位未核对时阻断新单，跨执行保留成交推导证据。"""
+        blocked = []
+        for symbol, expected in list(self._owner.pending_positions.items()):
+            actual = self._owner.get_current_volume(symbol, assets)
+            if not is_degraded_snapshot_source(assets.source) and self._is_same_volume(actual, expected):
+                del self._owner.pending_positions[symbol]
+                self._resolved_positions[symbol] = expected
+                continue
+            blocked.append(
+                AlgorithmResult(
+                    symbol=symbol,
+                    algorithm="POSITION-CONFIRMATION",
+                    status=ExecutionStatus.BLOCKED,
+                    error="上一轮成交后的持仓尚待核对，已阻断本次下单",
+                    reason_code="COMMON.POSITION.UNCONFIRMED",
+                    reason_family=ExecutionReasonFamily.ACCOUNT_STATE,
+                    expected_volume=expected,
+                    position_confirmed=False,
+                    account_assets=assets,
+                )
+            )
+        return blocked
 
     def _run_symbol_algorithms_serially(
         self,
@@ -835,9 +892,11 @@ class ExecutionEngine:
         snapshot_error = None
         if dispatch_phases.phase_one_tasks:
             self._owner.handle_termination_checkpoint()
-            phase_one_results[:] = self._settle_result_positions(phase_one_results, phase_one_results)
+            phase_one_results[:] = self._settle_result_positions(phase_one_results)
             assert self._account_snapshot is not None
             assets, snapshot_error = self._account_snapshot
+        if any(result.position_confirmed is False for result in phase_one_results):
+            snapshot_error = snapshot_error or "减仓成交已确认，持仓尚待核对，已阻断后续开仓"
         if snapshot_error or self._has_unsuccessful_results(phase_one_results):
             return self._build_blocked_phase_two_results(
                 dispatch_phases.phase_two_plans,
@@ -865,106 +924,44 @@ class ExecutionEngine:
         phase_two_results.extend(self._run_prepared_symbol_algorithms(phase_two_tasks))
         return phase_two_results
 
-    def _fills_match_target(self, result: AlgorithmResult) -> bool:
-        """确认终态订单的净成交量足以解释目标持仓。"""
-        if result.error and result.reason_code != TARGET_NOT_REACHED:
-            return False
-        target = result.target_volume
-        start = result.sizing.current_quantity if result.sizing is not None else None
-        if target is None or start is None or self._is_same_volume(start, target):
-            return False
-        orders = result.orders
-        order_ids = {order.order_id for order in orders}
-        if (
-            not all(order_ids)
-            or len(order_ids) != len(orders)
-            or not all(order.is_completed() and order.status != OrderStatus.REJECTED for order in orders)
-        ):
-            return False
-        net_filled = sum(
-            order.filled_volume if order.direction == OrderDirection.BUY else -order.filled_volume for order in orders
-        )
-        return self._is_same_volume(start + net_filled, target)
-
-    def _settle_result_positions(
-        self, results: list[AlgorithmResult], latest_legs: Iterable[AlgorithmResult]
-    ) -> list[AlgorithmResult]:
-        """同一账户快照服务所有品种，成交与持仓冲突时有限复查。"""
-        assets, error = self._read_result_assets()
-        expected = {
-            result.symbol: result.target_volume
-            for result in latest_legs
-            if result.target_volume is not None and self._fills_match_target(result)
-        }
-        unconfirmed = self._unconfirmed_positions(assets, expected) if error is None else set()
-        for delay in (0.5, 1.0, 2.0):
-            if not unconfirmed:
-                break
-            remaining = self._runtime.deadline_remaining_seconds()
-            if remaining is not None and remaining <= delay:
-                break
-            self._runtime.sleep_or_terminate(delay)
-            refreshed, refresh_error = self._read_result_assets()
-            if refresh_error:
-                break
-            assets = refreshed
-            unconfirmed = self._unconfirmed_positions(assets, expected)
-        self._account_snapshot = assets, error
-        return self._reconcile_result_positions(results, assets, unconfirmed)
-
-    def _unconfirmed_positions(self, assets: UnifiedAccountAssets, expected: dict[str, TargetVolumeValue]) -> set[str]:
-        return {
-            symbol
-            for symbol, target in expected.items()
-            if not self._is_same_volume(self._owner.get_current_volume(symbol, assets), target)
-        }
+    def _settle_result_positions(self, results: list[AlgorithmResult]) -> list[AlgorithmResult]:
+        """一次账户查询核对所有品种，保留已确认的交易完成结论。"""
+        self._account_snapshot = self._read_result_assets()
+        return self._reconcile_result_positions(results, self._account_snapshot[0])
 
     def _reconcile_result_positions(
-        self, results: list[AlgorithmResult], assets: UnifiedAccountAssets, unconfirmed: set[str]
+        self, results: list[AlgorithmResult], assets: UnifiedAccountAssets
     ) -> list[AlgorithmResult]:
-        """用同一快照合并持仓与到位结论；实际执行错误保持原样。"""
+        """分别保存交易结论与持仓核对事实，真实执行错误保持原样。"""
         if is_degraded_snapshot_source(assets.source):
             return results
         reconciled = []
         for result in results:
             final = self._owner.get_current_volume(result.symbol, assets)
-            if (
-                result.reason_code == _POSITION_UNCONFIRMED
-                or not isfinite(final)
-                or normal_session_skip(result.model_dump())
-            ):
+            if not isfinite(final) or normal_session_skip(result.model_dump()):
                 reconciled.append(result)
                 continue
             values = {name: getattr(result, name) for name in AlgorithmResult.model_fields}
             values.update(final_volume=final, account_assets=assets)
-            can_rejudge = (
-                result.reason_code == TARGET_NOT_REACHED
-                and result.status in {ExecutionStatus.FAILED, ExecutionStatus.PARTIAL}
-            ) or (is_success_status(result.status) and not result.error)
-            if (
-                can_rejudge
-                and result.target_volume is not None
+            if result.expected_volume is not None:
+                confirmed = self._is_same_volume(final, result.expected_volume)
+                values.update(position_confirmed=confirmed, final_volume=final if confirmed else None)
+            elif (
+                result.target_volume is not None
+                and (result.reason_code == TARGET_NOT_REACHED or is_success_status(result.status) and not result.error)
                 and (result.reason_code == TARGET_NOT_REACHED or not self._is_same_volume(final, result.target_volume))
             ):
-                values.update(self._summarize_reconciled_position(result, final, result.target_volume, unconfirmed))
+                values.update(
+                    summarize_outcome(
+                        start=result.start_volume if result.start_volume is not None else float("nan"),
+                        final=final,
+                        target=result.target_volume,
+                        orders=result.orders,
+                        trades=result.trades,
+                    )
+                )
             reconciled.append(AlgorithmResult(**values))
         return reconciled
-
-    def _summarize_reconciled_position(
-        self, result: AlgorithmResult, final: float, target: TargetVolumeValue, unconfirmed: set[str]
-    ) -> OutcomeSummary:
-        start = result.sizing.current_quantity if result.sizing is not None else result.final_volume
-        pending = result.symbol in unconfirmed
-        return summarize_outcome(
-            start=final if start is None else start,
-            final=float("nan") if pending else final,
-            target=target,
-            orders=result.orders,
-            trades=result.trades,
-            explicit_error="成交已确认，最终持仓尚未确认" if pending else None,
-            error_reason_code=_POSITION_UNCONFIRMED,
-            error_reason_family=ExecutionReasonFamily.ACCOUNT_STATE,
-        )
 
     def _build_prepared_symbol_algorithm(
         self,
@@ -1144,6 +1141,13 @@ class ExecutionEngine:
             account_assets=current.account_assets,
             target_volume=current.target_volume if current.target_volume is not None else previous.target_volume,
             sizing=current.sizing if current.sizing is not None else previous.sizing,
+            start_volume=previous.start_volume,
+            expected_volume=current.expected_volume
+            if current.expected_volume is not None
+            else previous.expected_volume,
+            position_confirmed=(
+                current.position_confirmed if current.expected_volume is not None else previous.position_confirmed
+            ),
             first_tick=current.first_tick if current.first_tick is not None else previous.first_tick,
             memory=merged_memory,
             final_volume=(
@@ -1375,6 +1379,7 @@ class ExecutionEngine:
         if (
             explicit_error
             and not only_normal_skips
+            and not all(result.expected_volume is not None and result.success for result in results)
             and status
             in {
                 ExecutionStatus.SUCCEEDED,
@@ -1389,7 +1394,7 @@ class ExecutionEngine:
                 for result in results
             )
             status = ExecutionStatus.PARTIAL if progressed else ExecutionStatus.FAILED
-            error = explicit_error
+            error = error or explicit_error
 
         return UnifiedStandardOutput(
             account_assets=account_assets,

@@ -449,7 +449,13 @@ async def trade(
         gm_session=gm_session,
         target_mode=target_mode,
     )
-    standard_input.extra = {**standard_input.extra, "algorithm_selection": algorithm_selection}
+    standard_input.extra = {
+        **standard_input.extra,
+        "algorithm_selection": algorithm_selection,
+        "pending_positions": await native_operation(
+            "execution_read", {"op": "pending_positions", "account_id": account.id}
+        ),
+    }
     if is_supplement_step:
         standard_input.execution_notification_code = None
         standard_input.extra = {**standard_input.extra, "server_notification": True}

@@ -92,7 +92,10 @@ def _stub_intent_promotion(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, i
     monkeypatch.setattr(rebalance_execution, "get_execution_target_snapshot", AsyncMock(return_value=None))
 
     async def read(name: str, request: dict[str, object]) -> dict[str, object]:
-        assert name == "execution_read" and request["op"] == "last_target"
+        assert name == "execution_read"
+        if request["op"] == "pending_positions":
+            return {}
+        assert request["op"] == "last_target"
         return {"present": False, "target": None}
 
     monkeypatch.setattr(rebalance_execution, "native_operation", read)

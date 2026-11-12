@@ -61,6 +61,7 @@ class AbstractExecutor(
     # 这些宿主字段由 `AbstractExecutorExecutionMixin.__init__()` 初始化，保留在主类上仅用于
     # 静态类型表达，避免 mixin 访问它们时退化成“未知属性”。
     account_orders: AccountOrderBook
+    pending_positions: dict[str, float]
     channel_type: TradeChannel
     logger: Logger
     account_config: AccountConfig | None

@@ -181,15 +181,12 @@ def _recover_outer_failure(
     executor: ExecutorProtocol,
     tracker: OrderTracker,
     exc: BaseException,
-) -> tuple[UnifiedAccountAssets, float]:
-    """外层可恢复异常的收尾：补显式错误并重读最终持仓。"""
+) -> tuple[UnifiedAccountAssets, float, str | None]:
+    """保留执行异常，持仓查询错误独立返回。"""
     if not tracker.explicit_error:
         tracker.record_exception(exc)
     executor.logger.exception("SINGLE-MAKER 执行失败")
-    assets, final_volume, query_error = read_final_position(executor, executor.get_current_volume)
-    if query_error:
-        tracker.explicit_error = query_error
-    return assets, final_volume
+    return read_final_position(executor, executor.get_current_volume)
 
 
 @register_algorithm(
@@ -250,6 +247,7 @@ def single_maker_callback(
 
     execution_memory: dict[str, Any] = {}
 
+    explicit_error = None
     try:
         executor.logger.info(f"开始执行 {symbol} 的交易")
 
@@ -315,15 +313,13 @@ def single_maker_callback(
 
             # 重新获取账户资产
             account_assets, final_volume, explicit_error = read_final_position(executor, executor.get_current_volume)
-            if explicit_error:
-                tracker.explicit_error = explicit_error
 
     except ExecutionTerminated:
         raise
     except RECOVERABLE_ALGORITHM_EXCEPTIONS as exc:
         if getattr(exc, "requires_session_recovery", False):
             raise
-        account_assets, final_volume = _recover_outer_failure(executor, tracker, exc)
+        account_assets, final_volume, explicit_error = _recover_outer_failure(executor, tracker, exc)
     finally:
         # 使用工具函数清理订单跟踪器
         teardown_order_tracker(executor, tracker, chase_config)
@@ -338,6 +334,7 @@ def single_maker_callback(
             target_volume,
             orders,
             trades,
+            position_error=explicit_error,
             **tracker.outcome_inputs(),
         ),
         orders=orders,
