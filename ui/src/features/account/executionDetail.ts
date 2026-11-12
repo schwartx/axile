@@ -562,6 +562,7 @@ function buildSpine(
   symbols: SymbolChain[],
   targetChange: TargetChange | null,
   failure: FailureReason | null,
+  sessionClosed: boolean,
 ): SpineNode[] {
   const nodes: SpineNode[] = []
   const started = eventAt(events, 'execution_started')
@@ -642,7 +643,7 @@ function buildSpine(
       nodes.push({ key: 'phase', label: '逐只执行', detail: skipped ? `${skipped} 只休市跳过` : `${results.length} 只无变动`, time: '', status: 'INFO', broken: false })
     }
   }
-  if (afterContent) {
+  if (afterContent && !(sessionClosed && snapshotSource(afterContent, afterAssets) === 'unavailable')) {
     const src = snapshotSource(afterContent, afterAssets)
     nodes.push({
       key: 'after',
@@ -875,7 +876,7 @@ export function buildExecutionDetail(
     header,
     targetChange,
     symbols,
-    spine: buildSpine(events, artifacts, symbols, targetChange, failure).map(node =>
+    spine: buildSpine(events, artifacts, symbols, targetChange, failure, conclusion.sessionScope === 'all').map(node =>
       node.key === 'failed' || node.key === 'completed'
         ? { ...node, label: conclusion.text, detail: '', status: conclusion.warning ? 'WARNING' : 'INFO', broken: conclusion.warning }
         : node),

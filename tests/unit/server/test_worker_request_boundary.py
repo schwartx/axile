@@ -105,3 +105,53 @@ def test_worker_request_forwards_only_truthy_notification_snapshot(monkeypatch, 
         assert captured["notification_snapshot"] is snapshot
     else:
         assert "notification_snapshot" not in captured
+
+
+@pytest.mark.parametrize("command", ["execute_trade", "empty_positions"])
+def test_session_closed_worker_does_not_report_settling(monkeypatch, command):
+    from axile.executor.models.execution_result import ExecutionStatus
+    from axile.executor.models.unified_account_assets import UnifiedAccountAssets
+
+    account = build_account().model_dump(mode="json")
+    payload = (
+        {
+            "standard_input": {"account_config": account["account_config"], "curr_target": {}},
+            "trigger_source": "manual",
+            "audit_input": {},
+        }
+        if command == "execute_trade"
+        else {"empty_kwargs": {"algorithm": {}, "extra": {"audit": {}}}, "audit_input": {}}
+    )
+    output = (
+        FakeExecutor()
+        .execute(None)
+        .model_copy(
+            update={
+                "status": ExecutionStatus.NOOP,
+                "reason_code": "COMMON.SESSION.CLOSED",
+                "symbol_results": {},
+                "account_assets": UnifiedAccountAssets.unavailable(),
+            }
+        )
+    )
+    executor = SimpleNamespace(execute=lambda *args, **kwargs: output, empty_positions=lambda *args, **kwargs: output)
+    monkeypatch.setattr(worker, "_resolve_prepared_executor", lambda **kwargs: executor)
+    monkeypatch.setattr(worker, "_append_trade_pre_execute_audit", lambda **kwargs: None)
+    monkeypatch.setattr(worker, "_append_empty_positions_pre_execute_audit", lambda **kwargs: None)
+    monkeypatch.setattr(worker, "_append_success_audit", lambda **kwargs: None)
+    monkeypatch.setattr(worker, "_finalize_with_orders", lambda *args: None)
+    state = worker._WorkerBackendState()
+    phases = []
+    monkeypatch.setattr(state.progress, "report", lambda execution_id, phase: phases.append(phase))
+    response = worker._handle_worker_request(
+        WorkerBackendRequest(
+            request_id="skip",
+            command=command,
+            account_payload=account,
+            execution_id="skip",
+            payload=payload,
+        ),
+        state,
+    )
+    assert response.kind == "result", response.error
+    assert phases == ["snapshot"]
