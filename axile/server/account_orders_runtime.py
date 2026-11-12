@@ -20,7 +20,6 @@ from axile.executor.models.unified_order import UnifiedOrder
 from axile.server.account_control import providers
 from axile.server.account_control.store import AccountControlStore
 from axile.server.db.models.account import AccountContext
-from axile.server.db.models.account_order import AccountOrderPublic
 from axile.server.execution.execution_account_control import build_account_control_guard, flush_account_control_records
 from axile.server.order_attributes import order_attributes
 
@@ -88,30 +87,30 @@ def public_order(order: UnifiedOrder) -> dict[str, Any]:
         except (TypeError, ValueError, OSError, OverflowError):
             created = None
     execution_id = extra.get("execution_id")
-    return AccountOrderPublic(
-        avg_price=order.avg_price
-        if order.filled_volume > 0 and isfinite(order.avg_price) and order.avg_price > 0
+    return {
+        "avg_price": order.avg_price
+        if order.filled_volume > 0 and isfinite(order.avg_price) and (order.avg_price > 0)
         else None,
-        avg_price_source=("trades" if extra.get("avg_price_source") == "trades" else "native")
-        if order.filled_volume > 0 and isfinite(order.avg_price) and order.avg_price > 0
+        "avg_price_source": ("trades" if extra.get("avg_price_source") == "trades" else "native")
+        if order.filled_volume > 0 and isfinite(order.avg_price) and (order.avg_price > 0)
         else None,
-        attributes=order_attributes(extra),
-        order_id=order.order_id,
-        symbol=order.symbol,
-        direction=str(getattr(order.direction, "value", order.direction)),
-        offset=str(offset) if offset is not None else None,
-        order_type=str(getattr(order.order_type, "value", order.order_type)),
-        price=order.price,
-        volume=order.volume,
-        filled_volume=order.filled_volume,
-        remaining_volume=order.remaining_volume,
-        status=order.status,
-        create_time=created,
-        execution_id=execution_id if isinstance(execution_id, str) else None,
-        native_identity={key: str(extra[key]) for key in _IDENTITY_FIELDS if extra.get(key) is not None},
-        uncertain=not order.is_active() and not order.is_completed(),
-        update_time=updated,
-        reason=next(
+        "attributes": order_attributes(extra),
+        "order_id": order.order_id,
+        "symbol": order.symbol,
+        "direction": str(getattr(order.direction, "value", order.direction)),
+        "offset": str(offset) if offset is not None else None,
+        "order_type": str(getattr(order.order_type, "value", order.order_type)),
+        "price": order.price,
+        "volume": order.volume,
+        "filled_volume": order.filled_volume,
+        "remaining_volume": order.remaining_volume,
+        "status": order.status,
+        "create_time": created,
+        "execution_id": execution_id if isinstance(execution_id, str) else None,
+        "native_identity": {key: str(extra[key]) for key in _IDENTITY_FIELDS if extra.get(key) is not None},
+        "uncertain": not order.is_active() and (not order.is_completed()),
+        "update_time": updated,
+        "reason": next(
             (
                 str(extra[key])
                 for key in ("error_msg", "ord_rej_reason_detail", "last_msg", "cancel_reason", "status_msg")
@@ -119,7 +118,7 @@ def public_order(order: UnifiedOrder) -> dict[str, Any]:
             ),
             None,
         ),
-    ).model_dump(mode="json")
+    }
 
 
 async def _flush_borrowed_guard(guard: Any) -> None:

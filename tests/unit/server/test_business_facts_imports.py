@@ -34,10 +34,10 @@ import axile
 assert Path(axile.__file__).resolve() == Path.cwd() / 'axile/__init__.py'
 importlib.import_module(sys.argv[1])
 from pydantic import BaseModel
-from axile.server.db.models import Account, ExecuteRecordPublic
+from axile.server.db.models import Account, ExecutionEvent
 from axile.server.native_store import native_operation_sync
 
-for model in (Account, ExecuteRecordPublic):
+for model in (Account, ExecutionEvent):
     assert issubclass(model, BaseModel)
     assert not hasattr(model, '__table__')
 assert not {'sqlalchemy', 'sqlmodel', 'alembic', 'aiosqlite'} & sys.modules.keys()

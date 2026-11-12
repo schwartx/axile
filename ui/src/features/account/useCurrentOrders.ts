@@ -1,10 +1,44 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { cancelCurrentOrder, getCurrentOrders, type CancelReceipt, type CurrentOrder } from '@/lib/api/orders'
+import { cancelCurrentOrder, getAccountReconciliation, getCurrentOrders, type AccountAssetRefresh, type CancelReceipt, type CurrentOrder } from '@/lib/api/orders'
 import { currentOrderKey, mergeReceipts, reconcileLocalReceipts, updateLocalReceipt } from '@/features/account/currentOrdersModel'
 import { useLiveOrders } from '@/stores/liveOrders'
 import { useAccountConnection } from '@/stores/liveConnection'
+import { usePolling } from '@/lib/hooks/usePolling'
 
-export function useCurrentOrders(accountId: number) {
+export function useCurrentOrders(accountId: number, onAssetsUpdated?: () => void) {
+  const currentAccount = useRef(accountId)
+  currentAccount.current = accountId
+  const assetsUpdated = useRef(onAssetsUpdated)
+  assetsUpdated.current = onAssetsUpdated
+  const generation = useRef(0)
+  const [assetSnapshot, setAssetSnapshot] = useState({ accountId, id: 0 })
+  const [assetResult, setAssetResult] = useState<{ accountId: number; result: AccountAssetRefresh | null; generation: number } | null>(null)
+  const finishAssetRefresh = useCallback((result: AccountAssetRefresh | null | undefined, token: number) => {
+    if (currentAccount.current !== accountId || generation.current !== token) return
+    setAssetResult({ accountId, result: result ?? null, generation: token })
+    if (result?.status === 'updated') assetsUpdated.current?.()
+  }, [accountId])
+  const beginAssetRefresh = useCallback(() => {
+    const token = ++generation.current
+    setAssetResult({ accountId, result: { status: 'pending', message: '正在核对持仓' }, generation: token })
+    return (result: AccountAssetRefresh | null | undefined) => finishAssetRefresh(result, token)
+  }, [accountId, finishAssetRefresh])
+  useEffect(() => () => { generation.current++ }, [accountId])
+  const observeAssetSnapshot = useCallback((id: number) => {
+    if (currentAccount.current !== accountId) return
+    setAssetSnapshot(previous => previous.accountId === accountId && previous.id === id ? previous : { accountId, id })
+  }, [accountId])
+  const result = assetResult?.accountId === accountId ? assetResult.result : null
+  const identity = result?.reconciliation_id ?? ''
+  const token = assetResult?.generation ?? 0
+  const reconciliation = usePolling(useCallback(async (signal: AbortSignal) => {
+    const result = await getAccountReconciliation(accountId, identity, signal)
+    if (!signal.aborted) finishAssetRefresh(result, token)
+    return result
+  }, [accountId, identity, token, finishAssetRefresh]), {
+    queryKey: `asset-reconciliation:${accountId}:${identity}:${token}`,
+    enabled: result?.status === 'pending' && !!identity, intervalMs: 5000,
+  })
   const connectionReady = useAccountConnection(accountId).status === 'ready'
   const [openFor, setOpenFor] = useState<number | null>(null)
   const [local, setLocal] = useState<{ accountId: number; values: CancelReceipt[] }>({ accountId, values: [] })
@@ -17,12 +51,18 @@ export function useCurrentOrders(accountId: number) {
     if (!connectionReady) return
     setChecking(accountId)
     setFailure(null)
-    try { useLiveOrders.getState().applyRead(accountId, await getCurrentOrders(accountId, undefined, true)) }
-    catch (error) { setFailure({ accountId, error: error instanceof Error ? error : new Error(String(error)) }) }
+    const finish = beginAssetRefresh()
+    try {
+      const result = await getCurrentOrders(accountId, undefined, true)
+      useLiveOrders.getState().applyRead(accountId, result)
+      finish(result.asset_refresh)
+    }
+    catch (error) {
+      setFailure({ accountId, error: error instanceof Error ? error : new Error(String(error)) })
+      finish({ status: 'failed', message: '本次持仓核对结果待确认' })
+    }
     finally { setChecking(current => current === accountId ? null : current) }
-  }, [accountId, connectionReady])
-  const currentAccount = useRef(accountId)
-  currentAccount.current = accountId
+  }, [accountId, connectionReady, beginAssetRefresh])
   const pending = useRef(new Set<string>())
   const open = openFor === accountId
   const query = { data, error, refreshError: failure?.accountId === accountId ? failure.error : null, stale: !connected || !connectionReady || !!error,
@@ -66,7 +106,12 @@ export function useCurrentOrders(accountId: number) {
       pending.current.delete(key)
     }
   }
-  return { accountId, connectionReady, query, open, show, close: () => setOpenFor(null), refresh, cancel, receipts }
+  const awaitingSnapshot = result?.status === 'updated' && result.snapshot_id != null
+    && (assetSnapshot.accountId !== accountId || assetSnapshot.id < result.snapshot_id)
+  return { accountId, connectionReady, query, open, show, close: () => setOpenFor(null), refresh, cancel, receipts,
+    assetRefresh: awaitingSnapshot ? { status: 'pending' as const, message: '正在更新持仓显示' }
+      : result?.status === 'pending' && reconciliation.error ? { ...result, message: '核对结果暂不可用，持仓更新尚未确认' } : result,
+    beginAssetRefresh, observeAssetSnapshot }
 }
 
 export type OrdersState = ReturnType<typeof useCurrentOrders>

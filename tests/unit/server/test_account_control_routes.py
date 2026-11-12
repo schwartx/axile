@@ -175,7 +175,7 @@ def account_client(native_database, monkeypatch):
 def test_account_public_returns_connection_credentials_but_omits_webhook() -> None:
     account = _build_account(feishu_key="unique-feishu-webhook-key")
     account.account_config["password"] = "unique-account-password"
-    payload = account_view(account).model_dump_json()
+    payload = json.dumps(account_view(account), separators=(",", ":"))
     assert "unique-account-password" in payload
     assert "unique-feishu-webhook-key" not in payload
     assert '"account_config"' not in payload and '"feishu_key"' not in payload
@@ -212,7 +212,7 @@ def test_runtime_sync_get_keeps_public_projection_and_missing_states(account_cli
 def test_native_public_queries_match_existing_public_contract(account_client) -> None:
     client, database = account_client
     source = _seed_account(database, feishu_key="private-webhook")
-    expected = account_view(source).model_dump(mode="json")
+    expected = account_view(source)
     detail = client.get("/account/1")
     listing = client.get("/account/")
     assert detail.status_code == 200, detail.text

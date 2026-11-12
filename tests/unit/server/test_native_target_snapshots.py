@@ -70,7 +70,7 @@ def test_latest_snapshot_preserves_absent_normalized_weights(monkeypatch):
 
     value = asyncio.run(snapshots.get_latest_account_target_snapshot(2, 7))
     assert value is not None and value["raw_weights"] == {} and value.get("normalized_weights") is None
-    assert snapshots.target_snapshot_public(value, weight_kind="raw").weights == {}
+    assert snapshots.target_snapshot_public(value, weight_kind="raw")["weights"] == {}
 
 
 def test_execution_snapshot_reads_frozen_weights_by_identity(monkeypatch):

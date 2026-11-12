@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from fastapi import HTTPException
 
+from axile.server import account_assets as assets_service
 from axile.server.api.deps import HistoryPagination
 from axile.server.api.routes import account_assets, account_execution
 from axile.server.api.routes.account_crud import execute_record_detail, list_execute_records
@@ -68,11 +69,11 @@ def test_enqueue_error_returns_original_with_actual_traceback(route, monkeypatch
 
 @pytest.mark.parametrize("error, code", [(_raised_error(), 502), (TimeoutError(RAW), 504)])
 def test_asset_error_preserves_original_and_http_semantics(error, code, monkeypatch):
-    monkeypatch.setattr(account_assets, "_get_account_or_404", AsyncMock(return_value=build_account()))
-    monkeypatch.setattr(account_assets, "query_account_assets", AsyncMock(side_effect=error))
-    monkeypatch.setattr(account_assets, "try_register_account_asset_refresh", lambda _id: True)
+    monkeypatch.setattr(account_assets, "_get_account_or_404", AsyncMock(return_value=build_account(id=7)))
+    monkeypatch.setattr(assets_service, "query_account_assets", AsyncMock(side_effect=error))
+    monkeypatch.setattr(assets_service, "try_register_account_asset_refresh", lambda _id: True)
     released = []
-    monkeypatch.setattr(account_assets, "clear_account_asset_refresh", released.append)
+    monkeypatch.setattr(assets_service, "clear_account_asset_refresh", released.append)
     with pytest.raises(HTTPException) as captured:
         asyncio.run(account_assets.refresh_account_assets(account_id=7))
     assert captured.value.status_code == code

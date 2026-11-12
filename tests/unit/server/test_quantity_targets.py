@@ -118,8 +118,8 @@ def test_quantity_snapshot_roundtrip_and_downgrade_guard(native_database):
     assert restored["target_mode"] == saved["target_mode"] == "quantity"
     assert restored["raw_targets"] == {"XAUUSD": 0.015} and restored["weights"] == {}
     public = target_snapshot_public(saved, weight_kind="raw")
-    assert public.raw_targets == {"XAUUSD": 0.015} and public.weights == {}
-    assert public.quantities is None
+    assert public["raw_targets"] == {"XAUUSD": 0.015} and public["weights"] == {}
+    assert public["quantities"] is None
     with pytest.raises(_core.NativeError, match="数量目标"):
         _core.migration_downgrade(path, '{"public":"0034"}')
     assert _core.migration_current(path, "{}")["public"] == "0036"
@@ -169,7 +169,7 @@ def test_history_sizing_does_not_cross_target_modes(monkeypatch):
     native = AsyncMock(side_effect=AssertionError("不能复用相同数字的旧权重证据"))
     monkeypatch.setattr(account_execution, "native_operation", native)
     public = asyncio.run(account_execution._account_target_public(account, current))
-    assert public.target_mode == "quantity" and public.weights == {} and public.quantities is None
+    assert public["target_mode"] == "quantity" and public["weights"] == {} and (public["quantities"] is None)
     native.assert_not_awaited()
 
 

@@ -8,11 +8,6 @@ from fastapi import APIRouter, HTTPException, Query, Response
 
 from axile.server import account_control_audit
 from axile.server._native import _core
-from axile.server.db.models import (
-    AccountControlAuditExecutionListPublic,
-    AccountControlAuditSummaryPublic,
-    AccountControlEventListPublic,
-)
 
 router = APIRouter()
 
@@ -30,7 +25,7 @@ async def _audit_response(query: Awaitable[bytes]) -> Response:
         raise
 
 
-@router.get("/{account_id}/control/audit/summary", response_model=list[AccountControlAuditSummaryPublic])
+@router.get("/{account_id}/control/audit/summary", response_model=None)
 async def account_control_audit_summary(account_id: int, control_date: str = Query(...)) -> Response:
     """查询账户在指定 control_date 下的账户控制审计汇总。"""
     return await _audit_response(
@@ -38,7 +33,7 @@ async def account_control_audit_summary(account_id: int, control_date: str = Que
     )
 
 
-@router.get("/{account_id}/control/audit/executions", response_model=AccountControlAuditExecutionListPublic)
+@router.get("/{account_id}/control/audit/executions", response_model=None)
 async def account_control_audit_executions(
     account_id: int,
     control_date: str = Query(...),
@@ -53,7 +48,7 @@ async def account_control_audit_executions(
     )
 
 
-@router.get("/executions/{execution_id}/control/events", response_model=AccountControlEventListPublic)
+@router.get("/executions/{execution_id}/control/events", response_model=None)
 async def execution_control_events(
     execution_id: str,
     symbol: str | None = None,

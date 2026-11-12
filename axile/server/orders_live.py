@@ -65,9 +65,9 @@ def read_orders_snapshot(account: Any) -> dict[str, Any] | None:
         binding, value, sampled = cached
         result = deepcopy(value)
     current = current_session(account.id, key)
-    stale = not matches_session(binding) or current.status != "ready" or clock_monotonic() - sampled > 5
+    stale = not matches_session(binding) or current["status"] != "ready" or clock_monotonic() - sampled > 5
     if stale:
-        result.update(complete=False, error=current.message or "账户委托同步已中断，状态待确认")
+        result.update(complete=False, error=current["message"] or "账户委托同步已中断，状态待确认")
     return result
 
 
@@ -83,7 +83,7 @@ async def orders_frames(account_ids: set[int] | None = None) -> list[dict[str, A
     return [
         {
             "account_id": value["id"],
-            "snapshot": (await query_account_orders(AccountSnapshot.model_validate(value))).model_dump(mode="json"),
+            "snapshot": await query_account_orders(AccountSnapshot.model_validate(value)),
         }
         for value in accounts
     ]

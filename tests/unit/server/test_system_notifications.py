@@ -18,7 +18,6 @@ from axile.server import error_notifications
 from axile.server._native import _core
 from axile.server.api.routes import init as init_module
 from axile.server.core import db
-from axile.server.db.models.system_notification import SystemNotificationStatePublic
 from axile.server.execution import notification_state
 from tests.sqlite_oracle import utc_time
 
@@ -146,21 +145,30 @@ def test_default_trial_can_use_saved_key(client, monkeypatch):
 def test_latest_result_is_persistent_and_older_completions_cannot_overwrite(client, monkeypatch, native_database):
     monkeypatch.setattr(db, "database_path", lambda: str(native_database))
     assert client.get("/api/v1/init/execution-alert/result").json()["ok"] is None
-    latest = SystemNotificationStatePublic(
-        finished_at="2026-09-30T10:02:00+08:00",
-        mode="function",
-        event_type="execution_timeout",
-        execution_id="exec-new",
-        ok=False,
-        error="timeout",
-    )
+    latest = {
+        "finished_at": "2026-09-30T10:02:00+08:00",
+        "mode": "function",
+        "event_type": "execution_timeout",
+        "execution_id": "exec-new",
+        "account_id": None,
+        "ok": False,
+        "error": "timeout",
+    }
     notification_state.record_system_notification_result(latest)
     notification_state.record_system_notification_result(
-        SystemNotificationStatePublic(finished_at="2026-09-30T10:01:00+08:00", ok=True)
+        {
+            "finished_at": "2026-09-30T10:01:00+08:00",
+            "mode": None,
+            "event_type": None,
+            "execution_id": None,
+            "account_id": None,
+            "ok": True,
+            "error": None,
+        }
     )
     assert client.get("/api/v1/init/execution-alert/result").json() == {
-        **latest.model_dump(mode="json"),
-        "finished_at": utc_time(latest.finished_at),
+        **latest,
+        "finished_at": utc_time(latest["finished_at"]),
     }
 
 
@@ -180,7 +188,15 @@ def test_state_write_failure_does_not_escape_notification(client, monkeypatch, n
         )
     with pytest.raises(_core.NativeError, match="disk unavailable"):
         notification_state.record_system_notification_result(
-            SystemNotificationStatePublic(finished_at="2026-10-23T10:00:00", ok=True)
+            {
+                "finished_at": "2026-10-23T10:00:00",
+                "mode": None,
+                "event_type": None,
+                "execution_id": None,
+                "account_id": None,
+                "ok": True,
+                "error": None,
+            }
         )
     asyncio.run(error_notifications.send_feishu_error(RuntimeError("error"), None, "saved-key"))
     assert len(calls) == 1

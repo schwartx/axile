@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from axile.server._native import _core
 from axile.server.api.routes import account_crud, execution_replay
 from axile.server.db.models.account import Account, AccountUpdate
-from axile.server.db.models.account_runtime_sync import AccountRuntimeSyncPublic
+from axile.server.db.models.account_runtime_sync import AccountRuntimeSyncState
 
 
 def test_window_requires_recording_and_preserves_fixed_selection(monkeypatch, tmp_path):
@@ -131,7 +131,7 @@ def test_manifest_ignores_later_unassociated_partial(monkeypatch, tmp_path):
 @pytest.mark.parametrize("recording_only", [True, False])
 def test_recording_patch_keeps_acknowledgement_separate_from_trading_sync(monkeypatch, acknowledged, recording_only):
     account = Account(id=7, name="test", market="future", trade_channel="ctp", brokerage="test")
-    account.runtime_sync = AccountRuntimeSyncPublic(status="synchronized", revision=1, attempts=1)
+    account.runtime_sync = AccountRuntimeSyncState(status="synchronized", revision=1, attempts=1)
     stored = account.model_dump(exclude={"replay_config_version"}) | {
         "replay_recording_enabled": True,
         "runtime_sync": {"status": "pending", "revision": 2, "attempts": 1},

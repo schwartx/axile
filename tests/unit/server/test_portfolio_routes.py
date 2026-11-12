@@ -45,7 +45,7 @@ def test_run_and_save_persists_only_successful_trial(monkeypatch, account_id, va
     from unittest.mock import AsyncMock, Mock
 
     from axile.server.api.routes import portfolio as routes
-    from axile.server.db.models import Portfolio, ValidateCustomCalcResponse
+    from axile.server.db.models import Portfolio
     from axile.server.db.models.account import AccountSnapshot
     from axile.server.db.models.portfolio import RunAndSavePortfolioRequest
 
@@ -74,7 +74,17 @@ def test_run_and_save_persists_only_successful_trial(monkeypatch, account_id, va
             assert isinstance(context, AccountSnapshot) and context.id == account_id
         assert code == CODE
         stages.append("run")
-        return ValidateCustomCalcResponse(valid=valid, target={"rb2610": 1.0} if valid else None)
+        return {
+            "valid": valid,
+            "target": {"rb2610": 1.0} if valid else None,
+            "target_mode": "weight",
+            "error": None,
+            "traceback": None,
+            "error_line": None,
+            "error_offset": None,
+            "error_type": None,
+            "error_message": None,
+        }
 
     run = AsyncMock(side_effect=trial)
     clear = Mock()
@@ -89,7 +99,7 @@ def test_run_and_save_persists_only_successful_trial(monkeypatch, account_id, va
         )
     )
 
-    assert result.valid is valid
+    assert result["valid"] is valid
     expected = ["context", "run", "save_trial"] if valid else ["context", "run"]
     assert stages == expected
     run.assert_awaited_once()
@@ -101,7 +111,6 @@ def test_run_and_save_releases_refresh_reservation_when_native_save_fails(monkey
     from unittest.mock import AsyncMock, Mock
 
     from axile.server.api.routes import portfolio as routes
-    from axile.server.db.models import ValidateCustomCalcResponse
     from axile.server.db.models.portfolio import RunAndSavePortfolioRequest
 
     native = AsyncMock(side_effect=[{"account": None}, RuntimeError("write failed")])
@@ -110,7 +119,19 @@ def test_run_and_save_releases_refresh_reservation_when_native_save_fails(monkey
     monkeypatch.setattr(
         routes,
         "_run_custom_calc_validation",
-        AsyncMock(return_value=ValidateCustomCalcResponse(valid=True, target={"rb2610": 1.0})),
+        AsyncMock(
+            return_value={
+                "valid": True,
+                "target": {"rb2610": 1.0},
+                "target_mode": "weight",
+                "error": None,
+                "traceback": None,
+                "error_line": None,
+                "error_offset": None,
+                "error_type": None,
+                "error_message": None,
+            }
+        ),
     )
     monkeypatch.setattr(routes, "try_register_target_refresh", Mock(return_value=True))
     monkeypatch.setattr(routes, "clear_target_refresh", clear)

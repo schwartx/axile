@@ -1,13 +1,21 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { CurrentOrdersButton, CurrentOrdersDialog, CurrentOrdersContent } from '../src/features/account/CurrentOrders'
 import { useCurrentOrders } from '../src/features/account/useCurrentOrders'
 import { useBusinessSync } from '../src/lib/api/businessStream'
+import { getAccountAssetSnapshots } from '../src/lib/api/accounts'
+import { usePolling } from '../src/lib/hooks/usePolling'
 import '../src/styles/theme.css'
 
 export function Fixture() {
   useBusinessSync()
-  const state = useCurrentOrders(1)
+  const state = useCurrentOrders(1, () => { void assets.refresh() })
+  const assets = usePolling(useCallback((signal: AbortSignal) => getAccountAssetSnapshots(1, { limit: 1 }, signal), []), { queryKey: 'fixture-overview-assets', intervalMs: 10000 })
+  const snapshotId = assets.data?.data[0]?.id
+  const observeAssetSnapshot = state.observeAssetSnapshot
+  useEffect(() => {
+    if (snapshotId != null) observeAssetSnapshot(snapshotId)
+  }, [snapshotId, observeAssetSnapshot])
   const [memoryAccount, setMemoryAccount] = useState(1)
   const [dialogVersion, setDialogVersion] = useState(0)
   const [running, setRunning] = useState(true)

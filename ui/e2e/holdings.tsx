@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { HoldingDetailDialog } from '../src/features/account/HoldingDetailDialog'
 import { CurrentOrdersButton, CurrentOrdersDialog } from '../src/features/account/CurrentOrders'
@@ -6,6 +6,7 @@ import { HoldingsPreviewTable } from '../src/features/account/HoldingsPreviewTab
 import { HoldingsView } from '../src/features/account/HoldingsView'
 import { holdingPreviewRows } from '../src/features/account/holdingDetailModel'
 import { useCurrentOrders } from '../src/features/account/useCurrentOrders'
+import { AssetRefreshStatus } from '../src/features/account/AssetRefreshStatus'
 import { getAccountAssetSnapshots, getAccountTargetSnapshot } from '../src/lib/api/accounts'
 import { usePolling } from '../src/lib/hooks/usePolling'
 import { useLiveConnection } from '../src/stores/liveConnection'
@@ -33,16 +34,21 @@ export function Fixture() {
   const [accountId, setAccountId] = useState(1)
   const [selection, setSelection] = useState<{ accountId: number; symbol: string; keyboardOpened: boolean } | null>(null)
   const symbol = selection?.accountId === accountId ? selection.symbol : null
-  const orders = useCurrentOrders(accountId)
+  const orders = useCurrentOrders(accountId, () => { void assets.refresh() })
   const assets = usePolling(useCallback((signal: AbortSignal) => getAccountAssetSnapshots(accountId, { limit: 1 }, signal), [accountId]), { queryKey: `assets:${accountId}`, intervalMs: 0 })
   const target = usePolling(useCallback((signal: AbortSignal) => getAccountTargetSnapshot(accountId, signal), [accountId]), { queryKey: `target:${accountId}`, intervalMs: 0 })
   const latest = assets.data?.data[0]
+  const observeAssetSnapshot = orders.observeAssetSnapshot
+  useEffect(() => {
+    if (latest) observeAssetSnapshot(latest.id)
+  }, [latest?.id, observeAssetSnapshot])
   const positions = latest?.assets.positions ?? []
   const refresh = () => Promise.all([assets.refresh(), target.refresh(), orders.refresh()]).then(() => undefined)
   return <main data-keyboard-opened={selection?.keyboardOpened ?? false} className="min-h-screen bg-bg p-6 text-ink-1">
     <button type="button" onClick={() => setAccountId(accountId === 1 ? 2 : 1)} className="mb-4">切换账户</button>
     <section className="max-w-[960px] rounded-xl border border-line bg-surface p-6">
       <h1 className="mb-4 text-sm text-ink-2">持仓 vs 目标 · 账户{accountId}</h1>
+      <AssetRefreshStatus result={orders.assetRefresh} />
       <CurrentOrdersButton state={orders} />
       {quantityPlan ? <HoldingsView positions={positions} executablePlan={quantityPlan} target={{}} equity={0} assetLabel="市值" quantityLabel="股"
         onSelect={new URLSearchParams(location.search).has('plain') ? undefined : (value, keyboardOpened) => { setSelection({ accountId, symbol: value, keyboardOpened }) }} />
@@ -50,7 +56,7 @@ export function Fixture() {
         observed={!!latest} currency={currency} positionValueLabel="货值"
         onSelect={(value, keyboardOpened) => { setSelection({ accountId, symbol: value, keyboardOpened }) }} />}
     </section>
-    <CurrentOrdersDialog state={orders} accountName={`账户${accountId}`} units={units} />
+    <CurrentOrdersDialog state={orders} units={units} />
     <HoldingDetailDialog symbol={symbol} restoreFocus={!!selection?.keyboardOpened} positions={positions} observed={!!latest}
       observedAt={latest?.created_at ?? null} target={target.data} orders={orders} currency={currency} units={units}
       dataStale={assets.stale || target.stale || !!assets.error || !!target.error} refreshing={assets.refreshing || target.refreshing}

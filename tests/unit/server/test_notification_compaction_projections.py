@@ -10,7 +10,6 @@ import pytest
 
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
 from axile.server._native import _core
-from axile.server.db.models.schedule import ActivityExecutionRecord
 from tests.conftest import native_store_call
 from tests.fixtures.rust_store.supplement_rows import SupplementGroup, SupplementStep
 from tests.unit.server._business_facts_test_support import persist_result, rows, sql
@@ -118,9 +117,7 @@ def _projection_rows(path, record_id):
 
 def _activity(path):
     page = json.loads(_core.journal(_core.Store(str(path)), 1, 0, 100))
-    return ActivityExecutionRecord.model_validate(
-        next(row["record"] for row in page["data"] if row["kind"] == "execution")
-    )
+    return next(row["record"] for row in page["data"] if row["kind"] == "execution")
 
 
 def _extra(path):
@@ -152,8 +149,8 @@ def test_full_context_preserves_projections_and_activity_without_requested_analy
     result_before = asyncio.run(read_execution_result(record))
     assert all(before.values())
     activity = _activity(database)
-    assert activity.trade_count == 1
-    assert activity.summary is not None and activity.summary["cost"] is not None
+    assert activity["trade_count"] == 1
+    assert activity["summary"] is not None and activity["summary"]["cost"] is not None
     _finish(database)
     assert _projection_rows(database, record["id"]) == before
     assert _extra(database)["server_notification_context"] == _result()["extra"]["server_notification_context"]
@@ -161,8 +158,8 @@ def test_full_context_preserves_projections_and_activity_without_requested_analy
     state = rows(database, "account_analysis")[0]
     assert "current_snapshot" not in state and state["requested"]
     after_activity = _activity(database)
-    assert after_activity.trade_count == activity.trade_count
-    assert after_activity.summary == activity.summary
+    assert after_activity["trade_count"] == activity["trade_count"]
+    assert after_activity["summary"] == activity["summary"]
     assert _projection_rows(database, record["id"]) == before
     assert asyncio.run(read_execution_result(record)) == result_before
 
@@ -233,6 +230,6 @@ def test_supplement_finish_keeps_projections_in_real_caller_transaction(database
     assert rows(database, "supplement_group")[0]["status"] == "completed"
     assert _projection_rows(database, record["id"]) == before
     activity = _activity(database)
-    assert activity.trade_count == 1
-    assert activity.summary is not None and activity.summary["cost"] == 20.0
+    assert activity["trade_count"] == 1
+    assert activity["summary"] is not None and activity["summary"]["cost"] == 20.0
     assert _projection_rows(database, record["id"]) == before

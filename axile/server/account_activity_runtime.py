@@ -10,7 +10,6 @@ from zoneinfo import ZoneInfo
 from axile.executor.algorithms.utils.clock import clock_monotonic, clock_now_iso
 from axile.executor.models.unified_order import TradeRecord
 from axile.server.account_orders_runtime import public_offset, public_order
-from axile.server.db.models.account_order import AccountActivityPublic, AccountOrderPublic, AccountTradePublic
 
 
 def _number(value: Any) -> float | None:
@@ -54,7 +53,7 @@ def _trade_attributes(extra: dict[str, Any], raw: dict[str, Any]) -> dict[str, s
     }
 
 
-def _trade(trade: TradeRecord) -> AccountTradePublic:
+def _trade(trade: TradeRecord) -> dict[str, Any]:
     extra = trade.extra
     raw = extra.get("raw_trade_data", {})
     raw = raw if isinstance(raw, dict) else {}
@@ -66,28 +65,28 @@ def _trade(trade: TradeRecord) -> AccountTradePublic:
     if extra.get("channel_type") == "ctp" or direction in {"0", "1"}:
         direction = {"0": "BUY", "1": "SELL"}.get(direction, direction)
     maker = extra.get("is_maker")
-    return AccountTradePublic(
-        trade_id=trade.trade_id,
-        attributes=_trade_attributes(extra, raw),
-        order_id=trade.order_id,
-        symbol=trade.symbol,
-        direction=direction,
-        offset=public_offset(extra),
-        time=trade.trade_time,
-        price=trade.trade_price,
-        volume=trade.trade_volume,
-        value=trade.trade_value,
-        trading_day=_text(extra.get("trading_day")),
-        hedge_flag=_text(extra.get("hedge_flag")),
-        exchange_trade_id=_text(extra.get("exchange_trade_id")),
-        amount=_number(raw.get("amount")),
-        commission=_number(extra.get("commission", raw.get("commission"))),
-        commission_asset=_text(extra.get("commission_asset")),
-        cost=_number(raw.get("cost")),
-        realized_pnl=_number(extra.get("realized_pnl")),
-        is_maker=maker if isinstance(maker, bool) else None,
-        position_side=_text(extra.get("position_side")),
-    )
+    return {
+        "trade_id": trade.trade_id,
+        "attributes": _trade_attributes(extra, raw),
+        "order_id": trade.order_id,
+        "symbol": trade.symbol,
+        "direction": direction,
+        "offset": public_offset(extra),
+        "time": trade.trade_time,
+        "price": trade.trade_price,
+        "volume": trade.trade_volume,
+        "value": trade.trade_value,
+        "trading_day": _text(extra.get("trading_day")),
+        "hedge_flag": _text(extra.get("hedge_flag")),
+        "exchange_trade_id": _text(extra.get("exchange_trade_id")),
+        "amount": _number(raw.get("amount")),
+        "commission": _number(extra.get("commission", raw.get("commission"))),
+        "commission_asset": _text(extra.get("commission_asset")),
+        "cost": _number(raw.get("cost")),
+        "realized_pnl": _number(extra.get("realized_pnl")),
+        "is_maker": maker if isinstance(maker, bool) else None,
+        "position_side": _text(extra.get("position_side")),
+    }
 
 
 def _time(value: str | None) -> float:
@@ -166,27 +165,28 @@ def run_activity_command(executor: Any, payload: dict[str, Any]) -> dict[str, An
     snapshot = activity.snapshot(symbol)
     limit = min(500, max(1, int(payload.get("limit", 100))))
     orders = sorted(
-        [AccountOrderPublic.model_validate(public_order(order)) for order in snapshot["orders"]],
-        key=lambda order: (_time(order.create_time), order.order_id),
+        [public_order(order) for order in snapshot["orders"]],
+        key=lambda order: (_time(order["create_time"]), order["order_id"]),
         reverse=True,
     )
     trades = sorted(snapshot["trades"], key=lambda trade: (_time(trade.trade_time), trade.trade_id), reverse=True)
-    ended_orders = [order for order in orders if order.status in {"已撤销", "已拒绝", "已过期"}]
+    ended_orders = [order for order in orders if order["status"] in {"已撤销", "已拒绝", "已过期"}]
     failures = sorted(snapshot["failures"], key=lambda row: (_time(row["time"]), row["event_id"]), reverse=True)
-    result = AccountActivityPublic(
-        channel=str(getattr(executor.channel_type, "value", executor.channel_type)),
-        orders=orders[:limit],
-        ended_orders=ended_orders[:limit],
-        trades=[_trade(trade) for trade in trades[:limit]],
-        failures=failures[:limit],
-        scope=snapshot["scope"],
-        started_at=snapshot["started_at"],
-        sampled_at=clock_now_iso(),
-        queried_at=snapshot["queried_at"],
-        errors=snapshot["errors"]
+    result = {
+        "channel": str(getattr(executor.channel_type, "value", executor.channel_type)),
+        "orders": orders[:limit],
+        "ended_orders": ended_orders[:limit],
+        "trades": [_trade(trade) for trade in trades[:limit]],
+        "failures": failures[:limit],
+        "scope": snapshot["scope"],
+        "started_at": snapshot["started_at"],
+        "sampled_at": clock_now_iso(),
+        "queried_at": snapshot["queried_at"],
+        "errors": snapshot["errors"]
         + ([f"本次连接记录较多，每类仅保留最近{snapshot['capacity']}笔"] if snapshot["dropped"] else []),
-        symbols=activity.symbols(),
-        limit=limit,
-        truncated=any(len(rows) > limit for rows in (orders, ended_orders, trades, failures)),
-    )
-    return result.model_dump(mode="json")
+        "symbols": activity.symbols(),
+        "limit": limit,
+        "truncated": any((len(rows) > limit for rows in (orders, ended_orders, trades, failures))),
+        "asset_refresh": None,
+    }
+    return result

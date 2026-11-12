@@ -4,11 +4,11 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from threading import RLock
+from typing import Any
 
 from axile.executor.algorithms.utils.clock import clock_monotonic, clock_now_iso
-from axile.executor.connection_progress import ConnectionRun
 from axile.executor.connection_state import ConnectionObservation, ConnectionStatus
-from axile.server.db.models.account_connection import AccountConnectionPublic, AccountSessionStatus
+from axile.server.db.models.account_connection import AccountSessionStatus
 
 _STALE_SECONDS = 5.0
 _lock = RLock()
@@ -162,16 +162,28 @@ def forget_session(account_id: int) -> None:
     forget_orders(account_id)
 
 
-def current_session(account_id: int, config_key: str) -> AccountConnectionPublic:
+def current_session(account_id: int, config_key: str) -> dict[str, Any]:
     """返回有存活依据的当前状态；没有实例时返回未建立。"""
     with _lock:
         session = _sessions.get(account_id)
         if session is None or session.config_key != config_key:
-            return AccountConnectionPublic()
+            return {
+                "progress": None,
+                "status": "uninitialized",
+                "observed_at": None,
+                "message": None,
+                "label": None,
+                "worker_alive": False,
+                "sampled_at": None,
+                "last_success_at": None,
+                "last_failure_at": None,
+                "manually_disconnected": False,
+                "retry_after_seconds": 0,
+            }
         return _public_session(session)
 
 
-def _public_session(session: _LiveSession) -> AccountConnectionPublic:
+def _public_session(session: _LiveSession) -> dict[str, Any]:
     observation = session.observation
     alive = not session.ended and session.alive()
     if not alive:
@@ -186,18 +198,26 @@ def _public_session(session: _LiveSession) -> AccountConnectionPublic:
         message = observation.message
     if status != session.view_status:
         session.view_status, session.updated_at = status, clock_now_iso()
-    return AccountConnectionPublic(
-        progress=ConnectionRun.model_validate(session.progress) if session.progress else None,
-        status=status,
-        message=message,
-        worker_alive=alive,
-        observed_at=session.updated_at,
-        sampled_at=session.sampled_at,
-        label=observation.label if observation and status == "unavailable" else None,
-        retry_after_seconds=max(0, math.ceil(session.retry_deadline - clock_monotonic()))
+    return {
+        "progress": {
+            key: session.progress[key]
+            for key in ("run_id", "channel", "purpose", "status", "steps", "created_at", "finished_at", "error")
+        }
+        if session.progress
+        else None,
+        "status": status,
+        "observed_at": session.updated_at,
+        "message": message,
+        "label": observation.label if observation and status == "unavailable" else None,
+        "worker_alive": alive,
+        "sampled_at": session.sampled_at,
+        "last_success_at": None,
+        "last_failure_at": None,
+        "manually_disconnected": False,
+        "retry_after_seconds": max(0, math.ceil(session.retry_deadline - clock_monotonic()))
         if status == "unavailable"
         else 0,
-    )
+    }
 
 
 def public_session_views() -> dict[str, dict[str, object]]:
@@ -206,7 +226,7 @@ def public_session_views() -> dict[str, dict[str, object]]:
         return {
             str(account_id): {
                 "config_key": session.config_key,
-                "connection": _public_session(session).model_dump(mode="json"),
+                "connection": _public_session(session),
             }
             for account_id, session in _sessions.items()
         }
@@ -233,4 +253,7 @@ def connection_table(account_id: int, config_key: str, run_id: str, step_id: str
             return None
         if session.progress.get("run_id") != run_id:
             return None
-        return session.progress.get("tables", {}).get(step_id)
+        table = session.progress.get("tables", {}).get(step_id)
+        if table is None:
+            return None
+        return {key: table[key] for key in ("kind", "title", "summary", "description", "columns", "row_count", "rows")}

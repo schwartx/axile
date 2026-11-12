@@ -60,14 +60,14 @@ async def _read(function, account_id: int, execution_id: str, *args) -> dict[str
     return {**result, "account_id": account_id, "execution_id": execution_id}
 
 
-@router.get("/{account_id}/replay/status")
+@router.get("/{account_id}/replay/status", response_model=None)
 async def replay_status(account_id: int) -> dict[str, object]:
     """分别返回保存意愿与实际录制状态，不创建 worker。"""
     account = await _get_account_or_404(account_id)
     return await get_worker_backend_manager().replay_status(account)
 
 
-@router.get("/executions/{execution_id}/replay")
+@router.get("/executions/{execution_id}/replay", response_model=None)
 async def replay_manifest(execution_id: str) -> dict[str, object]:
     """读取历史录制段与覆盖原因，不调用当前渠道解释旧数据。"""
     account_id = await _execution_account(execution_id)
@@ -87,7 +87,7 @@ async def replay_manifest(execution_id: str) -> dict[str, object]:
     return {**result, "execution_start_us": start_us, "execution_end_us": end_us}
 
 
-@router.get("/executions/{execution_id}/replay/window")
+@router.get("/executions/{execution_id}/replay/window", response_model=None)
 async def replay_window(
     execution_id: str,
     recording_id: Annotated[str, Query(min_length=1, max_length=256, pattern=r"^[A-Za-z0-9_-]+$")],

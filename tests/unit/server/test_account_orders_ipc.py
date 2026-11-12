@@ -107,10 +107,25 @@ def test_order_timeout_retires_only_idle_worker(monkeypatch, activity):
 
 @pytest.mark.parametrize("status,budget", [("uninitialized", 30), ("connecting", 30), ("ready", 30)])
 def test_query_timeout_never_includes_connection_preparation(monkeypatch, status, budget):
-    from axile.server.db.models.account_connection import AccountConnectionPublic
 
     monkeypatch.setattr(
-        WorkerBackendManager, "_current_session", staticmethod(lambda _: AccountConnectionPublic(status=status))
+        WorkerBackendManager,
+        "_current_session",
+        staticmethod(
+            lambda _: {
+                "progress": None,
+                "status": status,
+                "observed_at": None,
+                "message": None,
+                "label": None,
+                "worker_alive": False,
+                "sampled_at": None,
+                "last_success_at": None,
+                "last_failure_at": None,
+                "manually_disconnected": False,
+                "retry_after_seconds": 0,
+            }
+        ),
     )
     assert WorkerBackendManager._query_timeout(build_account()) == budget
 
@@ -121,7 +136,6 @@ def test_query_timeout_never_includes_connection_preparation(monkeypatch, status
 def test_read_guard_rejects_every_non_ready_state_before_worker_creation(monkeypatch, status):
     from unittest.mock import Mock
 
-    from axile.server.db.models.account_connection import AccountConnectionPublic
     from axile.server.execution.resident_connection import AccountConnectionUnavailable
 
     manager = WorkerBackendManager()
@@ -130,7 +144,21 @@ def test_read_guard_rejects_every_non_ready_state_before_worker_creation(monkeyp
     monkeypatch.setattr(
         WorkerBackendManager,
         "_current_session",
-        staticmethod(lambda _: AccountConnectionPublic(status=status, worker_alive=True)),
+        staticmethod(
+            lambda _: {
+                "progress": None,
+                "status": status,
+                "observed_at": None,
+                "message": None,
+                "label": None,
+                "worker_alive": True,
+                "sampled_at": None,
+                "last_success_at": None,
+                "last_failure_at": None,
+                "manually_disconnected": False,
+                "retry_after_seconds": 0,
+            }
+        ),
     )
     with pytest.raises(AccountConnectionUnavailable, match="先连接账户"):
         manager._order_command_blocking(build_account(is_started=False), {"command": "query"})

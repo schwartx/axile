@@ -16,7 +16,7 @@ from tests.sqlite_oracle import connect as oracle_connect
 from tests.sqlite_oracle import sqlite_oracle
 from tests.unit.server._business_analysis_support import database, persist_records, record
 from tests.unit.server._business_analysis_support import schema_template as schema_template
-from tests.unit.server._execution_read_oracle import ExecuteRecordSummaryPublic
+from tests.unit.server._execution_read_oracle import execution_summary
 from tests.unit.server._execution_test_support import build_account, insert_account
 from tests.unit.server._journal_oracle import _compact_execution_activity
 from tests.unit.server._performance_costs_oracle import project_execution
@@ -86,12 +86,12 @@ def test_mixed_pages_keep_ties_counts_filters_and_existing_projection(tmp_path, 
             for head in heads:
                 source = record(head["id"])
                 projected, trades = project_execution(source)
-                summary = ExecuteRecordSummaryPublic.model_validate(
+                summary = execution_summary(
                     {**head, "symbol_results": {"A": {"outcome": None}}, "trade_count": projected["tradeCount"]}
                 )
                 expected[source.id] = _compact_execution_activity(
                     ExecuteRecord.model_validate(head), summary, trades, source.result["account_assets"]["total_asset"]
-                ).model_dump()
+                )
             order = [
                 ("execution", 6),
                 ("schedule_skip", 6),
@@ -127,7 +127,7 @@ def test_mixed_pages_keep_ties_counts_filters_and_existing_projection(tmp_path, 
                             reference = expected[item["record"]["id"]]
                             assert item == reference, {
                                 key: (value, reference["record"][key])
-                                for key, value in item["record"].items()
+                                for key, value in item["record"]["items"]()
                                 if value != reference["record"][key]
                             }
             route = next(route for route in account_schedule.router.routes if route.path == "/{account_id}/activity")

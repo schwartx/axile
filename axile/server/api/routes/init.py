@@ -33,7 +33,6 @@ from axile.common.notification_config import validate_notification_config
 from axile.common.notification_function import run_notification_function
 from axile.executor.algorithms.utils.clock import clock_now, get_default_clock
 from axile.server.algorithm_discovery import require_algorithm_directory
-from axile.server.db.models.system_notification import SystemNotificationStatePublic
 from axile.server.error_notifications import build_system_notification_context, build_test_card
 from axile.server.native_store import native_operation
 
@@ -44,24 +43,6 @@ _HTTP_TIMEOUT_SECONDS = 15
 _RESTART_DELAY_SECONDS = 0.5
 # 飞书自定义机器人 webhook 前缀；测试推送走与真实告警一致的地址契约。
 _FEISHU_HOOK_BASE = "https://open.feishu.cn/open-apis/bot/v2/hook/"
-
-
-class InitStatus(BaseModel):
-    """初始化就绪状态与预填值.
-
-    Attributes
-    ----------
-    configured : bool
-        是否已完成初始化配置（``config.toml`` 存在）。
-    environment : str
-        当前运行环境标识。
-    values : dict[str, Any]
-        向导各字段的预填值（取自当前有效配置）。
-    """
-
-    configured: bool
-    environment: str
-    values: dict[str, Any]
 
 
 class DbTestRequest(BaseModel):
@@ -100,28 +81,6 @@ class BrowserTitleUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     browser_title: str = Field(max_length=120)
-
-
-class TestResult(BaseModel):
-    """连通性测试或保存操作的结果.
-
-    Attributes
-    ----------
-    ok : bool
-        是否成功。
-    message : str
-        面向用户的结果说明。
-    """
-
-    ok: bool
-    message: str
-
-
-class NotificationFunctionTestResult(TestResult):
-    """函数试跑的源码错误位置，与账户通知编辑器使用同一反馈契约。"""
-
-    error_line: int | None = None
-    traceback: str | None = None
 
 
 class InitSaveRequest(BaseModel):
@@ -165,18 +124,14 @@ def _prefill_values() -> dict[str, Any]:
     }
 
 
-@router.get("/status")
-def init_status() -> InitStatus:
+@router.get("/status", response_model=None)
+def init_status() -> dict[str, Any]:
     """返回初始化就绪状态与向导预填值."""
-    return InitStatus(
-        configured=is_configured(),
-        environment=settings.environment,
-        values=_prefill_values(),
-    )
+    return {"configured": is_configured(), "environment": settings.environment, "values": _prefill_values()}
 
 
-@router.post("/test-db")
-async def test_db(payload: DbTestRequest) -> TestResult:
+@router.post("/test-db", response_model=None)
+async def test_db(payload: DbTestRequest) -> dict[str, Any]:
     """
     测试数据库连通性.
 
@@ -189,12 +144,12 @@ async def test_db(payload: DbTestRequest) -> TestResult:
         path, options = _database_probe_target(payload.uri)
         await native_operation("database_probe", options, database=path)
     except Exception as exc:  # noqa: BLE001 - 连接异常统一转为失败结果
-        return TestResult(ok=False, message=f"数据库连接失败：{exc}")
-    return TestResult(ok=True, message="数据库连接成功")
+        return {"ok": False, "message": f"数据库连接失败：{exc}"}
+    return {"ok": True, "message": "数据库连接成功"}
 
 
-@router.patch("/browser-title")
-def update_browser_title(payload: BrowserTitleUpdateRequest) -> TestResult:
+@router.patch("/browser-title", response_model=None)
+def update_browser_title(payload: BrowserTitleUpdateRequest) -> dict[str, Any]:
     """先持久化再更新当前标题，无需重启服务。"""
     if not is_configured():
         raise HTTPException(status_code=409, detail="系统尚未完成初始化，请先完成初始化配置")
@@ -204,7 +159,7 @@ def update_browser_title(payload: BrowserTitleUpdateRequest) -> TestResult:
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"写入配置文件失败：{exc}") from exc
     settings.browser_title = title
-    return TestResult(ok=True, message="浏览器标签标题已保存，无需重启服务。")
+    return {"ok": True, "message": "浏览器标签标题已保存，无需重启服务。"}
 
 
 def _sqlite_boolean(value: str) -> bool:
@@ -245,8 +200,8 @@ def _database_probe_target(uri: str) -> tuple[str, dict[str, Any]]:
     return path, {"uri": use_uri, "timeout": timeout}
 
 
-@router.post("/test-feishu")
-async def test_feishu(payload: FeishuTestRequest) -> TestResult:
+@router.post("/test-feishu", response_model=None)
+async def test_feishu(payload: FeishuTestRequest) -> dict[str, Any]:
     """
     测试执行告警飞书机器人是否连通.
 
@@ -261,7 +216,7 @@ async def test_feishu(payload: FeishuTestRequest) -> TestResult:
     """
     key = (settings.exe_err_feishu_key if payload.key is None else payload.key).strip()
     if not key:
-        return TestResult(ok=False, message="请先填写飞书机器人 key")
+        return {"ok": False, "message": "请先填写飞书机器人 key"}
 
     data = {"msg_type": "interactive", "card": build_test_card()}
     try:
@@ -270,19 +225,19 @@ async def test_feishu(payload: FeishuTestRequest) -> TestResult:
             async with session.post(f"{_FEISHU_HOOK_BASE}{key}", json=data) as res:
                 result = await res.json()
     except Exception as exc:  # noqa: BLE001 - 网络/解析异常统一转为失败结果
-        return TestResult(ok=False, message=f"推送失败：{exc}")
+        return {"ok": False, "message": f"推送失败：{exc}"}
 
     ok = isinstance(result, dict) and (result.get("code") == 0 or result.get("StatusMessage") == "success")
     if ok:
-        return TestResult(ok=True, message="测试卡片已发送，请在飞书群确认是否收到。")
+        return {"ok": True, "message": "测试卡片已发送，请在飞书群确认是否收到。"}
     detail = (
         str(result.get("msg") or result.get("StatusMessage") or result) if isinstance(result, dict) else str(result)
     )
-    return TestResult(ok=False, message=f"飞书返回失败：{detail}")
+    return {"ok": False, "message": f"飞书返回失败：{detail}"}
 
 
-@router.patch("/execution-alert")
-def update_execution_alert(payload: ExecutionAlertUpdateRequest) -> TestResult:
+@router.patch("/execution-alert", response_model=None)
+def update_execution_alert(payload: ExecutionAlertUpdateRequest) -> dict[str, Any]:
     """
     保存系统级执行错误告警配置并立即生效.
 
@@ -341,16 +296,16 @@ def update_execution_alert(payload: ExecutionAlertUpdateRequest) -> TestResult:
     settings.system_execution_notification_mode = payload.system_execution_notification_mode
     settings.system_execution_notification_code = code
     logger.info("执行错误告警配置已更新并立即生效。")
-    return TestResult(ok=True, message="执行告警配置已保存并立即生效。")
+    return {"ok": True, "message": "执行告警配置已保存并立即生效。"}
 
 
-@router.get("/execution-alert/function/default")
+@router.get("/execution-alert/function/default", response_model=None)
 def default_system_notification_function() -> dict[str, str]:
     """返回不含凭据的系统告警示例源码。"""
     return {"code": DEFAULT_SYSTEM_NOTIFICATION_CODE}
 
 
-@router.get("/execution-alert/result", response_model=SystemNotificationStatePublic)
+@router.get("/execution-alert/result", response_model=None)
 async def system_notification_result() -> Response:
     """仅已初始化服务读取真实结果，首启向导无需连接业务数据库。"""
     if not is_configured():
@@ -358,8 +313,8 @@ async def system_notification_result() -> Response:
     return Response(content=await native_operation("notifications_get_system_json", {}), media_type="application/json")
 
 
-@router.post("/execution-alert/function/test")
-async def test_system_notification_function(payload: NotificationFunctionTestRequest) -> NotificationFunctionTestResult:
+@router.post("/execution-alert/function/test", response_model=None)
+async def test_system_notification_function(payload: NotificationFunctionTestRequest) -> dict[str, Any]:
     """运行当前草稿，使用当前凭据选择；不会保存配置或覆盖真实告警摘要。"""
     error = RuntimeError("样例执行超时" if payload.event_type == "execution_timeout" else "样例执行异常")
     context = build_system_notification_context(error, None, event_type=payload.event_type, is_test=True)
@@ -379,12 +334,12 @@ async def test_system_notification_function(payload: NotificationFunctionTestReq
         }
     key = settings.exe_err_feishu_key if payload.key is None else payload.key
     result = await asyncio.to_thread(run_notification_function, payload.code, context, system_feishu_key=key)
-    return NotificationFunctionTestResult(
-        ok=result.ok,
-        message="样例函数运行成功" if result.ok else result.error or "运行失败",
-        error_line=result.error_line,
-        traceback=getattr(result, "traceback", None),
-    )
+    return {
+        "ok": result.ok,
+        "message": "样例函数运行成功" if result.ok else result.error or "运行失败",
+        "error_line": result.error_line,
+        "traceback": getattr(result, "traceback", None),
+    }
 
 
 def _restart_process() -> None:
@@ -395,8 +350,8 @@ def _restart_process() -> None:
     os.kill(os.getpid(), signal.SIGTERM)
 
 
-@router.post("/save")
-def init_save(payload: InitSaveRequest, background_tasks: BackgroundTasks) -> TestResult:
+@router.post("/save", response_model=None)
+def init_save(payload: InitSaveRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
     """
     校验并写入初始化配置，随后触发进程重启.
 
@@ -471,4 +426,4 @@ def init_save(payload: InitSaveRequest, background_tasks: BackgroundTasks) -> Te
 
     logger.warning("初始化配置已写入 {}，即将重启进入正常模式。", CONFIG_TOML_PATH)
     background_tasks.add_task(_restart_process)
-    return TestResult(ok=True, message="配置已保存，服务正在重启……")
+    return {"ok": True, "message": "配置已保存，服务正在重启……"}

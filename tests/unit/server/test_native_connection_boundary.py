@@ -1,6 +1,7 @@
 """连接持久化边界与只读订阅，SQLite 原子语义在 Rust 模块测试。"""
 
 import asyncio
+import json
 from dataclasses import asdict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -11,7 +12,6 @@ from axile.executor.connection_state import ConnectionObservation
 from axile.server import connection_events, connection_runtime, connection_state, orders_live
 from axile.server.db.models.account import Account
 from axile.server.db.models.account_connection import AccountConnectionState
-from axile.server.db.models.account_order import AccountOrdersPublic
 from tests.sqlite_oracle import utc_time
 from tests.unit.server._native_read_views import connection_view
 
@@ -64,7 +64,7 @@ def test_worker_collector_keeps_history_in_memory_and_main_service_crosses_once(
     assert request["binding"] == asdict(current)
     assert request["history"]["last_success_at"] == "access"
     assert request["history"]["last_failure"]["error"]["technical_detail"] == "evidence"
-    assert connection_runtime.current_session(1, current.config_key).status == "ready"
+    assert connection_runtime.current_session(1, current.config_key)["status"] == "ready"
     assert "private-password" not in str(request)
 
 
@@ -106,7 +106,7 @@ def test_end_revokes_runtime_before_native_failure_and_retains_original_evidence
 
     monkeypatch.setattr(connection_state, "native_operation_sync", native)
     connection_state.end_connection_instance(current, "worker timeout", TimeoutError("original timeout"))
-    assert connection_runtime.current_session(1, current.config_key).status == "unavailable"
+    assert connection_runtime.current_session(1, current.config_key)["status"] == "unavailable"
     assert calls[0][0] == "connection_end"
     assert calls[0][1]["last_failure"]["error"]["technical_detail"] == "original timeout"
 
@@ -136,14 +136,14 @@ def test_public_history_does_not_advertise_a_live_session_or_credentials():
         last_failure={"observed_at": "failed", "message": "old failure", "error": {"technical_detail": "original"}},
     )
     detail = connection_view(value, detail=True)
-    assert detail.status == "disconnected" and not detail.worker_alive
-    assert detail.last_success_at == utc_time("2026-10-20T08:59:00+08:00")
-    assert detail.last_failure.message == "old failure"
-    assert detail.error is None and detail.presentation is None
-    assert "private-password" not in detail.model_dump_json()
-    assert "private-webhook" not in detail.model_dump_json()
+    assert detail["status"] == "disconnected" and (not detail["worker_alive"])
+    assert detail["last_success_at"] == utc_time("2026-10-20T08:59:00+08:00")
+    assert detail["last_failure"]["message"] == "old failure"
+    assert detail["error"] is None and detail["presentation"] is None
+    assert "private-password" not in json.dumps(detail)
+    assert "private-webhook" not in json.dumps(detail)
     value.account_config = {"password": "replacement"}
-    assert connection_view(value).status == "uninitialized"
+    assert connection_view(value)["status"] == "uninitialized"
 
 
 def test_public_session_batch_is_detached_and_preserves_expiry_and_cooldown(monkeypatch):
@@ -177,7 +177,7 @@ def test_connection_and_orders_streams_use_native_account_scan_and_filter_creden
     value = account()
     scan = AsyncMock(
         side_effect=[
-            [value.model_dump(mode="json") | {"connection": connection_view(value).model_dump(mode="json")}],
+            [value.model_dump(mode="json") | {"connection": connection_view(value)}],
             [value.model_dump(mode="json")],
             [],
         ]
@@ -187,7 +187,19 @@ def test_connection_and_orders_streams_use_native_account_scan_and_filter_creden
     from axile.server import account_orders, native_store
 
     monkeypatch.setattr(native_store, "native_operation", scan)
-    query = AsyncMock(return_value=AccountOrdersPublic(data=[], count=0, complete=True, sampled_at="now"))
+    query = AsyncMock(
+        return_value={
+            "data": [],
+            "count": 0,
+            "sampled_at": "now",
+            "complete": True,
+            "instance_id": None,
+            "version": 0,
+            "error": None,
+            "cancellations": list(),
+            "asset_refresh": None,
+        }
+    )
     monkeypatch.setattr(account_orders, "query_account_orders", query)
     connections = asyncio.run(connection_events.connection_frames({2, 1}))
     orders = asyncio.run(orders_live.orders_frames({1}))

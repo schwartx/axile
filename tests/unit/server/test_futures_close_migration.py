@@ -47,13 +47,13 @@ def test_account_policy_survives_json_settings_public_and_worker_snapshot(native
     account = Account.model_validate(stored)
     assert account.futures_close_policy.overrides == {"AG": "today_first"}
     assert AccountSnapshot.model_validate(account.model_dump()).futures_close_policy == policy
-    assert account_view(account).futures_close_policy == policy
+    assert account_view(account)["futures_close_policy"] == policy.model_dump(mode="json")
 
 
 def test_public_capability_keeps_modes_and_supplied_fee_columns():
     from axile.server.api.routes.capabilities import list_channel_capabilities
 
-    channels = {row.channel: row.model_dump(mode="json") for row in list_channel_capabilities()}
+    channels = {row["channel"]: row for row in list_channel_capabilities()}
     assert channels["ctp"]["futures_close"]["modes"] == ["rules", "fee"]
     assert channels["tq"]["futures_close"]["modes"] == ["rules"]
     ag = next(p for p in channels["tq"]["futures_close"]["presets"] if p["product"] == "AG")

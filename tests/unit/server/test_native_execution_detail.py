@@ -19,7 +19,7 @@ from axile.server._native import _core
 from axile.server.api.routes import account_crud, account_schedule
 from tests.sqlite_oracle import to_us
 from tests.unit.server._business_facts_test_support import persist_result
-from tests.unit.server._execution_read_oracle import ExecuteRecordDetailPublic
+from tests.unit.server._execution_read_oracle import execution_summary
 from tests.unit.server._execution_test_support import build_account, insert_account
 from tests.unit.server._native_read_views import read_execution_detail
 from tests.unit.server.test_business_facts_tq import tq_historical_payloads
@@ -178,7 +178,7 @@ def test_execution_response_reuses_complete_legacy_display_contract(
 
 def _expected_detail(head, detail, summary):
     """公开 DTO 默认值与固定摘要独立于原生 HTTP 编码。"""
-    return ExecuteRecordDetailPublic.model_validate({**head, **detail, **summary}).model_dump(mode="json")
+    return {**execution_summary({**head, **summary}), "input": detail["input"], "result": detail["result"]}
 
 
 def _accounts(path):

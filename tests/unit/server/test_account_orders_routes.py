@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
 from axile.server.api.routes import account_orders as routes
-from axile.server.db.models.account_order import AccountOrderPublic, AccountOrdersPublic, OrderCancelReceipt
 from axile.server.db.models.execution import ExecutionEvent
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server._submission_test_support import initialize_submission_database
@@ -36,7 +35,17 @@ def test_missing_account_and_validation(client):
 
 def test_empty_success_and_query_failure_are_distinct(client, monkeypatch):
     async def empty(_account, **_kwargs):
-        return AccountOrdersPublic(data=[], count=0, sampled_at="2026-10-15T10:00:00")
+        return {
+            "data": [],
+            "count": 0,
+            "sampled_at": "2026-10-15T10:00:00",
+            "complete": True,
+            "instance_id": None,
+            "version": 0,
+            "error": None,
+            "cancellations": list(),
+            "asset_refresh": None,
+        }
 
     monkeypatch.setattr(routes, "query_account_orders", empty)
     assert client.get("/account/1/orders").json()["count"] == 0
@@ -53,9 +62,13 @@ def test_empty_success_and_query_failure_are_distinct(client, monkeypatch):
 
 def test_cancel_returns_acceptance_separately_from_terminal_status(client, monkeypatch):
     async def cancel(_account, payload):
-        return OrderCancelReceipt(
-            **payload.model_dump(), state="submitted", message="等待实际回报", requested_at="2026-10-15T10:00:00"
-        )
+        return {
+            "state": "submitted",
+            "message": "等待实际回报",
+            "requested_at": "2026-10-15T10:00:00",
+            "order": None,
+            **payload.model_dump(),
+        }
 
     monkeypatch.setattr(routes, "cancel_account_order", cancel)
     response = client.post("/account/1/orders/cancel", json={"request_id": "r1", "order_id": "a", "symbol": "rb2610"})
@@ -72,22 +85,27 @@ def test_timeout_returns_unknown_gateway_error(client, monkeypatch):
 
 
 def test_recent_activity_validates_scope_and_keeps_partial_query_failure_visible(client, monkeypatch):
-    from axile.server.db.models.account_order import AccountActivityPublic
 
     calls = []
 
     async def query(_account, **kwargs):
         calls.append(kwargs)
-        return AccountActivityPublic(
-            orders=[],
-            trades=[],
-            failures=[],
-            scope="当前交易日",
-            started_at="2026-10-16T09:00:00",
-            sampled_at="2026-10-16T10:00:00",
-            limit=100,
-            errors=["成交核对失败"],
-        )
+        return {
+            "channel": "",
+            "orders": [],
+            "ended_orders": list(),
+            "trades": [],
+            "failures": [],
+            "scope": "当前交易日",
+            "started_at": "2026-10-16T09:00:00",
+            "sampled_at": "2026-10-16T10:00:00",
+            "queried_at": None,
+            "errors": ["成交核对失败"],
+            "symbols": list(),
+            "limit": 100,
+            "truncated": False,
+            "asset_refresh": None,
+        }
 
     monkeypatch.setattr(routes, "query_account_activity", query)
     response = client.get("/account/1/orders/activity?refresh=true&symbol=rb2610")
@@ -107,6 +125,34 @@ def test_recent_activity_gateway_error_does_not_disclose_channel_exception(clien
     response = client.get("/account/1/orders/activity")
     assert response.status_code == 502
     assert "secret" not in response.text
+
+
+def test_reconciliation_status_read_validates_identity_and_never_requests_refresh(client, monkeypatch):
+    identity = "a" * 32
+    calls = []
+
+    async def read(_account, **kwargs):
+        calls.append(kwargs)
+        return {
+            "data": [],
+            "count": 0,
+            "sampled_at": "now",
+            "complete": True,
+            "instance_id": None,
+            "version": 0,
+            "error": None,
+            "cancellations": list(),
+            "asset_refresh": {"status": "updated", "reconciliation_id": identity, "snapshot_id": 7},
+        }
+
+    monkeypatch.setattr(routes, "query_account_orders", read)
+    response = client.get(f"/account/1/orders?reconciliation_id={identity}")
+    assert response.status_code == 200
+    assert response.json()["asset_refresh"]["snapshot_id"] == 7
+    assert calls == [{"reconciliation_id": identity}]
+    assert client.get("/account/1/orders?reconciliation_id=bad").status_code == 422
+    assert client.get(f"/account/1/orders?reconciliation_id={identity}&refresh=true").status_code == 422
+    assert len(calls) == 1
 
 
 def test_current_orders_link_history_by_symbol_and_order_id(monkeypatch, tmp_path):
@@ -136,24 +182,40 @@ def test_current_orders_link_history_by_symbol_and_order_id(monkeypatch, tmp_pat
         assert native_store_call(database, "append_execution_event", event.model_dump(mode="json")) is True
 
     async def query(_account, **_kwargs):
-        return AccountOrdersPublic(
-            data=[
-                AccountOrderPublic(
-                    order_id="same-id",
-                    symbol=symbol,
-                    direction="BUY",
-                    order_type="LIMIT",
-                    price=3500,
-                    volume=1,
-                    filled_volume=0,
-                    remaining_volume=1,
-                    status="待成交",
-                )
+        return {
+            "data": [
+                {
+                    "avg_price": None,
+                    "avg_price_source": None,
+                    "attributes": dict(),
+                    "order_id": "same-id",
+                    "symbol": symbol,
+                    "direction": "BUY",
+                    "offset": None,
+                    "order_type": "LIMIT",
+                    "price": 3500,
+                    "volume": 1,
+                    "filled_volume": 0,
+                    "remaining_volume": 1,
+                    "status": "待成交",
+                    "create_time": None,
+                    "execution_id": None,
+                    "native_identity": dict(),
+                    "uncertain": False,
+                    "update_time": None,
+                    "reason": None,
+                }
                 for symbol in ("rb2610", "ag2612", "cu2612")
             ],
-            count=3,
-            sampled_at="2026-10-15T10:00:00",
-        )
+            "count": 3,
+            "sampled_at": "2026-10-15T10:00:00",
+            "complete": True,
+            "instance_id": None,
+            "version": 0,
+            "error": None,
+            "cancellations": list(),
+            "asset_refresh": None,
+        }
 
     monkeypatch.setattr(routes, "query_account_orders", query)
 
@@ -162,7 +224,7 @@ def test_current_orders_link_history_by_symbol_and_order_id(monkeypatch, tmp_pat
 
         result = await query(build_account())
         await _link_executions(build_account(), result)
-        assert {row.symbol: row.execution_id for row in result.data} == {
+        assert {row["symbol"]: row["execution_id"] for row in result["data"]} == {
             "rb2610": "new-rb",
             "ag2612": "ag",
             "cu2612": None,
@@ -181,27 +243,42 @@ def test_history_link_uses_one_batch_and_keeps_existing_associations(monkeypatch
         return [["rb2610", "same-id", "history"]]
 
     monkeypatch.setattr(service, "native_operation", lookup)
-    result = AccountOrdersPublic(
-        data=[
-            AccountOrderPublic(
-                order_id="same-id",
-                symbol=symbol,
-                direction="BUY",
-                order_type="LIMIT",
-                price=3500,
-                volume=1,
-                filled_volume=0,
-                remaining_volume=1,
-                status="待成交",
-                execution_id=execution,
-            )
+    result = {
+        "data": [
+            {
+                "avg_price": None,
+                "avg_price_source": None,
+                "attributes": dict(),
+                "order_id": "same-id",
+                "symbol": symbol,
+                "direction": "BUY",
+                "offset": None,
+                "order_type": "LIMIT",
+                "price": 3500,
+                "volume": 1,
+                "filled_volume": 0,
+                "remaining_volume": 1,
+                "status": "待成交",
+                "create_time": None,
+                "execution_id": execution,
+                "native_identity": dict(),
+                "uncertain": False,
+                "update_time": None,
+                "reason": None,
+            }
             for symbol, execution in (("rb2610", None), ("ag2612", "existing"))
         ],
-        count=2,
-        sampled_at="2026-10-15T10:00:00",
-    )
+        "count": 2,
+        "sampled_at": "2026-10-15T10:00:00",
+        "complete": True,
+        "instance_id": None,
+        "version": 0,
+        "error": None,
+        "cancellations": list(),
+        "asset_refresh": None,
+    }
     asyncio.run(service._link_executions(build_account(), result))
     assert calls == [("order_execution_links", {"account_id": 1, "identities": [("rb2610", "same-id")]})]
-    assert [order.execution_id for order in result.data] == ["history", "existing"]
+    assert [order["execution_id"] for order in result["data"]] == ["history", "existing"]
     asyncio.run(service._link_executions(build_account(), result))
     assert len(calls) == 1

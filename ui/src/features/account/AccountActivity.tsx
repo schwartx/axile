@@ -19,6 +19,7 @@ import { usePositionRecords } from '@/features/account/usePositionRecords'
 import { PositionRecordsTable } from '@/features/account/PositionRecordsTable'
 import { ReadStatusDot } from '@/features/account/ReadStatusDot'
 import { useReadWarningDelay } from '@/features/account/useReadWarningDelay'
+import { AssetRefreshStatus } from '@/features/account/AssetRefreshStatus'
 
 const time = (value: string | null) => {
   if (!value) return '未知'
@@ -48,26 +49,31 @@ export function AccountActivityContent({ state, units, channel, pendingContent }
   const request = useRef({ key: '', refresh: true, manual: false })
   const [reconcileFailure, setReconcileFailure] = useState<{ key: string; message: string } | null>(null)
   const key = `${state.accountId}:${state.query.data?.instance_id ?? ''}:${symbol}`
+  const beginAssetRefresh = state.beginAssetRefresh
   const fetcher = useCallback(async (signal: AbortSignal) => {
     const refresh = request.current.key !== key || request.current.refresh
     const manual = request.current.key === key && request.current.manual
+    const finish = refresh ? beginAssetRefresh() : null
     try {
-      const result = await getAccountActivity(state.accountId, symbol, limit, refresh, signal)
+      // 显式核对由账户持有，关闭弹窗只取消展示读取，仍接收任务身份和最终结果。
+      const result = await getAccountActivity(state.accountId, symbol, limit, refresh, refresh ? undefined : signal)
+      finish?.(result.asset_refresh)
       if (!signal.aborted) {
         request.current = { key, refresh: false, manual: false }
         if (manual) setReconcileFailure(result.errors.length ? { key: `${key}:${limit}`, message: result.errors.join('；') } : null)
       }
       return result
     } catch (error) {
+      finish?.({ status: 'failed', message: '本次持仓核对结果待确认' })
       if (!signal.aborted && manual) {
         request.current.manual = false
         setReconcileFailure({ key: `${key}:${limit}`, message: error instanceof Error ? error.message : String(error) })
       }
       throw error
     }
-  }, [state.accountId, key, symbol, limit])
+  }, [state.accountId, key, symbol, limit, beginAssetRefresh])
   const query = usePolling(fetcher, { queryKey: `${key}:${limit}`, enabled: state.open && state.connectionReady && tab !== 'pending' && tab !== 'positions', retainDataWhenDisabled: true, intervalMs: 5000 })
-  const holdings = usePositionRecords(state.accountId, state.query.data?.instance_id ?? '', state.open && tab === 'positions', state.connectionReady)
+  const holdings = usePositionRecords(state.accountId, state.query.data?.instance_id ?? '', state.open && tab === 'positions', state.connectionReady, beginAssetRefresh)
   const assets = holdings.snapshot?.assets
   const positionNotice = [
     holdings.reconcileError != null ? '本次核对未完成。' : '',
@@ -132,6 +138,7 @@ export function AccountActivityContent({ state, units, channel, pendingContent }
         <button type="button" aria-label={tab === 'positions' ? '核对持仓' : '核对记录'} disabled={!state.connectionReady || loading || refreshing} onClick={() => { if (tab === 'positions') void holdings.reconcile(); else { setReconcileFailure(null); request.current = { key, refresh: true, manual: true }; void query.refresh() } }} className="flex min-h-8 min-w-20 cursor-pointer items-center justify-end gap-1.5 text-accent disabled:cursor-default disabled:text-ink-3"><RefreshCw size={14} aria-hidden />{refreshing || loading ? '核对中' : tab === 'positions' ? '核对持仓' : '核对记录'}</button>
         </Tooltip>
       </div>
+      <div className="shrink-0"><AssetRefreshStatus result={state.assetRefresh} /></div>
       {tab !== 'positions' && tab !== 'pending' && <p className="mb-3 shrink-0 text-xs text-ink-3">记录观测：{data ? time(data.sampled_at) : '尚未读取'}
         {(recordsDelayed || recordFailure) && <ReadStatusDot label={recordFailure ? '本次核对未完成' : '记录更新暂不可用'}>{recordNotice}</ReadStatusDot>}
       </p>}

@@ -8,6 +8,14 @@ Python 通过 `native_operation()` 或 `native_operation_sync()` 调用一个完
 
 PyO3 入口在持有 GIL 时取得请求和路径，等待数据库、查询、计算和编码时释放 GIL。异步入口在线程中执行，避免 SQLite 等待阻塞事件循环。Python 只保留少量按领域命名的读取和模型辅助函数，例如 `repositories.py`；不要增加 Session 兼容层、通用 SQL 代理或 Python 存储回退。
 
+## 前端响应边界
+
+前端 API 不注册 Pydantic 响应模型。已有 Rust JSON 出口继续以 `Response` 逐字节透传；Python 只负责必要协调和公开字段投影，并在返回普通值的路由显式声明 `response_model=None`。默认值、空值、数值口径、排序与时间格式由所属输出函数负责。账户配置仍通过渠道声明的连接字段白名单回显，Webhook 和其他内部配置不进入响应。
+
+委托与撤单回执由账户服务使用普通字典管理，HTTP 与 SSE 共用同一份公开快照；任务身份、版本、终态和核对落库规则不变。算法目录直接消费原生扫描结果，算法参数 JSON Schema 继续由参数模型生成。
+
+Pydantic 保留在请求校验、算法参数、渠道描述、连接任务及其他实际内部对象处。连接任务与表格在现有记录器中校验，公开出口只导出已验证的状态；不得再建立一套仅用于响应的模型。路由结构检查见 `tests/contract/test_frontend_response_boundary.py`。
+
 ## 账户控制配置
 
 `control_policy.rs` 是 override、完整策略、默认值、严格校验和 preset 合并规则的唯一实现。

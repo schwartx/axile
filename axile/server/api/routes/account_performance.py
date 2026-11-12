@@ -10,7 +10,7 @@ from axile.server.native_store import native_operation
 router = APIRouter()
 
 
-@router.patch("/performance-settings/{account_id}", response_model=PerformanceSettings)
+@router.patch("/performance-settings/{account_id}", response_model=None)
 async def save_performance_settings(account_id: int, settings: PerformanceSettings):
     """原子更新设置，由事实版本失效触发重算。"""
     try:

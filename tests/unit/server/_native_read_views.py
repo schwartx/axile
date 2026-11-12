@@ -5,6 +5,7 @@ import tempfile
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from axile.server._native import _core
 from tests.sqlite_oracle import connect as oracle_connect
@@ -180,9 +181,8 @@ def _connection_fixture(path, account, state):
             )
 
 
-def connection_view(account, *, detail=False):
+def connection_view(account, *, detail=False) -> dict[str, Any]:
     from axile.server.connection_runtime import public_session_views
-    from axile.server.db.models.account_connection import AccountConnectionDetail, AccountConnectionPublic
 
     with tempfile.TemporaryDirectory(prefix="axile-connection-view-") as temporary:
         path = str(Path(temporary) / "fixture.db")
@@ -194,7 +194,25 @@ def connection_view(account, *, detail=False):
                 path,
                 json.dumps({"account_id": account.id, "live_sessions": public_session_views()}, ensure_ascii=False),
             )
-            return (AccountConnectionDetail if detail else AccountConnectionPublic).model_validate_json(value)
+            result = json.loads(value)
+            if detail:
+                return result
+            return {
+                key: result[key]
+                for key in (
+                    "progress",
+                    "status",
+                    "observed_at",
+                    "message",
+                    "label",
+                    "worker_alive",
+                    "sampled_at",
+                    "last_success_at",
+                    "last_failure_at",
+                    "manually_disconnected",
+                    "retry_after_seconds",
+                )
+            }
         finally:
             _core.close_database(path)
 
@@ -254,18 +272,15 @@ def status_view(record, *, outcome_symbols=(), intent=None):
             _core.close_database(path)
 
 
-def account_view(account):
+def account_view(account) -> dict[str, Any]:
     from axile.server.api.routes.account_crud import _account_read_request
-    from axile.server.db.models import AccountPublic
 
     values = account.model_dump(mode="json")
     for name in ("has_pending_supplement", "notification_state", "connection_state"):
         value = getattr(account, name)
         values[name] = value.model_dump(mode="json") if hasattr(value, "model_dump") else value
-    return AccountPublic.model_validate(
-        _core.account_public(
-            "", json.dumps({"account": values, "runtime_sync": None, **_account_read_request()}, ensure_ascii=False)
-        )
+    return _core.account_public(
+        "", json.dumps({"account": values, "runtime_sync": None, **_account_read_request()}, ensure_ascii=False)
     )
 
 

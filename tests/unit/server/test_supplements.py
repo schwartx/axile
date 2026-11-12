@@ -549,9 +549,9 @@ def test_terminate_between_executions_uses_existing_route(database):
         response = Response()
         result = await account_execution.terminate_account_execution(1, ExecutionTerminateRequest(), response)
         assert response.status_code == 200
-        assert result.execution_id is None
-        assert result.status is None
-        assert result.message == "已取消剩余补发"
+        assert result["execution_id"] is None
+        assert result["status"] is None
+        assert result["message"] == "已取消剩余补发"
         with pytest.raises(HTTPException) as caught:
             await account_execution.terminate_account_execution(1, ExecutionTerminateRequest(), Response())
         assert caught.value.status_code == 409
@@ -636,11 +636,11 @@ def test_preview_recalculates_selected_bases_without_moving_timeline(monkeypatch
         limit=1,
     )
     response = asyncio.run(account_schedule.schedule_preview(payload))
-    assert [item.scheduled_at for item in response.items] == bases
-    assert [item.base_scheduled_at for item in response.items] == bases
-    assert all(item.index == 0 and item.effective_count == expected_count for item in response.items)
-    assert response.next_cursor is None
-    assert not response.has_more
+    assert [item["scheduled_at"] for item in response["items"]] == bases
+    assert [item["base_scheduled_at"] for item in response["items"]] == bases
+    assert all(item["index"] == 0 and item["effective_count"] == expected_count for item in response["items"])
+    assert response["next_cursor"] is None
+    assert not response["has_more"]
 
 
 def test_preview_paginates_supplements_from_same_base(monkeypatch):
@@ -653,9 +653,15 @@ def test_preview_paginates_supplements_from_same_base(monkeypatch):
     monkeypatch.setattr(
         account_schedule,
         "_calendar_summary",
-        lambda *_args: account_schedule.SchedulePreviewCalendar(
-            requirement="not_required", availability="not_required"
-        ),
+        lambda *_args: {
+            "requirement": "not_required",
+            "availability": "not_required",
+            "unavailable_reason": None,
+            "calendar_id": None,
+            "label": None,
+            "coverage_start": None,
+            "coverage_end": None,
+        },
     )
 
     async def run():
@@ -667,11 +673,11 @@ def test_preview_paginates_supplements_from_same_base(monkeypatch):
             limit=1,
         )
         first = await account_schedule.schedule_preview(payload)
-        assert first.items[0].scheduled_at == BASE + timedelta(minutes=1)
-        assert first.items[0].base_scheduled_at == BASE
-        assert not first.items[0].is_last
-        second = await account_schedule.schedule_preview(payload.model_copy(update={"after": first.next_cursor}))
-        assert second.items[0].scheduled_at == BASE + timedelta(minutes=2)
-        assert second.items[0].is_last
+        assert first["items"][0]["scheduled_at"] == BASE + timedelta(minutes=1)
+        assert first["items"][0]["base_scheduled_at"] == BASE
+        assert not first["items"][0]["is_last"]
+        second = await account_schedule.schedule_preview(payload.model_copy(update={"after": first["next_cursor"]}))
+        assert second["items"][0]["scheduled_at"] == BASE + timedelta(minutes=2)
+        assert second["items"][0]["is_last"]
 
     asyncio.run(run())
