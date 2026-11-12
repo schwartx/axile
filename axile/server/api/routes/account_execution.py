@@ -469,7 +469,7 @@ async def execution_status(execution_id: str) -> dict[str, Any]:
     from axile.server.execution.live import live_hub
 
     return {
-        "progress": live_hub.execution_progress(status_payload["account_id"], execution_id),
+        "progress": live_hub.execution_progress(cast(int, status_payload["account_id"]), execution_id),
         "execution_id": status_payload["execution_id"],
         "account_id": status_payload["account_id"],
         "execution_kind": status_payload.get("execution_kind"),

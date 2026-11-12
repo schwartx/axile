@@ -80,6 +80,7 @@ def test_execution_status_keeps_defaults_and_filters_internal_state(monkeypatch)
     response = TestClient(app).get("/executions/exec-1")
     assert response.status_code == 200
     assert response.json() == {
+        "progress": None,
         "execution_id": "exec-1",
         "account_id": 1,
         "execution_kind": None,
