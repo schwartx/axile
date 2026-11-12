@@ -51,15 +51,6 @@ class OrderCancelReceipt(Model):
     order: AccountOrderPublic | None = None
 
 
-class AccountAssetRefreshPublic(Model):
-    """主动核对记录时的持仓更新结果，成功仅在资产落库后发布。"""
-
-    status: Literal["updated", "pending", "failed"]
-    reconciliation_id: str | None = None
-    snapshot_id: int | None = None
-    message: str | None = None
-
-
 class AccountOrdersPublic(Model):
     """当前委托快照；不完整时不发布确定的笔数。"""
 
@@ -71,7 +62,7 @@ class AccountOrdersPublic(Model):
     version: int = 0
     error: str | None = None
     cancellations: list[OrderCancelReceipt] = Field(default_factory=list)
-    asset_refresh: AccountAssetRefreshPublic | None = None
+    asset_refresh: dict[str, object] | None = None
 
 
 class AccountTradePublic(Model):
@@ -127,4 +118,4 @@ class AccountActivityPublic(Model):
     symbols: list[str] = Field(default_factory=list)
     limit: int
     truncated: bool = False
-    asset_refresh: AccountAssetRefreshPublic | None = None
+    asset_refresh: dict[str, object] | None = None

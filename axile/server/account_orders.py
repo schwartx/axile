@@ -17,7 +17,6 @@ from axile.server.connection_state import connection_config_key
 from axile.server.db.models.account import AccountContext
 from axile.server.db.models.account_order import (
     AccountActivityPublic,
-    AccountAssetRefreshPublic,
     AccountOrderPublic,
     AccountOrdersPublic,
     OrderCancelReceipt,
@@ -33,7 +32,7 @@ class _OrdersState:
     receipts: dict[str, OrderCancelReceipt] = field(default_factory=dict)
     cached: AccountOrdersPublic | None = None
     refresh_task: asyncio.Task | None = None
-    reconciliations: dict[str, AccountAssetRefreshPublic] = field(default_factory=dict)
+    reconciliations: dict[str, dict[str, object]] = field(default_factory=dict)
 
 
 _states: dict[int, tuple[str, _OrdersState]] = {}
@@ -176,9 +175,11 @@ async def query_account_orders(
         state = _state(account)
         snapshot = await _query(account, state, False)
         if reconciliation_id is not None:
-            snapshot.asset_refresh = state.reconciliations.get(reconciliation_id) or AccountAssetRefreshPublic(
-                status="failed", reconciliation_id=reconciliation_id, message="核对任务已失效，请重新核对"
-            )
+            snapshot.asset_refresh = state.reconciliations.get(reconciliation_id) or {
+                "status": "failed",
+                "reconciliation_id": reconciliation_id,
+                "message": "核对任务已失效，请重新核对",
+            }
         return snapshot
     state = _state(account)
     if state.refresh_task is None or state.refresh_task.done():
@@ -200,20 +201,22 @@ async def _refresh_orders(account: AccountContext, state: _OrdersState) -> Accou
     return snapshot
 
 
-async def _reconcile_assets(account: AccountContext, deadline: float) -> AccountAssetRefreshPublic:
+async def _reconcile_assets(account: AccountContext, deadline: float) -> dict[str, object]:
     """先核对记录再查询持仓；耗尽原有预算后继续落库，不占用委托锁。"""
     state = _state(account)
     identity = uuid4().hex
-    pending = AccountAssetRefreshPublic(
-        status="pending", reconciliation_id=identity, message="持仓仍在核对，完成后自动保存，请稍后查看"
-    )
+    pending: dict[str, object] = {
+        "status": "pending",
+        "reconciliation_id": identity,
+        "message": "持仓仍在核对，完成后自动保存，请稍后查看",
+    }
     state.reconciliations[identity] = pending
 
-    async def reconcile() -> AccountAssetRefreshPublic:
-        result = (await reconcile_account_assets(account)).model_copy(update={"reconciliation_id": identity})
+    async def reconcile() -> dict[str, object]:
+        result = {**await reconcile_account_assets(account), "reconciliation_id": identity}
         state.reconciliations[identity] = result
         # 保留最近 50 个终态，正在等待的核对不能被淘汰。
-        ended = [key for key, value in state.reconciliations.items() if value.status != "pending"]
+        ended = [key for key, value in state.reconciliations.items() if value["status"] != "pending"]
         for key in ended[:-50]:
             state.reconciliations.pop(key)
         return result
@@ -221,7 +224,7 @@ async def _reconcile_assets(account: AccountContext, deadline: float) -> Account
     task = _background(reconcile())
     assert account.id is not None
     if get_running_execution_id(account.id) is not None:
-        pending.message = "账户正在执行，结束后继续核对持仓"
+        pending["message"] = "账户正在执行，结束后继续核对持仓"
         return pending
     try:
         remaining = max(0, deadline - asyncio.get_running_loop().time())

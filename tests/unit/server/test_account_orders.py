@@ -10,7 +10,7 @@ from axile.executor.account_orders import AccountOrderBook
 from axile.executor.models.unified_order import UnifiedOrder
 from axile.server import account_orders as service
 from axile.server.account_orders_runtime import public_order, run_order_command
-from axile.server.db.models.account_order import AccountAssetRefreshPublic, OrderCancelReceipt, OrderCancelRequest
+from axile.server.db.models.account_order import OrderCancelReceipt, OrderCancelRequest
 from tests.unit.server._execution_test_support import build_account
 
 
@@ -52,7 +52,7 @@ def clear_state(monkeypatch):
     monkeypatch.setattr(
         service,
         "reconcile_account_assets",
-        AsyncMock(return_value=AccountAssetRefreshPublic(status="updated", snapshot_id=7)),
+        AsyncMock(return_value={"status": "updated", "snapshot_id": 7}),
     )
     service._states.clear()
     yield

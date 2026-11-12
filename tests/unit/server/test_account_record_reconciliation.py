@@ -55,10 +55,10 @@ def test_explicit_query_commits_position_before_return_and_reloading(monkeypatch
             monkeypatch.setattr(assets, "query_account_assets", query)
             call = orders.query_account_activity if entry == "activity" else orders.query_account_orders
             result = await call(build_account(id=1), refresh=True)
-            assert result.asset_refresh.status == "updated"
-            assert result.asset_refresh.snapshot_id != previous["id"]
+            assert result.asset_refresh["status"] == "updated"
+            assert result.asset_refresh["snapshot_id"] != previous["id"]
             saved = await latest_asset_snapshot(1)
-            assert saved["id"] == result.asset_refresh.snapshot_id
+            assert saved["id"] == result.asset_refresh["snapshot_id"]
             assert saved["assets"]["positions"][0]["volume"] == 3
             assert saved["assets"]["positions"][0]["available_volume"] == 3
             # 后续普通读取仍读快照/镜像，不重复查询资产。
@@ -81,8 +81,8 @@ def test_partial_failure_keeps_records_and_previous_position(monkeypatch, tmp_pa
                 monkeypatch.setattr(orders, "get_running_execution_id", lambda _: "active-execution")
             result = await orders.query_account_activity(build_account(id=1), refresh=True)
             assert result.scope == "本次连接"
-            assert result.asset_refresh.status == ("pending" if busy else "failed")
-            assert result.asset_refresh.snapshot_id is None
+            assert result.asset_refresh["status"] == ("pending" if busy else "failed")
+            assert result.asset_refresh.get("snapshot_id") is None
             assert "secret" not in result.model_dump_json()
             assert (await latest_asset_snapshot(1))["id"] == previous["id"]
             if busy:
@@ -156,7 +156,7 @@ def test_exhausted_record_budget_returns_pending_and_finishes_saving(monkeypatch
             monkeypatch.setattr(assets, "query_account_assets", query)
             account = build_account(id=1)
             result = await orders._reconcile_assets(account, asyncio.get_running_loop().time())
-            assert result.status == "pending"
+            assert result["status"] == "pending"
             await started.wait()
             release.set()
             saved = await assets.refresh_account_assets(account)
@@ -270,9 +270,9 @@ def test_record_reconciliation_waits_for_older_query_then_reads_new_positions(
             else:
                 assert (await previous).assets["positions"][0]["volume"] == 1
             assert calls == 2
-            assert result.asset_refresh.status == "updated"
+            assert result.asset_refresh["status"] == "updated"
             saved = await latest_asset_snapshot(1)
-            assert saved["id"] == result.asset_refresh.snapshot_id
+            assert saved["id"] == result.asset_refresh["snapshot_id"]
             assert saved["assets"]["positions"][0]["volume"] == 3
 
     asyncio.run(scenario())
@@ -294,25 +294,25 @@ def test_status_read_reports_its_own_background_result_not_an_unrelated_snapshot
             monkeypatch.setattr(assets, "query_account_assets", query)
             account = build_account(id=1)
             pending = await orders._reconcile_assets(account, asyncio.get_running_loop().time())
-            identity = pending.reconciliation_id
-            assert identity and pending.status == "pending"
+            identity = pending["reconciliation_id"]
+            assert identity and pending["status"] == "pending"
             await started.wait()
             # 任意更大的快照编号都不能完成这次仍在运行的任务。
             await save_manual_asset_snapshot(1, asset(1).model_dump(mode="json"))
             status = await orders.query_account_orders(account, reconciliation_id=identity)
-            assert status.asset_refresh.status == "pending"
+            assert status.asset_refresh["status"] == "pending"
             release.set()
             await asyncio.gather(*tuple(orders._tasks))
             status = await orders.query_account_orders(account, reconciliation_id=identity)
-            assert status.asset_refresh.reconciliation_id == identity
-            assert status.asset_refresh.status == ("failed" if fails else "updated")
+            assert status.asset_refresh["reconciliation_id"] == identity
+            assert status.asset_refresh["status"] == ("failed" if fails else "updated")
             if not fails:
-                assert status.asset_refresh.snapshot_id == (await latest_asset_snapshot(1))["id"]
+                assert status.asset_refresh["snapshot_id"] == (await latest_asset_snapshot(1))["id"]
             unknown = await orders.query_account_orders(account, reconciliation_id="0" * 32)
-            assert unknown.asset_refresh.status == "failed"
+            assert unknown.asset_refresh["status"] == "failed"
             foreign = await orders.query_account_orders(build_account(id=2), reconciliation_id=identity)
-            assert foreign.asset_refresh.status == "failed"
-            assert foreign.asset_refresh.snapshot_id is None
+            assert foreign.asset_refresh["status"] == "failed"
+            assert foreign.asset_refresh.get("snapshot_id") is None
 
     asyncio.run(scenario())
 
@@ -337,14 +337,14 @@ def test_deferred_reconciliation_waits_for_execution_without_querying_channel(mo
             monkeypatch.setattr(assets, "query_account_assets", query)
             account = build_account(id=1)
             result = await orders._reconcile_assets(account, asyncio.get_running_loop().time() + 35)
-            assert result.status == "pending"
+            assert result["status"] == "pending"
             await waiting.wait()
             query.assert_not_awaited()
             busy = False
             release.set()
             await asyncio.gather(*tuple(orders._tasks))
-            status = await orders.query_account_orders(account, reconciliation_id=result.reconciliation_id)
-            assert status.asset_refresh.status == "updated"
+            status = await orders.query_account_orders(account, reconciliation_id=result["reconciliation_id"])
+            assert status.asset_refresh["status"] == "updated"
             query.assert_awaited_once()
 
     asyncio.run(scenario())

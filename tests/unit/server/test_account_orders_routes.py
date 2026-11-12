@@ -110,8 +110,6 @@ def test_recent_activity_gateway_error_does_not_disclose_channel_exception(clien
 
 
 def test_reconciliation_status_read_validates_identity_and_never_requests_refresh(client, monkeypatch):
-    from axile.server.db.models.account_order import AccountAssetRefreshPublic
-
     identity = "a" * 32
     calls = []
 
@@ -121,11 +119,7 @@ def test_reconciliation_status_read_validates_identity_and_never_requests_refres
             data=[],
             count=0,
             sampled_at="now",
-            asset_refresh=AccountAssetRefreshPublic(
-                status="updated",
-                reconciliation_id=identity,
-                snapshot_id=7,
-            ),
+            asset_refresh={"status": "updated", "reconciliation_id": identity, "snapshot_id": 7},
         )
 
     monkeypatch.setattr(routes, "query_account_orders", read)

@@ -13,7 +13,6 @@ from axile.server.business_facts.assets import save_manual_asset_snapshot
 from axile.server.connection_state import connection_config_key
 from axile.server.db.models import AccountAssetSnapshotPublic
 from axile.server.db.models.account import AccountContext
-from axile.server.db.models.account_order import AccountAssetRefreshPublic
 from axile.server.execution.registry import clear_account_asset_refresh, try_register_account_asset_refresh
 from axile.server.execution.worker_backend.manager import (
     WorkerBackendTimeoutError,
@@ -72,7 +71,7 @@ async def refresh_account_assets(account: AccountContext) -> AccountAssetSnapsho
     return await asyncio.shield(task)
 
 
-async def reconcile_account_assets(account: AccountContext) -> AccountAssetRefreshPublic:
+async def reconcile_account_assets(account: AccountContext) -> dict[str, object]:
     """记录核对独立报告资产结果，不丢弃已取得的委托或成交。"""
     try:
         assert account.id is not None
@@ -91,7 +90,7 @@ async def reconcile_account_assets(account: AccountContext) -> AccountAssetRefre
             except AccountAssetRefreshBusyError:
                 # 显式核对继续等待执行/目标计算释放槽位，不在等待中访问渠道。
                 await clock_async_sleep(1)
-        return AccountAssetRefreshPublic(status="updated", snapshot_id=snapshot.id)
+        return {"status": "updated", "snapshot_id": snapshot.id}
     except Exception:
         logger.exception("联动持仓核对失败 account_id={}", account.id)
-        return AccountAssetRefreshPublic(status="failed", message="持仓核对失败，当前显示上次资产快照")
+        return {"status": "failed", "message": "持仓核对失败，当前显示上次资产快照"}
