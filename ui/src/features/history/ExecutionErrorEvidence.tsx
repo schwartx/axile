@@ -33,7 +33,7 @@ function sourceScope(source: Source, snapshot: Snapshot): string {
 }
 
 /** 打开时独立读取并冻结证据；页面轮询不会替换正文或复制内容。 */
-export function ExecutionErrorEvidence(props: Context & { events?: ExecutionEvent[]; label?: string; enabled?: boolean; className?: string }) {
+export function ExecutionErrorEvidence(props: Context & { events?: ExecutionEvent[]; label?: string; summary?: string; enabled?: boolean; className?: string }) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const requests = useRef(new Map<Source, AbortController>())
   const generation = useRef(0)
@@ -95,9 +95,13 @@ export function ExecutionErrorEvidence(props: Context & { events?: ExecutionEven
     scope: (Object.keys(names) as Source[]).filter(source => snapshot.context.executionId || source === 'record')
       .map(source => ({ label: names[source], value: sourceScope(source, snapshot) })),
   }) : null
+  const trigger = <button type="button" onClick={open} className={`shrink-0 cursor-pointer rounded-sm text-accent hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${props.summary ? 'text-[14px]' : 'text-[13px]'}`}>{props.label ?? '查看错误详情'}</button>
   return <div className={props.className ?? 'mt-3'}>
     {(props.events ?? []).map(event => { const item = catalogEvidence(event); return item && <div key={event.id ?? event.seq} className={`mb-1 text-[13px] ${event.event_type === 'instruments_failed' ? 'text-warn' : 'text-ink-2'}`}><span>{item.label.split(' · ')[0]}</span><span className="ml-2 whitespace-pre-wrap">{shortErrorReason(item.value)}</span></div> })}
-    <button type="button" onClick={open} className="cursor-pointer text-[13px] text-accent hover:underline">{props.label ?? '查看错误详情'}</button>
+    {props.summary ? <div className="my-2 flex flex-wrap items-baseline gap-x-4 gap-y-2 rounded bg-warn-soft px-2.5 py-2">
+      <span className="min-w-0 text-[14px] break-words text-warn">{props.summary}</span>
+      {trigger}
+    </div> : trigger}
     {snapshot && info && <CenteredModal open title="执行错误详情" subtitle={snapshot.context.executionId ?? `记录 ${snapshot.context.recordId}`} onClose={close} widthClassName="w-[720px]"
       footer={<div className="flex flex-wrap items-center justify-end gap-3 border-t border-line px-[22px] py-4">
         <ErrorCopyButton text={info.text} label="复制全部" disabled={busy || failures.length > 0} />

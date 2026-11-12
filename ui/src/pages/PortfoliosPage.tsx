@@ -13,6 +13,7 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { IdentityHover } from '@/components/ui/IdentityHover'
 import { ConfirmModal, type ConfirmSpec } from '@/components/ui/ConfirmModal'
+import { CenteredModal } from '@/components/ui/CenteredModal'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { CreatePortfolioModal } from '@/features/portfolio/CreatePortfolioModal'
 import { TargetChips } from '@/features/portfolio/TargetChips'
@@ -24,7 +25,8 @@ import {
   PORTFOLIO_ROLLUP_ICON,
   PORTFOLIO_ROLLUP_TEXT_CLASS,
 } from '@/features/portfolio/portfolioRollup'
-import { deletePortfolio, refreshPortfolioTargetSnapshot } from '@/lib/api/portfolios'
+import { deletePortfolio, refreshPortfolioTargetSnapshot, setPortfolioArchived } from '@/lib/api/portfolios'
+import { getDashboard } from '@/lib/api/accounts'
 import {
   formatTargetWeight,
   formatTargetUpdatedAt,
@@ -44,6 +46,12 @@ function CurrentPortfolios() {
   const toast = useToastStore((s) => s.toast)
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null)
   const [deleteError, setDeleteError] = useState<Error | null>(null)
+  const [blockedDeletion, setBlockedDeletion] = useState<{ portfolio: PortfolioLite; followers: AccountDashboardItem[] } | null>(null)
+  const [checkingDelete, setCheckingDelete] = useState(false)
+  const deleteCheckLock = useRef(false)
+  const [archiving, setArchiving] = useState(false)
+  const [archiveError, setArchiveError] = useState<Error | null>(null)
+  const archiveLock = useRef(false)
   const [searchParams, setSearchParams] = useSearchParams()
   const [createMode, setCreateMode] = useState<'new' | PortfolioLite | null>(null)
 
@@ -64,19 +72,48 @@ function CurrentPortfolios() {
 
   const followersOf = (pid: number | null): AccountDashboardItem[] =>
     pid == null ? [] : (accounts ?? []).filter((a) => a.portfolio_id === pid)
+  const blockedPortfolio = blockedDeletion?.portfolio
+  const blockedFollowers = blockedDeletion?.followers ?? []
 
-  const askDelete = (p: PortfolioLite) => {
-    if (p.id == null) return
-    const followers = followersOf(p.id)
-    if (followers.length > 0) {
-      const names = followers.map((f) => f.name).join('、')
-      setConfirm({
-        title: '无法删除',
-        body: `「${p.name}」正被账户 ${names} 绑定。需先在该账户改绑到其它组合、或解绑后，才能删除本组合。`,
-        okText: `查看 ${followers[0].name}`,
-        onConfirm: () => navigate(`/accounts/${followers[0].account_id}`),
-      })
+  const archiveBlockedPortfolio = async () => {
+    if (blockedPortfolio?.id == null || archiveLock.current) return
+    archiveLock.current = true
+    setArchiving(true)
+    setArchiveError(null)
+    try {
+      await setPortfolioArchived(blockedPortfolio.id, true)
+      toast('组合已归档')
+      setBlockedDeletion(null)
+      void refreshPortfolios()
+    } catch (error) {
+      setArchiveError(error instanceof Error ? error : new Error(String(error)))
+    } finally {
+      archiveLock.current = false
+      setArchiving(false)
+    }
+  }
+
+  const askDelete = async (p: PortfolioLite) => {
+    if (p.id == null || accounts == null || accountsError || deleteCheckLock.current) return
+    deleteCheckLock.current = true
+    setCheckingDelete(true)
+    setDeleteError(null)
+    try {
+      const archived = await getDashboard(undefined, true)
+      const { accounts: currentAccounts, accountsError: currentError } = useDomainStore.getState()
+      if (currentAccounts == null || currentError) throw currentError ?? new Error('绑定关系暂不可用，请稍后重试')
+      const followers = [...currentAccounts, ...archived.data].filter(account => account.portfolio_id === p.id)
+      if (followers.length > 0) {
+        setArchiveError(null)
+        setBlockedDeletion({ portfolio: p, followers })
+        return
+      }
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error : new Error(String(error)))
       return
+    } finally {
+      deleteCheckLock.current = false
+      setCheckingDelete(false)
     }
     setConfirm({
       title: '删除组合',
@@ -115,6 +152,7 @@ function CurrentPortfolios() {
     ? list.filter((p) => followersOf(p.id).length === 0).length
     : null
   const rollup = portfolioRollup({ total: list.length, targetStates, unboundCount, targetsReady })
+  const onlyArchivedFollowers = blockedFollowers.length > 0 && blockedFollowers.every(account => account.archived_at)
 
   return (
     <section>
@@ -180,7 +218,7 @@ function CurrentPortfolios() {
             const contextChannel = accounts?.find((account) => account.account_id === targetFetch?.snapshot?.context_account_id)?.trade_channel
             return <PortfolioCard key={p.id} p={p} targetState={targetStates[index]} targetFetch={targetFetch}
               quantityUnit={portfolioQuantityUnit(channels ?? [], p.market, contextChannel)}
-              followers={followersOf(p.id)} accountsReady={accounts != null} accountsError={accountsError} onDelete={askDelete} onDuplicate={setCreateMode} />
+              followers={followersOf(p.id)} accountsReady={accounts != null} accountsError={accountsError} checkingDelete={checkingDelete} onDelete={askDelete} onDuplicate={setCreateMode} />
           })}
         </div>
       )}
@@ -195,6 +233,24 @@ function CurrentPortfolios() {
         }}
       />
       <ConfirmModal spec={confirm} onClose={() => setConfirm(null)} />
+      {blockedPortfolio && <CenteredModal open title="无法删除组合" onClose={() => setBlockedDeletion(null)} closeDisabled={archiving}
+        footer={onlyArchivedFollowers && <div className="flex justify-end border-t border-line px-[22px] py-4">
+          <button type="button" disabled={archiving} onClick={() => void archiveBlockedPortfolio()}
+            className="cursor-pointer rounded-lg bg-ink-1 px-4 py-2 text-sm text-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-40">
+            {archiving ? '归档中…' : '归档组合'}
+          </button>
+        </div>}>
+        <p className="text-sm text-ink-2">以下{onlyArchivedFollowers ? '已归档' : ''}账户仍绑定「{blockedPortfolio.name}」：</p>
+        <ul className="my-3 space-y-2">
+          {blockedFollowers.map(account => <li key={account.account_id}>
+            <PortfolioFollowerLink account={account} showId />
+          </li>)}
+        </ul>
+        <p className="mb-4 text-sm text-ink-2">{onlyArchivedFollowers
+          ? '建议归档组合，保留配置与绑定。'
+          : '请先在未归档账户中改绑或解绑。'}</p>
+        <ErrorNotice intent="mutation" title="归档组合失败" error={archiveError} variant="compact" />
+      </CenteredModal>}
     </section>
   )
 }
@@ -208,6 +264,7 @@ function PortfolioCard({
   followers,
   accountsReady,
   accountsError,
+  checkingDelete,
   onDelete,
   onDuplicate,
 }: {
@@ -218,6 +275,7 @@ function PortfolioCard({
   followers: AccountDashboardItem[]
   accountsReady: boolean
   accountsError: Error | null
+  checkingDelete: boolean
   onDelete: (p: PortfolioLite) => void
   onDuplicate: (p: PortfolioLite) => void
 }) {
@@ -281,8 +339,6 @@ function PortfolioCard({
               {running ? <LoaderCircle size={14} className="animate-spin motion-reduce:animate-none" aria-hidden /> : <Play size={14} aria-hidden />}
             </button>
           </Tooltip>
-          {p.id != null && <ArchiveAction kind="portfolio" id={p.id} name={p.name}
-            onChanged={() => useDomainStore.getState().refreshPortfolios()} />}
           <Tooltip content="复制组合">
             <button
               type="button"
@@ -294,12 +350,16 @@ function PortfolioCard({
               <Copy size={14} aria-hidden />
             </button>
           </Tooltip>
-          <Tooltip content={accountsReady && !accountsError ? '删除组合' : '绑定关系确认后才能删除'}>
+          {p.id != null && <ArchiveAction kind="portfolio" id={p.id} name={p.name} iconOnly
+            className="grid h-8 w-8 cursor-pointer place-items-center rounded-lg border border-line text-ink-2 enabled:hover:border-warn/55 enabled:hover:bg-warn-soft enabled:hover:text-warn focus-visible:border-warn/55 focus-visible:bg-warn-soft focus-visible:text-warn disabled:cursor-not-allowed disabled:opacity-45"
+            onChanged={() => useDomainStore.getState().refreshPortfolios()} />}
+          <Tooltip content={checkingDelete ? '正在确认绑定关系…' : accountsReady && !accountsError ? '删除组合' : '绑定关系确认后才能删除'}>
             <button
               type="button"
               aria-label="删除组合"
               className="grid h-8 w-8 cursor-pointer place-items-center rounded-lg border border-line text-ink-2 enabled:hover:border-warn/55 enabled:hover:bg-warn-soft enabled:hover:text-warn focus-visible:border-warn/55 focus-visible:bg-warn-soft focus-visible:text-warn disabled:cursor-not-allowed disabled:opacity-45"
-              disabled={!accountsReady || Boolean(accountsError)}
+              disabled={checkingDelete || !accountsReady || Boolean(accountsError)}
+              aria-busy={checkingDelete}
               onClick={() => onDelete(p)}
             >
               <Trash2 size={14} aria-hidden />
@@ -416,7 +476,7 @@ function TargetTimestamp({ state, snapshot }: {
   )
 }
 
-function PortfolioFollowerLink({ account }: { account: AccountDashboardItem }) {
+function PortfolioFollowerLink({ account, showId = false }: { account: AccountDashboardItem; showId?: boolean }) {
   const to = `/accounts/${account.account_id}`
   const transitioning = useViewTransitionState(to)
   return (
@@ -432,6 +492,7 @@ function PortfolioFollowerLink({ account }: { account: AccountDashboardItem }) {
       >
         {account.name}
       </span>
+      {showId && <span className="text-[12px] text-ink-3">#{account.account_id}{account.archived_at ? ' · 已归档' : ''}</span>}
       <span className="text-[12px] text-ink-3" style={transitioning ? { viewTransitionName: `account-channel-${account.account_id}` } : undefined}>
         {channelLabel(account.trade_channel, account.market)}
       </span>

@@ -1,13 +1,14 @@
 import { shanghaiLabel } from '@/features/history/costs'
 import { isDegradedSnapshotSource } from '@/features/account/accountSnapshot'
 import { lossClass } from '@/features/history/costs'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { executionEventPhase, isActiveExecution, laterPhase, phaseIndex } from '@/features/dashboard/execProgress'
 import { useLiveOrders } from '@/stores/liveOrders'
 import { useLocation, useParams } from 'react-router'
 import { Card } from '@/components/ui/Card'
 import { SkeletonLines } from '@/components/ui/Skeleton'
 import { NumberTicker } from '@/components/ui/NumberTicker'
+import { Tooltip } from '@/components/ui/Tooltip'
 import { formatDuration } from '@/components/ui/duration'
 import { ExecutionErrorEvidence } from '@/features/history/ExecutionErrorEvidence'
 import { readEvidencePages, type EvidencePage } from '@/features/history/executionErrorAdapter'
@@ -34,7 +35,6 @@ import { executionRecordView } from '@/features/account/executionOutcome'
 import { AccountPageTitle } from '@/features/account/pageHead'
 import { EvidenceExportButton } from '@/features/account/EvidenceExportButton'
 import { Link } from '@/components/ui/nav'
-import type { FailureReason } from '@/features/account/failureReason'
 import { PhaseBar } from '@/features/dashboard/PhaseBar'
 import { accountAssetTerms, positionValueLabelOf } from '@/features/dashboard/display'
 import { useDomainStore } from '@/stores/domain'
@@ -140,18 +140,25 @@ function Header({
   m,
   currency,
   assetLabel,
+  errorDetails,
+  identity,
 }: {
   m: ExecutionDetailModel
   currency: string
   assetLabel: string
+  errorDetails: ReactNode
+  identity: ReactNode
 }) {
   const v = executionHeadline(m)
   const h = m.header
   const meta = [TRIGGER_LABEL[h.trigger] ?? h.trigger, KIND_LABEL[h.kind] ?? h.kind].filter(Boolean).join(' ')
   return (
     <div className="mt-3">
-      <div className={`text-[16px] ${v.level === 'warn' ? 'font-semibold text-warn' : 'text-ink-1'}`}>{v.text}</div>
-      <div className="num mt-2 text-[14px] text-ink-2">
+      <div className="flex flex-col items-start gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+        <div className={`text-[16px] ${v.level === 'warn' ? 'font-semibold text-warn' : 'text-ink-1'}`}>{v.text}</div>
+        {identity}
+      </div>
+      <div className="num mt-1 text-[14px] text-ink-2">
         {meta && <span className="text-ink-3">{meta} · </span>}
         {h.durationSec != null && <span className="text-ink-3">{fmtDuration(h.durationSec)} · </span>}
         {assetLabel} {fmtEquity(h.equityBefore)} → {h.equityAfter == null ? '—' : <NumberTicker value={h.equityAfter} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} />}
@@ -173,7 +180,7 @@ function Header({
           {m.terminationWarning}
         </div>
       )}
-      {m.failure && <FailureNote f={m.failure} />}
+      {errorDetails}
     </div>
   )
 }
@@ -194,11 +201,6 @@ function SnapshotNote({ m, assetLabel }: { m: ExecutionDetailModel; assetLabel: 
     ? `执行后账户快照为「${label(h.sourcePosition)}」，${assetLabel}变动与敞口对比不可得；逐品种仅展示已确认的持仓证据，缺少证据时到位状态未知。`
     : `执行前基线为「${label(h.sourceEquity)}」，${assetLabel}变动与敞口对比不可得；执行后持仓与到位证据仍然保留。`
   return <div className="mt-2 rounded bg-warn-soft px-2.5 py-1.5 text-[13.5px] text-warn">{note}</div>
-}
-
-/** 直接显示已有原因，原始文本在证据区回放。 */
-function FailureNote({ f }: { f: FailureReason }) {
-  return <div className="my-2 rounded bg-warn-soft px-2.5 py-2 text-[14px] text-warn">{shortErrorReason(f.human)}</div>
 }
 
 /** ② 目标变化段：回答「为什么调」。 */
@@ -611,6 +613,17 @@ export function ExecutionDetailPage() {
   const executionStreamConnected = useLiveExecStore(s => s.connected)
   const progressStale = isLive && executionStreamConnected
     ? Boolean(running?.progressStale) : Boolean(status.data?.progress?.stale || status.stale)
+  const errorDetails = <ExecutionErrorEvidence accountId={accountId} executionId={executionId} status={status.data} events={rawEvents}
+    summary={model?.failure ? shortErrorReason(model.failure.human) : undefined}
+    label={model?.failure ? '查看错误详情 ›' : undefined} className="mt-2" />
+  const identity = executionId && <div className="flex shrink-0 items-center gap-1.5 text-[12px] text-ink-3 [&>button]:px-1.5 [&>button]:py-0.5 [&>button]:text-[12px]">
+    <Tooltip content={<span className="font-mono select-text break-all">{executionId}</span>}>
+      <span tabIndex={0} aria-label={`执行 ID：${executionId}`} className="rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+        执行 ID：<span className="font-mono">{executionId.length > 12 ? `${executionId.slice(0, 6)}…${executionId.slice(-4)}` : executionId}</span>
+      </span>
+    </Tooltip>
+    <ErrorCopyButton text={executionId} label="复制执行 ID" variant="text" />
+  </div>
 
   return (
     <section>
@@ -634,12 +647,11 @@ export function ExecutionDetailPage() {
             disabled={status.data != null && status.data.account_id !== accountId} />
         </div>}
       </div>
-      <div className="num mt-2 text-[16px] font-mono text-ink-2">{executionId}</div>
       <div>
         <ErrorNotice intent="uncertain" title="状态待确认：执行状态查询失败" error={status.error} contextKey={executionId} onRetry={status.refresh} />
       </div>
-      <ExecutionErrorEvidence accountId={accountId} executionId={executionId} status={status.data} events={rawEvents} />
-      {model && <Header m={model} currency={currency} assetLabel={assetTerms.shortLabel} />}
+      {model ? <Header m={model} currency={currency} assetLabel={assetTerms.shortLabel} identity={identity} errorDetails={errorDetails} />
+        : <><div className="mt-3 flex justify-end">{identity}</div>{errorDetails}</>}
 
       {/* 运行中：顶部给一条确定态阶段条作一瞥总览；逐事件细节仍在下方脊柱。 */}
       {status.data?.status === 'QUEUED' && <div className="mt-3 text-[15px] text-ink-2">已受理，等待开跑</div>}
