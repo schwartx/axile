@@ -50,7 +50,8 @@ export function Fixture() {
       <h1 className="mb-4 text-sm text-ink-2">持仓 vs 目标 · 账户{accountId}</h1>
       <AssetRefreshStatus result={orders.assetRefresh} />
       <CurrentOrdersButton state={orders} />
-      {quantityPlan ? <HoldingsView positions={positions} executablePlan={quantityPlan} target={{}} equity={0} assetLabel="市值" quantityLabel="股"
+      {quantityPlan ? <HoldingsView positions={positions} executablePlan={quantityPlan} target={{}} rawTargets={target.data?.raw_targets}
+        sizing={target.data?.sizing} equity={latest?.assets.total_asset ?? 0} assetLabel="市值" quantityLabel="股"
         onSelect={new URLSearchParams(location.search).has('plain') ? undefined : (value, keyboardOpened) => { setSelection({ accountId, symbol: value, keyboardOpened }) }} />
         : <HoldingsPreviewTable holdings={assets.loading || target.loading ? null : holdingPreviewRows(positions, latest?.assets.total_asset ?? 0, target.data, !!latest)}
         observed={!!latest} currency={currency} positionValueLabel="货值"

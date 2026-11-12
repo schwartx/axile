@@ -141,6 +141,7 @@ export function AccountHoldingsPage() {
             positions={positions}
             executablePlan={comparison.data}
             target={target}
+            rawTargets={weights.data?.raw_targets}
             equity={equity}
             currency={currencyOf(item?.currency)}
             assetLabel={assetTerms.shortLabel}
