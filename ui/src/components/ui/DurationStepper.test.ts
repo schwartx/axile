@@ -27,3 +27,23 @@ test('省略零天或零小时，全零保留小时入口，非法值保持可�
       expect(html).toContain(`data-duration-unit="${key}"${hidden.some(unit => unit === key) ? ' inert=""' : ''} aria-hidden="${hidden.some(unit => unit === key)}"`)
   }
 })
+
+test('按天保留复用四个步进按钮和两种动效，空值合法且只能向上步进', () => {
+  const render = (value: string) => renderToStaticMarkup(createElement(DurationStepper, {
+    value, unit: 'days', min: 1, emptyLabel: '不清理', onChange() {}, ariaLabel: '保留天数',
+  }))
+  const empty = render('')
+  expect(empty).toContain('不清理')
+  expect(empty).toContain('ink-rewrite-slot')
+  expect(empty).toContain('number-flow-react')
+  expect(empty).not.toContain('aria-invalid="true"')
+  expect(empty).not.toContain('data-duration-unit="hours"')
+  expect((empty.match(/disabled=""/g) ?? [])).toHaveLength(2)
+  for (const amount of [1, 7]) {
+    expect(empty).toContain(`aria-label="保留天数：增加 ${amount} 天"`)
+    expect(empty).toContain(`aria-label="保留天数：减少 ${amount} 天"`)
+  }
+  expect((render('1').match(/disabled=""/g) ?? [])).toHaveLength(0)
+  for (const value of ['0', '-1', '1.5', 'invalid', '9007199254740992'])
+    expect(render(value)).toContain('aria-invalid="true"')
+})

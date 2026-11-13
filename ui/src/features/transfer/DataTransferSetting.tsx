@@ -6,17 +6,12 @@ import { AccessibilitySwitch } from '@/components/ui/AccessibilitySwitch'
 import { DatePicker } from '@/components/ui/DatePicker'
 import { MacTimePicker } from '@/components/ui/MacTimePicker'
 import { Segmented } from '@/components/ui/Segmented'
-import { StepperNumberInput } from '@/components/ui/StepperNumberInput'
 import { DurationStepper } from '@/components/ui/DurationStepper'
-import { stepNumericValue } from '@/components/ui/numericStepper'
 import { positiveInteger, transferDraft, transferPlan, type TransferDraft, type TransferPlan } from '@/features/transfer/transferForm'
 import { apiGet, apiSend, apiUpload, apiErrorFromBody } from '@/lib/api/client'
 
 type Settings = { plan: Partial<TransferPlan>; last_run: { ok: boolean; at: string; error?: string } | null }
 const retentionFields = [{ key: 'execution_days', label: '执行记录' }, { key: 'replay_days', label: '回放' }] as const
-function stepDays(value: string, direction: -1 | 1) {
-  return !value.trim() && direction === 1 ? '1' : stepNumericValue(value, direction, { step: 1, min: 1 })
-}
 const buttonClass = 'cursor-pointer rounded-[9px] border border-line px-4 py-2 text-[14px] hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-wait disabled:opacity-45'
 function download(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob)
@@ -63,7 +58,18 @@ function DataTransferModal({ open, onClose }: { open: boolean; onClose: () => vo
   let formError = ''
   try { effective() } catch (cause) { formError = cause instanceof Error ? cause.message : String(cause) }
   const disabled = busy || !settings
-  return <CenteredModal open={open} title="数据传送" onClose={onClose} closeDisabled={busy} widthClassName="w-[760px]">
+  return <CenteredModal open={open} title="数据传送" onClose={onClose} closeDisabled={busy} widthClassName="w-[760px]"
+    footer={<div className="mx-[22px] border-t border-line py-3">
+      {busy && <p role="status" className="mb-3 text-[13px] text-ink-2">正在处理，请稍候…</p>}
+      {message && <p role="status" className="mb-3 text-[13px] text-ink-2">{message}</p>}
+      {(error || formError) && <p role="alert" className="mb-3 whitespace-pre-wrap text-[13px] text-warn">{error || formError}</p>}
+      <fieldset disabled={disabled} className="flex justify-end gap-3">
+        <button type="button" className={buttonClass} disabled={!!formError}
+          onClick={() => void run(async () => { await apiSend('PUT', '/transfer/settings', effective()); setMessage('传送规则已保存') })}>保存规则</button>
+        <button type="button" className="cursor-pointer rounded-[9px] border border-ink-1 bg-ink-1 px-4 py-2 text-[14px] font-medium text-surface hover:opacity-90 focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-45"
+          disabled={!draft.source_url.trim() || !!formError} onClick={() => void run(async () => { const result = await apiSend<{ batch: string }>('POST', '/transfer/pull', effective()); setMessage(`拉取完成 · ${result.batch}`) })}>立即拉取</button>
+      </fieldset>
+    </div>}>
     <p className="mt-2 text-[14px] text-ink-3">从来源端拉取数据并在本机累积历史，来源端收到确认后才按规则清理。</p>
     <fieldset disabled={disabled} className="mt-5 space-y-5 disabled:opacity-70">
       <label className="block text-[14px] text-ink-2">来源端地址
@@ -121,22 +127,15 @@ function DataTransferModal({ open, onClose }: { open: boolean; onClose: () => vo
       </section>
       <section className="border-t border-line pt-4">
         <h3 className="text-[14px] font-medium">源端保留</h3>
-        <p className="mt-1 text-xs text-ink-3">仅清理已确认接收的源端数据；清空天数则不清理</p>
-        <div className="mt-3 grid gap-x-6 gap-y-3 sm:grid-cols-2">
-          {retentionFields.map(({ key, label }) => <div key={key} role="group" aria-label={`${label}保留`} className="flex items-center justify-between gap-3">
+        <p className="mt-1 text-xs text-ink-3">仅清理已确认接收的源端数据；留空则不清理</p>
+        <div className="mt-3 grid grid-cols-[max-content_minmax(0,1fr)] items-center gap-x-4 gap-y-3">
+          {retentionFields.map(({ key, label }) => <div key={key} role="group" aria-label={`${label}保留`} className="contents">
             <span className="text-[13px] text-ink-2">{label}</span>
-            <StepperNumberInput value={draft[key]} step={1} min={1} onStep={stepDays} placeholder="不清理"
-              unit={draft[key].trim() ? '天' : undefined} ariaLabel={`${label}保留天数`}
-              invalid={!!draft[key].trim() && !positiveInteger(draft[key])} onChange={value => patch({ [key]: value })} />
+            <div className="justify-self-end"><DurationStepper value={draft[key]} unit="days" min={1} emptyLabel="不清理" ariaLabel={`${label}保留天数`}
+              invalid={!!draft[key].trim() && !positiveInteger(draft[key])} onChange={value => patch({ [key]: value })} /></div>
           </div>)}
         </div>
       </section>
-      <div className="flex flex-wrap gap-3">
-        <button type="button" className="cursor-pointer rounded-[9px] border border-ink-1 bg-ink-1 px-4 py-2 text-[14px] font-medium text-surface hover:opacity-90 focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-45"
-          disabled={!draft.source_url.trim() || !!formError} onClick={() => void run(async () => { const result = await apiSend<{ batch: string }>('POST', '/transfer/pull', effective()); setMessage(`拉取完成 · ${result.batch}`) })}>立即拉取</button>
-        <button type="button" className={buttonClass} disabled={!!formError}
-          onClick={() => void run(async () => { await apiSend('PUT', '/transfer/settings', effective()); setMessage('传送规则已保存') })}>保存规则</button>
-      </div>
     </fieldset>
     <section className="mt-6 border-t border-line pt-4">
       <button type="button" className="flex cursor-pointer items-center gap-2 py-1 text-[14px] text-ink-2 hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-accent" aria-expanded={offlineOpen} aria-controls={offlineId} onClick={() => setOfflineOpen(value => !value)}>
@@ -159,9 +158,6 @@ function DataTransferModal({ open, onClose }: { open: boolean; onClose: () => vo
         </div>
       </div>
     </section>
-    {busy && <p role="status" className="mt-5 text-[14px] text-ink-2">正在处理，请稍候…</p>}
-    {message && <p role="status" className="mt-5 text-[14px] text-ink-2">{message}</p>}
-    {(error || formError) && <p role="alert" className="mt-5 whitespace-pre-wrap text-[14px] text-warn">{error || formError}</p>}
     {settings?.last_run && <p className="mt-5 text-[13px] text-ink-3">最近定时拉取：{settings.last_run.ok ? '完成' : settings.last_run.error} · {settings.last_run.at}</p>}
   </CenteredModal>
 }
