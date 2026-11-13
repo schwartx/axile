@@ -4,6 +4,7 @@ import { CenteredModal } from '@/components/ui/CenteredModal'
 import { Segmented } from '@/components/ui/Segmented'
 import { InkRewrite } from '@/components/ui/InkRewrite'
 import { Tooltip } from '@/components/ui/Tooltip'
+import { Toggle } from '@/features/account/editUi'
 import { closePolicySummary, closePriorityLabel } from '@/features/account/futuresClosePolicy'
 import type { ClosePriority, FuturesClosePolicy, FuturesCloseCapability } from '@/types/api'
 
@@ -33,12 +34,18 @@ export function FuturesClosePolicyEditor({ value, capability, onChange }: {
   const [draft, setDraft] = useState(value)
   const [search, setSearch] = useState('')
   const [error, setError] = useState('')
+  const lockable = capability.avoid_close_today_products ?? []
+  const setAvoidCloseToday = (product: string) => setDraft((d) => {
+    const enabled = d.avoid_close_today ?? lockable
+    return { ...d, avoid_close_today: enabled.includes(product) ? enabled.filter((p) => p !== product) : [...enabled, product].sort() }
+  })
   const begin = () => { setDraft(structuredClone(value)); setSearch(''); setError(''); setOpen(true) }
   const setPriority = (product: string, priority: ClosePriority) => setDraft((d) => ({ ...d, overrides: { ...d.overrides, [product]: priority } }))
   const restore = (product: string) => setDraft((d) => {
     const overrides = { ...d.overrides }
     delete overrides[product]
-    return { ...d, overrides }
+    const enabled = d.avoid_close_today ?? lockable
+    return { ...d, overrides, avoid_close_today: lockable.includes(product) ? [...new Set([...enabled, product])].sort() : enabled }
   })
   const presets = new Map(capability.presets.map((p) => [p.product, p]))
   const products = [...new Set([...presets.keys(), ...Object.keys(draft.overrides)])].sort()
@@ -71,7 +78,8 @@ export function FuturesClosePolicyEditor({ value, capability, onChange }: {
             {capability.modes.length > 1 ? <Segmented size="sm" value={draft.mode} options={capability.modes.map((mode) => ({ value: mode, label: mode === 'fee' ? '低手续费优先' : '按品种规则' }))} onChange={(mode) => setDraft((d) => ({ ...d, mode }))} /> : <p className="text-sm text-ink-1">按品种规则</p>}
             <Tooltip content={<>
               <p>{draft.mode === 'fee' ? '低手续费优先；同费或不可比较时：人工覆盖 → 预设 → 默认顺序。' : '人工覆盖 → 程序预设 → 默认顺序。'}</p>
-              <p>常规调仓与清仓共用。优先仓位不足时继续平另一类仓位；不支持选择平今平昨的交易所按交易所规则执行。</p>
+              <p>平仓顺序由常规调仓与清仓共用。不支持选择平今平昨的交易所按交易所规则执行。</p>
+              {lockable.length > 0 && <p>平今转锁仓用于 CTP/TQ 各算法的常规调仓：有今仓的方向保留，通过反向开仓达到净仓目标；下一交易日调仓时清理多余旧仓。锁仓占用资金，清仓与风险品种仍直接平仓。</p>}
             </>}>
               <button type="button" aria-label="平仓规则说明" className="shrink-0 cursor-help text-ink-3 hover:text-ink-2"><CircleHelp size={14} aria-hidden /></button>
             </Tooltip>
@@ -84,15 +92,16 @@ export function FuturesClosePolicyEditor({ value, capability, onChange }: {
         <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2">
           <input aria-label="搜索或添加品种" placeholder="搜索品种或交易所，例如 AG" value={search} onChange={(e) => { setSearch(e.target.value); setError('') }} className="min-w-0 flex-1 basis-[180px] rounded-lg border border-line bg-transparent px-3 py-1.5 text-sm" />
           <button type="button" className="shrink-0 cursor-pointer text-[13px] text-accent" onClick={add}>添加品种</button>
-          <button type="button" className="shrink-0 cursor-pointer text-[13px] text-accent disabled:cursor-default disabled:text-ink-3" disabled={!Object.keys(draft.overrides).length} onClick={() => setDraft((d) => ({ ...d, overrides: {} }))}>恢复全部预设</button>
+          <button type="button" className="shrink-0 cursor-pointer text-[13px] text-accent disabled:cursor-default disabled:text-ink-3" disabled={!Object.keys(draft.overrides).length && lockable.every((p) => (draft.avoid_close_today ?? lockable).includes(p))} onClick={() => setDraft((d) => ({ ...d, overrides: {}, avoid_close_today: [...lockable].sort() }))}>恢复全部预设</button>
         </div>
         {error && <p role="alert" className="shrink-0 text-xs text-warn">{error}</p>}
         <div className="isolate min-h-0 max-h-[440px] flex-1 overflow-auto rounded-lg border border-line">
           <table className="w-full min-w-[620px] text-left text-[13px]">
-            <thead className="sticky top-0 z-20 whitespace-nowrap bg-surface"><tr className="border-b border-line text-ink-3"><th className="p-3 font-normal">品种</th><th className="p-3 font-normal">平昨手续费</th><th className="p-3 font-normal">平今手续费</th><th className="p-3 font-normal" aria-live="polite"><InkRewrite text={draft.mode === 'fee' ? '兜底顺序' : '平仓顺序'} tone="label" /></th><th className="p-3 font-normal">来源</th></tr></thead>
+            <thead className="sticky top-0 z-20 whitespace-nowrap bg-surface"><tr className="border-b border-line text-ink-3"><th className="p-3 font-normal">品种</th><th className="p-3 font-normal">平昨手续费</th><th className="p-3 font-normal">平今手续费</th><th className="p-3 font-normal" aria-live="polite"><InkRewrite text={draft.mode === 'fee' ? '兜底顺序' : '平仓顺序'} tone="label" /></th>{lockable.length > 0 && <th className="p-3 font-normal">平今转锁仓</th>}<th className="p-3 font-normal">来源</th></tr></thead>
             <tbody className="relative z-0">{shown.map((product) => {
               const preset = presets.get(product)
-              const modified = Object.hasOwn(draft.overrides, product)
+              const locked = (draft.avoid_close_today ?? lockable).includes(product)
+              const modified = Object.hasOwn(draft.overrides, product) || (lockable.includes(product) && !locked)
               const priority = draft.overrides[product] ?? preset?.priority ?? draft.fallback
               const sameFee = Boolean(preset?.yesterday_fee) && preset?.yesterday_fee === preset?.today_fee
               return <tr key={product} className="border-b border-line last:border-0">
@@ -105,7 +114,13 @@ export function FuturesClosePolicyEditor({ value, capability, onChange }: {
                   <td className="p-3 align-top"><FeeDetails fee={preset?.today_fee} /></td>
                 </>}
                 <td className="p-3">{preset?.can_choose === false ? <span className="text-ink-3">按交易所规则执行</span> : <div role="group" aria-label={`${product} 平仓顺序`} className="whitespace-nowrap"><Segmented size="sm" value={priority} options={priorities} onChange={(next) => setPriority(product, next)} /></div>}</td>
-                <td className="p-3 whitespace-nowrap">{modified ? <><span className="text-accent">已修改</span><button type="button" aria-label={`${product} 恢复预设`} className="ml-2 cursor-pointer text-ink-3 hover:text-accent" onClick={() => restore(product)}>恢复预设</button></> : <span className="text-ink-3">{preset ? '预设' : `默认${closePriorityLabel(priority)}`}</span>}</td>
+                {lockable.length > 0 && <td className="p-3">{lockable.includes(product)
+                  ? <Toggle on={locked} onClick={() => setAvoidCloseToday(product)} ariaLabel={`${product} 平今转锁仓`} />
+                  : <span className="text-ink-3">—</span>}</td>}
+                <td className="p-3 whitespace-nowrap"><span className="inline-grid">
+                  <span className={`col-start-1 row-start-1 text-ink-3 ${modified ? 'invisible' : ''}`} aria-hidden={Boolean(modified)}>{preset ? '预设' : `默认${closePriorityLabel(priority)}`}</span>
+                  <span className={`col-start-1 row-start-1 ${modified ? '' : 'invisible'}`} aria-hidden={!modified}><span className="text-accent">已修改</span><button type="button" aria-label={`${product} 恢复预设`} className="ml-2 cursor-pointer text-ink-3 hover:text-accent" onClick={() => restore(product)}>恢复预设</button></span>
+                </span></td>
               </tr>
             })}</tbody>
           </table>

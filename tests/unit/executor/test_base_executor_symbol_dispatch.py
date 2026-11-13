@@ -746,6 +746,16 @@ def test_execute_skips_cancel_all_orders_when_all_symbols_are_noop(
     assert output.success is True
 
 
+def test_empty_positions_requests_actual_clear_without_changing_policy():
+    executor = _TestExecutor()
+    policy = {"avoid_close_today": ["IF"]}
+    plan = executor._plan_empty_positions([], {"IF2612": 0}, {"futures_close_policy": policy})
+    standard_input = executor._build_empty_positions_standard_input(account_config=executor.account_config, plan=plan)
+    assert standard_input.futures_close_policy.avoid_close_today == ["IF"]
+    assert standard_input.extra["close_all_positions"] is True
+    assert policy == {"avoid_close_today": ["IF"]}
+
+
 def test_execute_aborts_before_dispatch_when_cancel_all_orders_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

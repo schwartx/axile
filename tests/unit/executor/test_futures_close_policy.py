@@ -98,6 +98,21 @@ def test_override_normalization_and_validation():
     assert rule_priority(FuturesClosePolicy(fallback="today_first"), "AG") == ("yesterday_first", "preset")
 
 
+def test_avoid_close_today_defaults_on_and_can_be_disabled():
+    assert FuturesClosePolicy().avoid_close_today == ["IC", "IF", "IH", "IM"]
+    assert FuturesClosePolicy(avoid_close_today=[]).avoid_close_today == []
+    FuturesClosePolicy().validate_channel(TradeChannel.GM)
+    policy = FuturesClosePolicy(avoid_close_today=["if", "IF", "ic"])
+    assert policy.avoid_close_today == ["IC", "IF"]
+    policy.validate_channel(TradeChannel.CTP)
+    policy.validate_channel(TradeChannel.TQ)
+    for products in (["IF2612"], ["RB"], [True]):
+        with pytest.raises(ValidationError):
+            FuturesClosePolicy(avoid_close_today=products)
+    assert close_capability(automatic=True).avoid_close_today_products == ["IF", "IH", "IC", "IM"]
+    assert close_capability(automatic=False).avoid_close_today_products == ["IF", "IH", "IC", "IM"]
+
+
 def test_presets_include_supplied_fees_and_declare_modes():
     assert close_capability(automatic=True).modes == ["rules", "fee"]
     assert close_capability(automatic=False).modes == ["rules"]

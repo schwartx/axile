@@ -34,10 +34,10 @@ from axile.executor.algorithms.utils.final_position import read_final_position
 from axile.executor.algorithms.utils.order_tracker import ChaseConfig, OrderTracker
 from axile.executor.algorithms.utils.outcome import summarize_outcome
 from axile.executor.execution_session import ExecutionSession
+from axile.executor.futures_order_intent import position_quantities as _position_quantities
 from axile.executor.market_data_validation import MarketDataUnavailableError
 from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.models.unified_account_assets import (
-    Position,
     PositionDirection,
     UnifiedAccountAssets,
     is_degraded_snapshot_source,
@@ -221,45 +221,6 @@ def _extract_ctp_position_details(
         detail.net_position = detail.long_total - detail.short_total
 
     return position_details
-
-
-def _position_quantities(position: Position) -> tuple[str, int, int, int]:
-    """校验单方向拆分；总量只采用统一持仓数量，昨仓表示当前剩余量。"""
-    sides = {PositionDirection.LONG: "long", PositionDirection.SHORT: "short"}
-    if position.direction not in sides:
-        raise ValueError(f"{position.symbol}: CTP 持仓必须指定多空方向")
-    side = sides[position.direction]
-
-    def quantity(value: Any) -> int:
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError(f"{position.symbol}: 持仓数量必须是非负整数")
-        if not math.isfinite(value) or value < 0 or int(value) != value:
-            raise ValueError(f"{position.symbol}: 持仓数量必须是非负整数")
-        return int(value)
-
-    def extra_quantity(*keys: str) -> int | None:
-        values = [quantity(position.extra[key]) for key in keys if key in position.extra]
-        if len(set(values)) > 1:
-            raise ValueError(f"{position.symbol}: 持仓字段不一致 {keys}")
-        return values[0] if values else None
-
-    total = quantity(position.volume)
-    reported_total = extra_quantity(f"{side}_total", f"{side}_position")
-    today = extra_quantity(f"{side}_td", f"{side}_today_position")
-    yesterday = extra_quantity(f"{side}_yd", f"{side}_yd_position")
-    if reported_total is not None and reported_total != total:
-        raise ValueError(f"{position.symbol}: 持仓总量与 volume 不一致")
-    if today is None and yesterday is None:
-        if total:
-            raise ValueError(f"{position.symbol}: 缺少今昨持仓拆分")
-        return side, 0, 0, 0
-    if today is None:
-        today = total - cast(int, yesterday)
-    if yesterday is None:
-        yesterday = total - today
-    if today < 0 or yesterday < 0 or today + yesterday != total:
-        raise ValueError(f"{position.symbol}: 今昨持仓与总量不一致")
-    return side, total, today, yesterday
 
 
 def _calculate_order_price(
@@ -463,6 +424,7 @@ def _smart_close_position(
     trade_rule: Dict[str, Any] | None = None,
     tracker: OrderTracker | None = None,
     order_type: OrderType = OrderType.LIMIT,
+    open_order_type: OrderType = OrderType.LIMIT,
 ) -> Tuple[List[UnifiedOrder], float, bool]:
     """
     按昨仓 / 今仓可用量智能拆分平仓顺序。
@@ -519,13 +481,14 @@ def _smart_close_position(
 
     close_plan = executor.plan_close_orders(OrderDirection(direction), close_volume, account_assets)
     offsets = {
+        "open": THOST_FTDC_OF_Open,
         "close_yesterday": THOST_FTDC_OF_CloseYesterday,
         "close_today": THOST_FTDC_OF_CloseToday,
         "close": THOST_FTDC_OF_Close,
     }
     for leg_volume, extra in close_plan:
         offset_flag = offsets[str(extra["offset_flag"])]
-        offset_name = {"4": "平昨", "3": "平今", "1": "平仓"}[offset_flag]
+        offset_name = {"0": "开仓", "4": "平昨", "3": "平今", "1": "平仓"}[offset_flag]
         leg_orders, submitted_volume = _submit_close_leg(
             executor=executor,
             symbol=symbol,
@@ -538,7 +501,7 @@ def _smart_close_position(
             failure_message=f"{offset_name}失败: {{error}}",
             trade_rule=trade_rule,
             tracker=tracker,
-            order_type=order_type,
+            order_type=open_order_type if offset_flag == THOST_FTDC_OF_Open else order_type,
         )
         if not leg_orders:
             break
@@ -622,6 +585,7 @@ def _execute_position_adjustment(
             trade_rule=trade_rule,
             tracker=tracker,
             order_type=close_order_type,
+            open_order_type=open_order_type,
         )
         orders.extend(close_orders)
         if not close_ok:

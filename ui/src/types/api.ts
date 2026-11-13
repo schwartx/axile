@@ -69,12 +69,14 @@ export interface FuturesClosePolicy {
   mode: 'rules' | 'fee'
   fallback: ClosePriority
   overrides: Record<string, ClosePriority>
+  avoid_close_today?: string[]
 }
 export interface FuturesCloseCapability {
   modes: Array<'rules' | 'fee'>
   preset_version: string
   notice?: string
   presets: Array<{ product: string; exchange: string; priority: ClosePriority; yesterday_fee: string | null; today_fee: string | null; can_choose: boolean }>
+  avoid_close_today_products?: string[]
 }
 
 export interface ChannelCapability {

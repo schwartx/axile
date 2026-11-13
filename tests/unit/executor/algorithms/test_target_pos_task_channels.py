@@ -254,12 +254,17 @@ class _FuturesExecutor:
     ) -> UnifiedOrder:
         lots = int(volume)
         offset = str(kwargs.get("offset_flag", "0"))
-        if offset == "4":
-            self.short_yesterday -= lots
-        elif offset == "3":
-            self.short_today -= lots
-        elif offset == "0" and direction is OrderDirection.BUY:
-            self.long_today += lots
+        side = "short" if direction is OrderDirection.BUY else "long"
+        if offset in {"4", "3"}:
+            field = f"{side}_{'yesterday' if offset == '4' else 'today'}"
+            setattr(self, field, getattr(self, field) - lots)
+        elif offset == "1":
+            yesterday = min(lots, getattr(self, f"{side}_yesterday"))
+            setattr(self, f"{side}_yesterday", getattr(self, f"{side}_yesterday") - yesterday)
+            setattr(self, f"{side}_today", getattr(self, f"{side}_today") - (lots - yesterday))
+        elif offset == "0":
+            side = "long" if direction is OrderDirection.BUY else "short"
+            setattr(self, f"{side}_today", getattr(self, f"{side}_today") + lots)
         order = UnifiedOrder(
             order_id=f"{self.channel_type}-{len(self.orders) + 1}",
             symbol=self.symbol,

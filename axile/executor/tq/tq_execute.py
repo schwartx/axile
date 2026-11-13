@@ -28,6 +28,7 @@ from axile.executor.models.unified_order import OrderDirection, OrderType, Trade
 from axile.executor.models.unified_price import UnifiedPriceData
 from axile.executor.order_submission_context import get_order_submission_context, get_order_submission_validator
 from axile.executor.order_terminal_audit import OrderTerminalAudit
+from axile.executor.order_volume_limits import user_max_single_order_size
 from axile.executor.session_closed import COMMON_SESSION_CLOSED, SESSION_CLOSED_MESSAGE
 from axile.executor.tq.converters import account_to_unified, order_to_unified, quote_to_unified, trade_to_unified
 from axile.executor.tq.runtime import TQRuntime, snapshot_entity
@@ -486,6 +487,11 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
     ) -> UnifiedOrder:
         if not float(volume).is_integer() or volume <= 0:
             raise ValueError("TqSdk 委托数量必须为正整数手")
+        _, maximum = self.get_order_volume_bounds(
+            symbol, order_type, cast("dict[str, object] | None", kwargs.get("trade_rule"))
+        )
+        if maximum is not None and volume > maximum:
+            raise ValueError(f"TqSdk 委托数量 {volume} 超过单笔上限 {maximum}")
         self._ensure_instrument_symbols([symbol])
         runtime = self._require_runtime()
         tq_symbol = runtime.resolver.to_tq(symbol, for_trade=True)
@@ -604,6 +610,14 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
         rows = runtime.call(lambda api: [snapshot_entity(row) for row in getattr(api, "get_trade")().values()])
         trades = [trade_to_unified(row, runtime.resolver) for row in rows]
         return [trade for trade in trades if symbol is None or trade.symbol == symbol]
+
+    def get_order_volume_bounds(
+        self, symbol: str, order_type: OrderType = OrderType.LIMIT, trade_rule: dict[str, object] | None = None
+    ) -> tuple[int, int | None]:
+        """返回整数手下限与用户设置的单笔上限。"""
+        if trade_rule is not None and not isinstance(trade_rule, dict):
+            raise ValueError("trade_rule 必须是字典")
+        return 1, user_max_single_order_size(trade_rule)
 
     @override
     def get_tick_size(self, symbol: str) -> float | None:
@@ -785,8 +799,8 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
         return config.account_id or config.tq_username
 
     @override
-    def _get_default_trade_rules_for_empty(self, symbols: list[str]) -> dict[str, dict[str, object]]:
-        return {symbol: {} for symbol in symbols}
+    def _get_default_trade_rules_for_empty(self, _symbols: list[str]) -> dict[str, dict[str, object]]:
+        return {}
 
     @override
     def _cleanup(self) -> None:

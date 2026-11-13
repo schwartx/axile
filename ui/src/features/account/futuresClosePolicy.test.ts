@@ -11,3 +11,13 @@ test('新账户默认按品种规则，摘要区分人工干预与自动兜底',
   expect(closePolicySummary(policy)).toContain('低手续费优先 · 兜底')
   expect(defaultClosePolicy().overrides).toEqual({})
 })
+
+test('平今转锁仓默认开启，显式关闭不被默认值覆盖', () => {
+  const policy = defaultClosePolicy()
+  expect(policy.avoid_close_today).toEqual(['IC', 'IF', 'IH', 'IM'])
+  policy.avoid_close_today = ['IC', 'IF']
+  expect(closePolicySummary(policy)).toContain('IC、IF 平今转锁仓')
+  policy.avoid_close_today = []
+  expect(closePolicySummary(policy)).not.toContain('平今转锁仓')
+  expect(defaultClosePolicy().avoid_close_today).toEqual(['IC', 'IF', 'IH', 'IM'])
+})

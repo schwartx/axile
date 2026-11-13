@@ -15,6 +15,7 @@ from axile.common.logging import LogComponent, bind_log_context
 from axile.common.order_param_model import OrderParamModel
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
+from axile.executor.futures_order_intent import is_close_intent, validate_futures_order
 from axile.executor.market_data_validation import MarketDataPurpose, MarketDataUnavailableError
 from axile.executor.models.order_channel_health import OrderChannelHealth
 from axile.executor.models.unified_account_assets import PositionDirection, UnifiedAccountAssets
@@ -33,6 +34,7 @@ from axile.executor.termination_cleanup import (
 if TYPE_CHECKING:
     from axile.executor.abstract_executor.base import AbstractExecutor
     from axile.executor.execution_runtime import ExecutionRuntime
+    from axile.executor.futures_close_runtime import FuturesCloseRuntimeMixin
 
 
 type ObjectDict = dict[str, object]
@@ -67,6 +69,8 @@ class ExecutionSession:
         self.channel_type = owner.channel_type
         self.logger = bind_log_context(owner.logger, component=LogComponent.ALGORITHM, symbol=symbol)
         self.memory: ObjectDict = {}
+        self.trade_rule: ObjectDict = {}
+        self.futures_order: tuple[OrderDirection, str, bool] | None = None
         self.audit_context: AuditContext = {}
         self._market_data: ContextVar[UnifiedPriceData | None] = ContextVar("session_market_data", default=None)
         self._price_callbacks: dict[PriceDataCallback, PriceDataCallback] = {}
@@ -121,9 +125,18 @@ class ExecutionSession:
         self, direction: OrderDirection, volume: float, account_assets: UnifiedAccountAssets
     ) -> list[tuple[float, dict[str, object]]]:
         """转发渠道平仓拆单计划；未提供该能力的渠道保持单笔意图。"""
+        if self.futures_order is not None:
+            expected_direction, offset, protect_today = self.futures_order
+            if direction != expected_direction:
+                raise ValueError("订单方向与期货执行计划不一致")
+            return cast("FuturesCloseRuntimeMixin", self._owner).plan_futures_order(
+                self.symbol, direction, volume, account_assets, offset=offset, protect_today=protect_today
+            )
         planner = getattr(self._owner, "plan_close_orders", None)
         if callable(planner):
-            return planner(self.symbol, direction, volume, account_assets)
+            return cast(
+                "list[tuple[float, dict[str, object]]]", planner(self.symbol, direction, volume, account_assets)
+            )
         return [(volume, {})]
 
     @property
@@ -145,6 +158,20 @@ class ExecutionSession:
     ) -> UnifiedOrder:
         """按消费时的行情快照下单，并在账户限流等待后重新校验同一证据。"""
         self.handle_termination_checkpoint()
+        if self.channel_type in (TradeChannel.CTP, TradeChannel.TQ) and self.trade_rule:
+            kwargs.setdefault("trade_rule", self.trade_rule)
+        if self.futures_order is not None:
+            expected_direction, offset, protect_today = self.futures_order
+            raw = str(kwargs.get("offset_flag", kwargs.get("offset", "")))
+            if not raw and not is_close_intent(direction, kwargs.get("position_side")):
+                raw = "open"
+                kwargs["offset_flag"] = raw
+            is_open = raw in {"0", "open"}
+            if direction != expected_direction or not raw or is_open != (offset == "open"):
+                raise ValueError("订单开平意图与期货执行计划不一致")
+            validate_futures_order(
+                self.symbol, direction, volume, self.get_account_assets(), offset=offset, protect_today=protect_today
+            )
         if quote_price is not None:
             if not self.supports_quote_at_send or order_type != OrderType.LIMIT:
                 raise ValueError("仅 CTP 限价委托支持在发送点定价")
@@ -293,6 +320,8 @@ class ExecutionSession:
         self, order_type: OrderType = OrderType.LIMIT, trade_rule: dict[str, object] | None = None
     ) -> tuple[int | None, int | None] | None:
         """获取当前品种数量边界；渠道不支持时返回 None，保留小数数量语义。"""
+        if trade_rule is None:
+            trade_rule = self.trade_rule
         getter = getattr(self._owner, "get_order_volume_bounds", None)
         return (
             cast("tuple[int | None, int | None] | None", getter(self.symbol, order_type, trade_rule))

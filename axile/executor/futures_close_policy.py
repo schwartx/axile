@@ -32,6 +32,17 @@ class FuturesClosePolicy(BaseModel):
     mode: CloseMode = "rules"
     fallback: ClosePriority = "yesterday_first"
     overrides: dict[str, ClosePriority] = Field(default_factory=dict, max_length=200)
+    avoid_close_today: list[Literal["IF", "IH", "IC", "IM"]] = Field(
+        default_factory=lambda: ["IC", "IF", "IH", "IM"], max_length=4
+    )
+
+    @field_validator("avoid_close_today", mode="before")
+    @classmethod
+    def normalize_avoid_close_today(cls, value: object) -> object:
+        """锁今只支持股指期货，按品种覆盖所有月份合约。"""
+        if isinstance(value, list) and all(isinstance(product, str) for product in value):
+            return sorted({product.upper() for product in value})
+        return value
 
     @field_validator("overrides", mode="before")
     @classmethod
@@ -80,6 +91,7 @@ class FuturesCloseCapability(BaseModel):
     preset_version: str = PRESET_VERSION
     notice: str = _PRESET_DATA["notice"]
     presets: list[FuturesClosePreset]
+    avoid_close_today_products: list[str] = Field(default_factory=list)
 
 
 def close_capability(*, automatic: bool) -> FuturesCloseCapability:
@@ -87,6 +99,7 @@ def close_capability(*, automatic: bool) -> FuturesCloseCapability:
     return FuturesCloseCapability(
         modes=["rules", "fee"] if automatic else ["rules"],
         presets=[preset.model_copy(deep=True) for preset in _PRESETS.values()],
+        avoid_close_today_products=["IF", "IH", "IC", "IM"],
     )
 
 
