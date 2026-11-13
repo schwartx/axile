@@ -70,7 +70,7 @@ pub fn transfer(path: &str, request: &Value) -> Result<Value, AnalysisError> {
         "export_package" => package::export(path, request),
         "import_package" => package::import(path, request),
         "acknowledge" => state::acknowledge(path, request),
-        "prepare_send" => state::prepare(path, request),
+        "prepare_package" => state::prepare(path, request),
         "prune_recordings" => state::prune_recordings_request(path, request),
         "backup_index" => {
             snapshot_file(Path::new(path), Path::new(text(request, "snapshot")?))?;

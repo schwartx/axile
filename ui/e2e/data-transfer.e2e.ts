@@ -28,4 +28,13 @@ test('range survives save and reload; latest clears the selected bounds', async 
   await page.getByRole('button', { name: '保存规则' }).click()
   await expect(page.getByRole('status')).toHaveText('传送规则已保存')
   expect(plan.start).toBeNull(); expect(plan.end).toBeNull()
+  let request: Record<string, unknown> = {}
+  await page.route('**/api/v1/transfer/pull', route => {
+    request = route.request().postDataJSON()
+    return route.fulfill({ json: { batch: 'pulled-batch' } })
+  })
+  await page.getByLabel('来源端地址').fill('https://source.test')
+  await page.getByRole('button', { name: '立即拉取' }).click()
+  await expect(page.getByRole('status')).toHaveText('拉取完成 · pulled-batch')
+  expect(request.source_url).toBe('https://source.test')
 })

@@ -136,8 +136,8 @@ def test_replay_roundtrip_and_acknowledged_cleanup(peers, monkeypatch):
     assert list((target.parent / "replay").rglob("*.mcap"))
 
 
-def test_receive_without_authorization_and_offline_confirmation_api(peers, monkeypatch):
-    """联网接收无需授权，回执仍可用于离线确认。"""
+def test_offline_import_and_confirmation_api(peers, monkeypatch):
+    """离线导入返回回执，交回源端后才能清理。"""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -153,32 +153,35 @@ def test_receive_without_authorization_and_offline_confirmation_api(peers, monke
     with TestClient(app) as client:
         assert "receive_token" not in client.get("/api/v1/transfer/settings").json()
         assert client.get("/api/v1/transfer/identity").json()["source_id"]
-        received = client.post("/api/v1/transfer/receive", files={"file": ("data.axile", data)})
+        received = client.post("/api/v1/transfer/import", files={"file": ("data.axile", data)})
         assert received.status_code == 200
         receipt = received.json()
     monkeypatch.setattr(transfer, "database_path", lambda: str(source))
     with TestClient(app) as client:
-        assert client.post("/api/v1/transfer/acknowledge", json=receipt).status_code == 200
+        assert client.post("/api/v1/transfer/acknowledge", json={"receipt": receipt, "plan": {}}).status_code == 200
 
 
 def test_schedule_saved_and_restored(peers):
     from axile.server.core.scheduler import scheduler
 
-    plan = transfer.TransferPlan(destination="https://example.test:8443", every_hours=2)
+    plan = transfer.TransferPlan(source_url="https://example.test:8443", every_hours=2)
     transfer.save_plan(plan)
     transfer.configure_schedule()
-    assert scheduler.get_job("data-transfer") is not None
+    assert scheduler.get_job("data-transfer").func is transfer.scheduled_pull
     transfer.save_plan(transfer.TransferPlan())
     transfer.configure_schedule()
     assert scheduler.get_job("data-transfer") is None
 
 
-def test_network_failure_reuses_pending_without_cleanup(peers, monkeypatch):
+def test_network_failure_keeps_source_batch_without_cleanup(peers, monkeypatch):
     import asyncio
 
     import httpx
 
     seed(peers[0])
+    package = transfer.prepare_package(transfer.TransferPlan(), "receiver")
+    assert transfer.prepare_package(transfer.TransferPlan(), "receiver") == package
+    monkeypatch.setattr(transfer, "database_path", lambda: str(peers[1]))
 
     class Unreachable:
         async def __aenter__(self):
@@ -191,13 +194,92 @@ def test_network_failure_reuses_pending_without_cleanup(peers, monkeypatch):
             raise httpx.ConnectError("offline")
 
     monkeypatch.setattr(transfer.httpx, "AsyncClient", lambda **kwargs: Unreachable())
-    plan = transfer.TransferPlan(destination="https://offline.test", execution_days=1)
+    plan = transfer.TransferPlan(source_url="https://offline.test", execution_days=1)
     for _ in range(2):
         with pytest.raises(httpx.ConnectError):
-            asyncio.run(transfer.send(plan))
-    assert len(list((transfer.root() / "outbox").glob("*/data.axile"))) == 1
+            asyncio.run(transfer.pull(plan))
+    assert package.exists()
+    assert not (transfer.root() / "pull-pending.json").exists()
     with sqlite3.connect(peers[0]) as c:
         assert c.execute("select count(*) from executerecord").fetchone() == (1,)
+
+
+@pytest.mark.parametrize("failure", [None, "ack_before", "ack_after", "import", "oversize", "self"])
+def test_pull_downloads_then_confirms_and_resumes_receipt(peers, monkeypatch, failure):
+    import asyncio
+
+    import httpx
+
+    source, target = peers
+    seed(source)
+    seed(source, 2)
+    source_id = transfer.settings()["source_id"]
+    monkeypatch.setattr(transfer, "database_path", lambda: str(target))
+    receiver_id = transfer.settings()["source_id"]
+    if failure == "import":
+        seed(target, 9)
+    if failure == "oversize":
+        monkeypatch.setattr(transfer, "MAX_BYTES", 32)
+    calls = []
+    failed = False
+
+    def remote(request):
+        nonlocal failed
+        assert request.url.host == "source.test"
+        calls.append(request.url.path.rsplit("/", 1)[-1])
+        with monkeypatch.context() as context:
+            context.setattr(transfer, "database_path", lambda: str(source))
+            if calls[-1] == "identity":
+                return httpx.Response(200, json={"source_id": receiver_id if failure == "self" else source_id})
+            body = json.loads(request.content)
+            if calls[-1] == "export":
+                package = transfer.prepare_package(transfer.TransferPlan(**body), request.url.params["requester"])
+                return httpx.Response(200, content=package.read_bytes())
+            assert calls[-1] == "acknowledge"
+            if failure == "ack_before" and not failed:
+                failed = True
+                raise httpx.ConnectError("confirmation not delivered")
+            result = transfer.acknowledge(body["receipt"], transfer.TransferPlan(**body["plan"]))
+            if failure == "ack_after" and not failed:
+                failed = True
+                raise httpx.ConnectError("confirmation response lost")
+            return httpx.Response(200, json=result)
+
+    client = httpx.AsyncClient
+    monkeypatch.setattr(transfer.httpx, "AsyncClient", lambda **kwargs: client(transport=httpx.MockTransport(remote)))
+    plan = transfer.TransferPlan(source_url="https://source.test", execution_days=1)
+    pending = transfer.root() / "pull-pending.json"
+    if failure in {"import", "oversize", "self"}:
+        with pytest.raises(_core.NativeError if failure == "import" else ValueError):
+            asyncio.run(transfer.pull(plan))
+        assert calls == ["identity"] + ([] if failure == "self" else ["export"])
+        assert not pending.exists()
+        assert not list(transfer.root().glob("pull-*"))
+        with sqlite3.connect(source) as connection:
+            assert connection.execute("SELECT count(*) FROM executerecord").fetchone() == (2,)
+        with sqlite3.connect(target) as connection:
+            assert connection.execute("SELECT count(*) FROM executerecord").fetchone() == (
+                (1 if failure == "import" else 0),
+            )
+        return
+    if failure:
+        with pytest.raises(httpx.ConnectError):
+            asyncio.run(transfer.pull(plan))
+        assert pending.exists()
+        with sqlite3.connect(source) as connection:
+            assert connection.execute("SELECT count(*) FROM executerecord").fetchone() == (
+                (2 if failure == "ack_before" else 1),
+            )
+        # 修改当前规则也先补交上一次的回执，沿用其来源和保留范围。
+        plan = transfer.TransferPlan(source_url="https://different.test", execution_days=30)
+    result = asyncio.run(transfer.pull(plan))
+    assert result["batch"]
+    assert calls == ["identity", "export", "acknowledge"] + (["acknowledge"] if failure else [])
+    assert not pending.exists()
+    with sqlite3.connect(source) as connection:
+        assert connection.execute("SELECT count(*) FROM executerecord").fetchone() == (1,)
+    with sqlite3.connect(target) as connection:
+        assert connection.execute("SELECT count(*) FROM executerecord").fetchone() == (2,)
 
 
 def test_live_recording_between_sealed_parts_is_not_removed(peers, monkeypatch):
@@ -321,16 +403,16 @@ def test_early_morning_range_includes_replay(peers, monkeypatch, offset):
 
 
 @pytest.mark.parametrize("cleaned,valid", [(False, True), (True, True), (False, False)])
-def test_send_resumes_saved_receipt_without_network(peers, monkeypatch, cleaned, valid):
-    import asyncio
-
+def test_source_finishes_saved_receipt_before_new_export(peers, monkeypatch, cleaned, valid):
     source, target = peers
     seed(source)
     seed(source, 2)
-    plan = transfer.TransferPlan(destination="https://peer.test", execution_days=1)
+    plan = transfer.TransferPlan(source_url="https://peer.test", execution_days=1)
     package, manifest = transfer.export_package(plan)
     pending = transfer.root() / "pending.json"
-    key = hashlib.sha256(json.dumps(plan.model_dump(mode="json"), sort_keys=True).encode()).hexdigest()
+    key = hashlib.sha256(
+        json.dumps({"requester": "receiver", **transfer._plan_request(plan)}, sort_keys=True).encode()
+    ).hexdigest()
     transfer.write_json(pending, {"key": key, "batch": manifest["batch"]})
     monkeypatch.setattr(transfer, "database_path", lambda: str(target))
     receipt = transfer.import_package(package)
@@ -351,14 +433,14 @@ def test_send_resumes_saved_receipt_without_network(peers, monkeypatch, cleaned,
     monkeypatch.setattr(transfer.httpx, "AsyncClient", reject_network)
     if not valid:
         with pytest.raises(ValueError, match="接收确认与本机数据包不符"):
-            asyncio.run(transfer.send(plan))
+            transfer.prepare_package(plan, "receiver")
         assert pending.exists() and package.exists()
         with sqlite3.connect(source) as c:
             assert c.execute("SELECT count(*) FROM executerecord").fetchone() == (2,)
         return
-    result = asyncio.run(transfer.send(plan))
-    assert result["batch"] == manifest["batch"]
-    assert not pending.exists()
+    result = transfer.prepare_package(plan, "receiver")
+    assert result != package and result.exists()
+    assert json.loads(pending.read_text())["batch"] != manifest["batch"]
     assert not package.exists()
     with sqlite3.connect(source) as c:
         assert c.execute("SELECT count(*) FROM executerecord").fetchone() == (1,)

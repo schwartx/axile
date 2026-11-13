@@ -24,11 +24,11 @@ _settings_lock = threading.RLock()
 
 
 class TransferPlan(BaseModel):
-    """保存一次传送的范围、目标和保留规则。"""
+    """保存一次传送的范围、来源和源端保留规则。"""
 
     start: datetime | None = None
     end: datetime | None = None
-    destination: str = ""
+    source_url: str = ""
     every_hours: int = Field(default=0, ge=0, le=8760)
     execution_days: int | None = Field(default=None, ge=1)
     replay_days: int | None = Field(default=None, ge=1)
@@ -41,12 +41,12 @@ class TransferPlan(BaseModel):
                 raise ValueError("时间必须带时区")
         if self.start and self.end and self.start >= self.end:
             raise ValueError("结束时间必须晚于开始时间")
-        if self.destination:
-            url = httpx.URL(self.destination)
+        if self.source_url:
+            url = httpx.URL(self.source_url)
             if url.scheme not in {"https", "http"} or not url.host or url.userinfo or url.query or url.fragment:
-                raise ValueError("接收端地址无效")
-        if self.every_hours and not self.destination:
-            raise ValueError("定时传送需要联网接收端")
+                raise ValueError("来源端地址无效")
+        if self.every_hours and not self.source_url:
+            raise ValueError("定时拉取需要来源端地址")
         return self
 
 
@@ -149,41 +149,78 @@ def acknowledge(receipt: dict, plan: TransferPlan) -> dict:
     return _operation("acknowledge", receipt=receipt, **_plan_request(plan))
 
 
-async def send(plan: TransferPlan) -> dict:
-    """由 Rust 准备或恢复批次，Python 只执行联网交付。"""
+def prepare_package(plan: TransferPlan, requester: str) -> Path:
+    """复用来源端未确认的批次，清理中断时先完成已有确认。"""
+    key = hashlib.sha256(
+        json.dumps({"requester": requester, **_plan_request(plan)}, sort_keys=True).encode()
+    ).hexdigest()
+    request = {"key": key, "algorithm_directories": _algorithm_directories(), **_plan_request(plan)}
+    batch = _operation("prepare_package", **request)
+    if batch["receipt"] is not None:
+        acknowledge(batch["receipt"], plan)
+        batch = _operation("prepare_package", **request)
+    return Path(batch["package"])
+
+
+async def pull(plan: TransferPlan) -> dict:
+    """主动下载、导入，再向来源端交回可重试的接收确认。"""
     async with _lock:
-        key = hashlib.sha256(json.dumps(plan.model_dump(mode="json"), sort_keys=True).encode()).hexdigest()
-        batch = await native_call(
-            _operation, "prepare_send", key=key, algorithm_directories=_algorithm_directories(), **_plan_request(plan)
-        )
-        receipt = batch["receipt"]
-        if receipt is None:
-            async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
-                peer = await client.get(plan.destination.rstrip("/") + "/api/v1/transfer/identity")
+        pending = root() / "pull-pending.json"
+        async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
+            if pending.exists():
+                delivery = json.loads(pending.read_text())
+            else:
+                if not plan.source_url:
+                    raise ValueError("请填写来源端地址")
+                source = plan.source_url.rstrip("/")
+                peer = await client.get(source + "/api/v1/transfer/identity")
                 peer.raise_for_status()
                 if peer.json()["source_id"] == settings()["source_id"]:
-                    raise ValueError("接收端不能是本机")
-                with Path(batch["package"]).open("rb") as file:
-                    response = await client.post(
-                        plan.destination.rstrip("/") + "/api/v1/transfer/receive",
-                        files={"file": ("data.axile", file, "application/octet-stream")},
-                    )
-                response.raise_for_status()
-                receipt = response.json()
-        result = await native_call(acknowledge, receipt, plan)
-        return {"batch": batch["batch"], **result}
+                    raise ValueError("来源端不能是本机")
+                remote_plan = _plan_request(plan)["plan"]
+                with tempfile.TemporaryDirectory(dir=root(), prefix="pull-") as temporary:
+                    package = Path(temporary) / "data.axile"
+                    async with client.stream(
+                        "POST",
+                        source + "/api/v1/transfer/export",
+                        params={"requester": settings()["source_id"]},
+                        json=remote_plan,
+                    ) as response:
+                        response.raise_for_status()
+                        total = 0
+                        with package.open("wb") as file:
+                            async for data in response.aiter_bytes(1024 * 1024):
+                                total += len(data)
+                                if total > MAX_BYTES:
+                                    raise ValueError("数据包过大，请缩短范围")
+                                file.write(data)
+                    receipt = await native_call(import_package, package)
+                delivery = {"source_url": source, "plan": remote_plan, "receipt": receipt}
+                write_json(pending, delivery)
+            response = await client.post(
+                delivery["source_url"] + "/api/v1/transfer/acknowledge",
+                json={"receipt": delivery["receipt"], "plan": delivery["plan"]},
+            )
+            response.raise_for_status()
+            result = {"batch": delivery["receipt"]["batch"], **response.json()}
+            pending.unlink()
+            return result
 
 
-async def scheduled_send() -> None:
-    """执行定时传送并保存脱敏结果。"""
+async def scheduled_pull() -> None:
+    """执行定时拉取并保存结果。"""
     try:
-        result = await send(TransferPlan.model_validate(settings()["plan"]))
+        result = await pull(TransferPlan.model_validate(settings()["plan"]))
         write_json(root() / "last-run.json", {"ok": True, "at": datetime.now(UTC).isoformat(), "result": result})
     except Exception:
         # 凭据和账户配置不进入调度错误日志。
         write_json(
             root() / "last-run.json",
-            {"ok": False, "at": datetime.now(UTC).isoformat(), "error": "传送失败，源数据保留，请检查接收端"},
+            {
+                "ok": False,
+                "at": datetime.now(UTC).isoformat(),
+                "error": "拉取未完成，源数据仅在确认后清理，请检查来源端",
+            },
         )
 
 
@@ -196,5 +233,5 @@ def configure_schedule() -> None:
     plan = TransferPlan.model_validate(settings()["plan"])
     if plan.every_hours:
         scheduler.add_job(
-            scheduled_send, "interval", hours=plan.every_hours, id="data-transfer", max_instances=1, coalesce=True
+            scheduled_pull, "interval", hours=plan.every_hours, id="data-transfer", max_instances=1, coalesce=True
         )
