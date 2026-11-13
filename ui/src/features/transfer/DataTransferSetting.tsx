@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from 'react'
-import { ChevronDown, ChevronRight } from 'lucide-react'
+import { ArrowLeftRight, ChevronDown } from 'lucide-react'
 import { CenteredModal } from '@/components/ui/CenteredModal'
 import { Row, TEXT } from '@/features/account/editUi'
 import { AccessibilitySwitch } from '@/components/ui/AccessibilitySwitch'
@@ -23,11 +23,11 @@ function download(blob: Blob, name: string) {
 export function DataTransferSetting() {
   const [open, setOpen] = useState(false)
   return <Row label="数据传送" span>
-    <div className="flex items-center gap-4">
-      <p className="min-w-0 flex-1 text-[13px] leading-5 text-ink-3">跨实例拉取与离线传送</p>
-      <button type="button" aria-label="管理数据传送" aria-haspopup="dialog" aria-expanded={open}
-        className="inline-flex h-9 shrink-0 cursor-pointer items-center gap-1 rounded-md px-2 text-[13px] text-ink-2 transition-colors duration-150 hover:bg-fill hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-accent motion-reduce:transition-none"
-        onClick={() => setOpen(true)}>管理<ChevronRight size={15} aria-hidden /></button>
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+      <button type="button" aria-haspopup="dialog" aria-expanded={open}
+        className="inline-flex h-10 shrink-0 cursor-pointer items-center gap-2 rounded-[9px] border border-ink-3/30 bg-surface px-3 text-[14px] font-medium text-ink-1 transition-colors duration-150 hover:border-ink-3/50 hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent motion-reduce:transition-none"
+        onClick={() => setOpen(true)}><ArrowLeftRight size={16} aria-hidden />打开数据传送</button>
+      <p className="basis-full text-[13px] leading-5 text-ink-3 sm:basis-auto">跨实例拉取与离线传送</p>
     </div>
     <DataTransferModal open={open} onClose={() => setOpen(false)} />
   </Row>
