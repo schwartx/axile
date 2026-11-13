@@ -32,6 +32,7 @@ interface StepperNumberInputProps {
   /** 单位文案（如 次 / 毫秒 / 秒），缺省不显示。 */
   unit?: string
   ariaLabel?: string
+  placeholder?: string
   /** 非法态：边框转琥珀；同时强制显示输入层（不用滚动数字遮盖非法草稿）。 */
   invalid?: boolean
   size?: StepperSize
@@ -68,6 +69,7 @@ export function StepperNumberInput({
   disabled = false,
   unit,
   ariaLabel,
+  placeholder,
   invalid = false,
   size = 'md',
   onStep,
@@ -187,6 +189,7 @@ export function StepperNumberInput({
             style={autoWidth}
             id={id}
             aria-label={ariaLabel}
+            placeholder={placeholder}
             aria-describedby={describedBy}
             aria-invalid={invalid || undefined}
             inputMode={decimal ? "decimal" : "numeric"}

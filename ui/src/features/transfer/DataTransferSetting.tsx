@@ -1,13 +1,21 @@
 import { useEffect, useId, useState } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { CenteredModal } from '@/components/ui/CenteredModal'
-import { Row } from '@/features/account/editUi'
+import { Row, TEXT } from '@/features/account/editUi'
+import { AccessibilitySwitch } from '@/components/ui/AccessibilitySwitch'
+import { DatePicker } from '@/components/ui/DatePicker'
+import { MacTimePicker } from '@/components/ui/MacTimePicker'
+import { Segmented } from '@/components/ui/Segmented'
+import { StepperNumberInput } from '@/components/ui/StepperNumberInput'
+import { stepNumericValue } from '@/components/ui/numericStepper'
+import { positiveInteger, transferDraft, transferPlan, type TransferDraft, type TransferPlan } from '@/features/transfer/transferForm'
 import { apiGet, apiSend, apiUpload, apiErrorFromBody } from '@/lib/api/client'
 
-type Plan = { start: string | null; end: string | null; source_url: string; every_hours: number; execution_days: number | null; replay_days: number | null }
-type Settings = { plan: Partial<Plan>; last_run: { ok: boolean; at: string; error?: string } | null }
-const empty: Plan = { start: null, end: null, source_url: '', every_hours: 0, execution_days: null, replay_days: null }
-const inputClass = 'mt-2 block w-full rounded-[9px] border border-line bg-surface px-3 py-2 text-[14px] focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-45'
+type Settings = { plan: Partial<TransferPlan>; last_run: { ok: boolean; at: string; error?: string } | null }
+const retentionFields = [{ key: 'execution_days', label: '执行记录' }, { key: 'replay_days', label: '回放' }] as const
+function stepDays(value: string, direction: -1 | 1) {
+  return !value.trim() && direction === 1 ? '1' : stepNumericValue(value, direction, { step: 1, min: 1 })
+}
 const buttonClass = 'cursor-pointer rounded-[9px] border border-line px-4 py-2 text-[14px] hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-wait disabled:opacity-45'
 function download(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob)
@@ -25,22 +33,24 @@ export function DataTransferSetting() {
 }
 
 function DataTransferModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [plan, setPlan] = useState<Plan>(empty)
+  const [draft, setDraft] = useState(() => transferDraft())
   const [settings, setSettings] = useState<Settings | null>(null)
   const [range, setRange] = useState(false)
   const [busy, setBusy] = useState(false)
   const [offlineOpen, setOfflineOpen] = useState(false)
   const offlineId = useId()
+  const automaticId = useId()
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
-  const patch = (change: Partial<Plan>) => setPlan(p => ({ ...p, ...change }))
+  const patch = (change: Partial<TransferDraft>) => { setDraft(p => ({ ...p, ...change })); setError('') }
   useEffect(() => {
     if (!open) return
     let alive = true
     setSettings(null); setError(''); setMessage(''); setOfflineOpen(false)
     apiGet<Settings>('/transfer/settings').then(s => {
       if (!alive) return
-      setSettings(s); setPlan({ ...empty, ...s.plan }); setRange(Boolean(s.plan.start || s.plan.end))
+      const next = transferDraft(s.plan)
+      setDraft(next); setRange(Boolean(s.plan.start || s.plan.end)); setSettings(s)
     }).catch(e => { if (alive) setError(String(e)) })
     return () => { alive = false }
   }, [open])
@@ -48,28 +58,82 @@ function DataTransferModal({ open, onClose }: { open: boolean; onClose: () => vo
     setBusy(true); setError(''); setMessage('')
     try { await action() } catch (e) { setError(e instanceof Error ? e.message : String(e)) } finally { setBusy(false) }
   }
-  const effective = { ...plan, ...(range ? {} : { start: null, end: null }) }
+  const effective = () => transferPlan(draft, range)
+  let formError = ''
+  try { effective() } catch (cause) { formError = cause instanceof Error ? cause.message : String(cause) }
+  const disabled = busy || !settings
   return <CenteredModal open={open} title="数据传送" onClose={onClose} closeDisabled={busy} widthClassName="w-[760px]">
-    <p className="mt-2 text-[14px] text-ink-3">主动从来源端拉取账户、组合、执行历史和录制。本机累积历史，来源端在收到确认后保留近期。</p>
-    <fieldset disabled={busy || !settings} className="mt-5 space-y-5 disabled:opacity-70">
-      <div>
-        <label className="text-[14px] text-ink-2">来源端地址<input className={inputClass} value={plan.source_url} placeholder="https://来源端地址:端口" onChange={e => patch({ source_url: e.target.value })} /></label>
-      </div>
-      <div>
-        <label className="flex items-center gap-2 text-[14px]"><input type="checkbox" checked={range} onChange={e => setRange(e.target.checked)} />指定时间范围<span className="text-ink-3">默认传送至最新</span></label>
-        <div className="mt-3 grid gap-4 md:grid-cols-2">
-          <label className="text-[13px] text-ink-2">开始时间<input className={inputClass} type="datetime-local" disabled={!range} value={localInput(plan.start)} onChange={e => patch({ start: e.target.value ? new Date(e.target.value).toISOString() : null })} /></label>
-          <label className="text-[13px] text-ink-2">结束时间<input className={inputClass} type="datetime-local" disabled={!range} value={localInput(plan.end)} onChange={e => patch({ end: e.target.value ? new Date(e.target.value).toISOString() : null })} /></label>
+    <p className="mt-2 text-[14px] text-ink-3">从来源端拉取数据并在本机累积历史，来源端收到确认后才按规则清理。</p>
+    <fieldset disabled={disabled} className="mt-5 space-y-5 disabled:opacity-70">
+      <label className="block text-[14px] text-ink-2">来源端地址
+        <input type="url" className={`${TEXT} mt-2`} value={draft.source_url} placeholder="https://host:port" onChange={e => patch({ source_url: e.target.value })} />
+      </label>
+      <section>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h3 className="text-[14px] font-medium">时间范围</h3>
+          <Segmented size="sm" value={range ? 'range' : 'all'} ariaLabel="时间范围"
+            options={[{ value: 'all', label: '全部数据' }, { value: 'range', label: '指定范围' }]}
+            onChange={value => { setRange(value === 'range'); setError('') }} />
         </div>
-      </div>
-      <div className="grid gap-5 md:grid-cols-3">
-        <label className="text-[14px] text-ink-2">定时拉取<input className={inputClass} type="number" min="0" max="8760" value={plan.every_hours} onChange={e => patch({ every_hours: Number(e.target.value) })} /><span className="mt-1 block text-[12px] text-ink-3">每隔多少小时，0 表示关闭</span></label>
-        <label className="text-[14px] text-ink-2">源端执行记录保留天数<input className={inputClass} type="number" min="1" value={plan.execution_days ?? ''} onChange={e => patch({ execution_days: e.target.value ? Number(e.target.value) : null })} /><span className="mt-1 block text-[12px] text-ink-3">留空则不清理</span></label>
-        <label className="text-[14px] text-ink-2">源端回放保留天数<input className={inputClass} type="number" min="1" value={plan.replay_days ?? ''} onChange={e => patch({ replay_days: e.target.value ? Number(e.target.value) : null })} /><span className="mt-1 block text-[12px] text-ink-3">仅清理已接收且不再使用的录制</span></label>
-      </div>
+        <div inert={!range || disabled} aria-hidden={!range} className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${range ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+          <div className="min-h-0 overflow-hidden">
+            <p className="pt-3 text-xs text-ink-3">北京时间（UTC+8），留空的边界不限制范围</p>
+            <div className="grid gap-4 pt-2 sm:grid-cols-2">
+              {(['start', 'end'] as const).map(key => {
+                const label = key === 'start' ? '开始' : '结束'
+                return <div key={key} role="group" aria-label={`${label}时间（北京时间）`} className="min-w-0 space-y-2">
+                  <p className="text-[13px] text-ink-2">{label}时间</p>
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <DatePicker value={draft[key].date} ariaLabel={`${label}日期`} className="flex-1"
+                      min={key === 'end' ? draft.start.date || undefined : undefined}
+                      max={key === 'start' ? draft.end.date || undefined : undefined}
+                      onChange={date => patch({ [key]: { ...draft[key], date, time: date ? draft[key].time || '00:00' : '' } })} />
+                    <MacTimePicker compact value={draft[key].time} ariaLabel={`${label}时刻`}
+                      onChange={time => patch({ [key]: { ...draft[key], time } })} />
+                  </div>
+                </div>
+              })}
+            </div>
+          </div>
+        </div>
+      </section>
+      <section className="border-t border-line pt-4">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h3 id={automaticId} className="text-[14px] font-medium">自动拉取</h3>
+            <p id={`${automaticId}-help`} className="mt-1 text-xs text-ink-3">关闭浏览器后仍由服务端定时执行</p>
+          </div>
+          <AccessibilitySwitch checked={draft.automatic} labelledBy={automaticId} describedBy={`${automaticId}-help`}
+            onChange={automatic => patch({ automatic })} />
+        </div>
+        <div inert={!draft.automatic} aria-hidden={!draft.automatic} className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${draft.automatic ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+          <div className="min-h-0 overflow-hidden">
+            <div className="flex flex-wrap items-center gap-3 pt-3 text-[13px] text-ink-2">
+              <span>每隔</span>
+              <StepperNumberInput value={draft.every_hours} step={1} min={1} max={8760} unit="小时" ariaLabel="拉取间隔"
+                invalid={!positiveInteger(draft.every_hours, 8760)} onChange={every_hours => patch({ every_hours })} />
+              <span>拉取一次</span>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section className="border-t border-line pt-4">
+        <h3 className="text-[14px] font-medium">源端保留</h3>
+        <p className="mt-1 text-xs text-ink-3">仅清理已确认接收的源端数据；清空天数则不清理</p>
+        <div className="mt-3 grid gap-x-6 gap-y-3 sm:grid-cols-2">
+          {retentionFields.map(({ key, label }) => <div key={key} role="group" aria-label={`${label}保留`} className="flex items-center justify-between gap-3">
+            <span className="text-[13px] text-ink-2">{label}</span>
+            <StepperNumberInput value={draft[key]} step={1} min={1} onStep={stepDays} placeholder="不清理"
+              unit={draft[key].trim() ? '天' : undefined} ariaLabel={`${label}保留天数`}
+              invalid={!!draft[key].trim() && !positiveInteger(draft[key])} onChange={value => patch({ [key]: value })} />
+          </div>)}
+        </div>
+      </section>
       <div className="flex flex-wrap gap-3">
-        <button type="button" className={buttonClass} onClick={() => void run(async () => { await apiSend('PUT', '/transfer/settings', effective); setMessage('传送规则已保存') })}>保存规则</button>
-        <button type="button" className={buttonClass} disabled={!plan.source_url} onClick={() => void run(async () => { const result = await apiSend<{ batch: string }> ('POST', '/transfer/pull', effective); setMessage(`拉取完成 · ${result.batch}`) })}>立即拉取</button>
+        <button type="button" className="cursor-pointer rounded-[9px] border border-ink-1 bg-ink-1 px-4 py-2 text-[14px] font-medium text-surface hover:opacity-90 focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-45"
+          disabled={!draft.source_url.trim() || !!formError} onClick={() => void run(async () => { const result = await apiSend<{ batch: string }>('POST', '/transfer/pull', effective()); setMessage(`拉取完成 · ${result.batch}`) })}>立即拉取</button>
+        <button type="button" className={buttonClass} disabled={!!formError}
+          onClick={() => void run(async () => { await apiSend('PUT', '/transfer/settings', effective()); setMessage('传送规则已保存') })}>保存规则</button>
       </div>
     </fieldset>
     <section className="mt-6 border-t border-line pt-4">
@@ -78,16 +142,16 @@ function DataTransferModal({ open, onClose }: { open: boolean; onClose: () => vo
       </button>
       <div id={offlineId} inert={!offlineOpen} aria-hidden={!offlineOpen} className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${offlineOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
         <div className="min-h-0 overflow-hidden">
-          <fieldset disabled={busy || !settings} className="space-y-4 pt-3 disabled:opacity-70">
-            <button type="button" className={buttonClass} onClick={() => void run(async () => {
-              const response = await fetch('/api/v1/transfer/export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(effective) })
+          <fieldset disabled={disabled} className="space-y-4 pt-3 disabled:opacity-70">
+            <button type="button" className={buttonClass} disabled={!!formError} onClick={() => void run(async () => {
+              const response = await fetch('/api/v1/transfer/export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(effective()) })
               if (!response.ok) throw apiErrorFromBody(response.status, response.statusText, await response.json())
               download(await response.blob(), 'data.axile'); setMessage('数据包已导出；收到接收确认后才能清理')
             })}>导出数据包</button>
             <p className="text-[13px] text-ink-3">首次接收需要空账户与组合，之后可重复接收同一来源。账户配置完整保留，导入后调度暂停。</p>
             <div className="grid gap-4 sm:grid-cols-2">
-              <label className="text-[14px]">上传数据包<input className={inputClass} type="file" accept=".axile" onChange={e => { const f = e.target.files?.[0]; if (f) void run(async () => { const receipt = await apiUpload('/transfer/import', f); download(new Blob([JSON.stringify(receipt)], { type: 'application/json' }), 'receipt.json'); setMessage('接收完成，已下载确认文件；将确认文件交给来源端即可清理') }) }} /></label>
-              <label className="text-[14px]">交回离线接收确认<input className={inputClass} type="file" accept=".json" onChange={e => { const f = e.target.files?.[0]; if (f) void run(async () => { await apiSend('POST', '/transfer/acknowledge', { receipt: JSON.parse(await f.text()), plan: effective }); setMessage('接收确认已验证，按填写的保留规则清理') }) }} /></label>
+              <label className="text-[14px]">上传数据包<input className={`${TEXT} mt-2 file:mr-3 file:border-0 file:bg-fill file:px-3 file:py-1 file:text-ink-2`} type="file" accept=".axile" onChange={e => { const f = e.target.files?.[0]; if (f) void run(async () => { const receipt = await apiUpload('/transfer/import', f); download(new Blob([JSON.stringify(receipt)], { type: 'application/json' }), 'receipt.json'); setMessage('接收完成，已下载确认文件；将确认文件交给来源端即可清理') }) }} /></label>
+              <label className="text-[14px]">交回离线接收确认<input className={`${TEXT} mt-2 file:mr-3 file:border-0 file:bg-fill file:px-3 file:py-1 file:text-ink-2`} type="file" accept=".json" disabled={!!formError} onChange={e => { const f = e.target.files?.[0]; if (f) void run(async () => { await apiSend('POST', '/transfer/acknowledge', { receipt: JSON.parse(await f.text()), plan: effective() }); setMessage('接收确认已验证，按填写的保留规则清理') }) }} /></label>
             </div>
           </fieldset>
         </div>
@@ -95,12 +159,7 @@ function DataTransferModal({ open, onClose }: { open: boolean; onClose: () => vo
     </section>
     {busy && <p role="status" className="mt-5 text-[14px] text-ink-2">正在处理，请稍候…</p>}
     {message && <p role="status" className="mt-5 text-[14px] text-ink-2">{message}</p>}
-    {error && <p role="alert" className="mt-5 whitespace-pre-wrap text-[14px] text-warn">{error}</p>}
+    {(error || formError) && <p role="alert" className="mt-5 whitespace-pre-wrap text-[14px] text-warn">{error || formError}</p>}
     {settings?.last_run && <p className="mt-5 text-[13px] text-ink-3">最近定时拉取：{settings.last_run.ok ? '完成' : settings.last_run.error} · {settings.last_run.at}</p>}
   </CenteredModal>
-}
-function localInput(value: string | null) {
-  if (!value) return ''
-  const date = new Date(value)
-  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16)
 }
