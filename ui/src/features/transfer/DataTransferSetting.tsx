@@ -110,10 +110,11 @@ function DataTransferModal({ open, onClose }: { open: boolean; onClose: () => vo
         <div inert={!draft.automatic} aria-hidden={!draft.automatic} className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${draft.automatic ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
           <div className="min-h-0 overflow-hidden">
             <div className="flex flex-wrap items-center gap-3 pt-3 text-[13px] text-ink-2">
-              <span>每隔</span>
+              <span className="w-full sm:hidden">拉取间隔</span>
+              <span className="hidden sm:inline">每隔</span>
               <DurationStepper value={draft.every_hours} min={1} max={8760} ariaLabel="拉取间隔"
                 invalid={!positiveInteger(draft.every_hours, 8760)} onChange={every_hours => patch({ every_hours })} />
-              <span>拉取一次</span>
+              <span className="hidden sm:inline">拉取一次</span>
             </div>
           </div>
         </div>
