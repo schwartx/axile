@@ -118,62 +118,68 @@ def export_package(plan: TransferPlan) -> tuple[Path, dict]:
     batch = secrets.token_hex(16)
     directory = root() / "outbox" / batch
     directory.mkdir(parents=True, mode=0o700)
-    end = plan.end or datetime.now(UTC)
-    if end > datetime.now(UTC):
-        raise ValueError("截止时间不能晚于当前时间")
-    snapshot = directory / "database.sqlite3"
-    report = native_operation_sync(
-        "transfer_data",
-        {
-            "action": "export",
-            "snapshot": str(snapshot),
-            "start_us": int(plan.start.timestamp() * 1_000_000) if plan.start else 0,
-            "end_us": int(end.timestamp() * 1_000_000),
-        },
-        database=database_path(),
-    )
-    base = Path(database_path()).resolve().parent
-    files = {"database.sqlite3": snapshot}
-    for index in (base / "replay").glob("account-*/.replay-index.sqlite"):
-        name = str(index.relative_to(base))
-        copy = directory / name
-        copy.parent.mkdir(parents=True, exist_ok=True)
-        native_operation_sync("transfer_data", {"action": "backup_index", "snapshot": str(copy)}, database=str(index))
-        files[name] = copy
-    files.update({str(p.relative_to(base)): p for p in recording_files(plan)})
-    from axile.common.config import settings as app_settings
+    try:
+        end = plan.end or datetime.now(UTC)
+        if end > datetime.now(UTC):
+            raise ValueError("截止时间不能晚于当前时间")
+        snapshot = directory / "database.sqlite3"
+        report = native_operation_sync(
+            "transfer_data",
+            {
+                "action": "export",
+                "snapshot": str(snapshot),
+                "start_us": int(plan.start.timestamp() * 1_000_000) if plan.start else 0,
+                "end_us": int(end.timestamp() * 1_000_000),
+            },
+            database=database_path(),
+        )
+        base = Path(database_path()).resolve().parent
+        files = {"database.sqlite3": snapshot}
+        for index in (base / "replay").glob("account-*/.replay-index.sqlite"):
+            name = str(index.relative_to(base))
+            copy = directory / name
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            native_operation_sync(
+                "transfer_data", {"action": "backup_index", "snapshot": str(copy)}, database=str(index)
+            )
+            files[name] = copy
+        files.update({str(p.relative_to(base)): p for p in recording_files(plan)})
+        from axile.server.app import get_algorithm_directories
 
-    for number, configured in enumerate(app_settings.algorithm_directories or [str(base / "user_algorithms")]):
-        code = Path(configured).expanduser().resolve()
-        for path in code.rglob("*"):
-            if (
-                path.is_file()
-                and not path.is_symlink()
-                and not any(part.startswith(".") or part == "__pycache__" for part in path.relative_to(code).parts)
-            ):
-                files[f"code/{number}/{path.relative_to(code).as_posix()}"] = path
-    if sum(p.stat().st_size for p in files.values()) > MAX_BYTES:
-        raise ValueError("数据包超过预算，请缩短范围")
-    if shutil.disk_usage(base).free < sum(p.stat().st_size for p in files.values()) + 256 * 1024**2:
-        raise ValueError("剩余磁盘不足以暂存数据包，源数据未清理")
-    manifest = {
-        "format": 1,
-        "batch": batch,
-        "source_id": settings()["source_id"],
-        "start": plan.start.isoformat() if plan.start else None,
-        "end": end.isoformat(),
-        "executions": report["executions"],
-        "files": {n: {"sha256": digest(p), "size": p.stat().st_size} for n, p in files.items()},
-    }
-    package = directory / "data.axile"
-    with ZipFile(package, "w", ZIP_DEFLATED) as archive:
-        for name, path in files.items():
-            archive.write(path, name)
-        archive.writestr("manifest.json", json.dumps(manifest))
-    write_json(directory / "manifest.json", manifest)
-    snapshot.unlink()
-    shutil.rmtree(directory / "replay", ignore_errors=True)
-    return package, manifest
+        for number, configured in enumerate(get_algorithm_directories()):
+            code = configured.expanduser().resolve()
+            for path in code.rglob("*"):
+                if (
+                    path.is_file()
+                    and not path.is_symlink()
+                    and not any(part.startswith(".") or part == "__pycache__" for part in path.relative_to(code).parts)
+                ):
+                    files[f"code/{number}/{path.relative_to(code).as_posix()}"] = path
+        if sum(p.stat().st_size for p in files.values()) > MAX_BYTES:
+            raise ValueError("数据包超过预算，请缩短范围")
+        if shutil.disk_usage(base).free < sum(p.stat().st_size for p in files.values()) + 256 * 1024**2:
+            raise ValueError("剩余磁盘不足以暂存数据包，源数据未清理")
+        manifest = {
+            "format": 1,
+            "batch": batch,
+            "source_id": settings()["source_id"],
+            "start": plan.start.isoformat() if plan.start else None,
+            "end": end.isoformat(),
+            "executions": report["executions"],
+            "files": {n: {"sha256": digest(p), "size": p.stat().st_size} for n, p in files.items()},
+        }
+        package = directory / "data.axile"
+        with ZipFile(package, "w", ZIP_DEFLATED) as archive:
+            for name, path in files.items():
+                archive.write(path, name)
+            archive.writestr("manifest.json", json.dumps(manifest))
+        write_json(directory / "manifest.json", manifest)
+        snapshot.unlink()
+        shutil.rmtree(directory / "replay", ignore_errors=True)
+        return package, manifest
+    except BaseException:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
 
 
 def validate_manifest(manifest: dict) -> None:

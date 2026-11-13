@@ -3,6 +3,8 @@
 import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
 from zipfile import ZipFile
 
 import pytest
@@ -50,11 +52,14 @@ def test_roundtrip_accumulates_and_preserves_source_cleanup(peers, monkeypatch):
     with sqlite3.connect(source) as c:
         assert c.execute("select count(*) from executerecord").fetchone() == (1,)
     seed(source, 3)
+    with sqlite3.connect(source) as c:
+        c.execute("UPDATE account SET name='source update' WHERE id=1")
     package, _ = transfer.export_package(transfer.TransferPlan())
     monkeypatch.setattr(transfer, "database_path", lambda: str(target))
     transfer.import_package(package)
     with sqlite3.connect(target) as c:
         assert c.execute("select count(*) from executerecord").fetchone() == (3,)
+        assert c.execute("SELECT name FROM account WHERE id=1").fetchone() == ("source update",)
 
 
 def test_corrupt_package_and_forged_receipt_never_clean_source(peers, monkeypatch, tmp_path):
@@ -221,6 +226,7 @@ def test_live_recording_between_sealed_parts_is_not_removed(peers, monkeypatch):
         )
     )
     writer.finish()
+
     # 模拟两段之间：索引仍标记会话开启，当前没有 partial 文件。
     with sqlite3.connect(source.parent / "replay/account-1/.replay-index.sqlite") as c:
         c.execute("UPDATE recordings SET metadata=json_set(metadata,'$.state','recording')")
@@ -232,3 +238,102 @@ def test_live_recording_between_sealed_parts_is_not_removed(peers, monkeypatch):
     assert result["removed_recordings"] == 0
     assert list((source.parent / "replay").rglob("*.mcap"))
     writer.finish()
+
+
+@pytest.mark.parametrize("failure", ["budget", "disk", "archive", "snapshot"])
+def test_failed_exports_remove_only_their_own_staging(peers, monkeypatch, failure):
+    source, _ = peers
+    seed(source)
+    previous, _ = transfer.export_package(transfer.TransferPlan())
+    if failure == "budget":
+        monkeypatch.setattr(transfer, "MAX_BYTES", 1)
+    elif failure == "disk":
+        monkeypatch.setattr(transfer.shutil, "disk_usage", lambda _: SimpleNamespace(free=0))
+    elif failure == "archive":
+
+        def fail_archive(*args, **kwargs):
+            Path(args[0]).write_bytes(b"partial")
+            raise OSError("archive failed")
+
+        monkeypatch.setattr(transfer, "ZipFile", fail_archive)
+    else:
+
+        def fail_snapshot(operation, request, **kwargs):
+            Path(request["snapshot"]).write_bytes(b"partial")
+            raise RuntimeError("snapshot failed")
+
+        monkeypatch.setattr(transfer, "native_operation_sync", fail_snapshot)
+    for _ in range(2):
+        with pytest.raises((ValueError, OSError, RuntimeError)):
+            transfer.export_package(transfer.TransferPlan())
+    assert list((transfer.root() / "outbox").iterdir()) == [previous.parent]
+    assert previous.is_file()
+    with sqlite3.connect(source) as c:
+        assert c.execute("SELECT count(*) FROM executerecord").fetchone() == (1,)
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_export_uses_runtime_algorithm_directories(peers, monkeypatch, tmp_path, configured):
+    from axile.server import app
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(app.ALGORITHM_DIRECTORIES_ENV, raising=False)
+    monkeypatch.setattr(app.settings, "algorithm_directories", [])
+    code = tmp_path / ("custom_code" if configured else "user_algorithms")
+    code.mkdir()
+    (code / "custom.py").write_text("# exported algorithm\n")
+    directories = [code] if configured else app._initial_algorithm_directories()
+    monkeypatch.setattr(app, "_algorithm_directories", directories)
+    package, manifest = transfer.export_package(transfer.TransferPlan())
+    assert "code/0/custom.py" in manifest["files"]
+    with ZipFile(package) as archive:
+        assert archive.read("code/0/custom.py") == b"# exported algorithm\n"
+
+
+@pytest.mark.parametrize("local_change", ["new_account", "edited_account", "asset_snapshot", "unique_artifact"])
+def test_receiver_changes_are_not_overwritten(peers, monkeypatch, local_change):
+    source, target = peers
+    seed(source)
+    package, _ = transfer.export_package(transfer.TransferPlan())
+    monkeypatch.setattr(transfer, "database_path", lambda: str(target))
+    transfer.import_package(package)
+    for path, owner in ((source, "source"), (target, "receiver")):
+        with sqlite3.connect(path) as c:
+            if local_change == "new_account":
+                c.execute(
+                    "INSERT INTO account(id,name,market,trade_channel,brokerage,created_at_us,updated_at_us) "
+                    "VALUES(2,?,'crypto','binance','binance',0,0)",
+                    (owner,),
+                )
+            elif local_change == "edited_account":
+                c.execute("UPDATE account SET name=? WHERE id=1", (owner,))
+            elif local_change == "asset_snapshot":
+                c.execute(
+                    "INSERT INTO account_asset_snapshot(id,account_id,created_at_us,source) VALUES(1,1,0,?)", (owner,)
+                )
+            else:
+                c.execute(
+                    "INSERT INTO execution_artifact(id,execution_id,artifact_type,schema_version,content,created_at_us) "
+                    "VALUES(?,'exec-1','standard_input',1,?,0)",
+                    (2 if owner == "source" else 1, json.dumps({"owner": owner})),
+                )
+    monkeypatch.setattr(transfer, "database_path", lambda: str(source))
+    seed(source, 2)
+    package, _ = transfer.export_package(transfer.TransferPlan())
+    monkeypatch.setattr(transfer, "database_path", lambda: str(target))
+    with pytest.raises(_core.NativeError, match="UNIQUE" if local_change == "unique_artifact" else "独立新增或修改"):
+        transfer.import_package(package)
+    with sqlite3.connect(target) as c:
+        if local_change == "unique_artifact":
+            assert json.loads(c.execute("SELECT content FROM execution_artifact WHERE id=1").fetchone()[0]) == {
+                "owner": "receiver"
+            }
+            assert c.execute("SELECT count(*) FROM executerecord").fetchone() == (1,)
+            return
+        table, column, identity = (
+            ("account_asset_snapshot", "source", 1)
+            if local_change == "asset_snapshot"
+            else ("account", "name", 2 if local_change == "new_account" else 1)
+        )
+        assert c.execute(f"SELECT {column} FROM {table} WHERE id=?", (identity,)).fetchone() == ("receiver",)
+        assert c.execute("SELECT count(*) FROM executerecord").fetchone() == (1,)

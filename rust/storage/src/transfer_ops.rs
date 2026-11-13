@@ -1,7 +1,8 @@
 //! 一致快照、同源累积接收和确认后的历史清理。
 use crate::error::AnalysisError;
-use rusqlite::{params, Connection};
+use rusqlite::{functions::FunctionFlags, params, Connection};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 
 fn err(e: impl std::fmt::Display) -> AnalysisError {
@@ -39,7 +40,8 @@ fn idle(c: &Connection) -> Result<(), AnalysisError> {
     Ok(())
 }
 fn excluded(t: &str) -> bool {
-    t.starts_with("analysis_")
+    t == "alembic_version"
+        || t.starts_with("analysis_")
         || t == "account_analysis"
         || t.starts_with("account_connection")
         || t.starts_with("accountruntime")
@@ -170,6 +172,37 @@ fn merge_table(c: &Connection, t: &str) -> Result<(), AnalysisError> {
         .map_err(err)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(err)?;
+    let keys = cols
+        .iter()
+        .filter(|(_, pk)| *pk > 0)
+        .map(|(name, _)| quote(name))
+        .collect::<Vec<_>>();
+    if keys.is_empty() {
+        return Err(err(format!("表缺少主键: {t}")));
+    }
+    let join = keys
+        .iter()
+        .map(|key| format!("m.{key} IS i.{key}"))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let row_key = format!(
+        "json_array({})",
+        keys.iter()
+            .map(|k| format!("m.{k}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let row_hash = format!(
+        "transfer_hash(json_array({}))",
+        cols.iter()
+            .map(|(n, _)| format!("m.{}", quote(n)))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let conflict:bool=c.query_row(&format!("SELECT EXISTS(SELECT 1 FROM main.{table} m JOIN incoming.{table} i ON {join} LEFT JOIN transfer_rows r ON r.table_name=?1 AND r.row_key={row_key} WHERE r.row_hash IS NOT {row_hash})", table=quote(t)), [t], |r|r.get(0)).map_err(err)?;
+    if conflict {
+        return Err(err(format!("接收端存在独立新增或修改的数据: {t}")));
+    }
     let updates = cols
         .iter()
         .filter(|(_, pk)| *pk == 0)
@@ -182,15 +215,37 @@ fn merge_table(c: &Connection, t: &str) -> Result<(), AnalysisError> {
         format!("DO UPDATE SET {updates}")
     };
     c.execute_batch(&format!(
-        "INSERT INTO main.{0} SELECT * FROM incoming.{0} WHERE true ON CONFLICT {conflict}",
-        quote(t)
+        "INSERT INTO main.{0} SELECT * FROM incoming.{0} WHERE true ON CONFLICT ({1}) {conflict}",
+        quote(t),
+        keys.join(",")
     ))
-    .map_err(err)
+    .map_err(err)?;
+    if t == "account_settings" {
+        c.execute(
+            "UPDATE account_settings SET schedule=json_set(schedule,'$.is_started',json('false'))",
+            [],
+        )
+        .map_err(err)?;
+    }
+    c.execute(&format!("INSERT INTO transfer_rows SELECT ?1,{row_key},{row_hash} FROM main.{table} m JOIN incoming.{table} i ON {join} WHERE true ON CONFLICT(table_name,row_key) DO UPDATE SET row_hash=excluded.row_hash", table=quote(t)), [t]).map_err(err)?;
+    Ok(())
 }
 
 fn import_snapshot(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let source = text(request, "source_id")?;
     let c = Connection::open(path).map_err(err)?;
+    c.create_scalar_function(
+        "transfer_hash",
+        1,
+        FunctionFlags::SQLITE_DETERMINISTIC,
+        |context| {
+            Ok(format!(
+                "{:x}",
+                Sha256::digest(context.get::<String>(0)?.as_bytes())
+            ))
+        },
+    )
+    .map_err(err)?;
     c.execute_batch("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000")
         .map_err(err)?;
     idle(&c)?;
@@ -228,7 +283,7 @@ fn import_snapshot(path: &str, request: &Value) -> Result<Value, AnalysisError> 
     }
     let tx = c.unchecked_transaction().map_err(err)?;
     let c = &tx;
-    c.execute_batch("PRAGMA defer_foreign_keys=ON; CREATE TABLE IF NOT EXISTS transfer_origin(source TEXT PRIMARY KEY)").map_err(err)?;
+    c.execute_batch("PRAGMA defer_foreign_keys=ON; CREATE TABLE IF NOT EXISTS transfer_origin(source TEXT PRIMARY KEY); CREATE TABLE IF NOT EXISTS transfer_rows(table_name TEXT NOT NULL,row_key TEXT NOT NULL,row_hash TEXT NOT NULL,PRIMARY KEY(table_name,row_key)) WITHOUT ROWID").map_err(err)?;
     let origin: Option<String> = c
         .query_row("SELECT source FROM transfer_origin LIMIT 1", [], |r| {
             r.get(0)
@@ -258,11 +313,6 @@ fn import_snapshot(path: &str, request: &Value) -> Result<Value, AnalysisError> 
     for t in dest.iter().filter(|t| !excluded(t)) {
         merge_table(c, t)?;
     }
-    c.execute(
-        "UPDATE account_settings SET schedule=json_set(schedule,'$.is_started',json('false'))",
-        [],
-    )
-    .map_err(err)?;
     let result = json!({"source_id":source,"executions":records(c)?});
     tx.commit().map_err(err)?;
     Ok(result)
