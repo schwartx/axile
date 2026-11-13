@@ -167,7 +167,7 @@ def _handle_get_account_assets(
     request: WorkerBackendRequest,
     state: _WorkerBackendState,
 ) -> WorkerBackendResponse:
-    """查询并返回账户当前资产，不进入交易执行生命周期."""
+    """查询并返回账户资产或出入金流水，不进入交易执行生命周期."""
     account = AccountSnapshot.model_validate(request.account_payload)
     executor = None
     try:
@@ -183,11 +183,16 @@ def _handle_get_account_assets(
             allow_recovery=False,
             allow_connect=False,
         )
-        assets = cast(AbstractExecutor, executor).get_account_assets()
+        if request.command == "get_account_cash_flows":
+            flows = cast(AbstractExecutor, executor).get_account_cash_flows()
+            output = {"rows": [flow.model_dump(mode="json") for flow in flows]}
+        else:
+            assets = cast(AbstractExecutor, executor).get_account_assets()
+            output = assets.model_dump(mode="json")
         return WorkerBackendResponse(
             request_id=request.request_id,
             kind="result",
-            output_payload=cast("dict[str, object]", assets.model_dump(mode="json")),
+            output_payload=cast("dict[str, object]", output),
             channel_type=account.trade_channel,
         )
     except Exception as exc:  # noqa: BLE001 - IPC 边界统一返回结构化错误
@@ -555,7 +560,7 @@ def _handle_worker_request(
     """
     if request.command == "prepare":
         return _handle_prepare(request, state)
-    if request.command == "get_account_assets":
+    if request.command in {"get_account_assets", "get_account_cash_flows"}:
         return _handle_get_account_assets(request, state)
     if request.command == "calculate_portfolio":
         return _handle_calculate_portfolio(request, state)

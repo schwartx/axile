@@ -233,7 +233,10 @@ pub fn public_connection(
     Ok(current)
 }
 
-fn saved_key(connection: &Connection, account_id: i64) -> Result<Option<String>, AnalysisError> {
+pub(crate) fn saved_key(
+    connection: &Connection,
+    account_id: i64,
+) -> Result<Option<String>, AnalysisError> {
     let row = connection
         .query_row(
             "SELECT a.trade_channel, s.connection FROM account a

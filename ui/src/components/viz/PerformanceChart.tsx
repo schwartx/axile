@@ -309,9 +309,11 @@ function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, sca
         <span className={lossClass(costReady ? readingCost?.cost : null)}>滑点成本 {slippageCostAmount(costReady ? readingCost?.cost ?? null : null)} {displayCurrencyUnit(accountInfo?.currency)}</span>
         <span className={coverageNeedsAttention ? 'text-warn' : undefined}>{coverage}</span>
         {interval && costReady && readingCost && <><span>手续费 {feeText(readingCost)}</span>{estimated > 0 && <span className="text-warn">{estimated} 笔使用执行时间</span>}</>}
-    <Tooltip content={<p>账户收益未调整出入金 · 回测单边费率 {Number((data.settings.backtest_fee_rate * 10000).toFixed(8))} BP</p>} arrow>
+    <Tooltip content={<p>账户收益按已录入出入金修正{data.cash_flow_adjustment?.approximate ? '（资金占用时间加权近似）' : ''}{data.cash_flow_adjustment?.pending ? ` · ${data.cash_flow_adjustment.pending} 笔流水待核对` : ''} · 回测单边费率 {Number((data.settings.backtest_fee_rate * 10000).toFixed(8))} BP</p>} arrow>
       <button type="button" aria-label="收益计算口径说明" className="inline-flex min-h-5 items-center gap-1.5 rounded text-xs text-ink-3 hover:text-ink-1 focus-visible:outline-accent"><CircleHelp size={15} aria-hidden="true" /><span>计算口径</span></button>
     </Tooltip>
+      {!!data.cash_flow_adjustment?.pending && <span role="status" className="text-warn">{data.cash_flow_adjustment.pending} 笔出入金待核对，尚未计入</span>}
+      {data.cash_flow_adjustment?.approximate && <span className="text-ink-3">出入金按资金占用时间加权估算</span>}
       {((backtestMode === 'target' ? data.target_skips : data.skips)?.count || data.invalid_asset_count > 0 || backtestMode === 'sized' && !!data.sizing_fallback_count) ? <div role="status" className="text-xs text-warn">
         <Tooltip content={<div className="space-y-2">
       {backtestMode === 'sized' && !!data.sizing_fallback_count && <p className="text-ink-2">{data.sizing_fallback_count} 条参与回测的执行记录因缺少数量换算证据，按目标权重计算，对应日期在曲线上标记</p>}

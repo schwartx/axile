@@ -94,3 +94,9 @@ test('有前收时日涨跌用当前权益除以前收', () => {
   expect(cardPerformance(summary, now, { ...live, equity: null }).pct).toBeCloseTo(-1.2)
   expect(cardPerformance(summary, now, { ...live, previousClose: null }).pct).toBeCloseTo(-1.2)
 })
+
+test('服务端出入金修正优先于原始权益变化，未知收益不能退回未经修正的值', () => {
+  const live = { equity: 150000, observedAt: '2026-09-07T15:47:50+08:00', previousClose: 100000 }
+  expect(cardPerformance(summary, undefined, { ...live, adjustedReturn: 0 }).pct).toBe(0)
+  expect(cardPerformance(summary, undefined, { ...live, adjustedReturn: null }).pct).toBeNull()
+})

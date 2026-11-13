@@ -1195,6 +1195,29 @@ class WorkerBackendManager:
             raise WorkerBackendExecutionError.from_payload(response.error, "账户资产查询失败")
         return UnifiedAccountAssets.model_validate(response.output_payload)
 
+    async def get_account_cash_flows(self, account: AccountContext) -> list[dict]:
+        """通过已有就绪会话读取渠道流水，不创建交易执行。"""
+        from axile.executor.models.cash_flow import ChannelCashFlow
+        from axile.server.native_store import native_call
+
+        self._check_read_session(account)
+        request = WorkerBackendRequest(
+            request_id=uuid4().hex,
+            command="get_account_cash_flows",
+            account_payload=account.model_dump(mode="json"),
+            execution_id=None,
+            payload={},
+        )
+        response = await native_call(
+            self._request_blocking, _require_account_id(account), request, self._query_timeout(account)
+        )
+        if response.kind != "result" or response.output_payload is None:
+            raise WorkerBackendExecutionError.from_payload(response.error, "账户流水查询失败")
+        rows = response.output_payload.get("rows")
+        if not isinstance(rows, list) or len(rows) > 10000:
+            raise ValueError("渠道流水响应无效")
+        return [ChannelCashFlow.model_validate(row).model_dump(mode="json") for row in rows]
+
     async def query_instruments(
         self,
         account: AccountContext,

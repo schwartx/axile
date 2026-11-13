@@ -13,6 +13,7 @@ from axile.executor.abstract_executor.capability import AbstractExecutorCapabili
 from axile.executor.abstract_executor.execution import AbstractExecutorExecutionMixin
 from axile.executor.abstract_executor.facade import AbstractExecutorFacadeMixin
 from axile.executor.account_orders import AccountOrderBook
+from axile.executor.models.cash_flow import ChannelCashFlow
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_callback import OrderUpdateCallback, PriceDataCallback
 from axile.executor.models.unified_input import AccountConfig
@@ -114,6 +115,10 @@ class AbstractExecutor(
         UnifiedAccountAssets
             统一格式的账户资产信息。
         """
+
+    def get_account_cash_flows(self) -> list[ChannelCashFlow]:
+        """查询渠道可提供的已发生出入金；未支持的渠道明确拒绝。"""
+        raise NotImplementedError("该渠道暂不支持出入金流水查询")
 
     @abstractmethod
     def get_market_data(self, symbols: list[str]) -> dict[str, UnifiedPriceData]:

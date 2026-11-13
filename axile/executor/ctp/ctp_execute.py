@@ -1251,6 +1251,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 "ReqQryInstrument": "query_instruments",
                 "ReqQryInstrumentCommissionRate": "query_commission_rates",
                 "ReqQryTradingAccount": "query_account",
+                "ReqQryTransferSerial": "query_account",
                 "ReqQryInvestorPosition": "query_positions",
                 "ReqQryDepthMarketData": "query_depth_market_data",
                 "ReqQryOrder": "query_orders",
@@ -1620,6 +1621,16 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             self._ensure_instrument_symbols(self._position_catalog_symbols(positions))
         quotes, quote_errors = self._position_valuation_quotes(positions)
         return account_to_unified(accounts[-1], positions, self._instruments, quotes=quotes, quote_errors=quote_errors)
+
+    def get_account_cash_flows(self):
+        """查询柜台可返回的银期转账流水，不读取或发起转账密码。"""
+        from axile.executor.ctp.cash_flows import transfer_to_cash_flow
+
+        c = self._config()
+        req = td.CThostFtdcQryTransferSerialField()
+        req.BrokerID, req.AccountID, req.CurrencyID = c.broker_id, c.investor_id, "CNY"
+        rows = self._query("ReqQryTransferSerial", req)
+        return [flow for row in rows if (flow := transfer_to_cash_flow(row)) is not None]
 
     def _position_valuation_quotes(self, positions):
         """盘中有限等待 tick，休市直接用最近价格，缺价时查询快照。"""

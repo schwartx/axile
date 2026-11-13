@@ -32,7 +32,7 @@ export function ContributionPanel({ chart, selection, scaleMode }: {
       <Tooltip content={<div className="space-y-1 text-xs">
         <p>期初权益 {amount(points[0].account_equity ?? null)} · 期末权益 {amount(points.at(-1)!.account_equity ?? null)}</p>
         <p>毛盈亏含已平仓与持仓浮盈亏，净盈亏仅在费用完整时显示。</p>
-        <p>差额包含未获取费用、出入金及缺失数据；不重复扣除滑点。</p>
+        <p>盈亏已扣除已录入的净入金；差额包含未获取费用、未录入资金变动及缺失数据，不重复扣除滑点。</p>
         <p>异常处断开，从可靠持仓快照重新归零计算本段盈亏；各段不拼接为完整区间盈亏。</p>
         <p>圆点表示缺口后的新基准，后续显示本段盈亏；缺失区间未补齐。</p>
       </div>} arrow>
@@ -42,7 +42,7 @@ export function ContributionPanel({ chart, selection, scaleMode }: {
     </div>
     <dl className="mb-2 flex flex-wrap gap-x-5 gap-y-1 text-xs tabular-nums">
       {[
-        ['权益变化', view.accountChange], ['已知毛盈亏', view.knownGross],
+        ['权益变化', view.accountChange], ['净入金', view.cashFlow], ['投资盈亏', view.investmentPnl], ['已知毛盈亏', view.knownGross],
         ['已知手续费', view.knownFees], ['未归因差额', view.unexplained],
       ].map(([label, value]) => <div key={String(label)} className="flex items-baseline gap-2"><dt className="text-ink-3">{label}</dt><dd>{amount(value as number | null)}</dd></div>)}
       {groups.some(row => row.feeMissing > 0) && <div className="text-ink-3"><dt className="sr-only">费用状态</dt><dd>手续费未完整</dd></div>}

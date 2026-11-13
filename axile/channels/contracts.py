@@ -410,6 +410,7 @@ class ChannelDescriptor(_FrozenDescriptorModel):
     icon: str = Field(min_length=1)
     market: str = Field(min_length=1)
     currency: str = Field(min_length=1)
+    cash_flow_sync: bool = False
     units: ChannelUnits = Field(default_factory=ChannelUnits)
     ui: ChannelUi = Field(default_factory=ChannelUi)
     replay: ChannelReplayCapability = Field(default_factory=ChannelReplayCapability)

@@ -12,7 +12,7 @@ from axile.server.core.db import database_path
 from axile.server.native_store import native_call, native_operation
 
 # 标记贡献估值缺口并允许后续分段恢复；重建旧分析。
-LOGIC_VERSION = "26"
+LOGIC_VERSION = "27"
 ENGINE_VERSION = "equity-ledger-1"
 
 
@@ -22,6 +22,7 @@ def ensure_native_capabilities() -> None:
         "scan_algorithm_directory",
         "close_database",
         "account_public",
+        "cash_flow_operation",
         "connection_accounts",
         "execution_read",
         "supplement_has_execution_steps",
@@ -41,8 +42,8 @@ def ensure_native_capabilities() -> None:
     )
     if getattr(_core, "ANALYSIS_FACT_SCHEMA", None) != 42:
         raise RuntimeError("Native analysis extension requires direct business facts schema 0035; rebuild the wheel")
-    if getattr(_core, "PUBLIC_HEAD", None) != "0036":
-        raise RuntimeError("Native analysis extension requires migration head 0036; rebuild the wheel")
+    if getattr(_core, "PUBLIC_HEAD", None) != "0037":
+        raise RuntimeError("Native analysis extension requires migration head 0037; rebuild the wheel")
     missing = [name for name in required if not callable(getattr(_core, name, None))]
     if missing:
         raise RuntimeError(f"Native analysis extension must export {', '.join(missing)}; rebuild the wheel")

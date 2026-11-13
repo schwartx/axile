@@ -507,6 +507,19 @@ pub(crate) fn calculate(
         .into_iter()
         .map(|state| {
             let mut range = state.finish(&settings, count, request.include_backtest, None)?;
+            let mut points = serde_json::to_value(&range.points).map_err(|e| e.to_string())?;
+            let adjustment = crate::cash_flows::adjust(
+                connection,
+                request.account_id,
+                points.as_array_mut().unwrap(),
+            )
+            .map_err(|e| e.to_string())?;
+            for (point, value) in range.points.iter_mut().zip(points.as_array().unwrap()) {
+                point.account_return = value["account_return"].as_f64();
+                point.account_daily_return = value["account_daily_return"].as_f64();
+                point.difference = value["difference"].as_f64();
+            }
+            range.header["cash_flow_adjustment"] = adjustment;
             if request.include_metadata {
                 crate::calendar::enrich(connection, request.account_id, &mut range.header)?;
             }
@@ -637,6 +650,9 @@ mod tests {
 
     fn fixture() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("migrations/cash_flows.sql"))
+            .unwrap();
         crate::calendar::register_time_function(&connection).unwrap();
         connection.execute_batch(
             "CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,execution_id TEXT,created_at_us INTEGER,execution_kind TEXT,input_id TEXT,result_input_id TEXT,facts_complete INTEGER,result_staged INTEGER DEFAULT 0);

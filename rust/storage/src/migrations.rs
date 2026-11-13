@@ -15,7 +15,7 @@ mod private;
 mod quantity_targets;
 mod structured;
 
-pub const PUBLIC_HEAD: &str = "0036";
+pub const PUBLIC_HEAD: &str = "0037";
 pub const PRIVATE_HEAD: &str = "axon_0001";
 
 const PUBLIC_VERSION_TABLE: &str = "alembic_version";
@@ -24,7 +24,8 @@ const PRIVATE_BACKUP_TABLE: &str = "axon_0001_error_backup";
 const BASELINE_REVISION: u32 = 33;
 const STRUCTURED_REVISION: u32 = 34;
 const QUANTITY_REVISION: u32 = 35;
-const PUBLIC_HEAD_NUMBER: u32 = 36;
+const ARCHIVAL_REVISION: u32 = 36;
+const PUBLIC_HEAD_NUMBER: u32 = 37;
 
 fn invalid(message: impl Into<String>) -> AnalysisError {
     AnalysisError::new("MIGRATION_VALUE", message)
@@ -98,6 +99,7 @@ impl<'a> Policy<'a> {
                         BASELINE_REVISION
                             | STRUCTURED_REVISION
                             | QUANTITY_REVISION
+                            | ARCHIVAL_REVISION
                             | PUBLIC_HEAD_NUMBER
                     )
                 })
@@ -120,9 +122,9 @@ impl<'a> Policy<'a> {
 
     fn target_error(&self) -> AnalysisError {
         if self.codes.is_some() {
-            invalid("supported targets: public 0033/0034/0035/0036, private base/axon_0001")
+            invalid("supported targets: public 0033/0034/0035/0036/0037, private base/axon_0001")
         } else {
-            invalid("supported targets: public 0033/0034/0035/0036")
+            invalid("supported targets: public 0033/0034/0035/0036/0037")
         }
     }
 }
@@ -292,8 +294,16 @@ fn state(connection: Option<&Connection>) -> Result<State, AnalysisError> {
             if number >= QUANTITY_REVISION {
                 quantity_targets::validate(connection)?;
             }
-            if number == PUBLIC_HEAD_NUMBER {
+            if number >= ARCHIVAL_REVISION {
                 archival::validate(connection)?;
+            }
+            if number == PUBLIC_HEAD_NUMBER {
+                connection
+                    .prepare("SELECT id FROM account_cash_flow_revision LIMIT 0")
+                    .map_err(sql)?;
+                connection
+                    .prepare("SELECT external_id,status,revision FROM account_cash_flow LIMIT 0")
+                    .map_err(sql)?;
             }
             number
         }
@@ -397,12 +407,27 @@ fn move_public(
             quantity_targets::upgrade(connection)?;
             current.public = QUANTITY_REVISION;
         }
-        if current.public == QUANTITY_REVISION && target == PUBLIC_HEAD_NUMBER {
+        if current.public == QUANTITY_REVISION && target >= ARCHIVAL_REVISION {
             archival::upgrade(connection)?;
+            current.public = ARCHIVAL_REVISION;
+        }
+        if current.public == ARCHIVAL_REVISION && target == PUBLIC_HEAD_NUMBER {
+            connection
+                .execute_batch(include_str!("migrations/cash_flows.sql"))
+                .map_err(sql)?;
             current.public = PUBLIC_HEAD_NUMBER;
         }
     } else {
         if current.public == PUBLIC_HEAD_NUMBER && target < PUBLIC_HEAD_NUMBER {
+            cash_flow_downgrade_check(connection)?;
+            connection
+                .execute_batch(
+                    "DROP TABLE account_cash_flow_revision; DROP TABLE account_cash_flow;",
+                )
+                .map_err(sql)?;
+            current.public = ARCHIVAL_REVISION;
+        }
+        if current.public == ARCHIVAL_REVISION && target < ARCHIVAL_REVISION {
             archival::downgrade(connection)?;
             current.public = QUANTITY_REVISION;
         }
@@ -417,7 +442,7 @@ fn move_public(
     }
     if current.public != target {
         return Err(invalid(
-            "supported migration paths: empty/0033/0034/0035 to 0036, 0036 to 0035/0034/0033",
+            "supported migration paths: empty/0033/0034/0035/0036 to 0037, 0037 to 0036/0035/0034/0033",
         ));
     }
     current.public = target;
@@ -482,6 +507,20 @@ pub fn migration_check(path: &str, request: &Value) -> Result<Value, AnalysisErr
     })
 }
 
+fn cash_flow_downgrade_check(connection: &Connection) -> Result<(), AnalysisError> {
+    let populated: bool = connection
+        .query_row("SELECT EXISTS(SELECT 1 FROM account_cash_flow)", [], |r| {
+            r.get(0)
+        })
+        .map_err(sql)?;
+    if populated {
+        return Err(invalid(
+            "出入金流水非空，降级会丢失流水与修订记录；请保留当前版本",
+        ));
+    }
+    Ok(())
+}
+
 fn scan(
     connection: &Connection,
     current: State,
@@ -490,6 +529,9 @@ fn scan(
     result: &mut Value,
 ) -> Result<(), AnalysisError> {
     if current.public == PUBLIC_HEAD_NUMBER && targets.public < PUBLIC_HEAD_NUMBER {
+        cash_flow_downgrade_check(connection)?;
+    }
+    if current.public >= ARCHIVAL_REVISION && targets.public < ARCHIVAL_REVISION {
         archival::preflight_downgrade(connection)?;
     }
     if current.public >= QUANTITY_REVISION && targets.public < QUANTITY_REVISION {
@@ -522,7 +564,7 @@ pub fn migration_upgrade(path: &str, request: &Value) -> Result<Value, AnalysisE
         let current = state(connection)?;
         if current.public == 0 && targets.public < STRUCTURED_REVISION {
             return Err(invalid(
-                "empty databases can only be initialized at 0034/0035/0036",
+                "empty databases can only be initialized at 0034/0035/0036/0037",
             ));
         }
         if current.public == BASELINE_REVISION && targets.public >= STRUCTURED_REVISION {
@@ -732,7 +774,7 @@ mod tests {
         for _ in 0..2 {
             assert_eq!(
                 migration_upgrade(path.as_str(), &json!({})).unwrap()["public"],
-                "0036"
+                "0037"
             );
             assert_eq!(index_count(), 1);
         }
@@ -954,14 +996,14 @@ mod tests {
 
     #[test]
     fn targets_only_allow_the_published_baseline_and_final_revision() {
-        for target in ["0033", "0034", "0035", "0036", "head"] {
+        for target in ["0033", "0034", "0035", "0036", "0037", "head"] {
             let request = dual_request(target, "head");
             assert!(Policy::parse(&request)
                 .unwrap()
                 .targets(&request, true)
                 .is_ok());
         }
-        for target in ["base", "0001", "0032", "0037", "0039"] {
+        for target in ["base", "0001", "0032", "0038", "0039"] {
             let request = dual_request(target, "base");
             assert!(Policy::parse(&request)
                 .unwrap()

@@ -115,11 +115,12 @@ pub(crate) fn summaries(c: &Connection, ids: &[i64]) -> Result<Value, AnalysisEr
     for id in ids {
         let meta = status(c, *id)?;
         let s = store::state(c, *id, "all")?;
-        let points = s
+        let mut points = s
             .as_ref()
             .map(|s| point_rows(c, s))
             .transpose()?
             .unwrap_or_default();
+        crate::cash_flows::adjust(c, *id, &mut points)?;
         let last = points.last().cloned().unwrap_or(Value::Null);
         out.insert(id.to_string(),json!({"version":meta["version"],"status":meta["status"],"computed_at":meta["computed_at"],"observed_at":last["observed_at"],"account_equity":last["account_equity"],"account_daily_return":last["account_daily_return"],"points":points}));
     }
@@ -209,8 +210,10 @@ pub(crate) fn chart(
     key: &str,
 ) -> Result<Value, AnalysisError> {
     let s = guard(c, id, version, key)?;
-    let points = point_rows(c, &s)?;
+    let mut points = point_rows(c, &s)?;
+    let cash_flow_adjustment = crate::cash_flows::adjust(c, id, &mut points)?;
     let mut result = json!({"range":key,"settings":{"backtest_weight_type":"cs","backtest_fee_rate":s.fee_rate},"engine_version":s.engine_version,"backtest_included":true,"baseline":optional_iso(s.baseline_time)?,"end":optional_iso(s.last_time)?,"record_count":c.query_row("SELECT count(*) FROM executerecord WHERE account_id=?1 AND result_staged=0",[id],|r|r.get::<_,i64>(0)).map_err(sql)?,"observation_count":s.observations,"used_record_count":s.used,"target_used_record_count":s.target_used,"invalid_asset_count":s.invalid_assets,"skips":{"count":s.skipped,"missing_target":s.missing_target,"missing_ticks":s.missing_price,"first_time":optional_iso(s.skip_first)?,"last_time":optional_iso(s.skip_last)?},"target_skips":{"count":s.target_skipped,"missing_target":s.target_missing_target,"missing_ticks":s.target_missing_price,"first_time":optional_iso(s.target_skip_first)?,"last_time":optional_iso(s.target_skip_last)?},"sizing_fallback_count":s.fallback_count,"points":points,"bindings":[],"calendar":null});
+    result["cash_flow_adjustment"] = cash_flow_adjustment;
     crate::calendar::enrich(c, id, &mut result).map_err(|e| failure("ANALYSIS_CALENDAR", e))?;
     let records = records(c, &s, None)?;
     let mut days = BTreeMap::<String, Summary>::new();

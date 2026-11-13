@@ -287,6 +287,7 @@ business_operations! { register_business_operations, business_operation, PyAny;
     database_probe => crate::database_probe::probe,
     account_get => crate::accounts::account_get,
     account_public => crate::accounts::account_public,
+    cash_flow_operation => crate::cash_flows::operation,
     account_create => crate::accounts::account_create,
     account_create_replay => crate::accounts::account_create_replay,
     account_copy => crate::accounts::account_copy,

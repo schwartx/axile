@@ -403,6 +403,7 @@ def _ctp_plugin() -> ChannelPlugin:
     return ChannelPlugin(
         descriptor=ChannelDescriptor(
             channel="ctp",
+            cash_flow_sync=True,
             futures_close=close_capability(automatic=True),
             label="CTP",
             description="通过期货公司柜台连接国内期货市场",
