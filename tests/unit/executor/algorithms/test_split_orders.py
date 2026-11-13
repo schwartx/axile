@@ -646,3 +646,36 @@ def test_mixed_today_yesterday_close_before_crossing_zero(direction, side, sign)
     assert [c.kwargs.get("offset_flag") for c in calls] == ["close_yesterday", "close_today", "close_today", None]
     assert len(orders) == 4
     assert tracker.wait_calls == 2
+
+
+def test_offset_chunks_honor_user_limit_from_trade_rule():
+    executor = _make_executor(OrderParamModel.OFFSET)
+    executor.get_positions.return_value = []
+    executor.get_current_volume.side_effect = [0, 5]
+    executor.get_order_volume_bounds.side_effect = lambda order_type, trade_rule=None: (
+        1,
+        (trade_rule or {}).get("max_single_order_size"),
+    )
+    tracker = _FakeTracker()
+    orders = submit_and_track_split_orders(
+        executor,
+        tracker,
+        OrderDirection.BUY,
+        OrderType.LIMIT,
+        5,
+        3200,
+        target_volume=5,
+        current_volume=0,
+        trade_rule={"max_single_order_size": 2},
+    )
+    assert [order.volume for order in orders] == [2, 2, 1]
+
+
+@pytest.mark.parametrize("bounds", [None, (None, None), (0.01, 2)])
+def test_fractional_quantity_is_preserved_without_integer_lot_bounds(bounds):
+    executor = _make_executor(OrderParamModel.OFFSET)
+    executor.get_positions.return_value = []
+    executor.get_current_volume.side_effect = [0, 0.5]
+    executor.get_order_volume_bounds.return_value = bounds
+    orders = _submit(executor, _FakeTracker(), OrderDirection.BUY, 0.5, target=0.5, current=0)
+    assert [order.volume for order in orders] == [0.5]

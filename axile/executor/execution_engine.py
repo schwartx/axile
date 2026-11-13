@@ -14,11 +14,13 @@ from typing import TYPE_CHECKING
 
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
 from axile.executor.account_control.exceptions import AccountControlBlockedError
-from axile.executor.algorithms.core.base import AlgorithmInput, resolve_algorithm
+from axile.executor.algorithms.core.base import AlgorithmInput, ExecutorProtocol, resolve_algorithm
 from axile.executor.algorithms.exceptions import execution_error_message
 from axile.executor.algorithms.utils.outcome import TARGET_NOT_REACHED, summarize_outcome
 from axile.executor.execution_runtime import ExecutionRuntime
 from axile.executor.execution_session import ExecutionSession
+from axile.executor.futures_close_policy import futures_product
+from axile.executor.futures_close_runtime import FuturesCloseRuntimeMixin
 from axile.executor.market_data_validation import MarketDataUnavailableError
 from axile.executor.models.execution_result import (
     AlgorithmResult,
@@ -281,8 +283,26 @@ class ExecutionEngine:
         algorithm_input: AlgorithmInput,
     ) -> AlgorithmResult:
         """在单品种执行会话上运行算法."""
+        session.trade_rule = dict(algorithm_input.trade_rule)
         algorithm_func = resolve_algorithm(algorithm_name, session)
-        result = algorithm_func(session, algorithm_input)
+
+        def run_leg(executor: ExecutorProtocol, leg_input: AlgorithmInput) -> AlgorithmResult:
+            return self._run_symbol_algorithm_with_error_capture(
+                _PreparedSymbolAlgorithm(
+                    symbol=session.symbol,
+                    algorithm_name=algorithm_name,
+                    algorithm_input=leg_input,
+                ),
+                lambda: algorithm_func(executor, leg_input),
+            )
+
+        result = (
+            self._owner.run_futures_position_algorithm(session, algorithm_input, run_leg)
+            if isinstance(self._owner, FuturesCloseRuntimeMixin)
+            else None
+        )
+        if result is None:
+            result = algorithm_func(session, algorithm_input)
         merged_memory = dict(session.memory)
         merged_memory.update(result.memory)
         result.memory = merged_memory
@@ -634,11 +654,27 @@ class ExecutionEngine:
             )
         current_volume = self._owner.get_current_volume(symbol, account_assets)
         sizing.current_quantity = current_volume
+        trade_rule = dict(standard_input.trade_rules.get(symbol, {}))
+        futures_supported = isinstance(self._owner, FuturesCloseRuntimeMixin)
+        avoid_close_today = (
+            futures_supported
+            and futures_product(symbol) in standard_input.futures_close_policy.avoid_close_today
+            and symbol not in standard_input.risk_symbols
+        )
+        close_all_positions = futures_supported and (
+            standard_input.extra.get("close_all_positions") is True or symbol in standard_input.risk_symbols
+        )
+        avoid_close_today = avoid_close_today and not close_all_positions
+        trade_rule.pop("avoid_close_today", None)
+        if avoid_close_today:
+            trade_rule["avoid_close_today"] = True
+        if close_all_positions or "close_all_positions" in trade_rule:
+            trade_rule["close_all_positions"] = close_all_positions
         return _PlannedSymbolAlgorithm(
             symbol=symbol,
             algorithm_name=algorithm_name,
             params=resolved_algorithm.get("params"),
-            trade_rule=dict(standard_input.trade_rules.get(symbol, {})),
+            trade_rule=trade_rule,
             audit_context=self._build_symbol_audit_context(standard_input, symbol, algorithm_name),
             current_volume=current_volume,
             final_target_volume=target_volume,
@@ -718,13 +754,39 @@ class ExecutionEngine:
             or rules.get(symbol, {}).get("sizing_mode", "weight") != "lots"
         ]
 
+    def _futures_dispatch(
+        self, plan: _PlannedSymbolAlgorithm, assets: UnifiedAccountAssets
+    ) -> _DispatchDecision | None:
+        """按渠道共享的多空目标分阶段，不绑定算法名称。"""
+        if not isinstance(self._owner, FuturesCloseRuntimeMixin):
+            return None
+        position_plan = self._owner.futures_position_plan(
+            plan.symbol, plan.final_target_volume, assets, plan.trade_rule
+        )
+        if position_plan is None:
+            return None
+        position, targets = position_plan
+        long_target, short_target = targets
+        close_long = max(0, position.long - long_target)
+        close_short = max(0, position.short - short_target)
+        opens = long_target > position.long or short_target > position.short
+        return _DispatchDecision(
+            phase_one_target_volume=position.net - close_long + close_short if close_long or close_short else None,
+            run_phase_two=opens,
+            is_noop=not (close_long or close_short or opens),
+        )
+
     def _classify_symbol_dispatch_phases(
         self,
         plan: _PlannedSymbolAlgorithm,
+        assets: UnifiedAccountAssets,
     ) -> _DispatchDecision:
         """判断单个品种属于哪个阶段，并返回阶段目标."""
         current_volume = plan.current_volume
         final_target_volume = plan.final_target_volume
+        futures_dispatch = self._futures_dispatch(plan, assets)
+        if futures_dispatch is not None:
+            return futures_dispatch
 
         if self._is_same_volume(current_volume, final_target_volume):
             return _DispatchDecision(phase_one_target_volume=None, run_phase_two=False, is_noop=True)
@@ -759,7 +821,19 @@ class ExecutionEngine:
         direct_results: list[AlgorithmResult] = []
 
         for plan in planning.plans:
-            decision = self._classify_symbol_dispatch_phases(plan)
+            try:
+                decision = self._classify_symbol_dispatch_phases(plan, planning.account_assets)
+            except ValueError as exc:
+                direct_results.append(
+                    self._build_failed_algorithm_result(
+                        symbol=plan.symbol,
+                        algorithm_name=plan.algorithm_name,
+                        error=execution_error_message(exc, "持仓规划"),
+                        account_assets=planning.account_assets,
+                        target_volume=plan.final_target_volume,
+                    )
+                )
+                continue
             if decision.is_noop:
                 direct_results.append(
                     self._build_noop_algorithm_result(

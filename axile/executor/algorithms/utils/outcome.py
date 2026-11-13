@@ -32,6 +32,7 @@ def summarize_outcome(
     explicit_error: str | None = None,
     explicit_blocked_error: str | None = None,
     *,
+    target_reached: bool = True,
     error_reason_code: str | None = None,
     error_reason_family: ExecutionReasonFamily | None = None,
     blocked_reason_code: str | None = None,
@@ -48,7 +49,7 @@ def summarize_outcome(
         or (bool(orders) and not terminal)
     )
     rejected = any(order.status == OrderStatus.REJECTED for order in orders)
-    completed = isfinite(final) and isclose(final, target, rel_tol=0, abs_tol=1e-9)
+    completed = target_reached and isfinite(final) and isclose(final, target, rel_tol=0, abs_tol=1e-9)
     error = explicit_error
     reason_code = error_reason_code if error else None
     reason_family = error_reason_family if error else None

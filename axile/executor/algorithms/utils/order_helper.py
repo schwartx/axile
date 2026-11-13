@@ -56,17 +56,20 @@ def determine_close_intent(
     Returns
     -------
     CloseIntent
-        下单附加参数与可平反向持仓量；不涉及平仓时参数为空、可平量为 0。
+        下单附加参数与可平反向持仓量；已规划开仓时沿用开仓标志，普通开仓时参数为空。
 
     Notes
     -----
     该函数只在双向持仓语义下有意义。算法层不直接
     关心账户模式细节，而是根据当前持仓方向推导应平掉哪一边仓位。
 
-    函数只表达渠道无关的意图词汇；期货开平标志等渠道母语由各渠道的
-    ``place_order`` 翻译层负责推导，算法层不主动产生。
+    共享层已明确的开仓意图直接沿用；其余情况表达持仓侧，由渠道翻译开平标志。
     """
     symbol = executor.symbol
+    planned = getattr(executor, "futures_order", None)
+    # 锁仓时反向持仓会一直保留，不能用它的数量裁剪已经规划好的开仓腿。
+    if isinstance(planned, tuple) and planned[:2] == (direction, "open"):
+        return CloseIntent(kwargs={"offset_flag": "open"}, opposite_volume=0.0)
 
     try:
         positions = executor.get_positions(account_assets)
@@ -107,7 +110,7 @@ def determine_position_side(
     -------
     dict[str, str]
         下单附加参数。涉及平已有仓位时包含 ``position_side``（指明平哪一侧），
-        否则返回空字典（纯开仓意图，由渠道按自身参数模型翻译）。
+        已规划开仓时沿用开仓标志，其余开仓返回空字典，由渠道翻译。
     """
     return determine_close_intent(executor, direction, account_assets).kwargs
 
@@ -518,7 +521,9 @@ def _remaining_toward_target(direction: OrderDirection, target_volume: float, cu
     return max(0.0, target_volume - current_volume)
 
 
-def _leg_chunks(executor: ExecutorProtocol, order_type: OrderType, volume: float) -> list[float]:
+def _leg_chunks(
+    executor: ExecutorProtocol, order_type: OrderType, volume: float, trade_rule: dict[str, object] | None = None
+) -> list[float]:
     """
     按渠道单笔数量上限切分拆单腿.
 
@@ -530,17 +535,22 @@ def _leg_chunks(executor: ExecutorProtocol, order_type: OrderType, volume: float
         订单类型。
     volume : float
         本腿总量。
+    trade_rule : dict[str, object] | None
+        品种规则中的用户单笔数量上限。
 
     Returns
     -------
     list[float]
-        切分后的各段数量；渠道未提供边界、数量非整数手或不超过上限时
-        原样返回单段。
+        切分后的各段数量；整数手渠道向下取整，不足最小量留待后续片累计。
     """
+    bounds_getter = getattr(executor, "get_order_volume_bounds", None)
+    bounds = bounds_getter(order_type, trade_rule) if callable(bounds_getter) else None
+    if isinstance(bounds, tuple) and isinstance(bounds[0], int) and bounds[0] > 0:
+        volume = float(int(volume))
+        if volume < bounds[0]:
+            return []
     if not float(volume).is_integer():
         return [volume]
-    bounds_getter = getattr(executor, "get_order_volume_bounds", None)
-    bounds = bounds_getter(order_type) if callable(bounds_getter) else None
     if not isinstance(bounds, tuple):
         return [volume]
     max_size = bounds[1]
@@ -576,7 +586,10 @@ def _place_offset_leg(
     plan: list[tuple[float, dict[str, object]]] = [(volume, {})]
     if leg_kwargs.get("position_side") and callable(planner) and "offset_flag" not in leg_kwargs:
         plan = cast("list[tuple[float, dict[str, object]]]", planner(direction, volume, account_assets))
-    chunks = [(chunk, extra) for quantity, extra in plan for chunk in _leg_chunks(executor, order_type, quantity)]
+    trade_rule = cast("dict[str, object] | None", leg_kwargs.get("trade_rule"))
+    chunks = [
+        (chunk, extra) for quantity, extra in plan for chunk in _leg_chunks(executor, order_type, quantity, trade_rule)
+    ]
     for chunk, extra in chunks:
         order = submit_and_track_order(
             executor,

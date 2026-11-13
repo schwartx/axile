@@ -248,8 +248,10 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
 
       <fieldset disabled={saving} className="min-w-0" inert={saving}>
         {descriptor.futures_close && <Section label="平仓规则">
-          <p className="mb-3 text-sm text-ink-3">常规调仓与清仓共用，修改后用于后续执行。</p>
-          <FuturesClosePolicyEditor value={closePolicy} capability={descriptor.futures_close} onChange={(value) => { setSaveError(null); setClosePolicy(value) }} />
+          <div className="space-y-2 md:col-span-2">
+            <FuturesClosePolicyEditor value={closePolicy} capability={descriptor.futures_close} onChange={(value) => { setSaveError(null); setClosePolicy(value) }} />
+            <p className="text-sm text-ink-3">平仓规则适用于各期货调仓算法；清仓与风控强平不转锁仓。</p>
+          </div>
         </Section>}
 
         <Section label="主交易算法">

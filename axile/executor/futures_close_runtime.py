@@ -3,17 +3,162 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
+from typing import TYPE_CHECKING, Callable, cast
 
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
 from axile.executor.algorithms.utils.clock import clock_now_iso
+from axile.executor.algorithms.utils.final_position import read_final_position
+from axile.executor.algorithms.utils.outcome import TARGET_NOT_REACHED, summarize_outcome
 from axile.executor.futures_close_policy import PRESET_VERSION, FuturesClosePolicy, futures_product, rule_priority
-from axile.executor.futures_order_intent import plan_futures_close_orders
+from axile.executor.futures_order_intent import (
+    FuturesPosition,
+    futures_position,
+    plan_futures_close_orders,
+    validate_futures_order,
+)
+from axile.executor.models.execution_result import AlgorithmResult, ExecutionStatus
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection
+
+if TYPE_CHECKING:
+    from axile.executor.algorithms.core.base import AlgorithmInput, ExecutorProtocol
+    from axile.executor.execution_session import ExecutionSession
 
 
 class FuturesCloseRuntimeMixin:
     """每次执行固定配置，账户费率缓存随交易日变化而失效。"""
+
+    def futures_position_plan(
+        self, symbol: str, target: float, assets: UnifiedAccountAssets, rule: dict[str, object]
+    ) -> tuple[FuturesPosition, tuple[float, float]] | None:
+        """锁今与清仓共用多空规划，关闭时不接管普通调仓。"""
+        clear = rule.get("close_all_positions") is True
+        if not (clear or rule.get("avoid_close_today") is True):
+            return None
+        if clear and target != 0:
+            raise ValueError("清仓目标必须为零")
+        position = futures_position(symbol, assets, allow_frozen=clear)
+        return position, position.targets(target, clear=clear)
+
+    def plan_futures_order(
+        self,
+        symbol: str,
+        direction: OrderDirection,
+        volume: float,
+        assets: UnifiedAccountAssets,
+        *,
+        offset: str,
+        protect_today: bool,
+    ) -> list[tuple[float, dict[str, object]]]:
+        """为共享规划的一条腿生成明确开平标志，拒绝把过期解锁计划转成新锁仓。"""
+        validate_futures_order(symbol, direction, volume, assets, offset=offset, protect_today=protect_today)
+        if offset == "open":
+            return [(volume, {"offset_flag": "open"})]
+        return getattr(self, "plan_close_orders")(symbol, direction, volume, assets)
+
+    def run_futures_position_algorithm(
+        self,
+        session: ExecutionSession,
+        algorithm_input: AlgorithmInput,
+        algorithm: Callable[[ExecutorProtocol, AlgorithmInput], AlgorithmResult],
+    ) -> AlgorithmResult | None:
+        """共享层顺序执行实际开平腿，算法只控制每腿的报价、切片和成交等待。"""
+        if not (
+            algorithm_input.trade_rule.get("avoid_close_today") or algorithm_input.trade_rule.get("close_all_positions")
+        ):
+            return None
+        executor = cast("ExecutorProtocol", session)
+        symbol, target = session.symbol, algorithm_input.target_volume
+        assets = session.get_account_assets()
+        plan = self.futures_position_plan(symbol, target, assets, algorithm_input.trade_rule)
+        if plan is None:
+            return None
+        position, targets = plan
+        start = position.net
+        results: list[AlgorithmResult] = []
+        confirmed: FuturesPosition | None = None
+
+        def confirmed_net(snapshot: UnifiedAccountAssets) -> float:
+            nonlocal confirmed
+            if session.get_pending_orders():
+                raise ValueError("挂单尚未收敛，停止后续下单")
+            confirmed = futures_position(symbol, snapshot)
+            return confirmed.net
+
+        for direction, volume, offset in position.legs(targets):
+            confirmed = None
+            session.handle_termination_checkpoint()
+            leg_target = position.net + (volume if direction == OrderDirection.BUY else -volume)
+            session.futures_order = (direction, offset, algorithm_input.trade_rule.get("avoid_close_today") is True)
+            try:
+                result = algorithm(executor, replace(algorithm_input, target_volume=leg_target))
+            finally:
+                session.futures_order = None
+            results.append(result)
+            if not result.success:
+                break
+            assets, _, query_error = read_final_position(executor, confirmed_net)
+            if query_error:
+                result.error = query_error
+                break
+            assert confirmed is not None
+            expected_long = (
+                position.long + (volume if offset == "open" else -volume)
+                if ((direction == OrderDirection.BUY) == (offset == "open"))
+                else position.long
+            )
+            expected_short = (
+                position.short + (volume if offset == "open" else -volume)
+                if ((direction == OrderDirection.SELL) == (offset == "open"))
+                else position.short
+            )
+            if (confirmed.long, confirmed.short) != (expected_long, expected_short):
+                result.error = "开平持仓尚未确认，停止后续下单"
+                break
+            position = confirmed
+
+        if not results:
+            # 直接调用算法的路径也保持原有 NOOP 证据与行情校验。
+            results.append(algorithm(executor, algorithm_input))
+        last = results[-1]
+        if confirmed is None:
+            assets, final_net, query_error = read_final_position(executor, lambda a: futures_position(symbol, a).net)
+            confirmed = futures_position(symbol, assets) if not query_error else None
+        else:
+            final_net, query_error = confirmed.net, None
+        orders = [order for result in results for order in result.orders]
+        trades = [trade for result in results for trade in result.trades]
+        reached = confirmed is not None and (confirmed.long, confirmed.short) == targets
+        blocked = last.status == ExecutionStatus.BLOCKED and not query_error
+        error = last.error or query_error or (None if reached else "多空持仓尚未达到执行目标")
+        reason_code = last.reason_code
+        if not reached and reason_code == TARGET_NOT_REACHED:
+            reason_code = "FUTURES.POSITION.NOT_REACHED"
+        summary = summarize_outcome(
+            start,
+            final_net,
+            target,
+            orders,
+            trades,
+            explicit_error=None if blocked else error,
+            explicit_blocked_error=last.error if blocked else None,
+            target_reached=reached,
+            error_reason_code=reason_code,
+            error_reason_family=last.reason_family,
+            blocked_reason_code=last.reason_code,
+            blocked_reason_family=last.reason_family,
+        )
+        return last.model_copy(
+            update={
+                **summary,
+                "orders": orders,
+                "trades": trades,
+                "account_assets": assets,
+                "target_volume": target,
+                "memory": {key: value for result in results for key, value in result.memory.items()},
+            }
+        )
 
     def _prepare_futures_close_policy(self, policy: FuturesClosePolicy) -> None:
         policy.validate_channel(getattr(self, "channel_type"))

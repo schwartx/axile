@@ -671,13 +671,13 @@ class AbstractExecutorFacadeMixin:
             feishu_key=plan.feishu_key,
             execution_notification_code=plan.execution_notification_code,
             feishu_account=plan.feishu_account,
-            extra=plan.extra,
+            extra={**plan.extra, "close_all_positions": True},
             execution_timeout=plan.execution_timeout,
         )
 
     def _build_empty_positions_curr_target(self, positions: list[Position]) -> dict[str, float]:
         """
-        根据当前可用持仓构造清仓目标.
+        根据实际持仓构造清仓目标，期货冻结仓纳入撤单后处理.
 
         Parameters
         ----------
@@ -689,9 +689,10 @@ class AbstractExecutorFacadeMixin:
         dict[str, float]
             以 ``0`` 为目标权重的清仓目标映射。
         """
+        futures = _executor(self).channel_type in (TradeChannel.CTP, TradeChannel.TQ)
         curr_target: dict[str, float] = {}
         for position in positions:
-            if position.volume > 0 and position.available_volume > 0:
+            if position.volume > 0 and (futures or position.available_volume > 0):
                 curr_target[position.symbol] = 0.0
         return curr_target
 

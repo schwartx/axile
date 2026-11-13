@@ -11,6 +11,7 @@ import pytest
 
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.instrument_catalog import InstrumentCatalog, LocalInstrumentCatalogProvider
+from axile.executor.instrument_catalog_records import Instrument
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import TQAccountConfig
 from axile.executor.models.unified_order import OrderDirection, OrderType
@@ -206,8 +207,9 @@ def executor(monkeypatch: pytest.MonkeyPatch) -> tuple[TQExecutor, FakeApi]:
         instance.close()
 
 
+@pytest.mark.parametrize("offset_flag,offset", [("3", "CLOSETODAY"), ("0", "OPEN"), ("1", "CLOSE")])
 def test_executor_converts_queries_and_order_primitives(
-    executor: tuple[TQExecutor, FakeApi], monkeypatch: pytest.MonkeyPatch
+    executor: tuple[TQExecutor, FakeApi], monkeypatch: pytest.MonkeyPatch, offset_flag, offset
 ) -> None:
     instance, api = executor
     monkeypatch.setattr(
@@ -224,7 +226,7 @@ def test_executor_converts_queries_and_order_primitives(
         OrderType.LIMIT,
         2,
         3199,
-        offset_flag="3",
+        offset_flag=offset_flag,
     )
 
     assert market["rb2610"].last_price == 3200
@@ -239,7 +241,7 @@ def test_executor_converts_queries_and_order_primitives(
     assert {key: value for key, value in api.insert_args.items() if key != "order_id"} == {
         "symbol": "SHFE.rb2610",
         "direction": "SELL",
-        "offset": "CLOSETODAY",
+        "offset": offset,
         "volume": 2,
         "limit_price": 3199.0,
     }
@@ -440,3 +442,25 @@ def test_account_access_recovers_before_conversion_failure(executor, monkeypatch
         instance.get_account_assets()
     assert observations[-1].status == "ok"
     assert observations[-1].error is None
+
+
+@pytest.mark.parametrize("symbol", ["rb2610", "SHFE.rb2610"])
+def test_clear_preserves_user_rule_without_adding_conflicting_symbol_alias(executor, symbol):
+    instance, _ = executor
+    instance._require_runtime().install_catalog(
+        [Instrument("SHFE", "rb2610", "FUTURE")], instance._resolve_catalog_symbol
+    )
+    plan = instance._plan_empty_positions([], {"rb2610": 0}, {"trade_rules": {symbol: {"sizing_mode": "lots"}}})
+    standard_input = instance._build_empty_positions_standard_input(account_config=instance.account_config, plan=plan)
+    normalized = instance._normalize_connected_standard_input(standard_input)
+    assert normalized.trade_rules == {"rb2610": {"sizing_mode": "lots"}}
+    assert normalized.curr_target == {"rb2610": 0}
+
+
+def test_user_order_size_limit_is_available_and_checked_before_native_send(executor):
+    instance, api = executor
+    rule = {"max_single_order_size": 2}
+    assert instance.get_order_volume_bounds("rb2610", OrderType.LIMIT, rule) == (1, 2)
+    with pytest.raises(ValueError, match="单笔上限"):
+        instance._place_order_impl("rb2610", OrderDirection.BUY, OrderType.LIMIT, 3, 3200, trade_rule=rule)
+    assert api.insert_args == {}
