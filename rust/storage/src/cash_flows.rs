@@ -317,7 +317,7 @@ pub(crate) fn interval(
         capital += f.amount * ((end - f.time) as f64 / (end - start) as f64);
     }
     let result = (after - before - net) / capital;
-    (before > 0.0 && capital > 0.0 && result.is_finite()).then_some(result)
+    (before >= 0.0 && capital > 0.0 && result.is_finite()).then_some(result)
 }
 
 pub(crate) fn live_return(
@@ -339,7 +339,11 @@ pub(crate) fn live_return(
             continue;
         };
         let time = time_us::parse(time).map_err(invalid)?;
-        if time_us::local_datetime(time).map_err(invalid)?.date() < day {
+        // Baseline dates include a time; daily closes contain only a calendar date.
+        let is_baseline = point["date"]
+            .as_str()
+            .is_some_and(|date| date.contains('T'));
+        if time_us::local_datetime(time).map_err(invalid)?.date() < day || is_baseline {
             let flows = load(c, account)?;
             return Ok(point["account_equity"]
                 .as_f64()
@@ -429,9 +433,75 @@ fn adjust_curve(flows: &[Flow], points: &mut [Value]) -> Result<(), AnalysisErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_return_uses_previous_close_or_first_day_baseline() {
+        let performance = json!({"points": [
+            {"date":"2026-01-01T09:00:00", "observed_at":"2026-01-01T09:00:00+08:00", "account_equity":100.0},
+            {"date":"2026-01-01", "observed_at":"2026-01-01T10:00:00+08:00", "account_equity":110.0}
+        ]});
+        for (observed_at, equity, deposit, expected) in [
+            ("2026-01-01T11:00:00+08:00", 110.0, false, Some(0.1)),
+            ("2026-01-01T11:00:00+08:00", 150.0, true, Some(0.0)),
+            ("2026-01-02T11:00:00+08:00", 121.0, false, Some(0.1)),
+            ("2026-01-01T09:00:00+08:00", 100.0, false, None),
+            ("2026-01-01T08:00:00+08:00", 100.0, false, None),
+        ] {
+            let c = Connection::open_in_memory().unwrap();
+            c.execute_batch(concat!(
+                "CREATE TABLE account(id INTEGER PRIMARY KEY); INSERT INTO account VALUES(1);",
+                include_str!("migrations/cash_flows.sql")
+            ))
+            .unwrap();
+            if deposit {
+                c.execute(
+                    "INSERT INTO account_cash_flow(account_id,direction,amount,occurred_at_us,source,status,created_at_us,updated_at_us) VALUES(1,'deposit',50,?1,'manual','active',?1,?1)",
+                    [time_us::parse(observed_at).unwrap()],
+                )
+                .unwrap();
+            }
+            let observation = json!({"created_at":observed_at,"assets":{"total_asset":equity}});
+            assert_eq!(
+                live_return(&c, 1, &observation, &performance).unwrap(),
+                expected,
+                "observation={observation}, deposit={deposit}"
+            );
+        }
+    }
+
+    #[test]
+    fn full_withdrawal_then_deposit_keeps_cumulative_returns() {
+        let flows = [
+            Flow {
+                time: time_us::parse("2026-01-02T09:00:00+08:00").unwrap(),
+                amount: -100.0,
+            },
+            Flow {
+                time: time_us::parse("2026-01-02T21:00:00+08:00").unwrap(),
+                amount: 100.0,
+            },
+        ];
+        let mut points = [(1, 100.0), (2, 0.0), (3, 110.0), (4, 121.0)]
+            .into_iter()
+            .map(|(day, equity)| {
+                json!({"observed_at":format!("2026-01-{day:02}T09:00:00+08:00"),"account_equity":equity})
+            })
+            .collect::<Vec<_>>();
+        adjust_curve(&flows, &mut points).unwrap();
+        for (point, expected) in points.iter().skip(1).zip([0.0, 0.2, 0.32]) {
+            let actual = point["account_return"]
+                .as_f64()
+                .expect("valid invested capital");
+            assert!((actual - expected).abs() < 1e-12, "{point}");
+        }
+        assert_eq!(points[2]["account_daily_return"], 0.2);
+        assert_eq!(points[3]["account_daily_return"], 0.1);
+    }
+
     #[test]
     fn deposits_withdrawals_and_time_weighted_capital() {
         assert_eq!(interval(&[], 0, 10, 100.0, -100.0), Some(-2.0));
+        assert!(interval(&[], 0, 10, 0.0, 0.0).is_none());
         assert_eq!(
             interval(
                 &[Flow {

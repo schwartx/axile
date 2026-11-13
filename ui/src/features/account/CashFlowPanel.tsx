@@ -1,27 +1,36 @@
-import { useCallback, useRef, useState } from 'react'
-import { Card } from '@/components/ui/Card'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { CenteredModal } from '@/components/ui/CenteredModal'
 import { Select } from '@/components/ui/Select'
 import { Segmented } from '@/components/ui/Segmented'
+import { AmountInput } from '@/components/ui/AmountInput'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { getCashFlows, resolveCashFlow, saveCashFlow, syncCashFlows, type CashFlow } from '@/lib/api/cashFlows'
 import { usePolling } from '@/lib/hooks/usePolling'
-import { withViewTransition } from '@/lib/viewTransition'
 import { useDomainStore } from '@/stores/domain'
 import { amount, shanghaiLabel } from '@/features/history/costs'
+import { CashFlowDateTime } from '@/features/account/CashFlowDateTime'
+import { cashFlowTimeError, cashFlowTimestamp } from '@/features/account/cashFlowTime'
+import { useRemountFade } from '@/lib/viewTransition'
 
 const button = 'rounded-md border border-line px-3 py-1.5 text-sm text-ink-2 hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-45'
 const input = 'w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink-1 focus-visible:outline-2 focus-visible:outline-accent'
 
-/** 账户内补录、核对与撤销资金流水；资金搬家保持中性色。 */
+/** 账户权益旁的出入金入口与流水弹窗；资金搬家保持中性色。 */
 export function CashFlowPanel({ accountId }: { accountId: number }) {
+  const [dialogOpen, setDialogOpen] = useState(false)
   const [offset, setOffset] = useState(0)
   const fetcher = useCallback((signal: AbortSignal) => getCashFlows(accountId, offset, signal), [accountId, offset])
-  const page = usePolling(fetcher, { queryKey: `cash-flows:${accountId}:${offset}`, intervalMs: 5000 })
+  const page = usePolling(fetcher, { queryKey: `cash-flows:${accountId}:${offset}`, intervalMs: 5000, enabled: dialogOpen, retainDataWhenDisabled: true })
   const [open, setOpen] = useState(false)
+  const [now, setNow] = useState(Date.now)
+  const formId = useId()
+  const recordButton = useRef<HTMLButtonElement>(null)
+  const fade = useRemountFade(open)
   const [editing, setEditing] = useState<CashFlow | null>(null)
   const [direction, setDirection] = useState<'deposit' | 'withdraw'>('deposit')
   const [value, setValue] = useState('')
+  const [date, setDate] = useState('')
   const [time, setTime] = useState('')
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
@@ -30,11 +39,21 @@ export function CashFlowPanel({ accountId }: { accountId: number }) {
   const [feedback, setFeedback] = useState('')
   const [voidId, setVoidId] = useState<number | null>(null)
   const refreshAccounts = useDomainStore(s => s.refreshAccounts)
+  useEffect(() => {
+    if (dialogOpen && !open && !busy) recordButton.current?.focus()
+  }, [dialogOpen, open, busy])
+  useEffect(() => {
+    if (!dialogOpen || !open) return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [dialogOpen, open])
   const begin = (flow: CashFlow | null) => {
     setEditing(flow); setDirection(flow?.direction ?? 'deposit'); setValue(flow ? String(flow.amount) : '')
-    setTime(flow ? shanghaiLabel(flow.occurred_at).slice(0, 19).replace(' ', 'T') : '')
+    const localTime = flow ? shanghaiLabel(flow.occurred_at) : ''
+    setDate(localTime.slice(0, 10)); setTime(localTime.slice(11, 19))
     setNote(flow?.note ?? ''); setError(null); setFeedback('')
-    withViewTransition(() => setOpen(true))
+    setNow(Date.now())
+    setOpen(true)
   }
   const mutate = async (operation: () => Promise<unknown>, message = '流水已保存，收益正在重新计算') => {
     if (lock.current) return
@@ -49,42 +68,58 @@ export function CashFlowPanel({ accountId }: { accountId: number }) {
     } finally { lock.current = false; setBusy(false) }
   }
   const rows = page.data?.data ?? []
-  return <section className="mt-6" aria-label="账户出入金">
+  const currencyUnit = page.data?.currency === 'CNY' ? '元' : page.data?.currency ?? '账户币种'
+  const timeError = cashFlowTimeError(date, time, now)
+  return <>
+    <button type="button" aria-haspopup="dialog" aria-expanded={dialogOpen}
+      className="inline-flex h-6 shrink-0 cursor-pointer items-center rounded-md px-1 text-xs text-ink-3 hover:bg-fill hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-accent"
+      onClick={() => { setOpen(false); setError(null); setDialogOpen(true) }}>出入金</button>
+    <CenteredModal open={dialogOpen} title={open ? editing ? '修改流水' : '录入流水' : '出入金'} onClose={() => setDialogOpen(false)} closeDisabled={busy}
+      widthClassName={open ? 'w-[560px]' : 'w-[880px]'}
+      footer={open && <div className="flex justify-end gap-2 border-t border-line px-[22px] py-3">
+        <button type="button" className={button} disabled={busy} onClick={() => { setOpen(false); setError(null) }}>取消</button>
+        <button type="submit" form={formId} disabled={busy || !!timeError} className="cursor-pointer rounded-md border border-ink-1 bg-ink-1 px-3 py-1.5 text-sm font-medium text-surface focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-45">{busy ? '保存中…' : editing ? '保存修改' : '保存流水'}</button>
+      </div>}>
+    <section key={open ? 'form' : 'list'} aria-label="账户出入金" className={`pb-3 ${fade ? 'panel-fade-in' : ''}`}>
+    {open ? <form id={formId} aria-label={editing ? '修改出入金流水' : '录入出入金流水'} onSubmit={event => {
+      event.preventDefault()
+      const submittedAt = Date.now()
+      setNow(submittedAt)
+      if (cashFlowTimeError(date, time, submittedAt)) return
+      const occurredAt = cashFlowTimestamp(date, time)
+      if (!occurredAt) { setError(new Error('请填写有效的发生日期和时、分、秒')); return }
+      void mutate(async () => {
+        await saveCashFlow(accountId, { direction, amount: Number(value), occurred_at: occurredAt, note }, editing)
+        setOpen(false)
+      })
+    }}>
+      <fieldset disabled={busy} className="grid min-w-0 gap-y-4 sm:grid-cols-[max-content_minmax(0,1fr)] sm:items-center sm:gap-x-5">
+        <legend className="sr-only">{editing ? '修改流水' : '录入流水'}</legend>
+        <div role="group" aria-label="出入金方向" className="grid gap-y-1.5 sm:col-span-2 sm:grid-cols-subgrid sm:items-center sm:gap-x-5">
+          <span className="text-xs text-ink-2">方向</span>
+          <Segmented className="justify-self-start" value={direction} onChange={setDirection} ariaLabel="出入金方向" size="sm" options={[{ value: 'deposit', label: '入金' }, { value: 'withdraw', label: '出金' }]} />
+        </div>
+        <label className="grid gap-y-1.5 text-xs text-ink-2 sm:col-span-2 sm:grid-cols-subgrid sm:items-start sm:gap-x-5">
+          <span className="sm:pt-2.5">金额<span className="sr-only">（{currencyUnit}）</span></span>
+          <AmountInput value={value} onChange={setValue} unit={currencyUnit} ariaLabel={`金额（${currencyUnit}）`} autoFocus required />
+        </label>
+        <CashFlowDateTime date={date} time={time} onDateChange={setDate} onTimeChange={setTime} now={now} />
+        <label className="grid gap-y-1.5 text-xs text-ink-2 sm:col-span-2 sm:grid-cols-subgrid sm:items-center sm:gap-x-5">
+          <span>备注<span className="ml-1 text-ink-3">（可选）</span></span>
+          <input className={input} maxLength={500} value={note} onChange={e => setNote(e.target.value)} />
+        </label>
+      </fieldset>
+    </form> : <>
     <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-      <h2 className="text-sm font-semibold text-ink-2">出入金{page.data ? <span className="ml-2 font-normal text-ink-3">{page.data.currency}</span> : null}</h2>
-      <div className="flex gap-2">
+      <h3 className="text-sm font-semibold text-ink-2">流水记录</h3>
+      <div className="flex flex-wrap gap-2">
         <button type="button" className={button} disabled={busy || page.loading} onClick={() => { void page.refresh() }}>刷新记录</button>
         {page.data?.sync_supported && <button type="button" className={button} disabled={busy} onClick={() => { void mutate(() => syncCashFlows(accountId), '渠道流水已同步，收益将按最新流水重算') }}>同步渠道流水</button>}
-        <button type="button" className={button} disabled={busy} onClick={() => begin(null)}>录入流水</button>
+        <button ref={recordButton} type="button" className={button} disabled={busy} onClick={() => begin(null)}>录入流水</button>
       </div>
     </div>
-    <Card className="overflow-hidden px-4 py-3">
-      <p className="text-xs text-ink-2">出入金改变账户本金，收益按已录入流水修正。{page.data?.sync_supported ? '资产刷新时自动同步柜台可查询的流水；历史缺失部分可手工补录。' : '当前渠道暂不支持自动同步，可手工录入。'}</p>
-      <div className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-        <div className="min-h-0 overflow-hidden" inert={!open} aria-hidden={!open}>
-          <form aria-label={editing ? '修改出入金流水' : '录入出入金流水'} className="mt-3 space-y-3 border-t border-line py-3" onSubmit={event => {
-            event.preventDefault()
-            void mutate(async () => {
-              await saveCashFlow(accountId, { direction, amount: Number(value), occurred_at: `${time}+08:00`, note }, editing)
-              withViewTransition(() => setOpen(false))
-            })
-          }}>
-            <fieldset disabled={busy} className="space-y-3">
-              <legend className="sr-only">{editing ? '修改流水' : '录入流水'}</legend>
-              <Segmented value={direction} onChange={setDirection} ariaLabel="出入金方向" size="sm" options={[{ value: 'deposit', label: '入金' }, { value: 'withdraw', label: '出金' }]} />
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="space-y-1 text-xs text-ink-2"><span>金额（{page.data?.currency ?? '账户币种'}）</span><input className={input} type="number" min="0" step="any" required value={value} onChange={e => setValue(e.target.value)} /></label>
-                <label className="space-y-1 text-xs text-ink-2"><span>实际发生时间（北京时间）</span><input className={`${input} [color-scheme:light] dark:[color-scheme:dark]`} type="datetime-local" step="1" required value={time} onChange={e => setTime(e.target.value)} /></label>
-              </div>
-              <label className="block space-y-1 text-xs text-ink-2"><span>备注（可选）</span><input className={input} maxLength={500} value={note} onChange={e => setNote(e.target.value)} /></label>
-              <div className="flex gap-2"><button type="submit" className={button}>{busy ? '保存中…' : editing ? '保存修改' : '保存流水'}</button><button type="button" className={button} onClick={() => withViewTransition(() => setOpen(false))}>取消</button></div>
-            </fieldset>
-          </form>
-        </div>
-      </div>
       <ErrorNotice accountId={accountId} intent="read" title="流水读取失败" error={page.error} hasData={page.data != null} onRetry={page.refresh} variant="compact" />
-      <ErrorNotice accountId={accountId} intent="mutation" title="流水操作未完成" error={error} variant="compact" />
-      <p role="status" className="mt-2 text-xs text-ink-2">{feedback}</p>
+      <p role="status" className={feedback ? 'mt-2 text-xs text-ink-2' : undefined}>{feedback}</p>
       {page.loading ? <p className="py-3 text-sm text-ink-3">正在读取流水…</p> : !page.error && rows.length === 0 ? <p className="py-3 text-sm text-ink-3">暂无出入金记录。</p> : null}
       {rows.length > 0 && <div className="overflow-x-auto"><table className="w-full text-left text-xs tabular-nums">
         <caption className="sr-only">出入金流水，待核对记录优先显示</caption>
@@ -94,8 +129,11 @@ export function CashFlowPanel({ accountId }: { accountId: number }) {
         }} />)}</tbody>
       </table></div>}
       {(page.data?.total ?? 0) > 20 && <div className="mt-3 flex items-center justify-end gap-3 text-xs text-ink-3"><span>第 {offset + 1}–{Math.min(offset + 20, page.data!.total)} 条，共 {page.data!.total} 条</span><button type="button" className={button} disabled={busy || offset === 0} onClick={() => setOffset(offset - 20)}>上一页</button><button type="button" className={button} disabled={busy || offset + 20 >= page.data!.total} onClick={() => setOffset(offset + 20)}>下一页</button></div>}
-    </Card>
-  </section>
+    </>}
+    <ErrorNotice accountId={accountId} intent="mutation" title="流水操作未完成" error={error} variant="compact" />
+    </section>
+    </CenteredModal>
+  </>
 }
 
 function CashFlowRow({ flow, busy, voiding, onEdit, onVoid, onCancelVoid, onResolve }: {

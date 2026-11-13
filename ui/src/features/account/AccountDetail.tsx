@@ -517,8 +517,9 @@ export function AccountDetail({
                     <NumberTicker value={Math.abs(pct)} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />
                   </span>
                 )}
-                <PerformanceStatus status={item.performance?.status} />
+                {item.performance?.status !== 'ready' && <PerformanceStatus status={item.performance?.status} />}
               </span>
+              <CashFlowPanel key={accountId} accountId={accountId} />
             </div>
             <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-ink-3">
               <span><AssetObservationTime observedAt={item.asset_observed_at} /></span>
@@ -874,8 +875,6 @@ export function AccountDetail({
           onDashboardRefresh?.()
         }}
       />
-
-      <CashFlowPanel key={accountId} accountId={accountId} />
 
       {/* 近期活动 */}
       <div className="mx-0.5 mt-6 mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">

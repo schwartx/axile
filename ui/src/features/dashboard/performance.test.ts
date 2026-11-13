@@ -13,7 +13,9 @@ const summary: PerformanceSummary = {
 
 test('金额和日涨跌来自同一观测，日期按上海时间判断', () => {
   expect(cardPerformance(summary, Date.parse('2026-09-07T15:59:00Z'))).toMatchObject({ equity: 117128.71, pct: -1.2, dayLabel: '今日' })
-  expect(cardPerformance(summary, Date.parse('2026-09-07T16:00:00Z')).dayLabel).toBe('2026-09-07')
+  expect(cardPerformance(summary, Date.parse('2026-09-07T16:00:00Z')).dayLabel).toBe('9月7日')
+  expect(cardPerformance(summary, Date.parse('2026-12-31T15:59:00Z')).dayLabel).toBe('9月7日')
+  expect(cardPerformance(summary, Date.parse('2026-12-31T16:00:00Z')).dayLabel).toBe('2026年9月7日')
   expect(cardPerformance().equity).toBeNull()
   expect(cardPerformance({ ...summary, account_equity: null }).equity).toBeNull()
   expect(cardPerformance({ ...summary, status: 'stale' }).equity).toBe(117128.71)
