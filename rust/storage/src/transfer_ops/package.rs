@@ -1,4 +1,4 @@
-//! v1 ZIP 包的快照、文件选择、流式校验与接收落盘。
+//! ZIP 包的快照、文件选择、流式校验与接收落盘。
 use super::files::{self, invalid, Result, MAX_BYTES, MAX_FILES};
 use chrono::{DateTime, FixedOffset, SecondsFormat, TimeZone, Utc};
 use chrono_tz::Asia::Shanghai;

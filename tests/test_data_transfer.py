@@ -345,7 +345,7 @@ def test_send_resumes_saved_receipt_without_network(peers, monkeypatch, cleaned,
             package.parent / "receipt.json", receipt if valid else {**receipt, "manifest_sha256": "invalid"}
         )
 
-    # 兼容旧版本在清理数据包后、删除 pending 前中断的磁盘状态。
+    # 模拟数据包已清理、pending 仍未移除时的中断。
     transfer.write_json(pending, {"key": key, "batch": manifest["batch"]})
 
     def reject_network(**kwargs):
@@ -436,7 +436,7 @@ def test_receiver_changes_are_not_overwritten(peers, monkeypatch, local_change):
         assert c.execute("SELECT count(*) FROM executerecord").fetchone() == (1,)
 
 
-def test_python_v1_zip_and_receipt_are_compatible(peers, monkeypatch, tmp_path):
+def test_code_package_roundtrip(peers, monkeypatch, tmp_path):
     from axile.server import app
 
     source, target = peers
@@ -444,24 +444,24 @@ def test_python_v1_zip_and_receipt_are_compatible(peers, monkeypatch, tmp_path):
     seed(source, 2)
     code = tmp_path / "algorithms"
     code.mkdir()
-    (code / "recording-策略😀-000001.py").write_text("# legacy unicode\n")
+    filename = "recording-策略😀-000001.py"
+    (code / filename).write_text("# custom algorithm\n")
     monkeypatch.setattr(app, "_algorithm_directories", [code])
     package, manifest = transfer.export_package(transfer.TransferPlan())
-    legacy = tmp_path / "python-v1.axile"
-    with ZipFile(package) as src, ZipFile(legacy, "w") as out:
+    with ZipFile(package) as archive:
         for name, info in manifest["files"].items():
-            data = src.read(name)
+            data = archive.read(name)
             assert len(data) == info["size"]
             assert hashlib.sha256(data).hexdigest() == info["sha256"]
-            out.writestr(name, data)
-        out.writestr("manifest.json", json.dumps(manifest))
     monkeypatch.setattr(transfer, "database_path", lambda: str(target))
-    receipt = transfer.import_package(legacy)
-    assert receipt["manifest_sha256"] == hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
+    receipt = transfer.import_package(package)
+    installed = transfer.root() / "algorithms" / manifest["source_id"] / manifest["batch"] / "0" / filename
+    assert installed.read_bytes() == (code / filename).read_bytes()
     monkeypatch.setattr(transfer, "database_path", lambda: str(source))
     assert (
         transfer.acknowledge(receipt, transfer.TransferPlan(execution_days=1, replay_days=1))["removed_executions"] == 1
     )
+    assert (code / filename).is_file()
 
 
 @pytest.mark.parametrize("corruption", ["traversal", "duplicate", "budget", "symlink"])

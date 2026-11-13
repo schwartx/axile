@@ -1,9 +1,9 @@
-//! 传送目录、原子状态文件及与 Python v1 回执一致的清单摘要。
+//! 传送目录、原子状态文件及清单摘要。
 use crate::error::AnalysisError;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 pub(super) type Result<T> = std::result::Result<T, AnalysisError>;
@@ -119,68 +119,7 @@ pub(super) fn identity(value: &str) -> Result<()> {
     Ok(())
 }
 
-// v1 用 json.dumps(sort_keys=True) 计算回执，必须保留空格和 ASCII 转义。
 pub(super) fn manifest_hash(value: &Value) -> Result<String> {
-    let mut bytes = Vec::new();
-    canonical(value, &mut bytes)?;
+    let bytes = serde_json::to_vec(value).map_err(invalid)?;
     Ok(format!("{:x}", Sha256::digest(&bytes)))
-}
-fn string(value: &str, out: &mut Vec<u8>) -> Result<()> {
-    for character in serde_json::to_string(value).map_err(invalid)?.chars() {
-        if character >= '\u{7f}' {
-            let mut buffer = [0u16; 2];
-            for unit in character.encode_utf16(&mut buffer) {
-                write!(out, "\\u{unit:04x}").map_err(invalid)?;
-            }
-        } else {
-            out.push(character as u8);
-        }
-    }
-    Ok(())
-}
-fn canonical(value: &Value, out: &mut Vec<u8>) -> Result<()> {
-    match value {
-        Value::Object(fields) => {
-            out.push(b'{');
-            let mut keys = fields.keys().collect::<Vec<_>>();
-            keys.sort();
-            for (index, key) in keys.iter().enumerate() {
-                if index > 0 {
-                    out.extend_from_slice(b", ");
-                }
-                string(key, out)?;
-                out.extend_from_slice(b": ");
-                canonical(&fields[*key], out)?;
-            }
-            out.push(b'}');
-        }
-        Value::Array(values) => {
-            out.push(b'[');
-            for (index, value) in values.iter().enumerate() {
-                if index > 0 {
-                    out.extend_from_slice(b", ");
-                }
-                canonical(value, out)?;
-            }
-            out.push(b']');
-        }
-        Value::String(value) => string(value, out)?,
-        _ => out.extend_from_slice(value.to_string().as_bytes()),
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-    #[test]
-    fn python_v1_ascii_and_ordering() {
-        let mut bytes = Vec::new();
-        canonical(&json!({"中😀": [null, true, 2], "a": "\u{7f}"}), &mut bytes).unwrap();
-        assert_eq!(
-            String::from_utf8(bytes).unwrap(),
-            r#"{"a": "\u007f", "\u4e2d\ud83d\ude00": [null, true, 2]}"#
-        );
-    }
 }
