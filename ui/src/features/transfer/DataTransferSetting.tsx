@@ -7,6 +7,7 @@ import { DatePicker } from '@/components/ui/DatePicker'
 import { MacTimePicker } from '@/components/ui/MacTimePicker'
 import { Segmented } from '@/components/ui/Segmented'
 import { StepperNumberInput } from '@/components/ui/StepperNumberInput'
+import { DurationStepper } from '@/components/ui/DurationStepper'
 import { stepNumericValue } from '@/components/ui/numericStepper'
 import { positiveInteger, transferDraft, transferPlan, type TransferDraft, type TransferPlan } from '@/features/transfer/transferForm'
 import { apiGet, apiSend, apiUpload, apiErrorFromBody } from '@/lib/api/client'
@@ -110,7 +111,7 @@ function DataTransferModal({ open, onClose }: { open: boolean; onClose: () => vo
           <div className="min-h-0 overflow-hidden">
             <div className="flex flex-wrap items-center gap-3 pt-3 text-[13px] text-ink-2">
               <span>每隔</span>
-              <StepperNumberInput value={draft.every_hours} step={1} min={1} max={8760} unit="小时" ariaLabel="拉取间隔"
+              <DurationStepper value={draft.every_hours} min={1} max={8760} ariaLabel="拉取间隔"
                 invalid={!positiveInteger(draft.every_hours, 8760)} onChange={every_hours => patch({ every_hours })} />
               <span>拉取一次</span>
             </div>
