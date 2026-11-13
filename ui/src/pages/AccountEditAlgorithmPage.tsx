@@ -33,6 +33,9 @@ import { defaultClosePolicy } from '@/features/account/futuresClosePolicy'
 import { RuntimeSyncStatus } from '@/features/account/RuntimeSyncStatus'
 import { runtimeSyncMessage, useAccountRuntimeSync } from '@/features/account/useAccountRuntimeSync'
 import { AlgorithmWorkbench } from '@/features/account/AlgorithmWorkbench'
+import { AlgorithmScopePicker } from '@/features/account/AlgorithmScopePicker'
+import { productAlgorithmDraft, productAlgorithmValue, productAlgorithmError, type ProductAlgorithmDraft } from '@/features/account/productAlgorithms'
+import { withViewTransition } from '@/lib/viewTransition'
 import { algorithmScheduleDraft, algorithmScheduleValue, algorithmScheduleErrors } from '@/features/account/algorithmSchedule'
 import { ExecutionTimeoutInput } from '@/features/account/ExecutionTimeoutInput'
 import { formatDuration } from '@/components/ui/duration'
@@ -102,6 +105,8 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
   const [trade, setTrade] = useState<AlgorithmRef | null>(() => algorithmRefOf(accountPreview?.algorithm))
   const [empty, setEmpty] = useState<AlgorithmRef | null>(() => algorithmRefOf(accountPreview?.empty_positions_algorithm))
   const [schedule, setSchedule] = useState(() => algorithmScheduleDraft(accountPreview?.algorithm_schedule ?? []))
+  const [products, setProducts] = useState(() => productAlgorithmDraft(accountPreview?.product_algorithms))
+  const [scope, setScope] = useState('')
   const [closePolicy, setClosePolicy] = useState(accountPreview?.futures_close_policy ?? defaultClosePolicy())
   const [replayRecording, setReplayRecording] = useState(accountPreview?.replay_recording_enabled ?? false)
   const [executionTimeout, setExecutionTimeout] = useState(() => String(accountPreview?.execution_timeout ?? ''))
@@ -119,6 +124,8 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
     setEmpty(structuredClone(algorithmRefOf(acc.empty_positions_algorithm)))
     setEditorErrors({})
     setSchedule(previous => algorithmScheduleDraft(acc.algorithm_schedule ?? [], previous))
+    setProducts(previous => productAlgorithmDraft(acc.product_algorithms, previous))
+    setScope('')
     setClosePolicy(acc.futures_close_policy ?? defaultClosePolicy())
     setReplayRecording(acc.replay_recording_enabled ?? false)
     setExecutionTimeout(String(acc.execution_timeout ?? ''))
@@ -157,15 +164,19 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
   const emptyChanged = norm(empty) !== norm(origEmpty)
   const scheduleValue = algorithmScheduleValue(schedule)
   const scheduleChanged = norm(scheduleValue) !== norm([...(acc.algorithm_schedule ?? [])].sort((a, b) => a.start.localeCompare(b.start)))
+  const productsValue = productAlgorithmValue(products)
+  const productsChanged = norm(productsValue) !== norm(productAlgorithmValue(productAlgorithmDraft(acc.product_algorithms)))
   const closeChanged = norm(closePolicy) !== norm(acc.futures_close_policy ?? defaultClosePolicy())
   const recordingPatch = replayRecordingPatch(replayRecording, acc.replay_recording_enabled)
   const recordingChanged = recordingPatch.replay_recording_enabled !== undefined
   const timeoutErr = executionTimeoutError(executionTimeout, { allowEmpty: true })
   const timeoutChanged = executionTimeout.trim() !== '' && Number(executionTimeout) !== acc.execution_timeout
-  const dirty = tradeChanged || emptyChanged || scheduleChanged || closeChanged || recordingChanged || timeoutChanged
+  const dirty = tradeChanged || emptyChanged || scheduleChanged || productsChanged || closeChanged || recordingChanged || timeoutChanged
 
-  const err = timeoutErr ?? ['trade', 'empty', ...schedule.map(rule => rule.key)].map(key => editorErrors[key]).find(Boolean)
+  const productEditorKeys = Object.entries(products).flatMap(([key, profile]) => [`product:${key}`, ...profile.schedule.map(rule => rule.key)])
+  const err = timeoutErr ?? ['trade', 'empty', ...schedule.map(rule => rule.key), ...productEditorKeys].map(key => editorErrors[key]).find(Boolean)
     ?? algorithmScheduleErrors(schedule).find(Boolean) ?? algoParamError(trade) ?? algoParamError(empty)
+    ?? productAlgorithmError(products)
   const changes: string[] = []
   if (recordingChanged) changes.push(`执行回放录制：${replayRecording ? '开启' : '关闭'}`)
   if (timeoutChanged) changes.push(timeoutErr ? '执行超时有误' : `执行超时 ${formatDuration(acc.execution_timeout)} → ${formatDuration(Number(executionTimeout))}`)
@@ -173,6 +184,7 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
   if (tradeChanged) changes.push('主交易算法已改')
   if (emptyChanged) changes.push(empty ? '清仓算法已改' : '清仓算法已清除')
   if (scheduleChanged) changes.push('交易时段已改')
+  if (productsChanged) changes.push('品种算法已改')
   if (err && changes.length === 0) changes.push('参数编辑尚未完成')
 
   const save = async () => {
@@ -182,6 +194,7 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
     if (timeoutChanged) patch.execution_timeout = Number(executionTimeout)
     if (tradeChanged) patch.algorithm = trade as unknown as Record<string, unknown>
     if (scheduleChanged) patch.algorithm_schedule = scheduleValue
+    if (productsChanged) patch.product_algorithms = productsValue
     if (emptyChanged) {
       patch.empty_positions_algorithm = empty
         ? (empty as unknown as Record<string, unknown>)
@@ -200,6 +213,8 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
       setTrade(algorithmRefOf(updated.algorithm) ?? descriptor.defaults.trade_algorithm)
       setEmpty(algorithmRefOf(updated.empty_positions_algorithm))
       setSchedule(previous => algorithmScheduleDraft(updated.algorithm_schedule ?? [], previous))
+      setProducts(previous => productAlgorithmDraft(updated.product_algorithms, previous))
+      setScope(previous => previous in (updated.product_algorithms ?? {}) ? previous : '')
       setEditorErrors({})
       setClosePolicy(updated.futures_close_policy ?? defaultClosePolicy())
       setReplayRecording(updated.replay_recording_enabled ?? false)
@@ -223,14 +238,37 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
     }
   }
 
+  const updateProduct = (key: string, patch: Partial<ProductAlgorithmDraft>) => {
+    setSaveError(null)
+    setProducts(previous => ({ ...previous, [key]: { ...previous[key], ...patch } }))
+  }
+  const saveBar = <EditSaveBar layout="inline" changes={changes} blocked={Boolean(err)}
+    onCancel={() => { if (!saving) resetAlgorithms() }} onSave={() => void save()}
+    saving={saving} error={saveError} />
+
   return (
     <section aria-label="执行算法设置" className="grid h-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] gap-y-2 px-4 pt-4 md:px-5">
       <header>
         {title}
         <RuntimeSyncStatus runtime={runtime} disabled={saving} accountId={accountId} />
+        <fieldset disabled={saving}>
+          <AlgorithmScopePicker capability={descriptor.algorithm_scope} products={Object.keys(products)} value={scope}
+            onChange={value => withViewTransition(() => setScope(value), 'algorithm-config')}
+            onAdd={key => withViewTransition(() => {
+              setProducts(previous => ({ ...previous, [key]: {
+                algorithm: structuredClone(trade), schedule: algorithmScheduleDraft(scheduleValue),
+              } }))
+              setScope(key); setSaveError(null)
+            }, 'algorithm-config')}
+            onDelete={key => withViewTransition(() => {
+              setProducts(previous => Object.fromEntries(Object.entries(previous).filter(([name]) => name !== key)))
+              setScope(''); setSaveError(null)
+            }, 'algorithm-config')} />
+        </fieldset>
       </header>
 
       <fieldset disabled={saving} className="min-h-0 min-w-0 overflow-hidden" inert={saving}>
+        <div className={scope === '' ? 'h-full' : 'hidden'} inert={scope !== ''}>
         <AlgorithmWorkbench
           channel={acc.trade_channel} trade={trade} empty={empty} schedule={schedule}
           initialSlot={activeSlot} tradeNameVt={tradeNameVt} emptyNameVt={emptyNameVt}
@@ -238,9 +276,7 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
           onEmptyChange={value => { setSaveError(null); setEmpty(value) }}
           onScheduleChange={value => { setSaveError(null); setSchedule(value) }}
           errors={editorErrors} onValidationError={setEditorError}
-          saveBar={<EditSaveBar layout="inline" changes={changes} blocked={Boolean(err)}
-            onCancel={() => { if (!saving) resetAlgorithms() }} onSave={() => void save()}
-            saving={saving} error={saveError} />}
+          saveBar={saveBar}
           footer={<div className="space-y-1 pb-1">
             {descriptor.futures_close && <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 border-t border-line pt-2">
               <span className="shrink-0 text-xs text-ink-3">平仓规则</span>
@@ -276,6 +312,16 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
             </div>
           </div>}
         />
+        </div>
+        {Object.entries(products).map(([key, profile]) => <div key={key} className={scope === key ? 'h-full' : 'hidden'} inert={scope !== key}>
+          <AlgorithmWorkbench channel={acc.trade_channel} trade={profile.algorithm} empty={null} schedule={profile.schedule}
+            showEmpty={false} scopeLabel={key}
+            onTradeChange={algorithm => updateProduct(key, { algorithm })} onEmptyChange={() => {}}
+            onScheduleChange={value => updateProduct(key, { schedule: value })}
+            errors={{ ...editorErrors, trade: editorErrors[`product:${key}`] }}
+            onValidationError={(field, error) => setEditorError(field === 'trade' ? `product:${key}` : field, error)}
+            footer={<p className="text-xs text-ink-2">清仓和执行超时使用账户通用设置。</p>} saveBar={saveBar} />
+        </div>)}
       </fieldset>
 
     </section>

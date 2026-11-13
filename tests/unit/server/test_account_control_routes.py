@@ -1096,3 +1096,37 @@ def test_non_gm_account_rejects_special_sessions_without_mutation(account_client
     assert response.status_code == 422
     assert "仅适用于股票" in response.json()["detail"]
     assert native_store_call(database, "account_get", {"account_id": account_id})["gm_sessions"] is None
+
+
+@pytest.mark.parametrize("creating", [True, False])
+def test_product_algorithm_routes_persist_normalized_profiles_and_copy(account_client, creating):
+    client, database = account_client
+    _seed_account(database, is_started=False)
+    profile = {
+        "algorithm": {"method": "TWAP", "params": {"slices": 3}},
+        "algorithm_schedule": [
+            {"start": "21:00", "end": "02:30", "algorithm": {"method": "TWAP", "params": {"slices": 8}}}
+        ],
+    }
+    patch = {"product_algorithms": {" AG ": profile}}
+    response = (
+        client.post("/account/", json=_account_payload() | patch | {"is_started": False})
+        if creating
+        else client.patch("/account/1", json=patch)
+    )
+    assert response.status_code == (201 if creating else 200), response.text
+    account_id = response.json()["id"]
+    stored = native_store_call(database, "account_get", {"account_id": account_id})
+    assert stored["product_algorithms"] == {"SHFE.ag": profile}
+    assert client.patch(f"/account/{account_id}", json={"remark": "keep"}).json()["product_algorithms"] == {
+        "SHFE.ag": profile
+    }
+    rejected = client.patch(f"/account/{account_id}", json={"product_algorithms": {"ag": profile, "SHFE.ag": profile}})
+    assert rejected.status_code == 422
+    assert native_store_call(database, "account_get", {"account_id": account_id})["product_algorithms"] == {
+        "SHFE.ag": profile
+    }
+    copied = client.post(f"/account/{account_id}/copy", json={"name": "品种配置副本"})
+    assert copied.status_code == 201, copied.text
+    assert copied.json()["product_algorithms"] == {"SHFE.ag": profile}
+    assert client.patch(f"/account/{account_id}", json={"product_algorithms": {}}).json()["product_algorithms"] == {}

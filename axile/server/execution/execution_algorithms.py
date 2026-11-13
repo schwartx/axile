@@ -1,6 +1,8 @@
 """执行编排使用的杠杆与算法解析辅助函数."""
 
 from copy import deepcopy
+from datetime import datetime
+from typing import Any
 
 from axile.channels import get_channel
 from axile.channels.schedule_clock import is_within_schedule_windows
@@ -8,27 +10,42 @@ from axile.domain.execution import ExecutionKind
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.server.cron import SCHEDULER_TIMEZONE
 from axile.server.db.models.account import AccountContext
+from axile.server.db.models.algorithm_schedule import AlgorithmSchedule
+
+
+def _select_algorithm(
+    algorithm: dict[str, Any], schedule: AlgorithmSchedule, selected_at: datetime
+) -> tuple[dict[str, Any], dict[str, object]]:
+    """使用同一选择时刻解析完整配置，不合并其他范围的参数。"""
+    matched = next(
+        (rule for rule in schedule if is_within_schedule_windows(selected_at, [(rule.start, rule.end)])), None
+    )
+    return deepcopy(matched.algorithm if matched is not None else algorithm), {
+        "start": matched.start if matched is not None else None,
+        "end": matched.end if matched is not None else None,
+    }
 
 
 def select_rebalance_algorithm(account: AccountContext) -> tuple[AccountContext, dict[str, object]]:
     """开跑前选定一次算法，只修改本次快照，完整参数与选择时刻一起冻结。"""
     selected_at = clock_now(tz=SCHEDULER_TIMEZONE)
-    matched = next(
-        (
-            rule
-            for rule in account.algorithm_schedule
-            if is_within_schedule_windows(selected_at, [(rule.start, rule.end)])
-        ),
-        None,
-    )
-    algorithm = deepcopy(matched.algorithm if matched is not None else account.algorithm)
+    algorithm, period = _select_algorithm(account.algorithm, account.algorithm_schedule, selected_at)
     selection: dict[str, object] = {
         "selected_at": selected_at.isoformat(),
         "timezone": str(SCHEDULER_TIMEZONE),
-        "start": matched.start if matched is not None else None,
-        "end": matched.end if matched is not None else None,
+        **period,
     }
-    return account.model_copy(update={"algorithm": algorithm}), selection
+    products = {}
+    product_selection = {}
+    for key, profile in account.product_algorithms.items():
+        selected, period = _select_algorithm(profile.algorithm, profile.algorithm_schedule, selected_at)
+        products[key] = profile.model_copy(
+            update={"algorithm": {**selected, "params": selected.get("params") or {}}, "algorithm_schedule": []}
+        )
+        product_selection[key] = period
+    if products:
+        selection["product_algorithms"] = product_selection
+    return account.model_copy(update={"algorithm": algorithm, "product_algorithms": products}), selection
 
 
 def resolve_account_leverages(account: AccountContext) -> tuple[float, float]:
@@ -81,6 +98,8 @@ def resolve_execution_algorithm_name(
     if execution_kind == ExecutionKind.CLEAR_POSITIONS:
         empty_algorithm = resolve_empty_positions_algorithm(account)
         return str(empty_algorithm.get("method", "SINGLE-MAKER"))
+    if account.product_algorithms:
+        return "按品种"
     return str(account.algorithm.get("method", "SINGLE-MAKER"))
 
 

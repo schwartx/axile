@@ -86,6 +86,7 @@ export interface FuturesCloseCapability {
 }
 
 export interface ChannelCapability {
+  algorithm_scope?: { pattern: string; example: string; description: string } | null
   futures_close?: FuturesCloseCapability | null
   connection_steps?: Array<{ id: string; label: string }>
   connection_validation?: { steps: Array<{ id: string; label: string }>; notice: string } | null
@@ -248,6 +249,7 @@ export interface Account {
   short_leverage: number | null
   algorithm: Record<string, unknown>
   algorithm_schedule?: AlgorithmTimeRule[]
+  product_algorithms?: Record<string, ProductAlgorithm>
   empty_positions_algorithm: Record<string, unknown> | null
   trade_rules: Record<string, unknown> | null
   futures_close_policy?: FuturesClosePolicy
@@ -750,6 +752,11 @@ export interface AlgorithmTimeRule {
   start: string
   end: string
   algorithm: AlgorithmRef
+}
+
+export interface ProductAlgorithm {
+  algorithm: AlgorithmRef
+  algorithm_schedule: AlgorithmTimeRule[]
 }
 
 /** 原生订单观测；身份、数量、价格和时间不在前端补值。 */

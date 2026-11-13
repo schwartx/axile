@@ -368,6 +368,14 @@ class ChannelConnectionValidation(_FrozenDescriptorModel):
     notice: str = Field(min_length=1)
 
 
+class ChannelAlgorithmScope(_FrozenDescriptorModel):
+    """声明账户品种算法的代码格式，不包含具体账户配置。"""
+
+    pattern: str
+    example: str
+    description: str
+
+
 class ChannelDescriptor(_FrozenDescriptorModel):
     """
     描述前端与 API 可见的渠道静态能力.
@@ -415,6 +423,7 @@ class ChannelDescriptor(_FrozenDescriptorModel):
     ui: ChannelUi = Field(default_factory=ChannelUi)
     replay: ChannelReplayCapability = Field(default_factory=ChannelReplayCapability)
     futures_close: FuturesCloseCapability | None = None
+    algorithm_scope: ChannelAlgorithmScope | None = None
     defaults: ChannelDefaults
     leverage: ChannelLeverage
     account_form: ChannelAccountForm
@@ -454,6 +463,8 @@ class ChannelPlugin:
         算法在未知模型上按"歧义即失败"拒绝猜测下单语义。
     canonicalize_symbol : CanonicalizeSymbol
         把策略代码收到与持仓同一套标识；默认恒等。
+    algorithm_scope_key : CanonicalizeSymbol
+        将配置品种或实际合约归一为算法范围键；不适用的合约抛 ValueError。
     quantize_target_quantity : QuantizeTargetQuantity | None
         把目标权重量化成可下单数量 ``(weight, equity, notional_per_unit) -> qty``；
         缺省表示该渠道尚未提供量化，在位性回退权重阈值。
@@ -475,6 +486,7 @@ class ChannelPlugin:
     max_parallel_symbols: int | None = 1
     order_param_model: OrderParamModel = OrderParamModel.UNKNOWN
     canonicalize_symbol: CanonicalizeSymbol = _identity_symbol
+    algorithm_scope_key: CanonicalizeSymbol = _identity_symbol
     quantize_target_quantity: QuantizeTargetQuantity | None = None
     requires_pre_connect_guard: bool = False
     connect_account: Callable[[BaseAccountConfig], None] | None = None

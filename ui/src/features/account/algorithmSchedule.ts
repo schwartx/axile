@@ -47,6 +47,6 @@ export function algorithmScheduleErrors(rules: AlgorithmTimeRule[]): (string | n
   return errors
 }
 
-export function algorithmScheduleSummary(algorithm: AlgorithmRef | null, count: number): string {
-  return `${describeAlgorithmRef(algorithm)}${count ? ` · ${count} 个时段` : ''}`
+export function algorithmScheduleSummary(algorithm: AlgorithmRef | null, count: number, products = 0): string {
+  return `${describeAlgorithmRef(algorithm)}${count ? ` · ${count} 个时段` : ''}${products ? ` · ${products} 个品种` : ''}`
 }

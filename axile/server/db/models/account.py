@@ -32,7 +32,7 @@ from axile.server.db.models.account_validation import (
     _validate_leverage,
     _validate_weight_precision,
 )
-from axile.server.db.models.algorithm_schedule import AlgorithmSchedule
+from axile.server.db.models.algorithm_schedule import AlgorithmSchedule, ProductAlgorithm
 from axile.server.db.models.base import Model, now_str
 from axile.server.db.models.performance import FeeRate, WeightType
 
@@ -70,6 +70,7 @@ class AccountBase(BaseModel):
     short_leverage: Optional[float] = Field(default=None, description="做空杠杆")
     algorithm: Dict[str, Any] = Field(description="下单算法,必填")
     algorithm_schedule: AlgorithmSchedule = Field(default_factory=list)
+    product_algorithms: dict[str, ProductAlgorithm] = Field(default_factory=dict)
     empty_positions_algorithm: Optional[Dict[str, Any]] = Field(
         default=None, description="清仓算法, 非必填; null 时由执行逻辑回退到默认值"
     )
@@ -124,6 +125,16 @@ class AccountBase(BaseModel):
 
         for rule in self.algorithm_schedule:
             _check_algorithm_channel_compat(rule.algorithm, str(self.trade_channel), "时段算法")
+        if self.product_algorithms:
+            from axile.channels import get_channel
+            from axile.channels.algorithm_scopes import normalize_algorithm_scopes
+
+            normalized = normalize_algorithm_scopes(get_channel(self.trade_channel), self.product_algorithms)
+            for product, profile in normalized.items():
+                _check_algorithm_channel_compat(profile.algorithm, str(self.trade_channel), f"{product} 默认算法")
+                for rule in profile.algorithm_schedule:
+                    _check_algorithm_channel_compat(rule.algorithm, str(self.trade_channel), f"{product} 时段算法")
+            object.__setattr__(self, "product_algorithms", normalized)
         return self
 
 
@@ -220,6 +231,7 @@ class AccountUpdate(Model):
     short_leverage: Optional[float] = None
     algorithm: Optional[Dict[str, Any]] = None
     algorithm_schedule: AlgorithmSchedule = Field(default_factory=list)
+    product_algorithms: dict[str, ProductAlgorithm] = Field(default_factory=dict)
     empty_positions_algorithm: Optional[Dict[str, Any]] = None
     trade_rules: Optional[Dict[str, Any]] = None
     futures_close_policy: FuturesClosePolicy | None = None

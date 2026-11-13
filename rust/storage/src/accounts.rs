@@ -32,6 +32,7 @@ const EXECUTION: &[&str] = &[
     "short_leverage",
     "algorithm",
     "algorithm_schedule",
+    "product_algorithms",
     "empty_positions_algorithm",
     "trade_rules",
     "futures_close_policy",
@@ -185,6 +186,9 @@ fn account_row(row: &Row<'_>, states: bool) -> Result<Value, AnalysisError> {
     }
     if data.get("algorithm_schedule").is_none_or(Value::is_null) {
         data.insert("algorithm_schedule".into(), json!([]));
+    }
+    if data.get("product_algorithms").is_none_or(Value::is_null) {
+        data.insert("product_algorithms".into(), json!({}));
     }
     normalize_schedule(&mut data)?;
     data.insert("gm_sessions".into(), data["channel_options"]["gm"].clone());
@@ -1070,23 +1074,36 @@ mod tests {
         let mut input = account();
         input["algorithm_schedule"] = json!([{ "start":"21:00", "end":"02:30",
             "algorithm":{"method":"TWAP","params":{"slices":4}} }]);
+        input["product_algorithms"] = json!({"SHFE.ag": {
+            "algorithm":{"method":"TWAP","params":{"slices":3}},
+            "algorithm_schedule":[{"start":"21:00","end":"02:30",
+                "algorithm":{"method":"TWAP","params":{"slices":8}}}]
+        }});
         let id = insert_on(&connection, &input, "2026-11-09T09:00:00").unwrap();
         let saved = snapshot_on(&connection, id).unwrap().unwrap();
         assert_eq!(saved["algorithm_schedule"], input["algorithm_schedule"]);
+        assert_eq!(saved["product_algorithms"], input["product_algorithms"]);
         let copied = insert_on(&connection, &saved, "2026-11-09T09:01:00").unwrap();
         assert_eq!(
             snapshot_on(&connection, copied).unwrap().unwrap()["algorithm_schedule"],
             input["algorithm_schedule"]
         );
+        assert_eq!(
+            snapshot_on(&connection, copied).unwrap().unwrap()["product_algorithms"],
+            input["product_algorithms"]
+        );
         patch_on(
             &connection,
             id,
-            json!({"algorithm_schedule":[]}).as_object().unwrap(),
+            json!({"algorithm_schedule":[],"product_algorithms":{}})
+                .as_object()
+                .unwrap(),
             "2026-11-09T09:02:00",
         )
         .unwrap();
         let saved = snapshot_on(&connection, id).unwrap().unwrap();
         assert_eq!(saved["algorithm_schedule"], json!([]));
+        assert_eq!(saved["product_algorithms"], json!({}));
         assert_eq!(saved["algorithm"], input["algorithm"]);
     }
 

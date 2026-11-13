@@ -66,7 +66,7 @@ def replay_status(account_id: int):
 @app.get("/api/v1/account/{account_id}")
 def account_info(account_id: int):
     """真实公开响应模型必须保留平仓规则。"""
-    return account_view(_accounts[account_id]).model_dump(mode="json") | {"runtime_sync": sync()}
+    return account_view(_accounts[account_id]) | {"runtime_sync": sync()}
 
 
 @app.patch("/api/v1/account/{account_id}")

@@ -230,8 +230,11 @@ def _assets(
     )
 
 
+@pytest.mark.parametrize("override_field,override_key", [("symbol_algorithms", "ag2612"), ("product_algorithms", "ag")])
 def test_execute_continues_other_symbols_and_marks_overall_failure(
     monkeypatch: pytest.MonkeyPatch,
+    override_field: str,
+    override_key: str,
 ) -> None:
     """单个品种失败不应中断其他品种，但整体执行应失败。"""
     from axile.executor import execution_engine as execution_engine_module
@@ -295,7 +298,7 @@ def test_execute_continues_other_symbols_and_marks_overall_failure(
                 },
                 "curr_target": {"rb2610": 0.1, "ag2612": 0.2},
                 "algorithm": {"method": "SUCCESS-ALGO", "params": {"timeout": 3}},
-                "symbol_algorithms": {"ag2612": {"method": "FAIL-ALGO", "params": {"timeout": 7}}},
+                override_field: {override_key: {"method": "FAIL-ALGO", "params": {"timeout": 7}}},
             }
         )
     )

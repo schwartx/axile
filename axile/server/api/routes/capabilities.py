@@ -35,6 +35,7 @@ def list_channel_capabilities() -> list[dict[str, Any]]:
             mode="json",
             include={
                 "futures_close",
+                "algorithm_scope",
                 "channel",
                 "label",
                 "description",

@@ -318,7 +318,7 @@ async def _insert_intent(
         kind,
         algorithm_override=payload if kind == ExecutionKind.CLEAR_POSITIONS and payload else None,
     )
-    if kind == ExecutionKind.REBALANCE and account.algorithm_schedule:
+    if kind == ExecutionKind.REBALANCE and (account.algorithm_schedule or account.product_algorithms):
         algorithm = None  # 等待阶段尚未选定，不能把默认算法显示成实际算法。
     row = await _intent_operation(
         "intent_insert",

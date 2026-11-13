@@ -87,7 +87,7 @@ export function writeAccountConfigSummary(
   cache.set(accountId, {
     leverage: describeLeverage(acc.long_leverage, acc.short_leverage, showShortLeverage),
     symbols: describeSymbolControl(acc.forbidden_symbols, acc.risk_symbols),
-    algorithm: algorithmScheduleSummary(algorithmRefOf(acc.algorithm), acc.algorithm_schedule?.length ?? 0),
+    algorithm: algorithmScheduleSummary(algorithmRefOf(acc.algorithm), acc.algorithm_schedule?.length ?? 0, Object.keys(acc.product_algorithms ?? {}).length),
     emptyAlgorithm: describeAlgorithmRef(algorithmRefOf(acc.empty_positions_algorithm)),
   })
 }

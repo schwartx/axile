@@ -33,12 +33,14 @@ test.each([true, false])('录制、时段和超时共用保存取消，只提交
     mock.module(ui + 'features/setup/algorithms.ts', () => ({ algorithmRefOf: v => v ?? null, describeAlgorithmRef: v => v?.name ?? null, validateAlgorithmRef: () => null }));
     mock.module(ui + 'features/account/futuresClosePolicy.ts', () => ({ defaultClosePolicy: () => ({}) }));
     mock.module(ui + 'features/account/useAccountRuntimeSync.ts', () => ({ useAccountRuntimeSync: () => ({ invalidate() {}, acceptSaved() {} }), runtimeSyncMessage: () => '' }));
+    mock.module(ui + 'lib/viewTransition.ts', () => ({ withViewTransition: fn => fn() }));
     for (const [path, names] of [
       ['features/account/editUi.tsx', ['EditError', 'EditLoading', 'EditSaveBar', 'EditSynopsis', 'Row', 'Section', 'Toggle']],
       ['features/account/pageHead.tsx', ['AccountPageTitle']], ['features/setup/AlgorithmEditor.tsx', ['AlgorithmEditor']],
       ['features/account/FuturesClosePolicyEditor.tsx', ['FuturesClosePolicyEditor']], ['components/ui/Tooltip.tsx', ['Tooltip']],
       ['features/account/RuntimeSyncStatus.tsx', ['RuntimeSyncStatus']], ['features/replay/ReplayRecordingStatus.tsx', ['ReplayRecordingStatus']],
       ['features/account/AlgorithmWorkbench.tsx', ['AlgorithmWorkbench']],
+      ['features/account/AlgorithmScopePicker.tsx', ['AlgorithmScopePicker']],
       ['features/account/ExecutionTimeoutInput.tsx', ['ExecutionTimeoutInput']],
     ]) mock.module(ui + path, () => Object.fromEntries(names.map(name => [name, name])));
     const { AccountEditAlgorithmPage } = await import(ui + 'pages/AccountEditAlgorithmPage.tsx');
@@ -95,6 +97,28 @@ test.each([true, false])('录制、时段和超时共用保存取消，只提交
     toggle().props.onClick(); nodes = all(render());
     bar().props.onSave(); await new Promise(resolve => setImmediate(resolve)); nodes = all(render());
     expect(timeout().props.value).toBe('180');
+    const picker = () => nodes.find(n => n.type === 'AlgorithmScopePicker');
+    picker().props.onAdd('ag'); nodes = all(render());
+    expect(picker().props.products).toEqual(['ag']);
+    const product = () => nodes.find(n => n.type === 'AlgorithmWorkbench' && n.props.scopeLabel === 'ag');
+    product().props.onTradeChange({ method: 'TWAP', params: { slices: 3 } }); nodes = all(render());
+    product().props.onScheduleChange([rule]); nodes = all(render());
+    expect(bar().props.changes).toEqual(['品种算法已改']);
+    picker().props.onChange(''); nodes = all(render());
+    expect(product().props.trade.params.slices).toBe(3);
+    bar().props.onCancel(); nodes = all(render());
+    expect(picker().props.products).toEqual([]);
+    picker().props.onAdd('ag'); nodes = all(render());
+    product().props.onTradeChange({ method: 'TWAP', params: { slices: 3 } }); nodes = all(render());
+    product().props.onScheduleChange([rule]); nodes = all(render());
+    bar().props.onSave(); await new Promise(resolve => setImmediate(resolve)); nodes = all(render());
+    expect(patches.at(-1)).toEqual({ product_algorithms: { ag: { algorithm: { method: 'TWAP', params: { slices: 3 } },
+      algorithm_schedule: [{ start: '09:30', end: '10:00', algorithm: { method: 'TWAP', params: { slices: 4 } } }] } } });
+    expect(bar().props.changes).toEqual([]);
+    picker().props.onDelete('ag'); nodes = all(render());
+    bar().props.onSave(); await new Promise(resolve => setImmediate(resolve)); nodes = all(render());
+    expect(patches.at(-1)).toEqual({ product_algorithms: {} });
+    patches.splice(-2);
     console.log(JSON.stringify({ pending, cancelled, saved, schedulePending, scheduleCancelled, scheduleSaved, patches }));
   `
   const result = spawnSync(process.execPath, ['-e', script], { cwd: new URL('../../', import.meta.url), encoding: 'utf8', timeout: 10_000 })
