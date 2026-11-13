@@ -29,14 +29,13 @@ class TransferPlan(BaseModel):
     start: datetime | None = None
     end: datetime | None = None
     destination: str = ""
-    token: str = ""
     every_hours: int = Field(default=0, ge=0, le=8760)
     execution_days: int | None = Field(default=None, ge=1)
     replay_days: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def validate_range(self):
-        """验证时间范围、授权与定时目标。"""
+        """验证时间范围与定时目标。"""
         for value in (self.start, self.end):
             if value is not None and value.tzinfo is None:
                 raise ValueError("时间必须带时区")
@@ -46,8 +45,6 @@ class TransferPlan(BaseModel):
             url = httpx.URL(self.destination)
             if url.scheme not in {"https", "http"} or not url.host or url.userinfo or url.query or url.fragment:
                 raise ValueError("接收端地址无效")
-            if not self.token:
-                raise ValueError("请填写接收授权")
         if self.every_hours and not self.destination:
             raise ValueError("定时传送需要联网接收端")
         return self
@@ -75,13 +72,11 @@ def write_json(path: Path, value: object) -> None:
 
 
 def settings() -> dict:
-    """读取或初始化本机传送身份和接收授权。"""
+    """读取或初始化本机传送身份。"""
     with _settings_lock:
         path = root() / "settings.json"
         if not path.exists():
-            write_json(
-                path, {"source_id": secrets.token_hex(16), "receive_token": secrets.token_urlsafe(32), "plan": {}}
-            )
+            write_json(path, {"source_id": secrets.token_hex(16), "plan": {}})
         return json.loads(path.read_text())
 
 
@@ -105,7 +100,7 @@ def _operation(action: str, **request: object) -> dict:
 
 
 def _plan_request(plan: TransferPlan) -> dict:
-    """向数据层传递范围和保留规则，不传联网授权。"""
+    """向数据层传递范围和保留规则。"""
     return {
         "source_id": settings()["source_id"],
         "plan": plan.model_dump(mode="json", include={"start", "end", "execution_days", "replay_days"}),
@@ -164,16 +159,13 @@ async def send(plan: TransferPlan) -> dict:
         receipt = batch["receipt"]
         if receipt is None:
             async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
-                peer = await client.get(
-                    plan.destination.rstrip("/") + "/api/v1/transfer/identity", headers={"x-transfer-token": plan.token}
-                )
+                peer = await client.get(plan.destination.rstrip("/") + "/api/v1/transfer/identity")
                 peer.raise_for_status()
                 if peer.json()["source_id"] == settings()["source_id"]:
                     raise ValueError("接收端不能是本机")
                 with Path(batch["package"]).open("rb") as file:
                     response = await client.post(
                         plan.destination.rstrip("/") + "/api/v1/transfer/receive",
-                        headers={"x-transfer-token": plan.token},
                         files={"file": ("data.axile", file, "application/octet-stream")},
                     )
                 response.raise_for_status()
@@ -191,7 +183,7 @@ async def scheduled_send() -> None:
         # 凭据和账户配置不进入调度错误日志。
         write_json(
             root() / "last-run.json",
-            {"ok": False, "at": datetime.now(UTC).isoformat(), "error": "传送失败，源数据保留，请检查接收端与授权"},
+            {"ok": False, "at": datetime.now(UTC).isoformat(), "error": "传送失败，源数据保留，请检查接收端"},
         )
 
 

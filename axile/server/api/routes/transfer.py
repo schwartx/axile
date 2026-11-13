@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import json
-import secrets
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, File, Header, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from axile.server import data_transfer as service
@@ -22,11 +21,10 @@ def _plan(value: dict) -> service.TransferPlan:
     try:
         return service.TransferPlan.model_validate(value)
     except ValidationError as exc:
-        # 根校验失败不能把完整请求中的接收密钥带入日志和响应。
         raise HTTPException(
             422,
             {
-                "message": "请检查时间范围、接收端与授权、定时间隔",
+                "message": "请检查时间范围、接收端、定时间隔",
                 "errors": exc.errors(include_input=False, include_context=False),
             },
         ) from exc
@@ -34,7 +32,7 @@ def _plan(value: dict) -> service.TransferPlan:
 
 @router.get("/settings")
 def get_settings():
-    """返回规则、接收授权与最近调度结果。"""
+    """返回规则与最近调度结果。"""
     value = service.settings()
     last = service.root() / "last-run.json"
     return {**value, "last_run": json.loads(last.read_text()) if last.exists() else None}
@@ -90,19 +88,15 @@ async def import_file(file: UploadFile = File(...)):
 
 
 @router.get("/identity")
-def identity(x_transfer_token: str = Header(default="")):
-    """验证接收授权并返回实例身份，拒绝自传送死锁。"""
+def identity():
+    """返回实例身份，供发送端拒绝自传送。"""
     value = service.settings()
-    if not secrets.compare_digest(x_transfer_token, value["receive_token"]):
-        raise HTTPException(403, "接收授权无效")
     return {"source_id": value["source_id"]}
 
 
 @router.post("/receive")
-async def receive(file: UploadFile = File(...), x_transfer_token: str = Header(default="")):
-    """验证专用授权后接收联网传送。"""
-    if not secrets.compare_digest(x_transfer_token, service.settings()["receive_token"]):
-        raise HTTPException(403, "接收授权无效")
+async def receive(file: UploadFile = File(...)):
+    """接收联网传送。"""
     return await receive_file(file)
 
 
@@ -112,7 +106,7 @@ async def send(plan: dict):
     try:
         return await service.send(_plan(plan))
     except Exception as exc:
-        raise HTTPException(409, "传送未完成，源数据保留，请检查接收端与授权") from exc
+        raise HTTPException(409, "传送未完成，源数据保留，请检查接收端") from exc
 
 
 @router.post("/acknowledge")

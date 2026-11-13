@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import { apiGet, apiSend, apiUpload, apiErrorFromBody } from '@/lib/api/client'
 
-type Plan = { start: string | null; end: string | null; destination: string; token: string; every_hours: number; execution_days: number | null; replay_days: number | null }
-type Settings = { receive_token: string; plan: Partial<Plan>; last_run: { ok: boolean; at: string; error?: string } | null }
-const empty: Plan = { start: null, end: null, destination: '', token: '', every_hours: 0, execution_days: null, replay_days: null }
+type Plan = { start: string | null; end: string | null; destination: string; every_hours: number; execution_days: number | null; replay_days: number | null }
+type Settings = { plan: Partial<Plan>; last_run: { ok: boolean; at: string; error?: string } | null }
+const empty: Plan = { start: null, end: null, destination: '', every_hours: 0, execution_days: null, replay_days: null }
 const inputClass = 'mt-2 block w-full rounded-[9px] border border-line bg-surface px-3 py-2 text-[14px] focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-45'
 const buttonClass = 'cursor-pointer rounded-[9px] border border-line px-4 py-2 text-[14px] hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-wait disabled:opacity-45'
 function download(blob: Blob, name: string) {
@@ -30,9 +30,8 @@ export function DataTransferPage() {
     <h1 className="text-[24px] font-semibold text-ink-1">数据传送</h1>
     <p className="mt-2 text-[14px] text-ink-3">将账户、组合、执行历史和录制传到另一台 Axile。接收端累积历史，发送端保留近期。</p>
     <fieldset disabled={busy || !settings} className="mt-8 space-y-7 disabled:opacity-70">
-      <div className="grid gap-5 md:grid-cols-2">
+      <div>
         <label className="text-[14px] text-ink-2">接收端地址<input className={inputClass} value={plan.destination} placeholder="https://接收端地址:端口" onChange={e => patch({ destination: e.target.value })} /></label>
-        <label className="text-[14px] text-ink-2">接收授权<input className={inputClass} type="password" autoComplete="off" value={plan.token} onChange={e => patch({ token: e.target.value })} /></label>
       </div>
       <div>
         <label className="flex items-center gap-2 text-[14px]"><input type="checkbox" checked={range} onChange={e => setRange(e.target.checked)} />指定时间范围<span className="text-ink-3">默认传送至最新</span></label>
@@ -59,8 +58,6 @@ export function DataTransferPage() {
     <section className="mt-9 border-t border-line pt-6">
       <h2 className="text-[17px] font-medium">接收数据</h2>
       <p className="mt-2 text-[13px] text-ink-3">首次接收需要空账户与组合，之后可重复接收同一来源。账户配置完整保留，导入后调度暂停。</p>
-      <label className="mt-4 block text-[14px]">本机接收授权<input className={inputClass} readOnly type="password" value={settings?.receive_token ?? ''} aria-label="本机接收授权" onFocus={e => e.currentTarget.select()} /></label>
-      <button className={`${buttonClass} mt-3`} disabled={!settings} onClick={() => void run(async () => { await navigator.clipboard.writeText(settings?.receive_token ?? ''); setMessage('接收授权已复制') })}>复制接收授权</button>
       <div className="mt-4 flex flex-wrap items-center gap-4">
         <label className="text-[14px]">上传数据包<input className={inputClass} type="file" accept=".axile" disabled={busy} onChange={e => { const f = e.target.files?.[0]; if (f) void run(async () => { const receipt = await apiUpload('/transfer/import', f); download(new Blob([JSON.stringify(receipt)], { type: 'application/json' }), 'receipt.json'); setMessage('接收完成，已下载确认文件；将确认文件交给发送端即可清理') }) }} /></label>
         <label className="text-[14px]">交回离线接收确认<input className={inputClass} type="file" accept=".json" disabled={busy} onChange={e => { const f = e.target.files?.[0]; if (f) void run(async () => { await apiSend('POST', '/transfer/acknowledge', JSON.parse(await f.text())); setMessage('接收确认已验证，按保存的保留规则清理') }) }} /></label>

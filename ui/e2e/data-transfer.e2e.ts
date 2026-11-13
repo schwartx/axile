@@ -7,7 +7,7 @@ test('range survives save and reload; latest clears the selected bounds', async 
       plan = route.request().postDataJSON()
       return route.fulfill({ json: { saved: true } })
     }
-    return route.fulfill({ json: { receive_token: 'fixture', plan, last_run: null } })
+    return route.fulfill({ json: { plan, last_run: null } })
   })
   await page.goto('/e2e/data-transfer.html')
   const range = page.getByRole('checkbox')

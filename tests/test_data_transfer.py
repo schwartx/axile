@@ -136,8 +136,8 @@ def test_replay_roundtrip_and_acknowledged_cleanup(peers, monkeypatch):
     assert list((target.parent / "replay").rglob("*.mcap"))
 
 
-def test_receiver_token_and_offline_confirmation_api(peers, monkeypatch):
-    """离线包和联网接收共用导入，错误授权不能产生回执。"""
+def test_receive_without_authorization_and_offline_confirmation_api(peers, monkeypatch):
+    """联网接收无需授权，回执仍可用于离线确认。"""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -150,13 +150,10 @@ def test_receiver_token_and_offline_confirmation_api(peers, monkeypatch):
     app = FastAPI()
     app.include_router(router, prefix="/api/v1")
     monkeypatch.setattr(transfer, "database_path", lambda: str(target))
-    token = transfer.settings()["receive_token"]
     with TestClient(app) as client:
-        bad = client.post("/api/v1/transfer/receive", files={"file": ("data.axile", data)})
-        assert bad.status_code == 403
-        received = client.post(
-            "/api/v1/transfer/receive", headers={"x-transfer-token": token}, files={"file": ("data.axile", data)}
-        )
+        assert "receive_token" not in client.get("/api/v1/transfer/settings").json()
+        assert client.get("/api/v1/transfer/identity").json()["source_id"]
+        received = client.post("/api/v1/transfer/receive", files={"file": ("data.axile", data)})
         assert received.status_code == 200
         receipt = received.json()
     monkeypatch.setattr(transfer, "database_path", lambda: str(source))
@@ -167,7 +164,7 @@ def test_receiver_token_and_offline_confirmation_api(peers, monkeypatch):
 def test_schedule_saved_and_restored(peers):
     from axile.server.core.scheduler import scheduler
 
-    plan = transfer.TransferPlan(destination="https://example.test:8443", token="test", every_hours=2)
+    plan = transfer.TransferPlan(destination="https://example.test:8443", every_hours=2)
     transfer.save_plan(plan)
     transfer.configure_schedule()
     assert scheduler.get_job("data-transfer") is not None
@@ -194,7 +191,7 @@ def test_network_failure_reuses_pending_without_cleanup(peers, monkeypatch):
             raise httpx.ConnectError("offline")
 
     monkeypatch.setattr(transfer.httpx, "AsyncClient", lambda **kwargs: Unreachable())
-    plan = transfer.TransferPlan(destination="https://offline.test", token="token", execution_days=1)
+    plan = transfer.TransferPlan(destination="https://offline.test", execution_days=1)
     for _ in range(2):
         with pytest.raises(httpx.ConnectError):
             asyncio.run(transfer.send(plan))
@@ -330,7 +327,7 @@ def test_send_resumes_saved_receipt_without_network(peers, monkeypatch, cleaned,
     source, target = peers
     seed(source)
     seed(source, 2)
-    plan = transfer.TransferPlan(destination="https://peer.test", token="test", execution_days=1)
+    plan = transfer.TransferPlan(destination="https://peer.test", execution_days=1)
     package, manifest = transfer.export_package(plan)
     pending = transfer.root() / "pending.json"
     key = hashlib.sha256(json.dumps(plan.model_dump(mode="json"), sort_keys=True).encode()).hexdigest()
