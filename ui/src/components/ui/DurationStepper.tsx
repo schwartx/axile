@@ -32,7 +32,6 @@ export function DurationStepper({ value, onChange, min = 0, max, disabled = fals
   const stepped = (direction: -1 | 1, step: number) => stepNumericValue(value, direction, { step, min, max })
   const apply = (next: string) => {
     if (disabled || bad || next === value) return
-    setFocused(null)
     setDraft({ source: next, parts: splitHourDuration(next) })
     onChange(next)
   }
@@ -59,7 +58,7 @@ export function DurationStepper({ value, onChange, min = 0, max, disabled = fals
     const unit = fast ? '天' : '小时'
     return <button type="button" className={`${button} ${fast ? 'text-[13px]' : 'text-[19px]'} ${direction > 0 ? 'border-l' : 'border-r'} border-line`}
       disabled={disabled || bad || next === value} aria-label={`${ariaLabel}：${action} 1 ${unit}`}
-      title={`${action} 1 ${unit}`} onClick={() => apply(next)}>{direction > 0 ? '+' : '−'}{fast ? '1天' : ''}</button>
+      title={`${action} 1 ${unit}`} onClick={() => { setFocused(null); apply(next) }}>{direction > 0 ? '+' : '−'}{fast ? '1天' : ''}</button>
   }
   return <div role="group" aria-label={`${ariaLabel}输入`} data-duration-stepper
     onBlur={event => {
@@ -71,24 +70,31 @@ export function DurationStepper({ value, onChange, min = 0, max, disabled = fals
     {stepButton(-1, true)}
     {stepButton(-1, false)}
     <NumberFlowGroup>
-      <div className="flex h-full items-center gap-0.5 px-1 text-[16px]">
+      <div className="flex h-full items-center px-1 text-[16px]">
         {UNITS.map(({ key, label, step }) => {
           const part = draft.parts[key]
           const editing = focused === key || bad
-          return <label key={key} className={`flex h-8 cursor-text items-center gap-1 rounded-md px-1.5 ${focused === key ? 'bg-fill' : ''}`}>
-            <span className="relative block num" style={{ width: `${Math.max(2, Math.min(16, part.length))}ch` }}>
-              <span aria-hidden className={`pointer-events-none absolute inset-0 flex items-center justify-end ${editing ? 'invisible' : ''}`}>
-                <NumberFlow value={Number(part) || 0} className="text-ink-1" locales="zh-CN" format={FORMAT} trend={previous.current.trend}
-                  spinTiming={SPIN} transformTiming={TRANSFORM} opacityTiming={OPACITY} respectMotionPreference />
-              </span>
-              <input aria-label={`${ariaLabel}：${label}`} aria-describedby={describedBy} aria-invalid={bad || undefined}
-                inputMode="numeric" autoComplete="off" disabled={disabled} value={part}
-                className={`block w-full border-0 bg-transparent p-0 text-right text-ink-1 outline-none ${editing ? '' : 'opacity-0'}`}
-                onChange={event => edit(key, event.target.value)}
-                onFocus={event => { setFocused(key); event.currentTarget.select() }} onKeyDown={event => keyDown(event, step)} />
+          const shown = focused !== null || bad || Number(part) !== 0
+            || (key === 'hours' && Number(draft.parts.days) === 0)
+          return <span key={key} data-duration-unit={key} inert={!shown} aria-hidden={!shown}
+            className={`grid transition-[grid-template-columns] duration-200 ease-[cubic-bezier(.4,0,.2,1)] motion-reduce:transition-none ${shown ? 'grid-cols-[1fr]' : 'grid-cols-[0fr]'}`}>
+            <span className="min-w-0 overflow-hidden">
+              <label className={`flex h-8 cursor-text items-center gap-1 rounded-md px-1.5 ${focused === key ? 'bg-fill' : ''}`}>
+                <span className="relative block num" style={{ width: `${Math.max(2, Math.min(16, part.length))}ch` }}>
+                  <span aria-hidden className={`pointer-events-none absolute inset-0 flex items-center justify-end ${editing ? 'invisible' : ''}`}>
+                    <NumberFlow value={Number(part) || 0} className="text-ink-1" locales="zh-CN" format={FORMAT} trend={previous.current.trend}
+                      spinTiming={SPIN} transformTiming={TRANSFORM} opacityTiming={OPACITY} respectMotionPreference />
+                  </span>
+                  <input aria-label={`${ariaLabel}：${label}`} aria-describedby={describedBy} aria-invalid={bad || undefined}
+                    inputMode="numeric" autoComplete="off" disabled={disabled} value={part}
+                    className={`block w-full border-0 bg-transparent p-0 text-right text-ink-1 outline-none ${editing ? '' : 'opacity-0'}`}
+                    onChange={event => edit(key, event.target.value)}
+                    onFocus={event => { setFocused(key); event.currentTarget.select() }} onKeyDown={event => keyDown(event, step)} />
+                </span>
+                <span className="text-[13px] text-ink-3">{label}</span>
+              </label>
             </span>
-            <span className="text-[13px] text-ink-3">{label}</span>
-          </label>
+          </span>
         })}
       </div>
     </NumberFlowGroup>
