@@ -13,6 +13,7 @@ import { Select } from '@/components/ui/Select'
 import { SettingsSaveBar } from '@/components/ui/SettingsSaveBar'
 import { AlgorithmExtensions } from '@/features/init/AlgorithmExtensions'
 import { BrowserTitleSetting } from '@/features/init/BrowserTitleSetting'
+import { DataTransferSetting } from '@/features/transfer/DataTransferSetting'
 import {
   normalizeStringList,
 } from '@/components/ui/stringList'
@@ -573,6 +574,7 @@ export function InitWizard({
                       )}
                     </div>
                   </Row>
+                  <DataTransferSetting />
                 </Section>
 
                 <Section label="运行与日志">

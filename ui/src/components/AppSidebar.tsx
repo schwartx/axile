@@ -64,7 +64,6 @@ function GlobalSettingsNav({ phase, dense }: { phase: SettingsMovePhase; dense: 
   const hidden = phase === 'leaving' || phase === 'placed'
   const items: NavItemSpec[] = [
     { label: '系统告警', icon: BellRing, to: '/settings', active: (pathname) => pathname === '/settings' || pathname === '/settings/notification' },
-    { label: '数据传送', icon: Settings2, to: '/settings/transfer', active: exact('/settings/transfer') },
     { label: '高级设置', icon: Settings2, to: '/settings/advanced', active: exact('/settings/advanced') },
   ]
 

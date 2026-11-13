@@ -1,40 +1,77 @@
 import { expect, test } from '@playwright/test'
 
-test('range survives save and reload; latest clears the selected bounds', async ({ page }) => {
+test('advanced settings opens a transfer modal without saving the system draft', async ({ page }) => {
   let plan: Record<string, unknown> = {}
-  await page.route('**/api/v1/transfer/settings', async route => {
+  let systemSaves = 0
+  await page.route('**/api/v1/init/save', route => { systemSaves++; return route.fulfill({ json: { ok: true } }) })
+  await page.route('**/api/v1/transfer/settings', route => {
     if (route.request().method() === 'PUT') {
       plan = route.request().postDataJSON()
       return route.fulfill({ json: { saved: true } })
     }
     return route.fulfill({ json: { plan, last_run: null } })
   })
+  await page.route('**/api/v1/transfer/export', route => route.fulfill({ body: 'fixture-package' }))
   await page.goto('/e2e/data-transfer.html')
-  const range = page.getByRole('checkbox')
+  const database = page.getByPlaceholder('已配置 · 留空保持不变')
+  await database.fill('sqlite+aiosqlite:///./unsaved.db')
+  const opener = page.getByRole('button', { name: '打开数据传送' })
+  await opener.click()
+  const dialog = page.getByRole('dialog', { name: '数据传送' })
+  await expect(dialog).toBeVisible()
+  const range = dialog.getByRole('checkbox')
   await expect(range).toBeEnabled()
   await range.check()
-  const dates = page.locator('input[type="datetime-local"]')
+  const dates = dialog.locator('input[type="datetime-local"]')
   await dates.nth(0).fill('2020-01-01T08:00')
   await dates.nth(1).fill('2020-02-01T08:00')
-  await page.getByRole('button', { name: '保存规则' }).click()
-  await expect(page.getByRole('status')).toHaveText('传送规则已保存')
+  await dialog.getByRole('button', { name: '保存规则' }).click()
+  await expect(dialog.getByRole('status')).toHaveText('传送规则已保存')
   expect(plan.start).toBeTruthy(); expect(plan.end).toBeTruthy()
+  await page.screenshot({ path: test.info().outputPath('transfer-desktop.png'), animations: 'disabled' })
+  await expect(dialog.getByRole('button', { name: '离线传送' })).toHaveAttribute('aria-expanded', 'false')
+  await dialog.getByRole('button', { name: '离线传送' }).click()
+  const download = page.waitForEvent('download')
+  await dialog.getByRole('button', { name: '导出数据包' }).click()
+  expect((await download).suggestedFilename()).toBe('data.axile')
+
+  let request: Record<string, unknown> = {}
+  let finishPull = () => {}
+  const pulling = new Promise<void>(resolve => { finishPull = resolve })
+  await page.route('**/api/v1/transfer/pull', async route => {
+    request = route.request().postDataJSON()
+    await pulling
+    return route.fulfill({ json: { batch: 'pulled-batch' } })
+  })
+  await dialog.getByLabel('来源端地址').fill('https://source.test')
+  await dialog.getByRole('button', { name: '立即拉取' }).click()
+  const close = dialog.getByRole('button', { name: '关闭', exact: true })
+  await expect(close).toBeDisabled()
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeVisible()
+  finishPull()
+  await expect(dialog.getByRole('status')).toHaveText('拉取完成 · pulled-batch')
+  expect(request.source_url).toBe('https://source.test')
+  await close.click()
+  await expect(dialog).toBeHidden()
+  await expect(opener).toBeFocused()
+  await expect(database).toHaveValue('sqlite+aiosqlite:///./unsaved.db')
+  expect(systemSaves).toBe(0)
+
   await page.reload()
-  await expect(range).toBeEnabled()
+  await opener.click()
   await expect(range).toBeChecked()
   await expect(dates.nth(0)).toHaveValue('2020-01-01T08:00')
   await expect(dates.nth(1)).toHaveValue('2020-02-01T08:00')
   await range.uncheck()
-  await page.getByRole('button', { name: '保存规则' }).click()
-  await expect(page.getByRole('status')).toHaveText('传送规则已保存')
+  await dialog.getByRole('button', { name: '保存规则' }).click()
+  await expect(dialog.getByRole('status')).toHaveText('传送规则已保存')
   expect(plan.start).toBeNull(); expect(plan.end).toBeNull()
-  let request: Record<string, unknown> = {}
-  await page.route('**/api/v1/transfer/pull', route => {
-    request = route.request().postDataJSON()
-    return route.fulfill({ json: { batch: 'pulled-batch' } })
-  })
-  await page.getByLabel('来源端地址').fill('https://source.test')
-  await page.getByRole('button', { name: '立即拉取' }).click()
-  await expect(page.getByRole('status')).toHaveText('拉取完成 · pulled-batch')
-  expect(request.source_url).toBe('https://source.test')
+  expect(systemSaves).toBe(0)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect.poll(async () => (await dialog.boundingBox())!.x).toBeGreaterThanOrEqual(0)
+  const bounds = await dialog.boundingBox()
+  expect(bounds!.x).toBeGreaterThanOrEqual(0)
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390)
+  await page.screenshot({ path: test.info().outputPath('transfer-mobile.png'), animations: 'disabled' })
 })
