@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import { CenteredModal } from '@/components/ui/CenteredModal'
 import { Row, TEXT } from '@/features/account/editUi'
 import { AccessibilitySwitch } from '@/components/ui/AccessibilitySwitch'
@@ -22,9 +22,13 @@ function download(blob: Blob, name: string) {
 
 export function DataTransferSetting() {
   const [open, setOpen] = useState(false)
-  return <Row label="数据传送" hint="独立保存" span>
-    <button type="button" className={buttonClass} onClick={() => setOpen(true)}>打开数据传送</button>
-    <p className="mt-1.5 text-[12px] leading-5 text-ink-3">从其他实例拉取数据，或离线导入导出。规则独立保存，无需重启。</p>
+  return <Row label="数据传送" span>
+    <div className="flex items-center gap-4">
+      <p className="min-w-0 flex-1 text-[13px] leading-5 text-ink-3">跨实例拉取与离线传送</p>
+      <button type="button" aria-label="管理数据传送" aria-haspopup="dialog" aria-expanded={open}
+        className="inline-flex h-9 shrink-0 cursor-pointer items-center gap-1 rounded-md px-2 text-[13px] text-ink-2 transition-colors duration-150 hover:bg-fill hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-accent motion-reduce:transition-none"
+        onClick={() => setOpen(true)}>管理<ChevronRight size={15} aria-hidden /></button>
+    </div>
     <DataTransferModal open={open} onClose={() => setOpen(false)} />
   </Row>
 }
