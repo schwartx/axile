@@ -11,7 +11,7 @@
  * - ``label``：控件标签（如 启动↔暂停），纯 opacity 交叉淡。
  * - ``prose``：状态句，淡 + 极轻 blur（墨晕收锐），略日记一点。
  */
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 
 import { inkRewriteMs, nextInkPair, type InkPair, type InkTone } from '@/components/ui/inkRewriteState'
 import { OverflowText } from '@/components/ui/OverflowText'
@@ -50,6 +50,8 @@ interface InkRewriteProps {
   fluid?: boolean
   /** 受限的单行槽位通过统一 OverflowText 阅读完整文案。 */
   overflow?: boolean
+  /** 组合内容共用换字层；text 仍决定何时交接，数字内部可独立滚动。 */
+  renderText?: (text: string) => ReactNode
 }
 
 /**
@@ -75,6 +77,7 @@ export function InkRewrite({
   textClassName = '',
   fluid = false,
   overflow = false,
+  renderText,
 }: InkRewriteProps) {
   const first = useRef(true)
   const cls = textClassName.trim()
@@ -152,6 +155,7 @@ export function InkRewrite({
     [],
   )
 
+  const render = (value: string) => renderText ? renderText(value) : overflow ? <OverflowText text={value} /> : value
   const animate = pair.gen > 0
   const inCls = animate ? (tone === 'prose' ? 'ink-rewrite-in-prose' : 'ink-rewrite-in') : ''
   const outCls = tone === 'prose' ? 'ink-rewrite-out-prose' : 'ink-rewrite-out'
@@ -174,14 +178,14 @@ export function InkRewrite({
             className={`absolute left-0 top-0 whitespace-nowrap ${overflow ? 'w-full' : ''} ${outCls} ${pair.prevCls ?? ''}`.trim()}
             aria-hidden
           >
-            {overflow ? <OverflowText text={pair.prev} /> : pair.prev}
+            {render(pair.prev)}
           </span>
         )}
         <span
           key={pair.gen}
           className={`absolute left-0 top-0 whitespace-nowrap ${overflow ? 'w-full' : ''} ${inCls} ${pair.curCls}`.trim()}
         >
-          {overflow ? <OverflowText text={pair.cur} /> : pair.cur}
+          {render(pair.cur)}
         </span>
       </span>
     )
@@ -198,14 +202,14 @@ export function InkRewrite({
           className={`col-start-1 row-start-1 truncate whitespace-nowrap ${outCls} ${pair.prevCls ?? ''}`.trim()}
           aria-hidden
         >
-          {overflow ? <OverflowText text={pair.prev} /> : pair.prev}
+          {render(pair.prev)}
         </span>
       )}
       <span
         key={pair.gen}
         className={`col-start-1 row-start-1 truncate whitespace-nowrap ${inCls} ${pair.curCls}`.trim()}
       >
-        {overflow ? <OverflowText text={pair.cur} /> : pair.cur}
+        {render(pair.cur)}
       </span>
     </span>
   )

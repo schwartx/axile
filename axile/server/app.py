@@ -38,6 +38,7 @@ __all__ = [
     "ALGORITHM_DIRECTORIES_ENV",
     "_app",
     "settings",
+    "get_algorithm_directories",
     "get_directory_algorithm_modules",
     "load_configured_algorithm_modules",
 ]
@@ -89,6 +90,11 @@ def set_algorithm_directories(directories: Iterable[Path | str]) -> None:
     """
     global _algorithm_directories
     _algorithm_directories = [Path(directory).expanduser() for directory in directories if str(directory).strip()]
+
+
+def get_algorithm_directories() -> list[Path]:
+    """返回当前实例实际使用的算法目录副本。"""
+    return list(_algorithm_directories)
 
 
 def _get_directory_algorithm_modules(directory: Path) -> list[str]:
@@ -266,6 +272,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     _load_configured_algorithm_directories()
     _load_configured_algorithm_modules()
     register_china_channel_jobs(scheduler)
+    from axile.server.data_transfer import configure_schedule
+
+    configure_schedule()
     scheduler.start()
     from axile.server.time_check.service import service as time_check_service
 

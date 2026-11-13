@@ -56,6 +56,7 @@ pub mod logging;
 mod logging_python;
 mod logging_rotation;
 pub(crate) mod maintenance_ops;
+pub(crate) mod transfer_ops;
 pub(crate) mod migrations;
 pub(crate) mod notification_context;
 pub(crate) mod notifications;

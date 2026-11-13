@@ -28,6 +28,8 @@ if getattr(module, 'PUBLIC_HEAD', None) != '0037':
     raise RuntimeError('Native extension requires public migration head 0037')
 if getattr(module, 'EXECUTION_REPLAY_SCHEMA', None) != 1:
     raise RuntimeError('Native extension requires execution replay schema 1')
+if getattr(module, 'TRANSFER_PACKAGE_VERSION', None) != 1:
+    raise RuntimeError('Native extension requires transfer package API 1')
 required = (
     'Store', 'cash_flow_operation', 'close_database', 'journal', 'activity_symbols', 'execution_records',
     'execution_record_detail', 'asset_snapshots',
@@ -46,7 +48,7 @@ required = (
     'logging_console', 'logging_archive', 'logging_span', 'logging_scope',
     'logging_invalid', 'logging_console_failed', 'logging_archive_failed',
     'ExecutionReplayWriter', 'execution_replay_manifest', 'execution_replay_window',
-    'scan_algorithm_directory',
+    'scan_algorithm_directory', 'transfer_data',
 )
 missing = [name for name in required if not callable(getattr(module, name, None))]
 if missing:

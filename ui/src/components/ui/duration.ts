@@ -1,5 +1,20 @@
 export type DurationParts = { hours: string; minutes: string; seconds: string }
 
+export type DayHourParts = { days: string; hours: string }
+
+/** 天、小时共用总小时数；非法草稿保留在输入层。 */
+export function splitHourDuration(value: string): DayHourParts {
+  const hours = Number(value)
+  if (!value.trim() || !Number.isSafeInteger(hours) || hours < 0) return { days: '0', hours: value }
+  return { days: String(Math.floor(hours / 24)), hours: String(hours % 24) }
+}
+
+export function joinHourDuration(parts: DayHourParts): string {
+  if (!Object.values(parts).every(value => /^\d+$/.test(value))) return 'NaN'
+  const hours = Number(parts.days) * 24 + Number(parts.hours)
+  return Number.isSafeInteger(hours) ? String(hours) : 'NaN'
+}
+
 /** 展示省略零单位；编辑时保留所有分段，全零仍有秒这一处入口。 */
 export function durationPartVisible(parts: DurationParts, key: keyof DurationParts, editing = false): boolean {
   return editing || parts[key].trim() === '' || Number(parts[key]) !== 0

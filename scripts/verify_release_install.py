@@ -20,6 +20,8 @@ def main() -> None:
     package = Path(axile.__file__).resolve().parent
     assert not package.is_relative_to(repository), f"必须从隔离环境导入 wheel: {package}"
     assert version("axile") == expected
+    assert callable(_core.transfer_data)
+    assert _core.TRANSFER_PACKAGE_VERSION == 1
     assert _core.PUBLIC_HEAD == "0037"
     assert _core.ANALYSIS_FACT_SCHEMA == 42
     assert _core.EXECUTION_REPLAY_SCHEMA == 1
