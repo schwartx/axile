@@ -1,5 +1,6 @@
 """传送的累积、去重、回执和破损包边界。"""
 
+import hashlib
 import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
@@ -270,6 +271,112 @@ def test_failed_exports_remove_only_their_own_staging(peers, monkeypatch, failur
     assert previous.is_file()
     with sqlite3.connect(source) as c:
         assert c.execute("SELECT count(*) FROM executerecord").fetchone() == (1,)
+
+
+def test_imported_live_sessions_survive_receiver_recovery(peers, monkeypatch):
+    source, target = peers
+    seed(source)
+    with sqlite3.connect(source) as c:
+        c.execute(
+            "INSERT INTO account_control_session(id,instance_id,account_id,execution_id,timezone,started_at_us,status) "
+            "VALUES(1,'source-live',1,'exec-1','Asia/Shanghai',0,'active')"
+        )
+    package, _ = transfer.export_package(transfer.TransferPlan())
+    monkeypatch.setattr(transfer, "database_path", lambda: str(target))
+    transfer.import_package(package)
+    with sqlite3.connect(target) as c:
+        assert c.execute("SELECT status,finished_at_us FROM account_control_session").fetchone() == ("incomplete", None)
+    assert _core.control_monitor_recover(str(target), '{"now_ms":1000}') == {"updated": 0}
+    transfer.import_package(package)
+    monkeypatch.setattr(transfer, "database_path", lambda: str(source))
+    with sqlite3.connect(source) as c:
+        assert c.execute("SELECT status FROM account_control_session").fetchone() == ("active",)
+        c.execute("UPDATE account_control_session SET status='closed',finished_at_us=100 WHERE id=1")
+    package, _ = transfer.export_package(transfer.TransferPlan())
+    monkeypatch.setattr(transfer, "database_path", lambda: str(target))
+    transfer.import_package(package)
+    with sqlite3.connect(target) as c:
+        assert c.execute("SELECT status,finished_at_us FROM account_control_session").fetchone() == ("closed", 100)
+
+
+@pytest.mark.parametrize("offset", ["+08:00", "+00:00"])
+def test_early_morning_range_includes_replay(peers, monkeypatch, offset):
+    source, target = peers
+    seed(source)
+    start = datetime.fromisoformat("2026-11-11T00:00:00+08:00")
+    end = start + timedelta(hours=1)
+    stamp = int((start + timedelta(minutes=30)).timestamp() * 1_000_000)
+    with sqlite3.connect(source) as c:
+        c.execute("UPDATE executerecord SET created_at_us=?", (stamp,))
+    writer = _core.ExecutionReplayWriter(str(source.parent / "replay"), 1, "night", '{"schema_version":1}')
+    writer.append(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "recording_id": "night",
+                "capture_seq": 1,
+                "time_us": stamp,
+                "topic": "/execution",
+                "data": {"execution_id": "exec-1", "phase": "finished"},
+            }
+        )
+    )
+    writer.finish()
+    tz = datetime.fromisoformat("2026-11-11T00:00:00" + offset).tzinfo
+    package, manifest = transfer.export_package(
+        transfer.TransferPlan(start=start.astimezone(tz), end=end.astimezone(tz))
+    )
+    assert manifest["executions"] == ["exec-1"]
+    assert any(name.endswith(".mcap") for name in manifest["files"])
+    monkeypatch.setattr(transfer, "database_path", lambda: str(target))
+    transfer.import_package(package)
+    received = json.loads(_core.execution_replay_manifest(str(target.parent / "replay"), 1, "exec-1", None))
+    assert received["availability"] == "available"
+    monkeypatch.setattr(transfer, "database_path", lambda: str(source))
+    assert transfer.prune_recordings(manifest, start + timedelta(days=1)) > 0
+
+
+@pytest.mark.parametrize("cleaned,valid", [(False, True), (True, True), (False, False)])
+def test_send_resumes_saved_receipt_without_network(peers, monkeypatch, cleaned, valid):
+    import asyncio
+
+    source, target = peers
+    seed(source)
+    seed(source, 2)
+    plan = transfer.TransferPlan(destination="https://peer.test", token="test", execution_days=1)
+    package, manifest = transfer.export_package(plan)
+    pending = transfer.root() / "pending.json"
+    key = hashlib.sha256(json.dumps(plan.model_dump(mode="json"), sort_keys=True).encode()).hexdigest()
+    transfer.write_json(pending, {"key": key, "batch": manifest["batch"]})
+    monkeypatch.setattr(transfer, "database_path", lambda: str(target))
+    receipt = transfer.import_package(package)
+    monkeypatch.setattr(transfer, "database_path", lambda: str(source))
+    if cleaned:
+        transfer.acknowledge(receipt, plan)
+    else:
+        transfer.write_json(
+            package.parent / "receipt.json", receipt if valid else {**receipt, "manifest_sha256": "invalid"}
+        )
+
+    def reject_network(**kwargs):
+        pytest.fail("已收到确认的批次不应再次访问接收端")
+
+    monkeypatch.setattr(transfer.httpx, "AsyncClient", reject_network)
+    if not valid:
+        with pytest.raises(ValueError, match="接收确认与本机数据包不符"):
+            asyncio.run(transfer.send(plan))
+        assert pending.exists() and package.exists()
+        with sqlite3.connect(source) as c:
+            assert c.execute("SELECT count(*) FROM executerecord").fetchone() == (2,)
+        return
+    result = asyncio.run(transfer.send(plan))
+    assert result["batch"] == manifest["batch"]
+    assert not pending.exists()
+    assert not package.exists()
+    with sqlite3.connect(source) as c:
+        assert c.execute("SELECT count(*) FROM executerecord").fetchone() == (1,)
+    with sqlite3.connect(target) as c:
+        assert c.execute("SELECT count(*) FROM executerecord").fetchone() == (2,)
 
 
 @pytest.mark.parametrize("configured", [False, True])

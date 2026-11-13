@@ -13,6 +13,7 @@ import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
+from zoneinfo import ZoneInfo
 
 import httpx
 from pydantic import BaseModel, Field, model_validator
@@ -21,6 +22,7 @@ from axile.server.core.db import database_path
 from axile.server.native_store import native_operation_sync
 
 MAX_BYTES = 4 * 1024**3
+REPLAY_TIMEZONE = ZoneInfo("Asia/Shanghai")
 _lock = asyncio.Lock()
 _settings_lock = threading.RLock()
 
@@ -103,8 +105,8 @@ def digest(path: Path) -> str:
 def recording_files(plan: TransferPlan) -> list[Path]:
     """选择时间范围内已封口的录制段。"""
     replay = Path(database_path()).resolve().parent / "replay"
-    end = (plan.end or datetime.now(UTC)).astimezone(UTC).date().isoformat()
-    start = plan.start.astimezone(UTC).date().isoformat() if plan.start else "0000-00-00"
+    end = (plan.end or datetime.now(UTC)).astimezone(REPLAY_TIMEZONE).date().isoformat()
+    start = plan.start.astimezone(REPLAY_TIMEZONE).date().isoformat() if plan.start else "0000-00-00"
     # 包含边界日的全部已封口段；共享片段不能按执行 ID 裁剪。
     return sorted(
         p
@@ -360,7 +362,7 @@ def prune_recordings(manifest: dict, cutoff: datetime) -> int:
         files = [*account.glob(f"*/recording-{recording}-*.mcap"), *account.glob(f"*/fragment-{recording}-*.mcap")]
         if not files:
             continue
-        if any(p.parent.name >= cutoff.date().isoformat() or p.is_symlink() for p in files):
+        if any(p.parent.name >= cutoff.astimezone(REPLAY_TIMEZONE).date().isoformat() or p.is_symlink() for p in files):
             continue
         if any(
             str(p.relative_to(base)) not in manifest["files"]
@@ -394,21 +396,25 @@ async def send(plan: TransferPlan) -> dict:
         else:
             package, manifest = await asyncio.to_thread(export_package, plan)
             write_json(pending, {"key": key, "batch": manifest["batch"]})
-        async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
-            peer = await client.get(
-                plan.destination.rstrip("/") + "/api/v1/transfer/identity", headers={"x-transfer-token": plan.token}
-            )
-            peer.raise_for_status()
-            if peer.json()["source_id"] == settings()["source_id"]:
-                raise ValueError("接收端不能是本机")
-            with package.open("rb") as file:
-                response = await client.post(
-                    plan.destination.rstrip("/") + "/api/v1/transfer/receive",
-                    headers={"x-transfer-token": plan.token},
-                    files={"file": (package.name, file, "application/octet-stream")},
+        receipt_file = package.parent / "receipt.json"
+        if receipt_file.exists():
+            receipt = json.loads(receipt_file.read_text())
+        else:
+            async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
+                peer = await client.get(
+                    plan.destination.rstrip("/") + "/api/v1/transfer/identity", headers={"x-transfer-token": plan.token}
                 )
-            response.raise_for_status()
-            receipt = response.json()
+                peer.raise_for_status()
+                if peer.json()["source_id"] == settings()["source_id"]:
+                    raise ValueError("接收端不能是本机")
+                with package.open("rb") as file:
+                    response = await client.post(
+                        plan.destination.rstrip("/") + "/api/v1/transfer/receive",
+                        headers={"x-transfer-token": plan.token},
+                        files={"file": (package.name, file, "application/octet-stream")},
+                    )
+                response.raise_for_status()
+                receipt = response.json()
         result = await asyncio.to_thread(acknowledge, receipt, plan)
         pending.unlink(missing_ok=True)
         return {"batch": manifest["batch"], **result}

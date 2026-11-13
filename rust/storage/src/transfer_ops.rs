@@ -227,6 +227,14 @@ fn merge_table(c: &Connection, t: &str) -> Result<(), AnalysisError> {
         )
         .map_err(err)?;
     }
+    if t == "account_control_session" {
+        // 源端活跃会话在接收端只有历史观测；不能由本机启动恢复再次改写。
+        c.execute(
+            "UPDATE account_control_session SET status='incomplete' WHERE status='active' AND id IN (SELECT id FROM incoming.account_control_session)",
+            [],
+        )
+        .map_err(err)?;
+    }
     c.execute(&format!("INSERT INTO transfer_rows SELECT ?1,{row_key},{row_hash} FROM main.{table} m JOIN incoming.{table} i ON {join} WHERE true ON CONFLICT(table_name,row_key) DO UPDATE SET row_hash=excluded.row_hash", table=quote(t)), [t]).map_err(err)?;
     Ok(())
 }
