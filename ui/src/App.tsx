@@ -28,6 +28,7 @@ import { PortfolioEditPage } from '@/pages/PortfolioEditPage'
 import { Placeholder } from '@/pages/Placeholder'
 import { SystemEditNotificationPage } from '@/pages/SystemEditNotificationPage'
 import { SystemNotificationDocPage } from '@/pages/docs/SystemNotificationDocPage'
+import { DataTransferPage } from '@/pages/DataTransferPage'
 import { SystemConfigPage } from '@/pages/SystemConfigPage'
 import { WizardLayout } from '@/features/setup/WizardLayout'
 import { SetupHub } from '@/pages/setup/SetupHub'
@@ -124,6 +125,7 @@ const router = createBrowserRouter([
           { path: 'portfolios', element: <PortfoliosPage /> },
           { path: 'portfolios/:id/edit', element: <PortfolioEditPage />, handle: { fullBleed: true } },
           { path: 'settings/notification', element: <SystemEditNotificationPage />, handle: { fullBleed: true } },
+          { path: 'settings/transfer', element: <DataTransferPage /> },
           { path: 'settings', element: <SystemConfigPage /> },
           { path: 'settings/advanced', element: <SystemConfigPage section="advanced" />, handle: { fullBleed: true } },
           { path: '*', element: <Placeholder title="页面不存在" milestone="—" /> },

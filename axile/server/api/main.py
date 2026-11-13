@@ -14,9 +14,11 @@ from axile.server.api.routes import (
     portfolio,
     time_check,
     utils,
+    transfer,
 )
 
 api_router = APIRouter()
+api_router.include_router(transfer.router)
 api_router.include_router(utils.router)
 api_router.include_router(capabilities.router)
 api_router.include_router(connection_validation.router)

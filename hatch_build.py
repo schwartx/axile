@@ -46,7 +46,7 @@ required = (
     'logging_console', 'logging_archive', 'logging_span', 'logging_scope',
     'logging_invalid', 'logging_console_failed', 'logging_archive_failed',
     'ExecutionReplayWriter', 'execution_replay_manifest', 'execution_replay_window',
-    'scan_algorithm_directory',
+    'scan_algorithm_directory', 'transfer_data',
 )
 missing = [name for name in required if not callable(getattr(module, name, None))]
 if missing:

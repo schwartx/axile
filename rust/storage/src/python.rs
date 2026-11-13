@@ -360,6 +360,7 @@ business_operations! { register_business_operations, business_operation, PyAny;
     save_order_submission => crate::submissions::save_order_submission,
     save_submission_monitor => crate::submissions::save_submission_monitor,
     order_execution_links => crate::submissions::order_execution_links,
+    transfer_data => crate::transfer_ops::transfer,
     maintenance_replay_report => crate::maintenance_ops::replay_report,
     maintenance_replay_observe => crate::maintenance_ops::replay_observe,
 }
