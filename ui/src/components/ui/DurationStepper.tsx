@@ -32,7 +32,7 @@ export function DurationStepper({ value, onChange, min = 0, max, disabled = fals
   const valid = empty || (value.trim() !== '' && Number.isSafeInteger(total) && total >= 0)
   const bad = invalid || !valid || (!empty && (total < min || (max !== undefined && total > max)))
   const previous = useRef({ total, trend: 1 })
-  if (valid && total !== previous.current.total)
+  if (valid && !empty && total !== previous.current.total)
     previous.current = { total, trend: total < previous.current.total ? -1 : 1 }
   const stepped = (direction: -1 | 1, step: number) => {
     if (empty) return direction > 0 ? String(step) : value
@@ -84,6 +84,8 @@ export function DurationStepper({ value, onChange, min = 0, max, disabled = fals
         {(unit === 'days' ? UNITS.slice(0, 1) : UNITS).map(({ key, label, step }) => {
           const part = draft.parts[key]
           const editing = focused === key || bad
+          const number = <NumberFlow value={empty ? previous.current.total : Number(part) || 0} className="text-ink-1" locales="zh-CN" format={FORMAT} trend={previous.current.trend}
+            spinTiming={SPIN} transformTiming={TRANSFORM} opacityTiming={OPACITY} respectMotionPreference />
           const shown = unit === 'days' || focused !== null || bad || Number(part) !== 0
             || (key === 'hours' && Number(draft.parts.days) === 0)
           return <span key={key} data-duration-unit={key} inert={!shown} aria-hidden={!shown}
@@ -92,9 +94,12 @@ export function DurationStepper({ value, onChange, min = 0, max, disabled = fals
               <label className={`flex h-8 cursor-text items-center gap-1 rounded-md px-1.5 ${focused === key ? 'bg-fill' : ''}`}>
                 <span className="relative block num" style={{ width: `${Math.max(unit === 'days' ? 6 : 2, Math.min(16, part.length))}ch` }}>
                   <span aria-hidden className={`pointer-events-none absolute inset-0 flex items-center gap-1 ${unit === 'days' ? 'justify-center' : 'justify-end'} ${editing ? 'invisible' : ''}`}>
-                    <NumberFlow value={Number(part) || 0} className={empty ? 'hidden' : 'text-ink-1'} locales="zh-CN" format={FORMAT} trend={previous.current.trend}
-                      spinTiming={SPIN} transformTiming={TRANSFORM} opacityTiming={OPACITY} respectMotionPreference />
-                    {unit === 'days' && <InkRewrite text={empty ? emptyLabel! : label} textClassName={empty ? 'text-ink-3' : 'text-[13px] text-ink-3'} />}
+                    {unit === 'days'
+                      ? <InkRewrite text={empty ? emptyLabel! : label} className="place-items-center" textClassName="text-ink-3"
+                        renderText={text => text === label
+                          ? <span className="inline-flex items-baseline gap-1">{number}<span className="text-[13px]">{label}</span></span>
+                          : text} />
+                      : number}
                   </span>
                   <input aria-label={unit === 'days' ? ariaLabel : `${ariaLabel}：${label}`} placeholder={emptyLabel} aria-describedby={describedBy} aria-invalid={bad || undefined}
                     inputMode="numeric" autoComplete="off" disabled={disabled} value={part}
