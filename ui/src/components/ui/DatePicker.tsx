@@ -10,12 +10,13 @@ interface Props {
   min?: string
   max?: string
   disabled?: boolean
+  required?: boolean
   className?: string
 }
 const ICON_BUTTON = 'inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md text-ink-3 outline-none hover:bg-fill hover:text-ink-1 focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-default disabled:opacity-30'
 
 /** 主题日历：popover 顶层避免裁剪，DOM 留在原表单中，沿用弹窗的焦点管理。 */
-export function DatePicker({ value, onChange, ariaLabel, describedBy, min, max, disabled, className = '' }: Props) {
+export function DatePicker({ value, onChange, ariaLabel, describedBy, min, max, disabled, required, className = '' }: Props) {
   const id = useId()
   const root = useRef<HTMLDivElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
@@ -108,7 +109,7 @@ export function DatePicker({ value, onChange, ariaLabel, describedBy, min, max, 
       // 真正移出组件才关闭；点击空白由原生 popover 的 light-dismiss 处理。
       if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node)) close()
     }}>
-    <input type="text" inputMode="numeric" value={value} placeholder="YYYY-MM-DD" disabled={disabled}
+    <input type="text" inputMode="numeric" value={value} placeholder="YYYY-MM-DD" disabled={disabled} required={required}
       aria-label={ariaLabel} aria-describedby={describedBy} autoComplete="off" spellCheck={false}
       onChange={event => onChange(event.target.value)}
       onKeyDown={event => { if (event.key === 'ArrowDown') { event.preventDefault(); show() } }}

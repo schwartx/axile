@@ -177,6 +177,9 @@ mod tests {
     #[test]
     fn production_performance_reads_business_facts_without_replay_tables() {
         let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("migrations/cash_flows.sql"))
+            .unwrap();
         crate::calendar::register_time_function(&connection).unwrap();
         connection.execute_batch(
             "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,execution_id TEXT,created_at_us INTEGER,execution_kind TEXT,input_id TEXT,result_staged INTEGER DEFAULT 0);

@@ -16,6 +16,7 @@ from axile.executor.termination import TERMINATION_TRIGGER_OPERATOR
 WorkerBackendCommand = Literal[
     "prepare",
     "get_account_assets",
+    "get_account_cash_flows",
     "calculate_portfolio",
     "execute_trade",
     "empty_positions",

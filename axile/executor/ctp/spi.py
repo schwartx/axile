@@ -52,6 +52,9 @@ class TraderSpi(td.CThostFtdcTraderSpi):
     def OnRspQryTradingAccount(self, row, info, request_id, is_last):
         self.owner._query_response(row, info, request_id, is_last)
 
+    def OnRspQryTransferSerial(self, row, info, request_id, is_last):
+        self.owner._query_response(row, info, request_id, is_last)
+
     def OnRspQryInvestorPosition(self, row, info, request_id, is_last):
         self.owner._query_response(row, info, request_id, is_last)
 

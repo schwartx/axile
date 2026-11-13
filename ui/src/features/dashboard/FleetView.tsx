@@ -37,12 +37,13 @@ function FleetCard({
   const gate = gateOf(item)
   // 服务端真源的在途执行：在跑时状态文案与卡边优先反映「正在执行」。
   const live = useRunning(item.account_id)
-  // 当前权益来自资产查询；有前收时日涨跌 = 当前权益 / 前收 - 1。
+  // 当前权益来自资产查询；日涨跌由服务端按已录入出入金修正。
   const equity = currentEquity(item)
   const { pct, dayLabel } = cardPerformance(item.performance, Date.now(), {
     equity,
     observedAt: item.asset_observed_at,
     previousClose: item.previous_close,
+    adjustedReturn: item.live_daily_return,
   })
   // 红涨绿跌：涨→up(红)、跌→down(绿)。
   const pctCls = pct == null ? 'text-ink-2' : pct > 0 ? 'text-up' : pct < 0 ? 'text-down' : 'text-ink-2'

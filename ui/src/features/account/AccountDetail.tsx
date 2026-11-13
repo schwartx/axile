@@ -1,3 +1,4 @@
+import { CashFlowPanel } from '@/features/account/CashFlowPanel'
 import { ArchiveAction } from '@/features/account/ArchiveAction'
 import { algorithmScheduleSummary } from '@/features/account/algorithmSchedule'
 import { shanghaiLabel } from '@/features/history/costs'
@@ -220,6 +221,7 @@ export function AccountDetail({
     equity,
     observedAt: item.asset_observed_at,
     previousClose: item.previous_close,
+    adjustedReturn: item.live_daily_return,
   })
   const holdingsCount = positionsObserved ? snapshotPositions.length : null
   const comparisonLoading = comparison.data === null && comparison.loading
@@ -372,13 +374,13 @@ export function AccountDetail({
     setRefreshingAssets(true)
     setAssetRefreshError(null)
     try {
-      await refreshAccountAssets(accountId)
+      const refreshed = await refreshAccountAssets(accountId)
       if (generation !== request.generation) return
       await Promise.all([refreshAssetSnapshots(), refreshComparison(), account.refresh()])
       if (generation !== request.generation) return
       await onDashboardRefresh?.()
       if (generation !== request.generation) return
-      toast('账户资产已刷新')
+      toast(refreshed.cash_flow_sync === 'failed' ? '资产已刷新，出入金流水同步失败，请在出入金区域重试' : '账户资产已刷新')
     } catch (e) {
       if (generation === request.generation) {
         setAssetRefreshError(e instanceof Error ? e : new Error(String(e)))
@@ -515,8 +517,9 @@ export function AccountDetail({
                     <NumberTicker value={Math.abs(pct)} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />
                   </span>
                 )}
-                <PerformanceStatus status={item.performance?.status} />
+                {item.performance?.status !== 'ready' && <PerformanceStatus status={item.performance?.status} />}
               </span>
+              <CashFlowPanel key={accountId} accountId={accountId} />
             </div>
             <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-ink-3">
               <span><AssetObservationTime observedAt={item.asset_observed_at} /></span>

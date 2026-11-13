@@ -13,7 +13,9 @@ const summary: PerformanceSummary = {
 
 test('金额和日涨跌来自同一观测，日期按上海时间判断', () => {
   expect(cardPerformance(summary, Date.parse('2026-09-07T15:59:00Z'))).toMatchObject({ equity: 117128.71, pct: -1.2, dayLabel: '今日' })
-  expect(cardPerformance(summary, Date.parse('2026-09-07T16:00:00Z')).dayLabel).toBe('2026-09-07')
+  expect(cardPerformance(summary, Date.parse('2026-09-07T16:00:00Z')).dayLabel).toBe('9月7日')
+  expect(cardPerformance(summary, Date.parse('2026-12-31T15:59:00Z')).dayLabel).toBe('9月7日')
+  expect(cardPerformance(summary, Date.parse('2026-12-31T16:00:00Z')).dayLabel).toBe('2026年9月7日')
   expect(cardPerformance().equity).toBeNull()
   expect(cardPerformance({ ...summary, account_equity: null }).equity).toBeNull()
   expect(cardPerformance({ ...summary, status: 'stale' }).equity).toBe(117128.71)
@@ -93,4 +95,10 @@ test('有前收时日涨跌用当前权益除以前收', () => {
   expect(cardPerformance(summary, now, live).pct).toBeCloseTo(1.54439)
   expect(cardPerformance(summary, now, { ...live, equity: null }).pct).toBeCloseTo(-1.2)
   expect(cardPerformance(summary, now, { ...live, previousClose: null }).pct).toBeCloseTo(-1.2)
+})
+
+test('服务端出入金修正优先于原始权益变化，未知收益不能退回未经修正的值', () => {
+  const live = { equity: 150000, observedAt: '2026-09-07T15:47:50+08:00', previousClose: 100000 }
+  expect(cardPerformance(summary, undefined, { ...live, adjustedReturn: 0 }).pct).toBe(0)
+  expect(cardPerformance(summary, undefined, { ...live, adjustedReturn: null }).pct).toBeNull()
 })

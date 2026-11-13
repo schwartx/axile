@@ -6,18 +6,22 @@ import { checkPerformance } from '@/features/history/performanceCache'
 export function cardPerformance(
   summary?: PerformanceSummary,
   now = Date.now(),
-  live?: { equity: number | null; observedAt?: string | null; previousClose?: number | null },
+  live?: { equity: number | null; observedAt?: string | null; previousClose?: number | null; adjustedReturn?: number | null },
 ) {
   const liveDay = live?.observedAt ? shanghaiDay(live.observedAt) : null
   const day = liveDay ?? (summary?.observed_at ? shanghaiDay(summary.observed_at) : null)
+  const today = shanghaiDay(new Date(now).toISOString())
   const livePct =
     live?.equity != null && live.previousClose != null && live.previousClose > 0
       ? (live.equity / live.previousClose - 1) * 100
       : null
   return {
     equity: summary?.account_equity ?? null,
-    pct: livePct ?? (summary?.account_daily_return == null ? null : summary.account_daily_return * 100),
-    dayLabel: day == null ? '日涨跌' : day === shanghaiDay(new Date(now).toISOString()) ? '今日' : day,
+    pct: live?.adjustedReturn !== undefined ? (live.adjustedReturn == null ? null : live.adjustedReturn * 100) : livePct ?? (summary?.account_daily_return == null ? null : summary.account_daily_return * 100),
+    dayLabel: day == null ? '日涨跌' : day === today ? '今日' : day.replace(
+      /^(\d+)-0?(\d+)-0?(\d+)$/,
+      (_, year, month, date) => `${year === today.slice(0, 4) ? '' : `${year}年`}${month}月${date}日`,
+    ),
   }
 }
 

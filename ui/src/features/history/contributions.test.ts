@@ -10,6 +10,20 @@ function chart(rows: Partial<ContributionObservation>[] = []): AnalysisChart {
   } as AnalysisChart
 }
 
+test('出入金从投资盈亏及未归因差额中剔除，区间起点流水不重复计算', () => {
+  const source = chart([{ idx: 0 }, { idx: 3, gross_pnl: 50 }])
+  source.result.cash_flow_adjustment = { method: 'modified_dietz', approximate: true, pending: 0, flows: [
+    { occurred_at: '2026-10-01T15:00:00', amount: 999 },
+    { occurred_at: '2026-10-02T15:00:00', amount: 100 },
+    { occurred_at: '2026-10-03T15:00:00', amount: -50 },
+  ] }
+  const result = contributionView(source, null)!
+  expect(result.accountChange).toBe(100)
+  expect(result.cashFlow).toBe(50)
+  expect(result.investmentPnl).toBe(50)
+  expect(result.unexplained).toBe(0)
+})
+
 test('roll months aggregate and closed contracts remain in rankings', () => {
   const source = chart([
     { idx: 0 }, { idx: 3, gross_pnl: 120, trades: 2 },

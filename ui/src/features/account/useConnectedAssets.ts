@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { AccountAssetSnapshot } from '@/types/api'
 import { refreshAccountAssets } from '@/lib/api/accounts'
 import { useAccountConnection } from '@/stores/liveConnection'
 
-const requests = new Map<number, Promise<unknown>>()
+const requests = new Map<number, Promise<AccountAssetSnapshot>>()
 
 /** 会话就绪后刷新一次资产；断开时只保留已存快照，不发起连接或查询。 */
 export function useConnectedAssets(accountId: number, onSaved: () => void) {
@@ -19,8 +20,11 @@ export function useConnectedAssets(accountId: number, onSaved: () => void) {
       request = refreshAccountAssets(accountId).finally(() => { requests.delete(accountId) })
       requests.set(accountId, request)
     }
-    void request.then(() => {
-      if (active) saved.current()
+    void request.then(result => {
+      if (active) {
+        saved.current()
+        if (result.cash_flow_sync === 'failed') setState({ accountId, refreshing: false, error: new Error('资产已刷新，出入金流水同步失败，请在出入金区域重试同步') })
+      }
     }).catch(error => {
       if (active) setState({ accountId, refreshing: false, error })
     }).finally(() => {

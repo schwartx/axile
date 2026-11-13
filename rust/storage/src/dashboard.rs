@@ -179,11 +179,18 @@ pub fn dashboard_inputs(connection: &Connection, account_ids: &[i64]) -> Result<
             Value::Null
         };
         let target = targets.remove(&id);
+        let observation = observations.remove(&id).unwrap_or(Value::Null);
+        let summary = performance
+            .get(id.to_string())
+            .cloned()
+            .unwrap_or(Value::Null);
+        let live_return = crate::cash_flows::live_return(connection, id, &observation, &summary)
+            .map_err(|e| e.to_string())?;
         result.insert(
             id.to_string(),
             json!({
                 "portfolio_id":row.get::<_, Option<i64>>(1).map_err(database)?,
-                "latest":latest, "observation":observations.remove(&id),
+                "latest":latest, "observation":observation,"live_daily_return":live_return,
                 "target_weights":target.as_ref().map(|target| if target["mode"] == "weight" {target["targets"].clone()} else {Value::Null}),
                 "sizing_quantities":target.as_ref().and_then(|target| target.get("sizing")).cloned(),
                 "target_mode":target.as_ref().map(|target| target["mode"].clone()).unwrap_or(json!("weight")),
@@ -344,7 +351,10 @@ mod tests {
             INSERT INTO target_weight_snapshot(id,account_id,portfolio_id,normalized_weights_kind,weights_metadata) VALUES(1,1,7,'mapping','{}');
             ").unwrap();
         reader
-            .execute_batch(include_str!("analysis/schema.sql"))
+            .execute_batch(concat!(
+                include_str!("analysis/schema.sql"),
+                include_str!("migrations/cash_flows.sql")
+            ))
             .unwrap();
         reader.execute_batch("BEGIN").unwrap();
         assert_eq!(

@@ -93,6 +93,173 @@ test('observed equity keeps number animation padding compact above the asset tim
   await page.screenshot({ path: testInfo.outputPath('compact-observed-equity.png') })
 })
 
+test('cash flow dialog opens beside daily return, saves safely and restores keyboard focus', async ({ page }, testInfo) => {
+  await page.clock.setFixedTime(new Date('2026-11-13T10:00:00+08:00'))
+  await defaults(page)
+  await mockConnectionSnapshot(page, { status: 'ready', observed_at: null, message: null, error: null })
+  await page.route('**/api/v1/account/dashboard', route => route.fulfill({ json: { data: [{
+    ...dashboardItem, total_asset: 99625.52, asset_observed_at: new Date().toISOString(),
+    performance: { status: 'ready', observed_at: '2026-11-12T15:08:00+08:00', account_equity: 99625.52, account_daily_return: -.0041, points: [] },
+  }] } }))
+  let reads = 0
+  let saves = 0
+  let saved: Record<string, unknown> | null = null
+  let failSave = true
+  let finishSave: (() => void) | undefined
+  await page.route('**/api/v1/account/7/cash-flows*', async route => {
+    if (route.request().method() === 'POST') {
+      saves++
+      if (failSave) {
+        failSave = false
+        return route.fulfill({ status: 422, json: { detail: '合成保存失败' } })
+      }
+      saved = route.request().postDataJSON()
+      await new Promise<void>(resolve => { finishSave = resolve })
+      await route.fulfill({ json: { id: 1 } })
+    } else {
+      reads++
+      await route.fulfill({ json: { data: saved ? [{ ...saved, id: 1, source: 'manual', status: 'active', revision: 1 }] : [], total: saved ? 1 : 0, currency: 'CNY', sync_supported: false } })
+    }
+  })
+  await page.goto('/e2e/errors.html?mode=outage')
+  await page.evaluate(() => document.documentElement.classList.add('dark'))
+  await page.evaluate(() => {
+    document.querySelector('main')!.classList.add('app-workspace')
+    document.documentElement.dataset.cashFlowTransitions = '0'
+    const start = document.startViewTransition.bind(document)
+    document.startViewTransition = update => {
+      document.documentElement.dataset.cashFlowTransitions = String(Number(document.documentElement.dataset.cashFlowTransitions) + 1)
+      return start(update)
+    }
+  })
+  const entry = page.getByRole('button', { name: '出入金', exact: true })
+  await expect(entry).toBeVisible()
+  expect(reads).toBe(0)
+  const performanceElement = entry.locator('..').locator(':scope > span').first()
+  const performance = (await performanceElement.boundingBox())!
+  const entryBox = (await entry.boundingBox())!
+  expect(entryBox.x).toBeGreaterThanOrEqual(performance.x + performance.width)
+  expect(entryBox.x - performance.x - performance.width).toBeLessThanOrEqual(8)
+  expect(Math.abs(entryBox.y - performance.y)).toBeLessThan(6)
+  await expect(performanceElement.locator(':scope > span')).toHaveCount(1)
+  await page.screenshot({ path: testInfo.outputPath('cash-flow-entry.png'), animations: 'disabled' })
+  await entry.click()
+  const dialog = page.getByRole('dialog', { name: /^(出入金|录入流水|修改流水)$/ })
+  await expect(dialog.getByText('暂无出入金记录。')).toBeVisible()
+  await dialog.getByRole('button', { name: '录入流水', exact: true }).click()
+  await expect(dialog).toHaveAccessibleName('录入流水')
+  await expect(dialog.getByRole('button', { name: '刷新记录' })).toHaveCount(0)
+  await expect(dialog.getByText('暂无出入金记录。')).toHaveCount(0)
+  await expect(dialog.getByRole('form', { name: '录入出入金流水' })).toBeVisible()
+  await expect(dialog.getByLabel('金额（元）')).toBeFocused()
+  await expect(dialog.getByText('元', { exact: true })).toBeVisible()
+  await dialog.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(dialog).toHaveAccessibleName('出入金')
+  await expect(dialog.getByRole('button', { name: '录入流水', exact: true })).toBeFocused()
+  expect(saved).toBeNull()
+  await dialog.getByRole('button', { name: '录入流水', exact: true }).click()
+  await expect(page.locator('html')).toHaveAttribute('data-cash-flow-transitions', '0')
+  const amountInput = dialog.getByRole('textbox', { name: '金额（元）', exact: true })
+  const magnitude = dialog.getByRole('status', { name: '金额量级' })
+  const dateInput = dialog.getByRole('textbox', { name: '发生日期（北京时间）', exact: true })
+  await expect(amountInput).toHaveAttribute('inputmode', 'decimal')
+  await expect(magnitude).toHaveText('')
+  const dateTop = (await dateInput.boundingBox())!.y
+  for (const [value, hint] of [['100', '1百元'], ['1000', '1千元'], ['10000', '1万元'], ['125000.2500', '12.500025万元'], ['100000000', '1亿元']]) {
+    await amountInput.fill(value)
+    await expect(amountInput).toHaveValue(value)
+    await expect(magnitude).toHaveText(hint)
+    expect((await dateInput.boundingBox())!.y).toBe(dateTop)
+  }
+  await amountInput.fill('125000')
+  await amountInput.press('Home')
+  await amountInput.press('ArrowRight')
+  await amountInput.press('9')
+  await expect(amountInput).toHaveValue('1925000')
+  expect(await amountInput.evaluate(input => (input as HTMLInputElement).selectionStart)).toBe(2)
+  await amountInput.press('ArrowUp')
+  await expect(amountInput).toHaveValue('1925000')
+  await dateInput.fill('2026-11-13')
+  for (const [part, value] of [['时', '09'], ['分', '30'], ['秒', '47']]) {
+    await dialog.getByLabel(`发生时间：${part}（北京时间）`, { exact: true }).fill(value)
+  }
+  for (const draft of ['', '1.', '-1', '1e3', '9'.repeat(309)]) {
+    await amountInput.fill(draft)
+    await expect(magnitude).toHaveText('')
+    expect(await amountInput.evaluate(input => (input as HTMLInputElement).checkValidity())).toBe(false)
+    await dialog.getByRole('button', { name: '保存流水', exact: true }).click()
+    expect(saves).toBe(0)
+  }
+  await amountInput.fill('125000.25')
+  await expect(magnitude).toHaveText('12.500025万元')
+  const saveButton = dialog.getByRole('button', { name: '保存流水', exact: true })
+  await dialog.getByRole('button', { name: '发生日期（北京时间），打开日历', exact: true }).click()
+  const calendar = page.getByRole('dialog', { name: '发生日期（北京时间）日历', exact: true })
+  await expect(calendar.getByRole('button', { name: '2026-11-14', exact: true })).toBeDisabled()
+  await expect(calendar.getByRole('button', { name: '下个月', exact: true })).toBeDisabled()
+  const today = calendar.getByRole('button', { name: '2026-11-13', exact: true })
+  await today.press('ArrowRight')
+  await expect(today).toBeFocused()
+  await today.click()
+  await dateInput.fill('2026-11-14')
+  await expect(dialog.getByText('发生时间不能晚于当前时间', { exact: true })).toBeVisible()
+  await expect(saveButton).toBeDisabled()
+  await dialog.getByRole('form').evaluate(form => (form as HTMLFormElement).requestSubmit())
+  expect(saves).toBe(0)
+  await dateInput.fill('2026-11-13')
+  for (const [part, value] of [['时', '10'], ['分', '00'], ['秒', '01']]) {
+    await dialog.getByLabel(`发生时间：${part}（北京时间）`, { exact: true }).fill(value)
+  }
+  await expect(dialog.getByText('发生时间不能晚于当前时间', { exact: true })).toBeVisible()
+  await expect(saveButton).toBeDisabled()
+  await page.screenshot({ path: testInfo.outputPath('cash-flow-future-time.png'), animations: 'disabled' })
+  await page.clock.setFixedTime(new Date('2026-11-13T10:00:01+08:00'))
+  await expect(saveButton).toBeEnabled()
+  await expect(dialog.getByText('发生时间不能晚于当前时间', { exact: true })).toHaveCount(0)
+  for (const [part, value] of [['时', '09'], ['分', '30'], ['秒', '47']]) {
+    await dialog.getByLabel(`发生时间：${part}（北京时间）`, { exact: true }).fill(value)
+  }
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 844 })
+    await expect(dialog.getByRole('button', { name: '保存流水', exact: true })).toBeInViewport()
+    await expect.poll(async () => (await dialog.boundingBox())!.width).toBeLessThanOrEqual(Math.min(560, width * .92) + 1)
+    expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
+    await page.screenshot({ path: testInfo.outputPath(`cash-flow-form-${width}.png`), animations: 'disabled' })
+  }
+  await page.evaluate(() => document.documentElement.classList.remove('dark'))
+  await page.screenshot({ path: testInfo.outputPath('cash-flow-form-light.png'), animations: 'disabled' })
+  await dialog.getByRole('button', { name: '保存流水', exact: true }).click()
+  await expect(dialog.getByRole('alert')).toContainText('流水操作未完成')
+  await expect(dialog).toHaveAccessibleName('录入流水')
+  await expect(dialog.getByLabel('金额（元）')).toHaveValue('125000.25')
+  await dialog.getByRole('button', { name: '保存流水', exact: true }).click()
+  await expect(dialog.getByRole('button', { name: '保存中…' })).toBeDisabled()
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeVisible()
+  expect(saved).toMatchObject({ direction: 'deposit', amount: 125000.25, occurred_at: '2026-11-13T09:30:47+08:00' })
+  finishSave!()
+  await expect(dialog).toHaveAccessibleName('出入金')
+  await expect(dialog.getByRole('form')).toBeHidden()
+  await expect(dialog.getByRole('cell', { name: '125,000.25', exact: true })).toBeVisible()
+  await expect(dialog.getByRole('button', { name: '录入流水', exact: true })).toBeFocused()
+  await dialog.getByRole('button', { name: '修改', exact: true }).click()
+  await expect(dialog).toHaveAccessibleName('修改流水')
+  await expect(dialog.getByRole('form', { name: '修改出入金流水' })).toBeVisible()
+  await expect(dialog.getByLabel('金额（元）')).toHaveValue('125000.25')
+  await expect(dialog.getByRole('textbox', { name: '发生日期（北京时间）', exact: true })).toHaveValue('2026-11-13')
+  await expect(dialog.getByLabel('发生时间：秒（北京时间）', { exact: true })).toHaveValue('47')
+  await dialog.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(dialog.getByRole('form')).toBeHidden()
+  await expect(page.locator('html')).toHaveAttribute('data-cash-flow-transitions', '0')
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+  await expect(entry).toBeFocused()
+  await entry.click()
+  await expect(dialog).toHaveAccessibleName('出入金')
+  await expect(dialog.getByRole('form')).toHaveCount(0)
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+})
+
 test('all first-read network failures share one global notice and recover without writes', async ({ page }) => {
   await defaults(page)
   let offline = true

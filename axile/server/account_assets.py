@@ -43,7 +43,20 @@ async def _refresh_and_save(account: AccountContext) -> dict[str, Any]:
             raise ValueError("渠道未返回可信账户资产")
         payload = assets.model_dump(mode="json")
         snapshot = await save_manual_asset_snapshot(account.id, payload)
+        from axile.channels import get_channel
+        from axile.server.account_cash_flows import sync_cash_flows
+
+        cash_flow_sync = "unsupported"
+        # shortcut: 目前随资产刷新同步；需要持续采集时再接渠道推送或独立调度。
+        if get_channel(str(account.trade_channel)).descriptor.cash_flow_sync:
+            try:
+                await sync_cash_flows(account)
+                cash_flow_sync = "updated"
+            except Exception:
+                logger.exception("资产已刷新，但账户流水同步失败 account_id={}", account.id)
+                cash_flow_sync = "failed"
         return {
+            "cash_flow_sync": cash_flow_sync,
             "id": snapshot["id"],
             "account_id": snapshot["account_id"],
             "assets": payload,

@@ -7,7 +7,7 @@ use rusqlite::{params, types::Value as SqlValue, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::Path;
-pub(crate) const LOGIC_VERSION: &str = "26";
+pub(crate) const LOGIC_VERSION: &str = "27";
 pub(crate) const TABLES: [&str; 5] = [
     "analysis_state",
     "analysis_replay_position",

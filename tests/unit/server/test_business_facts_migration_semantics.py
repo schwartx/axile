@@ -1098,7 +1098,7 @@ def test_failed_migration_restores_summary_and_notification_evidence_before_retr
             # 版本落盘时失败，已转换的事实、摘要、通知引用和 DDL 必须一并回滚。
             connection.exec_driver_sql(
                 "CREATE TRIGGER fail_after_backfill BEFORE UPDATE OF version_num ON alembic_version "
-                "WHEN NEW.version_num='0036' "
+                "WHEN NEW.version_num='0037' "
                 "BEGIN SELECT RAISE(ABORT,'synthetic evidence verification failure'); END"
             )
             tables = {

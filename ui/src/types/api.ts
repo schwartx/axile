@@ -297,6 +297,12 @@ export interface PerformancePoint {
 }
 
 export interface AccountPerformance {
+  cash_flow_adjustment?: {
+    method: 'modified_dietz'
+    approximate: boolean
+    pending: number
+    flows: { occurred_at: string; amount: number }[]
+  }
   backtest_included: boolean
   settings: PerformanceSettings
   engine_version: string
@@ -443,6 +449,7 @@ export interface AccountDashboardItem {
   asset_observed_at?: string | null
   /** 该观测日之前的绩效日末权益；无观测或无更早绩效时为 null。 */
   previous_close?: number | null
+  live_daily_return?: number | null
   /** 最近一次执行是否成功（1/0）；无记录为 null。 */
   last_is_success: number | null
   last_exec_at: string | null
@@ -647,6 +654,7 @@ export interface AccountAssetSnapshot {
   account_id: number
   assets: AccountAssets
   source: 'execution' | 'manual'
+  cash_flow_sync?: 'updated' | 'failed' | 'unsupported'
   execution_id: string | null
   created_at: string
 }

@@ -11,6 +11,7 @@ pub(crate) mod audit_ops;
 pub(crate) mod business_detail;
 pub(crate) mod business_facts_ops;
 pub mod calendar;
+pub(crate) mod cash_flows;
 pub(crate) mod connection_state;
 mod contributions;
 pub(crate) mod control_audit;

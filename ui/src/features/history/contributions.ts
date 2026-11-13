@@ -1,3 +1,4 @@
+import { shanghaiTime } from '@/features/history/costs'
 import type { AnalysisChart, ContributionObservation } from '@/lib/api/performance'
 import { pointTime, type ChartSelection } from '@/features/history/chartModel'
 
@@ -93,12 +94,17 @@ export function contributionView(chart: AnalysisChart, selection: ChartSelection
   const groups = groupSeries(contractSeries(chart.contributions ?? [], start, end), end - start + 1)
   const currencies = new Set(groups.map(g => g.currency))
   const accountChange = difference(points[end].account_equity, points[start].account_equity)
+  const cashFlow = (chart.result.cash_flow_adjustment?.flows ?? []).reduce((sum, flow) => {
+    const time = shanghaiTime(flow.occurred_at)
+    return time > pointTime(points[start]) && time <= pointTime(points[end]) ? sum + flow.amount : sum
+  }, 0)
+  const investmentPnl = accountChange == null ? null : accountChange - cashFlow
   const knownGross = groups.reduce((a, r) => a + (r.gross ?? 0), 0)
   const knownFees = groups.reduce((a, r) => a + r.fee, 0)
   const comparable = groups.length > 0 && currencies.size === 1 && !currencies.has(null)
-  return { start, end, points: points.slice(start, end + 1), groups, accountChange,
+  return { start, end, points: points.slice(start, end + 1), groups, accountChange, cashFlow, investmentPnl,
     knownGross: comparable ? knownGross : null, knownFees: comparable ? knownFees : null,
-    unexplained: comparable && accountChange != null ? accountChange - knownGross + knownFees : null,
+    unexplained: comparable && investmentPnl != null ? investmentPnl - knownGross + knownFees : null,
     currency: currencies.size === 1 ? groups[0]?.currency : null,
   }
 }

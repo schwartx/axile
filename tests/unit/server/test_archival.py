@@ -190,12 +190,12 @@ def test_0035_upgrade_preserves_data_and_archives_block_downgrade(tmp_path):
         "INSERT INTO portfolio(id,name,market,custom_calc_py_code,created_at_us,updated_at_us) VALUES(7,'旧组合','期货',?,0,0)",
         (CODE,),
     )
-    assert call(path, "migration_upgrade")["public"] == "0036"
+    assert call(path, "migration_upgrade")["public"] == "0037"
     assert runtime_rows(path, "SELECT name,archived_at_us FROM portfolio")[0][:] == ("旧组合", None)
     call(path, "portfolio_operation", op="archive", portfolio_id=7, updated_at=NOW)
     with pytest.raises(_core.NativeError, match="无法无损降级"):
         call(path, "migration_downgrade", public="0035")
-    assert call(path, "migration_current")["public"] == "0036"
+    assert call(path, "migration_current")["public"] == "0037"
     call(path, "portfolio_operation", op="restore", portfolio_id=7, updated_at=NOW)
     assert call(path, "migration_downgrade", public="0035")["public"] == "0035"
 

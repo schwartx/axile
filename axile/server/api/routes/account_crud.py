@@ -408,7 +408,7 @@ async def account_dashboard(sched: SchedDep, archived: bool = False, include_arc
     Notes
     -----
     当前金额、持仓与偏离来自有效资产观测；日收益与曲线来自已发布历史绩效。
-    ``previous_close`` 是该观测日之前的绩效日末，供卡片用当前权益算日涨跌。
+    ``previous_close`` 是该观测日之前的绩效日末，保留原始前收；卡片日涨跌使用原生层扣除出入金后的 live_daily_return。
     执行记录、资产、目标与绩效均批量读取，避免逐账户查询。
     """
     context = await _account_operation(
@@ -536,6 +536,7 @@ async def account_dashboard(sched: SchedDep, archived: bool = False, include_arc
                 "performance": performance,
                 "asset_observed_at": latest_snapshot["created_at"] if latest_snapshot is not None else None,
                 "previous_close": previous_close,
+                "live_daily_return": persisted.get("live_daily_return"),
                 "last_is_success": latest["is_success"] if latest is not None else None,
                 "last_exec_at": latest["created_at"] if latest is not None else None,
                 "last_output_status": last_output_status,
