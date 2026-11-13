@@ -618,6 +618,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         PyTuple::new(m.py(), EVIDENCE_INPUT_STAGES)?,
     )?;
     m.add_class::<Store>()?;
+    m.add("TRANSFER_PACKAGE_VERSION", 1)?;
     m.add_class::<EvidenceCancellation>()?;
     crate::control_policy_python::register(m)?;
     crate::logging_python::register(m)?;

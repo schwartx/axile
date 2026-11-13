@@ -16,6 +16,9 @@ base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
 chrono-tz = "0.10"
 libc = "0.2"
+fs2 = "0.4"
+tempfile = "3"
+zip = { version = "=9.0.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 mcap = { version = "=0.26.0", default-features = false, features = ["zstd"] }
 pyo3 = { version = "0.29.3", features = ["abi3-py312", "extension-module"], optional = true }
 rusqlite = { version = "0.31", features = ["bundled", "functions", "backup", "hooks"] }
@@ -25,7 +28,7 @@ serde_path_to_error = "0.1"
 sha2 = "0.10"
 simdutf8 = "=0.1.5"
 regex = "1"
-uuid = { version = "=1.11.0", default-features = false, features = ["std", "v5"] }
+uuid = { version = "=1.11.0", default-features = false, features = ["std", "v4", "v5"] }
 zstd = "0.14.3"
 
 [profile.release]

@@ -4,8 +4,6 @@ import hashlib
 import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
-from types import SimpleNamespace
 from zipfile import ZipFile
 
 import pytest
@@ -88,11 +86,6 @@ def test_range_and_path_validation(peers):
     seed(source)
     _, m = transfer.export_package(transfer.TransferPlan(start=datetime.now(UTC) - timedelta(days=1)))
     assert m["executions"] == []
-    for name in ("../outside", "replay/account-1/../../outside.mcap", "/etc/passwd"):
-        m["files"][name] = {"size": 1, "sha256": "fake"}
-        with pytest.raises(ValueError):
-            transfer.validate_manifest(m)
-        del m["files"][name]
 
 
 def test_other_origin_rejected_without_changes(peers, monkeypatch):
@@ -241,32 +234,23 @@ def test_live_recording_between_sealed_parts_is_not_removed(peers, monkeypatch):
     writer.finish()
 
 
-@pytest.mark.parametrize("failure", ["budget", "disk", "archive", "snapshot"])
-def test_failed_exports_remove_only_their_own_staging(peers, monkeypatch, failure):
+@pytest.mark.parametrize("failure", ["code_directory", "future_range"])
+def test_failed_exports_remove_only_their_own_staging(peers, monkeypatch, tmp_path, failure):
+    from axile.server import app
+
     source, _ = peers
     seed(source)
     previous, _ = transfer.export_package(transfer.TransferPlan())
-    if failure == "budget":
-        monkeypatch.setattr(transfer, "MAX_BYTES", 1)
-    elif failure == "disk":
-        monkeypatch.setattr(transfer.shutil, "disk_usage", lambda _: SimpleNamespace(free=0))
-    elif failure == "archive":
-
-        def fail_archive(*args, **kwargs):
-            Path(args[0]).write_bytes(b"partial")
-            raise OSError("archive failed")
-
-        monkeypatch.setattr(transfer, "ZipFile", fail_archive)
+    plan = transfer.TransferPlan()
+    if failure == "code_directory":
+        invalid_directory = tmp_path / "not-a-directory"
+        invalid_directory.write_text("invalid")
+        monkeypatch.setattr(app, "_algorithm_directories", [invalid_directory])
     else:
-
-        def fail_snapshot(operation, request, **kwargs):
-            Path(request["snapshot"]).write_bytes(b"partial")
-            raise RuntimeError("snapshot failed")
-
-        monkeypatch.setattr(transfer, "native_operation_sync", fail_snapshot)
+        plan = transfer.TransferPlan(end=datetime.now(UTC) + timedelta(days=1))
     for _ in range(2):
-        with pytest.raises((ValueError, OSError, RuntimeError)):
-            transfer.export_package(transfer.TransferPlan())
+        with pytest.raises(ValueError):
+            transfer.export_package(plan)
     assert list((transfer.root() / "outbox").iterdir()) == [previous.parent]
     assert previous.is_file()
     with sqlite3.connect(source) as c:
@@ -333,7 +317,10 @@ def test_early_morning_range_includes_replay(peers, monkeypatch, offset):
     received = json.loads(_core.execution_replay_manifest(str(target.parent / "replay"), 1, "exec-1", None))
     assert received["availability"] == "available"
     monkeypatch.setattr(transfer, "database_path", lambda: str(source))
-    assert transfer.prune_recordings(manifest, start + timedelta(days=1)) > 0
+    result = transfer._operation(
+        "prune_recordings", manifest=manifest, cutoff_us=int((start + timedelta(days=1)).timestamp() * 1_000_000)
+    )
+    assert result["removed_recordings"] > 0
 
 
 @pytest.mark.parametrize("cleaned,valid", [(False, True), (True, True), (False, False)])
@@ -357,6 +344,9 @@ def test_send_resumes_saved_receipt_without_network(peers, monkeypatch, cleaned,
         transfer.write_json(
             package.parent / "receipt.json", receipt if valid else {**receipt, "manifest_sha256": "invalid"}
         )
+
+    # 兼容旧版本在清理数据包后、删除 pending 前中断的磁盘状态。
+    transfer.write_json(pending, {"key": key, "batch": manifest["batch"]})
 
     def reject_network(**kwargs):
         pytest.fail("已收到确认的批次不应再次访问接收端")
@@ -444,3 +434,65 @@ def test_receiver_changes_are_not_overwritten(peers, monkeypatch, local_change):
         )
         assert c.execute(f"SELECT {column} FROM {table} WHERE id=?", (identity,)).fetchone() == ("receiver",)
         assert c.execute("SELECT count(*) FROM executerecord").fetchone() == (1,)
+
+
+def test_python_v1_zip_and_receipt_are_compatible(peers, monkeypatch, tmp_path):
+    from axile.server import app
+
+    source, target = peers
+    seed(source)
+    seed(source, 2)
+    code = tmp_path / "algorithms"
+    code.mkdir()
+    (code / "recording-策略😀-000001.py").write_text("# legacy unicode\n")
+    monkeypatch.setattr(app, "_algorithm_directories", [code])
+    package, manifest = transfer.export_package(transfer.TransferPlan())
+    legacy = tmp_path / "python-v1.axile"
+    with ZipFile(package) as src, ZipFile(legacy, "w") as out:
+        for name, info in manifest["files"].items():
+            data = src.read(name)
+            assert len(data) == info["size"]
+            assert hashlib.sha256(data).hexdigest() == info["sha256"]
+            out.writestr(name, data)
+        out.writestr("manifest.json", json.dumps(manifest))
+    monkeypatch.setattr(transfer, "database_path", lambda: str(target))
+    receipt = transfer.import_package(legacy)
+    assert receipt["manifest_sha256"] == hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
+    monkeypatch.setattr(transfer, "database_path", lambda: str(source))
+    assert (
+        transfer.acknowledge(receipt, transfer.TransferPlan(execution_days=1, replay_days=1))["removed_executions"] == 1
+    )
+
+
+@pytest.mark.parametrize("corruption", ["traversal", "duplicate", "budget", "symlink"])
+def test_invalid_archive_never_commits_or_issues_receipt(peers, monkeypatch, tmp_path, corruption):
+    from zipfile import ZipInfo
+
+    source, target = peers
+    seed(source)
+    package, manifest = transfer.export_package(transfer.TransferPlan())
+    corrupt = tmp_path / "invalid.axile"
+    with ZipFile(package) as src, ZipFile(corrupt, "w") as out:
+        for name in manifest["files"]:
+            out.writestr(name, src.read(name))
+        if corruption == "duplicate":
+            with pytest.warns(UserWarning, match="Duplicate name"):
+                out.writestr("database.sqlite3", src.read("database.sqlite3"))
+        elif corruption == "budget":
+            manifest["files"]["database.sqlite3"]["size"] = transfer.MAX_BYTES + 1
+        else:
+            name = "../outside" if corruption == "traversal" else "replay/account-1/2026-01-01/link.mcap"
+            manifest["files"][name] = {"size": 1, "sha256": hashlib.sha256(b"x").hexdigest()}
+            info = ZipInfo(name)
+            if corruption == "symlink":
+                info.create_system = 3
+                info.external_attr = 0o120777 << 16
+            out.writestr(info, b"x")
+        out.writestr("manifest.json", json.dumps(manifest))
+    monkeypatch.setattr(transfer, "database_path", lambda: str(target))
+    with pytest.raises(ValueError):
+        transfer.import_package(corrupt)
+    with sqlite3.connect(target) as c:
+        assert c.execute("SELECT count(*) FROM account").fetchone() == (0,)
+    assert not list(transfer.root().glob("receipt-*.json"))
+    assert not (target.parent / "outside").exists()

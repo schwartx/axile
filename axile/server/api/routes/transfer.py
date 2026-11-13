@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import secrets
 import tempfile
@@ -12,6 +11,7 @@ from fastapi import APIRouter, File, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from axile.server import data_transfer as service
+from axile.server.native_store import native_call
 
 router = APIRouter(prefix="/transfer", tags=["transfer"])
 
@@ -53,9 +53,9 @@ async def export(plan: dict):
     """导出离线传送包。"""
     try:
         async with service._lock:
-            package, _ = await asyncio.to_thread(service.export_package, _plan(plan))
+            package, _ = await native_call(service.export_package, _plan(plan))
         return FileResponse(package, filename=package.name, media_type="application/octet-stream")
-    except (ValueError, RuntimeError) as exc:
+    except Exception as exc:
         raise HTTPException(409, "无法导出，请检查时间范围与数据库版本") from exc
 
 
@@ -72,7 +72,7 @@ async def receive_file(file: UploadFile) -> dict:
                         if total > service.MAX_BYTES:
                             raise HTTPException(413, "数据包过大，请缩短范围")
                         destination.write(data)
-                return await asyncio.to_thread(service.import_package, path)
+                return await native_call(service.import_package, path)
             except HTTPException:
                 raise
             except Exception as exc:
@@ -120,7 +120,7 @@ async def acknowledge(receipt: dict):
     """验证确认并按保留规则清理已传送数据。"""
     try:
         async with service._lock:
-            return await asyncio.to_thread(
+            return await native_call(
                 service.acknowledge, receipt, service.TransferPlan.model_validate(service.settings()["plan"])
             )
     except Exception as exc:

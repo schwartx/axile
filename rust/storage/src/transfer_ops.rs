@@ -5,6 +5,10 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
+mod files;
+mod package;
+mod state;
+
 fn err(e: impl std::fmt::Display) -> AnalysisError {
     AnalysisError::new("TRANSFER", e.to_string())
 }
@@ -63,6 +67,11 @@ fn records(c: &Connection) -> Result<Value, AnalysisError> {
 }
 pub fn transfer(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     match text(request, "action")? {
+        "export_package" => package::export(path, request),
+        "import_package" => package::import(path, request),
+        "acknowledge" => state::acknowledge(path, request),
+        "prepare_send" => state::prepare(path, request),
+        "prune_recordings" => state::prune_recordings_request(path, request),
         "backup_index" => {
             snapshot_file(Path::new(path), Path::new(text(request, "snapshot")?))?;
             Ok(json!({"ok":true}))

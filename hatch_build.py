@@ -28,6 +28,8 @@ if getattr(module, 'PUBLIC_HEAD', None) != '0037':
     raise RuntimeError('Native extension requires public migration head 0037')
 if getattr(module, 'EXECUTION_REPLAY_SCHEMA', None) != 1:
     raise RuntimeError('Native extension requires execution replay schema 1')
+if getattr(module, 'TRANSFER_PACKAGE_VERSION', None) != 1:
+    raise RuntimeError('Native extension requires transfer package API 1')
 required = (
     'Store', 'cash_flow_operation', 'close_database', 'journal', 'activity_symbols', 'execution_records',
     'execution_record_detail', 'asset_snapshots',
