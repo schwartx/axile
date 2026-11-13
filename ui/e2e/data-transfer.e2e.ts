@@ -12,6 +12,7 @@ test('advanced transfer controls preserve ranges, scheduling, retention and the 
     }
     return route.fulfill({ json: { plan, last_run: null } })
   })
+  await page.route('**/api/v1/transfer/check-source', route => route.fulfill({ json: { source_id: 'remote' } }))
   await page.route('**/api/v1/transfer/export', route => route.fulfill({ body: 'fixture-package' }))
   await page.goto('/e2e/data-transfer.html')
   const database = page.getByPlaceholder('已配置 · 留空保持不变')
@@ -23,6 +24,7 @@ test('advanced transfer controls preserve ranges, scheduling, retention and the 
   const range = dialog.getByRole('button', { name: '指定范围', exact: true })
   const automatic = dialog.getByRole('switch', { name: '自动拉取' })
   const days = dialog.getByRole('textbox', { name: '执行记录保留天数' })
+  await expect(dialog.getByLabel('来源端地址')).toHaveAttribute('placeholder', 'http(s)://host:port')
   await expect(save).toBeEnabled()
   await expect(automatic).not.toBeChecked()
   await expect(days).toHaveAttribute('placeholder', '不清理')
@@ -183,8 +185,10 @@ test('advanced transfer controls preserve ranges, scheduling, retention and the 
   await replay.locator('[data-duration-stepper]').scrollIntoViewIfNeeded()
   const retentionBounds = (await retention.locator('[data-duration-stepper]').boundingBox())!
   const replayBounds = (await replay.locator('[data-duration-stepper]').boundingBox())!
-  expect(replayBounds.y).toBeGreaterThan(retentionBounds.y)
-  expect(replayBounds.x + replayBounds.width).toBeCloseTo(retentionBounds.x + retentionBounds.width, 0)
+  expect(replayBounds.y).toBeCloseTo(retentionBounds.y, 0)
+  expect(replayBounds.x).toBeGreaterThan(retentionBounds.x + retentionBounds.width)
+  const labelBounds = (await retention.locator(':scope > span').boundingBox())!
+  expect(labelBounds.y + labelBounds.height / 2).toBeCloseTo(retentionBounds.y + retentionBounds.height / 2, 0)
   const footerY = (await save.boundingBox())!.y
   await dialog.getByLabel('来源端地址').scrollIntoViewIfNeeded()
   expect((await save.boundingBox())!.y).toBeCloseTo(footerY, 0)
@@ -252,4 +256,43 @@ test('advanced transfer controls preserve ranges, scheduling, retention and the 
   await page.screenshot({ path: test.info().outputPath('retention-mobile.png'), animations: 'disabled' })
   await page.emulateMedia({ colorScheme: 'light' })
   await page.screenshot({ path: test.info().outputPath('retention-mobile-light.png'), animations: 'disabled' })
+})
+
+
+test('source detection debounces edits, ignores stale results and reports failures without pulling', async ({ page }) => {
+  let checks = 0
+  let pulls = 0
+  let finishOld = () => {}
+  const old = new Promise<void>(resolve => { finishOld = resolve })
+  await page.route('**/api/v1/transfer/settings', route => route.fulfill({ json: { plan: {}, last_run: null } }))
+  await page.route('**/api/v1/transfer/pull', route => { pulls++; return route.fulfill({ json: { batch: 'unexpected' } }) })
+  await page.route('**/api/v1/transfer/check-source', async route => {
+    checks++
+    const { source_url } = route.request().postDataJSON()
+    if (source_url === 'http://old.test') { await old; return route.fulfill({ status: 409, json: { detail: '旧地址失败' } }) }
+    if (source_url === 'http://offline.test') return route.fulfill({ status: 409, json: { detail: '无法连接来源端，请检查地址、端口和网络' } })
+    return route.fulfill({ json: { source_id: 'remote' } })
+  })
+  await page.goto('/e2e/data-transfer.html')
+  await page.getByRole('button', { name: '打开数据传送' }).click()
+  const dialog = page.getByRole('dialog', { name: '数据传送', exact: true })
+  const source = dialog.getByLabel('来源端地址')
+  const detection = dialog.locator('p[aria-live="polite"] .ink-rewrite-slot > span:not([aria-hidden])')
+  await source.fill('host:port')
+  await expect(detection).toHaveText('请输入有效的 http:// 或 https:// 地址')
+  await source.fill('http://intermediate.test')
+  await source.fill('http://old.test')
+  await expect.poll(() => checks).toBe(1)
+  await expect(detection).toHaveText('正在检测来源端…')
+  await source.fill('https://source.test:8443/base')
+  await expect(detection).toHaveText('已连接来源端')
+  finishOld()
+  await source.fill('http://offline.test')
+  await expect(detection).toHaveText('无法连接来源端，请检查地址、端口和网络')
+  await expect(dialog.getByText('旧地址失败', { exact: true })).toHaveCount(0)
+  await source.fill('http://source.test:1419')
+  await expect(detection).toHaveText('已连接来源端')
+  expect(checks).toBe(4)
+  expect(pulls).toBe(0)
+  await dialog.screenshot({ path: test.info().outputPath('source-detection.png'), animations: 'disabled' })
 })

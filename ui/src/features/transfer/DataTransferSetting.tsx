@@ -6,6 +6,7 @@ import { AccessibilitySwitch } from '@/components/ui/AccessibilitySwitch'
 import { DatePicker } from '@/components/ui/DatePicker'
 import { MacTimePicker } from '@/components/ui/MacTimePicker'
 import { Segmented } from '@/components/ui/Segmented'
+import { TransferSourceInput } from '@/features/transfer/TransferSourceInput'
 import { DurationStepper } from '@/components/ui/DurationStepper'
 import { positiveInteger, transferDraft, transferPlan, type TransferDraft, type TransferPlan } from '@/features/transfer/transferForm'
 import { apiGet, apiSend, apiUpload, apiErrorFromBody } from '@/lib/api/client'
@@ -72,9 +73,8 @@ function DataTransferModal({ open, onClose }: { open: boolean; onClose: () => vo
     </div>}>
     <p className="mt-2 text-[14px] text-ink-3">从来源端拉取数据并在本机累积历史，来源端收到确认后才按规则清理。</p>
     <fieldset disabled={disabled} className="mt-5 space-y-5 disabled:opacity-70">
-      <label className="block text-[14px] text-ink-2">来源端地址
-        <input type="url" className={`${TEXT} mt-2`} value={draft.source_url} placeholder="https://host:port" onChange={e => patch({ source_url: e.target.value })} />
-      </label>
+      <TransferSourceInput value={draft.source_url} disabled={disabled}
+        onChange={source_url => patch({ source_url })} />
       <section>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h3 className="text-[14px] font-medium">时间范围</h3>
@@ -128,10 +128,10 @@ function DataTransferModal({ open, onClose }: { open: boolean; onClose: () => vo
       <section className="border-t border-line pt-4">
         <h3 className="text-[14px] font-medium">源端保留</h3>
         <p className="mt-1 text-xs text-ink-3">仅清理已确认接收的源端数据；留空则不清理</p>
-        <div className="mt-3 grid grid-cols-[max-content_minmax(0,1fr)] items-center gap-x-4 gap-y-3">
-          {retentionFields.map(({ key, label }) => <div key={key} role="group" aria-label={`${label}保留`} className="contents">
-            <span className="text-[13px] text-ink-2">{label}</span>
-            <div className="justify-self-end"><DurationStepper value={draft[key]} unit="days" min={1} emptyLabel="不清理" ariaLabel={`${label}保留天数`}
+        <div className="mt-3 grid gap-4 md:grid-cols-2">
+          {retentionFields.map(({ key, label }) => <div key={key} role="group" aria-label={`${label}保留`} className="flex items-center gap-3">
+            <span className="shrink-0 text-[13px] text-ink-2">{label}</span>
+            <div className="max-w-full"><DurationStepper value={draft[key]} unit="days" min={1} emptyLabel="不清理" ariaLabel={`${label}保留天数`}
               invalid={!!draft[key].trim() && !positiveInteger(draft[key])} onChange={value => patch({ [key]: value })} /></div>
           </div>)}
         </div>

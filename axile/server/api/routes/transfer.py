@@ -97,6 +97,16 @@ def identity():
     return {"source_id": value["source_id"]}
 
 
+@router.post("/check-source")
+async def check_source(plan: dict):
+    """检测来源端连接和身份，不拉取数据。"""
+    value = _plan(plan)
+    try:
+        return await service.check_source(value.source_url)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 @router.post("/pull")
 async def pull(plan: dict):
     """主动从来源端拉取数据并交回接收确认。"""

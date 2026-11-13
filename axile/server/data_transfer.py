@@ -42,9 +42,14 @@ class TransferPlan(BaseModel):
         if self.start and self.end and self.start >= self.end:
             raise ValueError("结束时间必须晚于开始时间")
         if self.source_url:
-            url = httpx.URL(self.source_url)
+            try:
+                url = httpx.URL(self.source_url)
+            except httpx.InvalidURL:
+                raise ValueError("来源端地址无效") from None
             if url.scheme not in {"https", "http"} or not url.host or url.userinfo or url.query or url.fragment:
                 raise ValueError("来源端地址无效")
+            if url.port is not None and not 1 <= url.port <= 65535:
+                raise ValueError("来源端端口无效")
         if self.every_hours and not self.source_url:
             raise ValueError("定时拉取需要来源端地址")
         return self
@@ -160,6 +165,32 @@ def prepare_package(plan: TransferPlan, requester: str) -> Path:
         acknowledge(batch["receipt"], plan)
         batch = _operation("prepare_package", **request)
     return Path(batch["package"])
+
+
+async def check_source(source_url: str) -> dict:
+    """只检查来源端身份与连接，不生成数据包或触发清理。"""
+    if not source_url:
+        raise ValueError("请填写来源端地址")
+    try:
+        async with httpx.AsyncClient(timeout=5, follow_redirects=False) as client:
+            response = await client.get(source_url.rstrip("/") + "/api/v1/transfer/identity")
+            response.raise_for_status()
+    except httpx.TimeoutException:
+        raise ValueError("检测超时，请检查来源端地址和网络") from None
+    except httpx.HTTPStatusError as exc:
+        raise ValueError(f"来源端返回 HTTP {exc.response.status_code}，请检查地址及数据传送接口") from None
+    except httpx.RequestError:
+        raise ValueError("无法连接来源端，请检查地址、端口和网络") from None
+    try:
+        value = response.json()
+    except ValueError:
+        value = None
+    source_id = value.get("source_id") if isinstance(value, dict) else None
+    if not isinstance(source_id, str) or not source_id.strip():
+        raise ValueError("来源端未提供有效的数据传送身份，请检查地址和服务版本")
+    if source_id == settings()["source_id"]:
+        raise ValueError("来源端不能是本机")
+    return {"source_id": source_id}
 
 
 async def pull(plan: TransferPlan) -> dict:
