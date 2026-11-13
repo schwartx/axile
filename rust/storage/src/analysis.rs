@@ -1,5 +1,6 @@
 //! Backend analysis: typed current state and daily outputs, without frozen fact copies.
 pub(crate) mod contribution;
+mod inputs;
 mod read;
 use crate::error::AnalysisError;
 pub(crate) use read::{chart, costs, detail, status, summaries};
@@ -277,6 +278,7 @@ pub(crate) fn query(path: &str, q: &Value) -> Result<Value, AnalysisError> {
         "status" => status(c, id),
         "chart" => chart(c, id, version, key),
         "costs" => costs(c, id, version, key, q),
+        "inputs" => inputs::inputs(c, id, version, key, q),
         "detail" => {
             let record = q["record_id"]
                 .as_i64()

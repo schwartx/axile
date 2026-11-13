@@ -15,6 +15,7 @@ pub(crate) struct Trade {
     pub quantity: Option<f64>,
     pub price: Option<f64>,
     pub reference: Option<f64>,
+    pub multiplier: Option<f64>,
     pub reference_source: Option<&'static str>,
     pub value: Option<f64>,
     pub cost: Option<f64>,
@@ -46,7 +47,7 @@ impl<'a> TradeReader<'a> {
              JOIN business_trade_collection c ON c.record_id=s.record_id AND c.parent_path=s.path AND c.state='array'
              JOIN business_trade t ON t.record_id=c.record_id AND t.collection_path=c.path
              LEFT JOIN execution_symbol_sizing z ON z.record_id=s.record_id AND z.path=s.path || '/sizing'
-             WHERE s.record_id=?1 ORDER BY s.ordinal,t.ordinal"
+             WHERE s.record_id=?1 ORDER BY s.ordinal,t.ordinal LIMIT ?2"
         )? })
     }
 
@@ -56,12 +57,22 @@ impl<'a> TradeReader<'a> {
         created_at: i64,
         prices: &std::collections::BTreeMap<String, Prices>,
     ) -> Result<Vec<Trade>, String> {
+        self.read_limit(record, created_at, prices, -1)
+    }
+
+    pub(crate) fn read_limit(
+        &mut self,
+        record: i64,
+        created_at: i64,
+        prices: &std::collections::BTreeMap<String, Prices>,
+        limit: i64,
+    ) -> Result<Vec<Trade>, String> {
         let fallback = timestamp(created_at).ok_or_else(|| {
             format!("SOURCE_FACTS_INCOMPLETE: record {record}: invalid execution time")
         })?;
         let rows = self
             .statement
-            .query_map([record], |row| {
+            .query_map([record, limit], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, Option<i64>>(1)?,
@@ -100,13 +111,8 @@ impl<'a> TradeReader<'a> {
             let multiplier = positive(multiplier);
             let reference = prices.get(&symbol).and_then(|prices| prices.cost);
             let reference_source = prices.get(&symbol).and_then(|prices| prices.cost_source);
-            let difference =
-                price
-                    .zip(reference)
-                    .filter(|_| side != "none")
-                    .map(|(price, reference)| {
-                        (price - reference) * if side == "buy" { 1.0 } else { -1.0 }
-                    });
+            let (value, cost, loss_bp) =
+                axile_analysis_core::trade_value(price, quantity, multiplier, reference, &side);
             let parsed_time = raw_time.and_then(timestamp);
             let estimated = parsed_time.is_none();
             let (time, day) = parsed_time.unwrap_or_else(|| fallback.clone());
@@ -127,17 +133,10 @@ impl<'a> TradeReader<'a> {
                 price,
                 reference,
                 reference_source,
-                value: price
-                    .zip(quantity)
-                    .zip(multiplier)
-                    .map(|((price, quantity), multiplier)| price * quantity * multiplier),
-                cost: difference
-                    .zip(quantity)
-                    .zip(multiplier)
-                    .map(|((difference, quantity), multiplier)| difference * quantity * multiplier),
-                loss_bp: difference
-                    .zip(reference)
-                    .map(|(difference, reference)| difference / reference * 1e4),
+                multiplier,
+                value,
+                cost,
+                loss_bp,
                 fee,
                 fee_currency: currency.filter(|value| !value.trim().is_empty()),
             })

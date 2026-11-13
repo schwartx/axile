@@ -1,5 +1,6 @@
 """回测设置和分析计算使用同一个事实失效事务。"""
 
+import json
 from unittest.mock import AsyncMock
 
 from fastapi import FastAPI
@@ -11,7 +12,7 @@ from axile.server.api.routes import account_performance as routes
 
 def test_backtest_save_normalizes_settings_in_one_native_call(monkeypatch):
     result = {"backtest_weight_type": "cs", "backtest_fee_rate": 0.01}
-    write = AsyncMock(return_value=result)
+    write = AsyncMock(return_value=json.dumps(result).encode())
     monkeypatch.setattr(routes, "native_operation", write)
     monkeypatch.setattr(routes, "now_str", lambda: "2026-01-01T09:00:00")
     app = FastAPI()

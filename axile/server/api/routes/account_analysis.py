@@ -1,6 +1,6 @@
 """后端增量分析；按事实修订号读取，不提供旧快照接口。"""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Path, Query
 from pydantic import BaseModel, ConfigDict, Field
@@ -31,6 +31,13 @@ class DetailQuery(AnalysisQuery):
     offset: int = Field(default=0, ge=0, le=2**63 - 1)
 
 
+class InputsQuery(AnalysisQuery):
+    """本地试算所用的完整窗口，按记录有界分页。"""
+
+    cursor: str | None = Field(default=None, max_length=1024)
+    kind: Literal["costs", "fees"] = "costs"
+
+
 async def _query(account_id: int, command: str, **query):
     try:
         return await native_operation("analysis_query", {"account_id": account_id, "command": command, **query})
@@ -42,6 +49,7 @@ async def _query(account_id: int, command: str, **query):
             "ANALYSIS_VERSION_CHANGED": 409,
             "ANALYSIS_PENDING": 409,
             "INVALID_REQUEST": 422,
+            "ANALYSIS_INPUT_LIMIT": 413,
         }.get(code, 503)
         raise HTTPException(status, detail={"code": code, "message": message}) from error
 
@@ -62,6 +70,12 @@ async def get_chart(account_id: AccountId, query: Annotated[AnalysisQuery, Query
 async def get_costs(account_id: AccountId, query: Annotated[CostQuery, Query()]):
     """按请求范围从规范事实计算成本和明细，不写派生副本。"""
     return await _query(account_id, "costs", **query.model_dump(exclude_none=True))
+
+
+@router.get("/analysis/{account_id}/inputs", response_model=None)
+async def get_inputs(account_id: AccountId, query: Annotated[InputsQuery, Query()]):
+    """读取冻结事实供浏览器试算，不写入绩效或执行记录。"""
+    return await _query(account_id, "inputs", **query.model_dump(exclude_none=True))
 
 
 @router.get("/analysis/{account_id}/execution/{record_id}", response_model=None)

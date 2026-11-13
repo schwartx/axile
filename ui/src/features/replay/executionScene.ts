@@ -3,7 +3,7 @@ import { replayTradeKey } from '@/features/replay/chartInteraction'
 import { createReplayProjector } from '@/features/replay/model'
 import type { ReplayCursor, ReplayGap, ReplayProjection, ReplayRange, ReplayWindow } from '@/features/replay/types'
 
-export interface ReplayExecutionSlice { range: ReplayRange; window: ReplayWindow; scene: ReplayProjection; project: (cursor: ReplayCursor) => ReplayProjection }
+export interface ReplayExecutionSlice { range: ReplayRange; window: ReplayWindow; scene: ReplayProjection; tradeFacts: Pick<ReplayProjection, 'ownTrades' | 'marketTrades'>; project: (cursor: ReplayCursor) => ReplayProjection }
 
 function taggedProjector(project: (cursor: ReplayCursor) => ReplayProjection, recordingId: string) {
   let previous: ReplayProjection | undefined, tagged: ReplayProjection | undefined
@@ -30,7 +30,7 @@ export function replayExecutionScene(parts: readonly { range: ReplayRange; windo
         valid_until_us: quote.valid_until_us == null ? null : Math.min(quote.valid_until_us, part.end_us) }]
     })
     const inRange = (time: number) => time >= part.start_us && time < part.end_us
-    return { range: part, window, project, scene: { ...projection, quoteHistory,
+    return { range: part, window, project, tradeFacts: { ownTrades: projection.ownTrades, marketTrades: projection.marketTrades }, scene: { ...projection, quoteHistory,
       ownTrades: projection.ownTrades.filter(trade => inRange(trade.time_us)),
       marketTrades: projection.marketTrades.filter(trade => inRange(trade.time_us)) } }
   })

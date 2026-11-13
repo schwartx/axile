@@ -110,6 +110,56 @@ def query(path, command="chart", **kwargs):
     )
 
 
+@pytest.mark.parametrize("kind", ["costs", "fees"])
+def test_local_inputs_are_complete_readonly_pages_bound_to_revision_and_range(account, kind):
+    for index in range(1, 102):
+        append(account, index)
+    update(account)
+    before = sql(account, "SELECT * FROM analysis_state ORDER BY range_key")
+    first = query(account, "inputs", kind=kind)
+    assert first["protocol"] == 2 and first["algorithm"] == "local-analysis-1"
+    assert len(first["records"]) == 100 and first["next_cursor"]
+    second = query(account, "inputs", kind=kind, cursor=first["next_cursor"])
+    assert len(second["records"]) == 1 and second["next_cursor"] is None
+    records = first["records"] + second["records"]
+    assert len({r["record_id"] for r in records}) == 101
+    assert first["kind"] == kind
+    if kind == "costs":
+        assert all(r["observation"] is None and len(r["trades"]) == 1 for r in records)
+        assert records[0]["trades"][0]["multiplier"] == 1
+        assert first["initial_equity"] is None
+    else:
+        assert all(r["observation"] is not None and not r["trades"] for r in records)
+        assert first["initial_equity"] > 0
+    assert "raw_input" not in first and "raw_result" not in first
+    assert sql(account, "SELECT * FROM analysis_state ORDER BY range_key") == before
+    with pytest.raises(Exception, match="INVALID_REQUEST"):
+        query(account, "inputs", kind=kind, range="30", cursor=first["next_cursor"])
+    with pytest.raises(Exception, match="INVALID_REQUEST"):
+        query(account, "inputs", kind="fees" if kind == "costs" else "costs", cursor=first["next_cursor"])
+    append(account, 102)
+    with pytest.raises(Exception, match="ANALYSIS_VERSION_CHANGED"):
+        query(account, "inputs", kind=kind, cursor=first["next_cursor"])
+
+
+def test_local_input_observations_deduplicate_time_but_keep_all_cost_trades(account):
+    append(account, 1)
+    append(account, 2)
+    sql(
+        account,
+        "UPDATE executerecord SET created_at_us=(SELECT created_at_us FROM executerecord WHERE id=1) WHERE id=2",
+    )
+    update(account)
+    inputs = query(account, "inputs", kind="fees")
+    assert len(inputs["records"]) == 2
+    assert inputs["records"][0]["observation"] is None
+    assert inputs["records"][1]["observation"]["id"] == 2
+    assert all(not r["trades"] for r in inputs["records"])
+    costs = query(account, "inputs", kind="costs")
+    assert sum(len(r["trades"]) for r in costs["records"]) == 2
+    assert all(r["observation"] is None for r in costs["records"])
+
+
 def assert_full_replay(path):
     core = require_native_store()
     store = core.Store(str(path))

@@ -115,14 +115,11 @@ impl Participants {
         } else {
             item.target.as_ref()
         };
-        let missing = target.is_some_and(|weights| {
-            self.previous_symbols
-                .iter()
-                .any(|symbol| !item.prices.contains_key(symbol))
-                || weights
-                    .iter()
-                    .any(|(symbol, weight)| *weight != 0.0 && !item.prices.contains_key(symbol))
-        });
+        let missing = axile_analysis_core::equity::missing_prices(
+            item,
+            target_weight,
+            &self.previous_symbols,
+        );
         if target.is_none() || missing {
             self.skips.count += 1;
             if target.is_none() {

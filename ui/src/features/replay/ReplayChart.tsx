@@ -1,4 +1,5 @@
 import { ResizeHandle } from '@/components/ui/ResizeHandle'
+import { ReplayIntervalAnalysis } from '@/features/replay/ReplayIntervalAnalysis'
 import { useCallback, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react'
 import { ArrowLeft, ArrowRight, Check, Circle, Crosshair, Info, Minus, RotateCcw, X } from 'lucide-react'
 import { ValueSlider } from '@/components/ui/ValueSlider'
@@ -116,6 +117,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   useLayoutEffect(() => () => viewScheduler.cancel(), [viewScheduler, replayWindow.window_id, symbol])
   const contentRange = useMemo(() => ({ ...range, start_us: Math.max(range.start_us, Math.min(range.end_us - 1, initialTimeUs)) }), [range, initialTimeUs])
   const visibleRange = timeView ?? contentRange
+  const analysisSlices = useMemo(() => slices ?? [{ range, window: replayWindow, scene, tradeFacts: scene }], [slices, range, replayWindow, scene])
   const historyRange = timePreview ?? visibleRange
   const [layers, setLayers] = useState({ working: true, canceled: true, filled: true, market: true, execution: true })
   const recorded = scene
@@ -654,5 +656,6 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       </div>
       <footer className="replay-help-footer">拖动平移 · 滚轮缩放 · 点击查看 · Esc 关闭</footer>
     </div>
+    <ReplayIntervalAnalysis key={`${symbol}:${range.start_us}:${range.end_us}`} slices={analysisSlices} symbol={symbol} range={range} visibleRange={visibleRange} cursor={projection.time_us} />
   </section>
 }
