@@ -192,3 +192,25 @@ def test_native_create_copy_clear_and_runtime_revision(native_database):
     assert native_store_call(native_database, "account_get", {"account_id": copied["id"]})["product_algorithms"] == {
         "SHFE.ag": profile()
     }
+
+
+def test_frozen_product_algorithms_survive_native_storage(native_database):
+    from tests.unit.server._business_facts_test_support import freeze_input
+    from tests.unit.server._native_read_views import read_view
+
+    account = Account.model_validate(build_account().model_dump() | {"product_algorithms": {"ag": profile()}})
+    selected, _ = execution_algorithms.select_rebalance_algorithm(account)
+    standard = _build_rebalance_standard_input(
+        account=selected,
+        curr_target={"ag2612": 0.1},
+        last_target={},
+        execution_id="execution-1",
+        trigger_source="manual",
+    )
+    frozen = freeze_input(native_database, standard.to_dict())
+    # 同一执行再次冻结必须仍能识别为同一输入。
+    assert freeze_input(native_database, standard.to_dict()) == frozen
+    restored = read_view(native_database, "read_execution_input", frozen)
+    assert restored["product_algorithms"] == standard.to_dict()["product_algorithms"]
+    rebuilt = UnifiedStandardInput.from_dict(restored | {"account_config": standard.to_dict()["account_config"]})
+    assert rebuilt.get_symbol_algorithm("ag2612") == standard.get_symbol_algorithm("ag2612")
