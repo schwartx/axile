@@ -4,6 +4,11 @@ import type { ProductAlgorithm } from '@/types/api'
 
 export type ProductAlgorithmDraft = { algorithm: ProductAlgorithm['algorithm']; schedule: AlgorithmRuleDraft[] }
 
+/** 期货界面只显示品种，证券代码保留交易所；内部配置键保持不变。 */
+export function algorithmScopeLabel(channel: string, code: string): string {
+  return channel === 'ctp' || channel === 'tq' ? code.replace(/^[A-Za-z]+\./, '') : code
+}
+
 export function productAlgorithmDraft(values: Record<string, ProductAlgorithm> = {}, previous: Record<string, ProductAlgorithmDraft> = {}): Record<string, ProductAlgorithmDraft> {
   return Object.fromEntries(Object.entries(values).map(([key, profile]) => [key, {
     algorithm: structuredClone(profile.algorithm), schedule: algorithmScheduleDraft(profile.algorithm_schedule ?? [], previous[key]?.schedule),

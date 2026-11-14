@@ -415,7 +415,7 @@ def _ctp_plugin() -> ChannelPlugin:
             algorithm_scope=ChannelAlgorithmScope(
                 pattern=FUTURES_SCOPE_PATTERN,
                 example="ag",
-                description="期货品种代码，如 ag、rb、TA；匹配该品种所有月份期货，不含期权和组合。",
+                description="只需品种代码，如 ag；自动识别交易所，适用于所有月份期货合约。",
             ),
             futures_close=close_capability(automatic=True),
             label="CTP",
@@ -544,7 +544,9 @@ def _gm_plugin() -> ChannelPlugin:
             ),
             channel="gm",
             algorithm_scope=ChannelAlgorithmScope(
-                pattern=GM_SCOPE_PATTERN, example="600000.SH", description="完整证券代码，如 600000.SH、SHSE.600000。"
+                pattern=GM_SCOPE_PATTERN,
+                example="600000.SH",
+                description="股票和 ETF 需带交易所；仅校验格式，不核验交易所归属，填错会不匹配。",
             ),
             replay=_gm_replay_capability(),
             label="掘金",
@@ -660,8 +662,8 @@ def _tq_plugin() -> ChannelPlugin:
             channel="tq",
             algorithm_scope=ChannelAlgorithmScope(
                 pattern=FUTURES_SCOPE_PATTERN,
-                example="SHFE.ag",
-                description="期货品种代码，如 SHFE.ag、ag、CZCE.TA；匹配所有月份期货，不含期权和组合。",
+                example="ag",
+                description="只需品种代码，如 ag；自动识别交易所，适用于所有月份期货合约。",
             ),
             replay=_tq_replay_capability(),
             futures_close=close_capability(automatic=False),

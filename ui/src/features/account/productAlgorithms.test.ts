@@ -1,6 +1,15 @@
 import { expect, test } from 'bun:test'
-import { productAlgorithmDraft, productAlgorithmError, productAlgorithmValue } from './productAlgorithms'
+import { algorithmScopeLabel, productAlgorithmDraft, productAlgorithmError, productAlgorithmValue } from './productAlgorithms'
 import { algorithmScheduleSummary } from './algorithmSchedule'
+
+test('期货显示品种代码，股票和 ETF 保留交易所', () => {
+  expect(algorithmScopeLabel('ctp', 'SHFE.ag')).toBe('ag')
+  expect(algorithmScopeLabel('tq', 'CZCE.TA')).toBe('TA')
+  expect(algorithmScopeLabel('gm', '600000.SH')).toBe('600000.SH')
+  expect(algorithmScopeLabel('gm', '510300.SH')).toBe('510300.SH')
+  expect(algorithmScopeLabel('binance', 'BTCUSDT')).toBe('BTCUSDT')
+  expect(algorithmScopeLabel('vendor', 'EX.CODE')).toBe('EX.CODE')
+})
 
 test('品种默认和跨日时段独立复制，提交剔除草稿键，清空删除全部品种', () => {
   const source = { 'SHFE.ag': { algorithm: { method: 'TWAP', params: { slices: 3 } }, algorithm_schedule: [

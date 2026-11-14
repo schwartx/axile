@@ -408,6 +408,11 @@ class UnifiedStandardInput(BaseModel):
         -------
         TradeAlgorithm
             已融合默认算法与品种覆盖配置后的算法映射。
+
+        Raises
+        ------
+        ValueError
+            已启用品种配置，但标的无法按渠道规则识别时抛出，禁止静默回退。
         """
         if symbol in self.symbol_algorithms:
             return _normalize_algorithm_config(
@@ -417,11 +422,14 @@ class UnifiedStandardInput(BaseModel):
             )
         if self.product_algorithms:
             from axile.channels import get_channel
+            from axile.channels.algorithm_scopes import normalize_algorithm_scopes
 
+            plugin = get_channel(self.channel_type)
             try:
-                key = get_channel(self.channel_type).algorithm_scope_key(symbol)
-            except ValueError:
-                key = None
+                scope = plugin.algorithm_scope_key(symbol)
+                key = next(iter(normalize_algorithm_scopes(plugin, {scope: None})))
+            except ValueError as error:
+                raise ValueError(f"无法识别 {symbol} 的算法品种，已阻止使用账户默认算法：{error}") from error
             if key in self.product_algorithms:
                 return dict(self.product_algorithms[key])
         return _normalize_algorithm_config(

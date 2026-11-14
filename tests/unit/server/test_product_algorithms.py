@@ -33,6 +33,7 @@ def profile(slices=3):
         ("tq", "shfe.ag", "SHFE.ag"),
         ("ctp", "ta", "CZCE.TA"),
         ("gm", "shse.600000", "600000.SH"),
+        ("gm", "600000.SZ", "600000.SZ"),
     ],
 )
 def test_channel_normalizes_scope(channel, raw, expected):
@@ -111,7 +112,8 @@ def test_independent_product_schedule_freezes_and_survives_input_roundtrip(monke
         assert standard.get_symbol_algorithm(symbol)["params"] == {"slices": slices}
     expected = 6 if time == "09:30" else 5
     assert standard.get_symbol_algorithm("rb2701")["params"] == {"slices": expected}
-    assert standard.get_symbol_algorithm("ag2612C5000")["params"] == {"slices": expected}
+    with pytest.raises(ValueError, match="已阻止使用账户默认算法"):
+        standard.get_symbol_algorithm("ag2612C5000")
     standard.symbol_algorithms = {"ag2612": {"method": "TWAP", "params": {"slices": 9}}}
     assert standard.get_symbol_algorithm("ag2612")["params"] == {"slices": 9}
     assert evidence["product_algorithms"]["SHFE.ag"]["start"] == ("21:00" if slices == 8 else None)
@@ -124,6 +126,25 @@ def test_future_contracts_exclude_options_and_combinations():
     for symbol in ("ag2612C5000", "cu2701-C-80000", "SP ag2612&ag2702", "SHFE.ag2612&ag2702"):
         with pytest.raises(ValueError):
             futures_algorithm_scope(symbol)
+
+
+def test_security_exchange_is_part_of_the_match_without_ownership_validation():
+    standard = UnifiedStandardInput.from_dict(
+        {
+            "channel_type": "gm",
+            "account_config": {
+                "connection_mode": "service",
+                "account_id": "fixture",
+                "token": "fixture",
+                "serv_addr": "127.0.0.1:7001",
+            },
+            "curr_target": {},
+            "algorithm": {"method": "TWAP", "params": {"slices": 2}},
+            "product_algorithms": {"600000.SZ": {"method": "TWAP", "params": {"slices": 7}}},
+        }
+    )
+    assert standard.get_symbol_algorithm("SHSE.600000")["params"] == {"slices": 2}
+    assert standard.get_symbol_algorithm("SZSE.600000")["params"] == {"slices": 7}
 
 
 def test_standard_input_rejects_malformed_product_map_and_accepts_default_params():
@@ -161,6 +182,46 @@ def test_http_roundtrip_and_invalid_patch_keeps_existing_configuration():
         assert client.patch("/api/v1/account/1", json={"product_algorithms": {"ag2612": profile()}}).status_code == 422
         assert client.get("/api/v1/account/1").json()["product_algorithms"] == {"SHFE.ag": profile()}
         assert client.patch("/api/v1/account/1", json={"product_algorithms": {}}).json()["product_algorithms"] == {}
+
+
+@pytest.mark.parametrize(
+    "channel,code,expected",
+    [
+        ("ctp", " AG ", "SHFE.ag"),
+        ("tq", "shfe.ag", "SHFE.ag"),
+        ("gm", "shse.600000", "600000.SH"),
+        ("ctp", "ag2612", None),
+        ("ctp", "NOTREAL", None),
+        ("ctp", "DCE.ag", None),
+        ("tq", "ag2612C5000", None),
+        ("gm", "ag", None),
+        ("gm", "600000", None),
+    ],
+)
+def test_channel_scope_preview_uses_account_validation(channel, code, expected):
+    from tests.futures_close_app import app
+
+    with TestClient(app) as client:
+        response = client.get(f"/api/v1/capabilities/channels/{channel}/algorithm-scope", params={"code": code})
+        if expected is None:
+            assert response.status_code == 422, response.text
+        else:
+            assert response.status_code == 200, response.text
+            assert response.json() == {"code": expected}
+
+
+def test_channel_scope_preview_rejects_unknown_channel_and_oversized_input():
+    from tests.futures_close_app import app
+
+    with TestClient(app) as client:
+        assert (
+            client.get("/api/v1/capabilities/channels/missing/algorithm-scope", params={"code": "ag"}).status_code
+            == 404
+        )
+        assert (
+            client.get("/api/v1/capabilities/channels/ctp/algorithm-scope", params={"code": "a" * 81}).status_code
+            == 422
+        )
 
 
 def test_native_create_copy_clear_and_runtime_revision(native_database):

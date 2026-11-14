@@ -24,10 +24,11 @@ function FeeDetails({ fee, shared = false }: { fee: string | null | undefined; s
 }
 
 /** 账户级平仓规则；完成只写页面草稿，页面保存后才用于后续执行。 */
-export function FuturesClosePolicyEditor({ value, capability, onChange }: {
+export function FuturesClosePolicyEditor({ value, capability, onChange, compact = false }: {
   value: FuturesClosePolicy
   capability: FuturesCloseCapability
   onChange: (value: FuturesClosePolicy) => void
+  compact?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState(value)
@@ -51,7 +52,7 @@ export function FuturesClosePolicyEditor({ value, capability, onChange }: {
   }
   return <>
     <button type="button" onClick={begin} className="inline-flex cursor-pointer items-center gap-2 text-left text-[14px] text-ink-2 hover:text-accent" aria-label="设置平仓规则">
-      <InkRewrite text={closePolicySummary(value)} tone="label" />
+      <InkRewrite text={closePolicySummary(value, compact)} tone="label" />
       <Settings size={16} aria-hidden />
     </button>
     <CenteredModal open={open} title="平仓规则" onClose={() => setOpen(false)} widthClassName="w-[1040px]" scrollBody={false}
