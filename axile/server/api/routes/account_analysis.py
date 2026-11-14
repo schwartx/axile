@@ -3,14 +3,14 @@
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Path, Query
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from axile.server._native import _core
 from axile.server.core.db import database_path
 from axile.server.db.models.performance import RangeKey
 from axile.server.native_store import native_operation
 from axile.server.performance_analysis import enqueue
-from axile.server.performance_details import CostQuery
+from axile.server.performance_details import CostQuery, CostSelection
 
 router = APIRouter()
 AccountId = Annotated[int, Path(gt=0, le=2**63 - 1)]
@@ -31,11 +31,18 @@ class DetailQuery(AnalysisQuery):
     offset: int = Field(default=0, ge=0, le=2**63 - 1)
 
 
-class InputsQuery(AnalysisQuery):
-    """本地试算所用的完整窗口，按记录有界分页。"""
+class InputsQuery(AnalysisQuery, CostSelection):
+    """成本输入只读取选区；费率试算保留完整窗口。"""
 
     cursor: str | None = Field(default=None, max_length=1024)
     kind: Literal["costs", "fees"] = "costs"
+
+    @model_validator(mode="after")
+    def fee_window(self):
+        """费率重放不能使用局部事实。"""
+        if self.kind == "fees" and any(value is not None for value in (self.day, self.start, self.end, self.record_id)):
+            raise ValueError("fee inputs require the complete window")
+        return self
 
 
 async def _query(account_id: int, command: str, **query):

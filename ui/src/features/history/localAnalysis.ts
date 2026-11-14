@@ -1,5 +1,6 @@
 import { apiGet } from '@/lib/api/client'
-import type { AnalysisChart, PerformanceRange } from '@/lib/api/performance'
+import type { AnalysisChart, AnalysisTable, CostQuery, PerformanceRange } from '@/lib/api/performance'
+import { decodeAnalysisTable } from './analysisClient'
 import type { CostSummary } from './costs'
 
 export interface LocalInputs {
@@ -12,9 +13,15 @@ export interface LocalInputs {
   initial_equity: number | null
   records: { record_id: string; observation: unknown; trades: unknown[] }[]
 }
-interface InputPage extends LocalInputs { next_cursor: string | null }
-export async function loadAnalysisInputs(accountId: number, version: string, range: PerformanceRange, kind: LocalInputs['kind'], signal: AbortSignal, fetchPage = (cursor: string | null) => {
-  const params = new URLSearchParams({ version, range, kind, ...(cursor ? { cursor } : {}) })
+export type CostSelection = Pick<CostQuery, 'day' | 'start' | 'end' | 'record_id'>
+interface InputPage extends Omit<LocalInputs, 'records'> {
+  selection?: CostSelection
+  records: { record_id: string; observation: unknown; trades: unknown[] | AnalysisTable }[]
+  next_cursor: string | null
+}
+const tradeColumns = ['symbol', 'time_us', 'day', 'estimated', 'side', 'price', 'quantity', 'multiplier', 'reference', 'fee', 'fee_currency']
+export async function loadAnalysisInputs(accountId: number, version: string, range: PerformanceRange, kind: LocalInputs['kind'], signal: AbortSignal, selection: CostSelection = {}, fetchPage = (cursor: string | null) => {
+  const params = new URLSearchParams({ version, range, kind, ...Object.fromEntries(Object.entries(selection).filter(([, value]) => value != null).map(([key, value]) => [key, String(value)])), ...(cursor ? { cursor } : {}) })
   return apiGet<InputPage>(`/account/analysis/${accountId}/inputs?${params}`, signal)
 }): Promise<LocalInputs> {
   let cursor: string | null = null, bytes = 0, trades = 0
@@ -24,13 +31,15 @@ export async function loadAnalysisInputs(accountId: number, version: string, ran
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
     const page = await fetchPage(cursor)
     if (page.protocol !== 2 || page.kind !== kind || page.algorithm !== 'local-analysis-1' || page.account_id !== accountId || page.version !== version || page.range !== range
-      || result && page.initial_equity !== result.initial_equity) throw new Error('分析数据版本已变更，请刷新绩效')
+      || (['day', 'start', 'end', 'record_id'] as const).some(key => (page.selection?.[key] ?? null) !== (selection[key] ?? null))
+      || result && page.initial_equity !== result.initial_equity) throw new Error('分析数据版本或选区已变更，请刷新绩效')
     bytes += new TextEncoder().encode(JSON.stringify(page)).byteLength
-    trades += page.records.reduce((n, record) => n + record.trades.length, 0)
+    const records = page.records.map(record => ({ ...record, trades: Array.isArray(record.trades) ? record.trades : decodeAnalysisTable(record.trades, tradeColumns) }))
+    trades += records.reduce((n, record) => n + record.trades.length, 0)
     const count = (result?.records.length ?? 0) + page.records.length
     if (bytes > 16 * 1024 * 1024 || count > 20_000 || trades > 150_000) throw new Error('窗口超过本地分析上限，请缩短范围；正式绩效和后端明细仍可查看')
     if (!result) result = { ...page, records: [] }
-    result.records.push(...page.records)
+    result.records.push(...records)
     cursor = page.next_cursor
     if (cursor && (seen.has(cursor) || !page.records.length)) throw new Error('分析分页未前进，请刷新重试')
     if (cursor) seen.add(cursor)

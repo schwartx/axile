@@ -54,7 +54,7 @@ function renderPage(options: { displayed?: boolean; marker?: number; status?: st
 test('新版结果未齐时图表、成本查询和浏览偏好仍绑定完整旧版', () => {
   const page = renderPage({ loadingResult: true, inputsError: true })
   expect(page.charts).toEqual([{ snapshotId: 's1', executionIndex: [{ record_id: 11, time_ms: 1000, has_transactions: false }], hasFullExecutions: false, daily: true, backtestMode: 'target', scaleMode: 'natural', showExecutions: false }])
-  expect(page.inputs).toEqual([{ accountId: 7, version: 's1', range: '90', kind: 'costs' }])
+  expect(page.inputs).toEqual([])
   expect(page.queries).toEqual([{ accountId: 7, version: 's1', range: '90', dimension: 'summary', start: 0, end: 1000 }])
   expect(page.html).toContain('正在读取新版绩效，当前保留上次结果')
   expect(page.html).toContain('data-segment="90"')
@@ -99,10 +99,13 @@ test('未加载观测时保留公共时间范围，禁用区间选择', () => {
   }
 })
 
-test('完整窗口尚未就绪时不发送选区汇总，也不展示局部结果', () => {
+test('成本分析默认折叠不加载输入，区间摘要仍可读取', () => {
   const page = renderPage({ loadingResult: true })
-  expect(page.inputs).toEqual([{ accountId: 7, version: 's1', range: '90', kind: 'costs' }])
-  expect(page.queries).toEqual([])
-  expect(page.html).toContain('正在计算成本')
+  expect(page.inputs).toEqual([])
+  expect(page.queries).toEqual([{ accountId: 7, version: 's1', range: '90', dimension: 'summary', start: 0, end: 1000 }])
+  expect(page.html).toContain('展开成本分析')
+  expect(page.html).toContain('aria-expanded="false"')
+  expect(page.html).toContain('inert=""')
+  expect(page.html).not.toContain('正在加载选区')
   expect(page.charts[0].snapshotId).toBe('s1')
 })
