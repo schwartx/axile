@@ -125,8 +125,10 @@ def test_local_inputs_are_complete_readonly_pages_bound_to_revision_and_range(ac
     assert len({r["record_id"] for r in records}) == 101
     assert first["kind"] == kind
     if kind == "costs":
-        assert all(r["observation"] is None and len(r["trades"]) == 1 for r in records)
-        assert records[0]["trades"][0]["multiplier"] == 1
+        assert all(r["observation"] is None and len(r["trades"]["rows"]) == 1 for r in records)
+        assert (
+            dict(zip(records[0]["trades"]["columns"], records[0]["trades"]["rows"][0], strict=True))["multiplier"] == 1
+        )
         assert first["initial_equity"] is None
     else:
         assert all(r["observation"] is not None and not r["trades"] for r in records)
@@ -137,6 +139,9 @@ def test_local_inputs_are_complete_readonly_pages_bound_to_revision_and_range(ac
         query(account, "inputs", kind=kind, range="30", cursor=first["next_cursor"])
     with pytest.raises(Exception, match="INVALID_REQUEST"):
         query(account, "inputs", kind="fees" if kind == "costs" else "costs", cursor=first["next_cursor"])
+    if kind == "costs":
+        with pytest.raises(Exception, match="INVALID_REQUEST"):
+            query(account, "inputs", kind=kind, day="2026-01-02", cursor=first["next_cursor"])
     append(account, 102)
     with pytest.raises(Exception, match="ANALYSIS_VERSION_CHANGED"):
         query(account, "inputs", kind=kind, cursor=first["next_cursor"])
@@ -156,7 +161,7 @@ def test_local_input_observations_deduplicate_time_but_keep_all_cost_trades(acco
     assert inputs["records"][1]["observation"]["id"] == 2
     assert all(not r["trades"] for r in inputs["records"])
     costs = query(account, "inputs", kind="costs")
-    assert sum(len(r["trades"]) for r in costs["records"]) == 2
+    assert sum(len(r["trades"]["rows"]) for r in costs["records"]) == 2
     assert all(r["observation"] is None for r in costs["records"])
 
 
@@ -498,3 +503,54 @@ def test_old_logic_is_invalidated_and_rebuilt_without_new_facts(account):
     assert update(account)["processed_observations"] == 6
     assert_full_replay(account)
     assert query(account)["contributions"][-1]["gross_pnl"] != 999
+
+
+def test_cost_inputs_only_ship_selected_trades_with_exact_boundaries(account):
+    for index in range(1, 5):
+        append(account, index)
+    # Keep execution time separate from trade time, including unknown-time fallback.
+    start = sql(account, "SELECT created_at_us FROM executerecord WHERE id=2")[0][0]
+    sql(account, "UPDATE business_trade SET trade_time_us=? WHERE record_id=1", (start + 1,))
+    sql(account, "UPDATE business_trade SET trade_time_us=NULL WHERE record_id=2")
+    sql(account, "UPDATE business_trade SET trade_time_us=? WHERE record_id=3", (start + 1000,))
+    sql(account, "UPDATE business_trade SET trade_time_us=? WHERE record_id=4", (start + 1001,))
+    update(account)
+    selection = {"start": start / 1000, "end": (start + 1000) / 1000}
+    inputs = query(account, "inputs", kind="costs", **selection)
+    assert inputs["selection"] == selection and inputs["next_cursor"] is None
+    assert [r["record_id"] for r in inputs["records"]] == ["1", "3"]
+    trades = [
+        dict(zip(r["trades"]["columns"], row, strict=True)) for r in inputs["records"] for row in r["trades"]["rows"]
+    ]
+    assert [t["time_us"] for t in trades] == [start + 1, start + 1000]
+    assert len(query(account, "costs", dimension="trade", **selection)["data"]) == len(trades)
+    execution = query(account, "inputs", kind="costs", record_id=2)
+    assert [r["record_id"] for r in execution["records"]] == ["2"]
+    fallback = dict(
+        zip(execution["records"][0]["trades"]["columns"], execution["records"][0]["trades"]["rows"][0], strict=True)
+    )
+    assert fallback["estimated"] is True and fallback["time_us"] == start
+    day = query(account, "inputs", kind="costs", day="2026-01-02")
+    assert len(day["records"]) == 4
+    assert query(account, "inputs", kind="costs", day="2026-02-01")["records"] == []
+    with pytest.raises(Exception, match="INVALID_REQUEST"):
+        query(account, "inputs", kind="fees", **selection)
+
+
+def test_scoped_cost_inputs_keep_shanghai_midnight_and_invalid_time_fallback(account):
+    for index in range(1, 5):
+        append(account, index)
+    from datetime import timezone
+
+    midnight = int(datetime(2026, 1, 1, 16, tzinfo=timezone.utc).timestamp() * 1_000_000)
+    for record_id, time in enumerate((midnight - 1, midnight, midnight + 86_400_000_000 - 1, 2**63 - 1), 1):
+        sql(account, "UPDATE business_trade SET trade_time_us=? WHERE record_id=?", (time, record_id))
+    update(account)
+    day = query(account, "inputs", kind="costs", day="2026-01-02")
+    assert [r["record_id"] for r in day["records"]] == ["2", "3"]
+    fallback = query(account, "inputs", kind="costs", day="2026-01-04")
+    assert [r["record_id"] for r in fallback["records"]] == ["4"]
+    trade = dict(
+        zip(fallback["records"][0]["trades"]["columns"], fallback["records"][0]["trades"]["rows"][0], strict=True)
+    )
+    assert trade["estimated"] is True and trade["day"] == "2026-01-04"

@@ -128,10 +128,15 @@ function AccountHistory({ accountId }: { accountId: number }) {
   const dirty = parsed != null && parsed.backtest_fee_rate !== settings?.backtest_fee_rate
   const [costSymbol, setCostSymbol] = useState('')
   const [costSide, setCostSide] = useState('')
-  const inputs = usePolling(useCallback((signal: AbortSignal) => loadAnalysisInputs(accountId, snapshot!.version, displayedRange, 'costs', signal), [accountId, snapshot?.version, displayedRange]), {
-    queryKey: `analysis-inputs:${accountId}:${snapshot?.version}:${displayedRange}`, intervalMs: 0, enabled: !!snapshot?.version,
+  const [costOpen, setCostOpen] = useState(false)
+  const inputs = usePolling(useCallback((signal: AbortSignal) => loadAnalysisInputs(accountId, snapshot!.version, displayedRange, 'costs', signal, JSON.parse(selectionKey)), [accountId, snapshot?.version, displayedRange, selectionKey]), {
+    queryKey: `analysis-inputs:${accountId}:${snapshot?.version}:${displayedRange}:${selectionKey}`, intervalMs: 0, enabled: !!snapshot?.version && costOpen, manual: true, retainDataWhenDisabled: true,
   })
-  const inputData = inputs.data?.version === snapshot?.version && inputs.data?.range === displayedRange ? inputs.data : null
+  const refreshInputs = inputs.refresh
+  useEffect(() => {
+    if (costOpen && !inputs.data && !inputs.error && !inputs.loading && !inputs.refreshing) void refreshInputs()
+  }, [costOpen, inputs.data, inputs.error, inputs.loading, inputs.refreshing, refreshInputs])
+  const inputData = costOpen && inputs.data?.version === snapshot?.version && inputs.data?.range === displayedRange ? inputs.data : null
   const localQuery = useMemo(() => ({ ...selectionQuery(selection), record_id: selection?.kind === 'execution' ? String(selection.recordId) : undefined, symbol: costSymbol || undefined, side: costSide || undefined }), [selection, costSymbol, costSide])
   const local = useLocalAnalysis<typeof localQuery, LocalResult>('account', inputData, localQuery)
   const symbols = useMemo(() => [...new Set(inputData?.records.flatMap(record => record.trades.map(trade => (trade as { symbol: string }).symbol)) ?? [])].sort(), [inputData])
@@ -148,7 +153,7 @@ function AccountHistory({ accountId }: { accountId: number }) {
   const trialMessage = trial.value?.preview_error ?? (feeInputs.error || trial.error ? '试算不可用，当前显示正式曲线' : trial.value?.preview ? '图中回测曲线为本地试算；账户收益仍为正式记录' : '正在准备完整窗口，当前仍显示正式曲线')
   const chartData = useMemo(() => snapshot && dirty && parsed && trial.value?.preview ? previewPerformance(snapshot, trial.value.preview, parsed.backtest_fee_rate) : data, [snapshot, dirty, parsed, trial.value?.preview, data])
   const intervalCosts = usePolling(useCallback((s: AbortSignal) => getPerformanceCosts(accountId, { version: snapshot!.version, range: displayedRange, dimension: 'summary', ...JSON.parse(selectionKey) }, s), [accountId, snapshot?.version, displayedRange, selectionKey]), {
-    queryKey: `performance-summary:${accountId}:${snapshot?.version}:${displayedRange}:${selectionKey}`, intervalMs: 0, enabled: !!snapshot?.version && selection?.kind === 'interval' && (!!inputs.error || !!local.error),
+    queryKey: `performance-summary:${accountId}:${snapshot?.version}:${displayedRange}:${selectionKey}`, intervalMs: 0, enabled: !!snapshot?.version && selection?.kind === 'interval' && (!costOpen || !!inputs.error || !!local.error),
   })
 
   const save = async () => {
@@ -273,14 +278,13 @@ function AccountHistory({ accountId }: { accountId: number }) {
     {selectionNotice && <p role="status" className="py-1 text-xs text-ink-3">数据已更新，原选区已失效，请重新选择。</p>}
     <ErrorNotice intent="read" title="区间成本读取失败" error={intervalCosts.error} hasData={intervalCosts.data != null} variant="compact" onRetry={intervalCosts.refresh} />
     {!data && <PerformanceChartPlaceholder accountId={accountId} controls={controls} loading={backtestBusy || !metadata && !initialError} failed={!!initialError} message={loadingMessage} />}
-    <ErrorNotice intent="read" title="本地分析不可用，仍可查看正式绩效和后端明细" error={inputs.error ?? local.error} variant="compact" onRetry={inputs.refresh} />
     <ErrorNotice intent="read" title="费率试算不可用，当前保留正式曲线" error={dirty ? feeInputs.error ?? trial.error : null} variant="compact" onRetry={refreshFeeInputs} />
     {dirty && <p role="status" className="py-2 text-xs text-warn">费率试算 {fee} BP · 未保存 · {trialMessage}<button type="button" className="ml-3 text-accent hover:underline" onClick={() => setDraft(null)}>取消试算</button></p>}
     {data && <div className="pb-4">
       <PerformanceChart key={displayedRange} accountId={accountId} snapshotId={snapshot?.version} viewKey={`${accountId}:${displayedRange}`} data={chartData!} executionIndex={snapshot!.execution_index} daily={daily} backtestMode={backtestMode} scaleMode={scale} costs={costs} intervalCost={local.value?.summary ?? (intervalCosts.error || intervalCosts.loading ? null : intervalCosts.data?.summary ?? null)} onSelect={value => { setSelectionNotice(false); setSelection(value) }} selection={selection} portfolioNames={portfolioNames} controls={controls} showExecutions={markers} />
 
     </div>}
-    {snapshot && !inputs.error && !local.error && <LocalCostPanel result={local.value} symbols={symbols} symbol={costSymbol} side={costSide} onSymbol={setCostSymbol} onSide={setCostSide} />}
+    {snapshot && <LocalCostPanel open={costOpen} onToggle={() => setCostOpen(value => !value)} error={inputs.error ?? local.error} onRetry={refreshInputs} result={local.value} symbols={symbols} symbol={costSymbol} side={costSide} onSymbol={setCostSymbol} onSide={setCostSide} />}
     {snapshot && <ContributionPanel key={accountId} chart={snapshot} selection={selection} scaleMode={scale} />}
     <div className="border-t border-line py-4">
       <SectionLabel>账户时间线</SectionLabel>

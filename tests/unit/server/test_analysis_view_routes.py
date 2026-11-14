@@ -26,6 +26,7 @@ def client(monkeypatch):
         ("", {"version": "42", "range": "30"}, "chart"),
         ("/costs", {"version": "42", "dimension": "trade", "limit": 1}, "costs"),
         ("/inputs", {"version": "42", "cursor": "opaque", "kind": "fees"}, "inputs"),
+        ("/inputs", {"version": "42", "start": 1, "end": 2, "record_id": 7}, "inputs"),
         ("/execution/7", {"version": "42", "offset": 200}, "detail"),
     ],
 )
@@ -53,6 +54,12 @@ def test_queries_use_new_native_operation(client, suffix, params, command):
         ("/inputs", {"version": "1", "cursor": "x" * 1025}),
         ("/inputs", {"version": "1", "limit": 10000}),
         ("/inputs", {"version": "1", "kind": "mixed"}),
+        ("/inputs", {"version": "1", "start": 1}),
+        ("/inputs", {"version": "1", "start": 2, "end": 1}),
+        ("/inputs", {"version": "1", "start": 1, "end": 2, "day": "2026-01-01"}),
+        ("/inputs", {"version": "1", "day": "2026-99-99"}),
+        ("/inputs", {"version": "1", "record_id": 0}),
+        ("/inputs", {"version": "1", "kind": "fees", "day": "2026-01-01"}),
     ],
 )
 def test_invalid_queries_fail_before_reading(client, suffix, params):

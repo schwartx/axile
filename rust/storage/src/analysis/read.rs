@@ -473,7 +473,7 @@ fn cursor(request: &Value, version: &str) -> Result<(String, usize), AnalysisErr
         .ok_or_else(|| failure("INVALID_REQUEST", "invalid cursor offset"))?;
     Ok((scope, offset))
 }
-fn matches(t: &Trade, q: &Value, window: Option<(i64, i64)>) -> bool {
+pub(super) fn matches(t: &Trade, q: &Value, window: Option<(i64, i64)>) -> bool {
     if q["day"].as_str().is_some_and(|d| t.day != d) {
         return false;
     }
@@ -496,13 +496,8 @@ fn matches(t: &Trade, q: &Value, window: Option<(i64, i64)>) -> bool {
     true
 }
 
-fn selected_records(
-    c: &Connection,
-    s: &State,
-    q: &Value,
-) -> Result<Vec<(Record, Vec<Trade>)>, AnalysisError> {
-    let mut selected = Vec::new();
-    let window = q["start"]
+pub(super) fn window(q: &Value) -> Result<Option<(i64, i64)>, AnalysisError> {
+    q["start"]
         .as_f64()
         .map(|start| -> Result<(i64, i64), AnalysisError> {
             let end = q["end"]
@@ -517,7 +512,16 @@ fn selected_records(
             };
             Ok((convert(start)?, convert(end)?))
         })
-        .transpose()?;
+        .transpose()
+}
+
+fn selected_records(
+    c: &Connection,
+    s: &State,
+    q: &Value,
+) -> Result<Vec<(Record, Vec<Trade>)>, AnalysisError> {
+    let mut selected = Vec::new();
+    let window = window(q)?;
     for r in records(c, s, q["record_id"].as_i64())? {
         let filtered = r
             .trades
