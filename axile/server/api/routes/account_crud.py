@@ -789,7 +789,11 @@ async def _update_account(
             data["feishu_key"] = None
         if account.account_config is not None or account.trade_channel is not None:
             data["account_config"] = normalized_account_config
-        Account.model_validate(db_account.model_dump() | data)
+        validated_account = Account.model_validate(db_account.model_dump() | data)
+        if "product_algorithms" in data:
+            data["product_algorithms"] = {
+                key: profile.model_dump(mode="json") for key, profile in validated_account.product_algorithms.items()
+            }
         saved = await _account_operation(
             "account_update",
             {

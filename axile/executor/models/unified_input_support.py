@@ -220,6 +220,7 @@ def _collect_unified_input_extra(data: dict[str, object]) -> dict[str, object]:
         "last_target",
         "algorithm",
         "symbol_algorithms",
+        "product_algorithms",
         "trade_rules",
         "futures_close_policy",
         "forbidden_symbols",

@@ -301,6 +301,7 @@ export function EditSaveBar({
   saving,
   error = null,
   layout = 'fixed',
+  saveLabel = '保存',
 }: {
   changes: string[]
   blocked?: boolean
@@ -309,6 +310,7 @@ export function EditSaveBar({
   saving?: boolean
   error?: unknown | null
   layout?: 'fixed' | 'inline'
+  saveLabel?: string
 }) {
   const open = changes.length > 0
   const statusText = open ? `待保存 · ${changes.length} 项` : '没有未保存的修改'
@@ -360,7 +362,7 @@ export function EditSaveBar({
               disabled={blocked || saving || !open}
               tabIndex={open || layout === 'inline' ? 0 : -1}
             >
-              <InkRewrite text={saving ? '保存中…' : '保存'} />
+              <InkRewrite text={saving ? '保存中…' : saveLabel} />
             </button>
           </div>
           <ErrorNotice intent="mutation" title="保存失败" error={error} variant="mutation" onRetry={onSave} />

@@ -700,6 +700,13 @@ pub(crate) fn decode_input(
         return Ok(get(head, "root_value")?.clone());
     }
     let mut result = fields(head, INPUT)?;
+    // 扩展字段沿用审计列保存，读回时恢复业务字段，无需修改已发布表结构。
+    if let Some(products) = get(head, "audit_evidence")?
+        .get("unrecognized_fields")
+        .and_then(|fields| fields.get("product_algorithms"))
+    {
+        result.insert("product_algorithms".into(), products.clone());
+    }
     if let Some(mode) = head.get("target_mode").filter(|mode| !mode.is_null()) {
         result.insert("target_mode".into(), mode.clone());
     }

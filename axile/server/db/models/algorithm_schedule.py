@@ -50,3 +50,19 @@ def validate_algorithm_schedule(value: list[ScheduledAlgorithm]) -> list[Schedul
 
 
 AlgorithmSchedule = Annotated[list[ScheduledAlgorithm], AfterValidator(validate_algorithm_schedule)]
+
+
+class ProductAlgorithm(BaseModel):
+    """单个品种独立的默认算法与每日时段，不继承账户时段。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    algorithm: dict[str, Any]
+    algorithm_schedule: AlgorithmSchedule = Field(default_factory=list)
+
+    @field_validator("algorithm")
+    @classmethod
+    def validate_algorithm(cls, value: dict[str, Any]) -> dict[str, Any]:
+        """复用完整算法的参数校验。"""
+        _validate_algorithm_config(value, "品种默认算法")
+        return {**value, "params": value.get("params") or {}}

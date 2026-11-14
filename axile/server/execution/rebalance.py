@@ -266,6 +266,7 @@ def _build_rebalance_standard_input(
             "last_target": last_target,
             "account_config": account.account_config,
             "algorithm": account.algorithm,
+            "product_algorithms": {key: profile.algorithm for key, profile in account.product_algorithms.items()},
             "trade_rules": account.trade_rules,
             "futures_close_policy": account.futures_close_policy.model_dump(),
             "forbidden_symbols": account.forbidden_symbols,

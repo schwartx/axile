@@ -20,6 +20,11 @@ export function getChannelCapabilities(signal?: AbortSignal): Promise<ChannelCap
   ))
 }
 
+/** 使用账户保存时的渠道规则校验品种，返回规范代码。 */
+export function validateAlgorithmScope(channel: string, code: string, signal?: AbortSignal): Promise<{ code: string }> {
+  return apiGet(`/capabilities/channels/${encodeURIComponent(channel)}/algorithm-scope?code=${encodeURIComponent(code)}`, signal)
+}
+
 /** 已注册算法列表（内置 + 用户自定义）；渠道/槽位过滤在前端完成。 */
 export function getAlgorithms(signal?: AbortSignal): Promise<AlgorithmInfo[]> {
   return apiGet<AlgorithmInfo[]>('/algorithms', signal)

@@ -230,8 +230,28 @@ def _assets(
     )
 
 
+def test_unrecognized_product_blocks_execution_before_dispatch(monkeypatch):
+    from axile.executor import execution_engine
+
+    executor = _TestExecutor()
+    dispatched = []
+    monkeypatch.setattr(execution_engine, "resolve_algorithm", lambda *args: dispatched.append(args))
+    standard = UnifiedStandardInput(
+        channel_type=TradeChannel.CTP,
+        account_config=executor.account_config,
+        curr_target={"NOTREAL2612": 0.1},
+        product_algorithms={"ag": {"method": "TWAP", "params": {}}},
+    )
+    with pytest.raises(ValueError, match="已阻止使用账户默认算法"):
+        executor.execute(standard)
+    assert dispatched == []
+
+
+@pytest.mark.parametrize("override_field,override_key", [("symbol_algorithms", "ag2612"), ("product_algorithms", "ag")])
 def test_execute_continues_other_symbols_and_marks_overall_failure(
     monkeypatch: pytest.MonkeyPatch,
+    override_field: str,
+    override_key: str,
 ) -> None:
     """单个品种失败不应中断其他品种，但整体执行应失败。"""
     from axile.executor import execution_engine as execution_engine_module
@@ -295,7 +315,7 @@ def test_execute_continues_other_symbols_and_marks_overall_failure(
                 },
                 "curr_target": {"rb2610": 0.1, "ag2612": 0.2},
                 "algorithm": {"method": "SUCCESS-ALGO", "params": {"timeout": 3}},
-                "symbol_algorithms": {"ag2612": {"method": "FAIL-ALGO", "params": {"timeout": 7}}},
+                override_field: {override_key: {"method": "FAIL-ALGO", "params": {"timeout": 7}}},
             }
         )
     )

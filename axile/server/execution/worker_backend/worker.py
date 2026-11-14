@@ -14,6 +14,7 @@ from typing import cast
 
 from loguru import logger
 
+from axile.domain.execution import ExecutionKind
 from axile.executor.abstract_executor.base import AbstractExecutor
 from axile.executor.account_control.models import AccountControlContextKind, AccountControlSource
 from axile.executor.algorithms.utils.clock import get_default_clock
@@ -25,7 +26,7 @@ from axile.executor.session_closed import session_closed_scope
 from axile.executor.termination import ExecutionTerminated
 from axile.server.context import Context, ContextSettings, PortfolioExecutor
 from axile.server.db.models.account import AccountSnapshot
-from axile.server.execution.execution_algorithms import resolve_account_leverages
+from axile.server.execution.execution_algorithms import resolve_account_leverages, resolve_execution_algorithm_name
 from axile.server.execution.input_persistence import sanitize_execution_input
 from axile.server.execution.resident_connection import disconnect_resident_executor, executor_config_signature
 from axile.server.execution.worker_backend.catalog import RemoteCatalogProvider
@@ -301,7 +302,7 @@ def _handle_execute_trade(
         channel_type=account.trade_channel,
     )
     audit_context = cast(dict[str, object], cast(dict[str, object], standard_input.extra).get("audit", {}))
-    algorithm_name = str(account.algorithm.get("method", "SINGLE-MAKER"))
+    algorithm_name = resolve_execution_algorithm_name(account, ExecutionKind.REBALANCE)
     trigger_source = cast(str, request.payload["trigger_source"])
     audit_input = cast(dict[str, object], request.payload["audit_input"])
     notification_snapshot = cast("dict[str, object] | None", request.payload.get("notification_snapshot"))

@@ -312,7 +312,7 @@ export function AccountDetail({
     : (cachedConfig?.symbols ?? null)
   // 算法摘要不收短：TARGET-POS-TASK 等直接给完整参数句，配置带里整项分组 + 截断兜底。
   const algorithmText = acc
-    ? algorithmScheduleSummary(algorithmRefOf(acc.algorithm), acc.algorithm_schedule?.length ?? 0)
+    ? algorithmScheduleSummary(algorithmRefOf(acc.algorithm), acc.algorithm_schedule?.length ?? 0, Object.keys(acc.product_algorithms ?? {}).length)
     : (cachedConfig?.algorithm ?? null)
   const emptyAlgorithmText = acc
     ? describeAlgorithmRef(algorithmRefOf(acc.empty_positions_algorithm))

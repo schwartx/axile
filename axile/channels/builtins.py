@@ -6,6 +6,12 @@ from typing import cast
 
 import pandas as pd
 
+from axile.channels.algorithm_scopes import (
+    FUTURES_SCOPE_PATTERN,
+    GM_SCOPE_PATTERN,
+    futures_algorithm_scope,
+    gm_algorithm_scope,
+)
 from axile.channels.cn_futures import canonicalize_cn_futures_symbol, quantize_cn_futures_quantity
 from axile.channels.contracts import (
     AlgorithmReference,
@@ -16,6 +22,7 @@ from axile.channels.contracts import (
     ChannelAccountForm,
     ChannelAccountNotice,
     ChannelAccountOption,
+    ChannelAlgorithmScope,
     ChannelCalendar,
     ChannelConnectionValidation,
     ChannelDefaults,
@@ -401,9 +408,15 @@ def _create_tq_executor(config: BaseAccountConfig):
 def _ctp_plugin() -> ChannelPlugin:
     """构造 CTP 内置渠道插件."""
     return ChannelPlugin(
+        algorithm_scope_key=futures_algorithm_scope,
         descriptor=ChannelDescriptor(
             channel="ctp",
             cash_flow_sync=True,
+            algorithm_scope=ChannelAlgorithmScope(
+                pattern=FUTURES_SCOPE_PATTERN,
+                example="ag",
+                description="只需品种代码，如 ag；自动识别交易所，适用于所有月份期货合约。",
+            ),
             futures_close=close_capability(automatic=True),
             label="CTP",
             description="通过期货公司柜台连接国内期货市场",
@@ -519,6 +532,7 @@ def _connect_gm_account(config: BaseAccountConfig) -> None:
 def _gm_plugin() -> ChannelPlugin:
     """构造掘金内置渠道插件."""
     return ChannelPlugin(
+        algorithm_scope_key=gm_algorithm_scope,
         connect_account=_connect_gm_account,
         schedule_settings_model=GMSessionSettings,
         legacy_schedule_field="gm_sessions",
@@ -529,6 +543,11 @@ def _gm_plugin() -> ChannelPlugin:
                 steps=_GM_STEPS, notice="使用当前配置建立临时会话并核对账户；不保存配置、不下单。"
             ),
             channel="gm",
+            algorithm_scope=ChannelAlgorithmScope(
+                pattern=GM_SCOPE_PATTERN,
+                example="600000.SH",
+                description="股票和 ETF 需带交易所；仅校验格式，不核验交易所归属，填错会不匹配。",
+            ),
             replay=_gm_replay_capability(),
             label="掘金",
             description="通过本机终端或 RPC 服务连接掘金量化",
@@ -633,6 +652,7 @@ def _tq_plugin() -> ChannelPlugin:
     live = ChannelAccountFieldCondition(field="account_mode", equals="live")
     sim = ChannelAccountFieldCondition(field="account_mode", equals="sim")
     return ChannelPlugin(
+        algorithm_scope_key=futures_algorithm_scope,
         validate_connection=_validate_tq_connection,
         descriptor=ChannelDescriptor(
             connection_steps=_TQ_STEPS,
@@ -640,6 +660,11 @@ def _tq_plugin() -> ChannelPlugin:
                 steps=_TQ_STEPS, notice="使用当前配置建立临时会话并核对账户；不保存配置、不下单。"
             ),
             channel="tq",
+            algorithm_scope=ChannelAlgorithmScope(
+                pattern=FUTURES_SCOPE_PATTERN,
+                example="ag",
+                description="只需品种代码，如 ag；自动识别交易所，适用于所有月份期货合约。",
+            ),
             replay=_tq_replay_capability(),
             futures_close=close_capability(automatic=False),
             label="天勤",
