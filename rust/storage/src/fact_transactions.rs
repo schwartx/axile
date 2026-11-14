@@ -69,7 +69,7 @@ impl<'a> TransactionReader<'a> {
                 .expect("nonempty trade group");
             let mut summary = crate::cost_summary::Summary::empty();
             for trade in &trades {
-                summary.push(trade);
+                summary.push(*trade);
             }
             let (before, target_quantity) = sizing.get(symbol).copied().unwrap_or_default();
             output.push(serde_json::json!({"symbol":symbol,"side":side,"quantity":quantity,"price":finite(price),"reference":finite(reference),"referenceSource":trades[0].reference_source,"time":time as f64 / 1000.0,"endTime":end as f64 / 1000.0,"timeEstimated":trades.iter().any(|t|t.estimated),"before":before,"target":target_quantity,"summary":summary.output()}));
@@ -96,6 +96,7 @@ mod tests {
             quantity: Some(1.0),
             price: Some(2.0),
             reference: None,
+            multiplier: None,
             reference_source: None,
             value: Some(2.0),
             cost: None,

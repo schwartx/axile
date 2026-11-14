@@ -3,13 +3,13 @@ import { spawnSync } from 'node:child_process'
 
 // Module stubs stay in a child process so this page test cannot replace the API
 // or hooks used by the cache/chart tests in the main Bun test process.
-function renderPage(options: { displayed?: boolean; marker?: number; status?: string; loadingResult?: boolean; errors?: boolean; retries?: string[]; selected?: boolean } = {}) {
+function renderPage(options: { displayed?: boolean; marker?: number; status?: string; loadingResult?: boolean; errors?: boolean; retries?: string[]; selected?: boolean; inputsError?: boolean } = {}) {
   const script = `
     import { mock } from 'bun:test'
     import { createElement } from 'react'
     import { renderToStaticMarkup } from 'react-dom/server'
     const options = JSON.parse(process.env.HISTORY_SCENARIO)
-    const charts = [], queries = [], notices = [], retryHandlers = new Map()
+    const charts = [], queries = [], inputs = [], notices = [], retryHandlers = new Map()
     let checks = 0, refreshes = 0
     const metadata = { schema_version: 1, status: options.status ?? 'ready', source_version: 2, version: 's2', logic_version: 'logic', engine_version: 'engine', computed_at: '2026-10-20T12:00:00', data_until: null, error: options.errors ? 'calculation failed' : null, retry_at: null }
     const result = { range: '90', settings: { backtest_fee_rate: 0, backtest_weight_type: 'cs' }, backtest_included: true, engine_version: 'engine', baseline: '1970-01-01T00:00:00Z', end: '1970-01-01T00:00:01Z', record_count: 1, observation_count: 2, used_record_count: 1, invalid_asset_count: 0, skips: null, points: [{ date: '1970-01-01', observed_at: '1970-01-01T00:00:00Z', account_return: 0, portfolio_return: 0 }, { date: '1970-01-01', observed_at: '1970-01-01T00:00:01Z', account_return: 0.1, portfolio_return: 0.1 }], bindings: [], calendar: { status: 'available', calendar_id: 'test', label: 'fixture', closed_ranges: [], unavailable_ranges: [] } }
@@ -29,9 +29,10 @@ function renderPage(options: { displayed?: boolean; marker?: number; status?: st
       selectionQuery: selection => selection?.kind === 'interval' ? { start: selection.start, end: selection.end } : {},
       savePerformanceSettings: async () => ({ backtest_fee_rate: 0, backtest_weight_type: 'cs' }),
     }))
+    mock.module('@/features/history/localAnalysis', () => ({ loadAnalysisInputs: async (accountId,version,range,kind) => { inputs.push({accountId,version,range,kind}); return null }, previewPerformance: chart => chart.result }))
     mock.module('@/lib/hooks/usePolling', () => ({ usePolling: (fetcher, { queryKey, enabled = true }) => {
-      if (queryKey.startsWith('performance-summary:') && enabled) void fetcher(new AbortController().signal)
-      return { data: queryKey.startsWith('account:') ? { name: 'fixture', backtest_fee_rate: 0, backtest_weight_type: 'cs' } : queryKey === 'performance-portfolios' ? { data: [] } : null, loading: false, error: null, refresh: async () => {} }
+      if ((queryKey.startsWith('performance-summary:') || queryKey.startsWith('analysis-inputs:')) && enabled) void fetcher(new AbortController().signal)
+      return { data: queryKey.startsWith('account:') ? { name: 'fixture', backtest_fee_rate: 0, backtest_weight_type: 'cs' } : queryKey === 'performance-portfolios' ? { data: [] } : null, loading: false, error: options.inputsError && queryKey.startsWith('analysis-inputs:') ? new Error('window limit') : null, refresh: async () => {} }
     } }))
     mock.module('@/features/history/usePerformanceSnapshot', () => ({ usePerformanceSnapshot: () => ({ metadata, displayed, statusError: options.errors ? new Error('status failed') : null, resultError: options.errors ? new Error('result failed') : null, refreshError: options.errors ? new Error('refresh failed') : null, checking: false, loadingResult: options.loadingResult ?? false, check: async () => { checks++ }, refresh: async () => { refreshes++; return true } }) }))
     const { performanceViews } = await import('@/features/history/viewState')
@@ -39,7 +40,7 @@ function renderPage(options: { displayed?: boolean; marker?: number; status?: st
     const { AccountHistoryPage } = await import('@/pages/AccountHistoryPage')
     const html = renderToStaticMarkup(createElement(AccountHistoryPage))
     for (const title of options.retries ?? []) await retryHandlers.get(title)?.()
-    console.log(JSON.stringify({ html, charts, queries, notices, checks, refreshes }))
+    console.log(JSON.stringify({ html, charts, queries, inputs, notices, checks, refreshes }))
   `
   const child = spawnSync(process.execPath, ['-e', script], {
     cwd: `${import.meta.dir}/../..`,
@@ -47,12 +48,13 @@ function renderPage(options: { displayed?: boolean; marker?: number; status?: st
     encoding: 'utf8', timeout: 20_000,
   })
   if (child.status !== 0) throw new Error(child.error?.message ?? child.stderr ?? `Child exited ${child.status}`)
-  return JSON.parse(child.stdout) as { html: string; charts: Array<{ snapshotId: string; executionIndex: Array<{ record_id: number; time_ms: number; has_transactions: boolean }>; hasFullExecutions: boolean; daily: boolean; backtestMode: string; scaleMode: string; showExecutions: boolean }>; queries: Array<{ version: string; range: string; accountId: number; dimension: string; start: number; end: number }>; notices: string[]; checks: number; refreshes: number }
+  return JSON.parse(child.stdout) as { html: string; charts: Array<{ snapshotId: string; executionIndex: Array<{ record_id: number; time_ms: number; has_transactions: boolean }>; hasFullExecutions: boolean; daily: boolean; backtestMode: string; scaleMode: string; showExecutions: boolean }>; queries: Array<{ version: string; range: string; accountId: number; dimension: string; start: number; end: number }>; inputs: Array<{ accountId: number; version: string; range: string; kind: string }>; notices: string[]; checks: number; refreshes: number }
 }
 
 test('新版结果未齐时图表、成本查询和浏览偏好仍绑定完整旧版', () => {
-  const page = renderPage({ loadingResult: true })
+  const page = renderPage({ loadingResult: true, inputsError: true })
   expect(page.charts).toEqual([{ snapshotId: 's1', executionIndex: [{ record_id: 11, time_ms: 1000, has_transactions: false }], hasFullExecutions: false, daily: true, backtestMode: 'target', scaleMode: 'natural', showExecutions: false }])
+  expect(page.inputs).toEqual([{ accountId: 7, version: 's1', range: '90', kind: 'costs' }])
   expect(page.queries).toEqual([{ accountId: 7, version: 's1', range: '90', dimension: 'summary', start: 0, end: 1000 }])
   expect(page.html).toContain('正在读取新版绩效，当前保留上次结果')
   expect(page.html).toContain('data-segment="90"')
@@ -95,4 +97,12 @@ test('未加载观测时保留公共时间范围，禁用区间选择', () => {
     const button = page.html.match(new RegExp(`<button[^>]*aria-label="${label}"[^>]*>`))?.[0]
     expect(button).toContain('disabled=""')
   }
+})
+
+test('完整窗口尚未就绪时不发送选区汇总，也不展示局部结果', () => {
+  const page = renderPage({ loadingResult: true })
+  expect(page.inputs).toEqual([{ accountId: 7, version: 's1', range: '90', kind: 'costs' }])
+  expect(page.queries).toEqual([])
+  expect(page.html).toContain('正在计算成本')
+  expect(page.charts[0].snapshotId).toBe('s1')
 })

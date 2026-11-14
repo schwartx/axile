@@ -12,6 +12,7 @@ crate-type = ["rlib", "cdylib"]
 python = ["dep:pyo3"]
 
 [dependencies]
+axile-analysis-core = { path = "../analysis-core" }
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
 chrono-tz = "0.10"

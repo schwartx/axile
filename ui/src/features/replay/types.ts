@@ -124,6 +124,7 @@ export interface ReplayOrder {
   native_identity: ReplayData
 }
 export interface ReplayTrade {
+  related_capture_seq?: number
   recording_id?: string
   key: string | null
   symbol: string

@@ -77,6 +77,7 @@ function trade(data: ReplayData, time: number, seq: number): ReplayTrade | null 
   const quality = text(data.identity_quality) ?? 'unknown'
   return {
     key: quality === 'stable' ? text(data.trade_key) : null, symbol,
+    ...(integer(data.related_capture_seq) != null ? { related_capture_seq: integer(data.related_capture_seq)! } : {}),
     order_id: text(data.order_id), price: number(known(data, 'price')), quantity: number(known(data, 'quantity')),
     direction: text(known(data, 'direction')), offset: text(known(data, 'offset')),
     position_side: text(known(data, 'position_side')), source: text(data.source), source_seq: integer(data.source_seq),

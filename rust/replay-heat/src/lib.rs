@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
+mod account;
 
 /// Normalized depth intervals: start, end, price, quantity (NaN means unknown).
 #[wasm_bindgen]

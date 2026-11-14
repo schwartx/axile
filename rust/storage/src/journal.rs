@@ -594,6 +594,7 @@ mod tests {
                 quantity: Some(1.0),
                 price: None,
                 reference: None,
+                multiplier: None,
                 reference_source: None,
                 value,
                 cost,

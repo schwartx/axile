@@ -33,6 +33,7 @@ mock.module('react/jsx-runtime', () => ({ jsx, jsxs: jsx, Fragment: 'fragment' }
 mock.module('react/jsx-dev-runtime', () => ({ jsxDEV: jsx, Fragment: 'fragment' }))
 mock.module('lucide-react', () => Object.fromEntries(['ArrowLeft', 'ArrowRight', 'Check', 'Circle', 'Crosshair', 'Info', 'Minus', 'RotateCcw', 'X'].map(name => [name, () => null])))
 for (const name of ['Tooltip', 'ValueSlider', 'Segmented', 'Select']) mock.module(ui + `components/ui/${name}.tsx`, () => ({ [name]: () => null }))
+mock.module(ui + 'features/replay/ReplayIntervalAnalysis.tsx', () => ({ ReplayIntervalAnalysis: () => null }))
 mock.module(ui + 'features/replay/ReplayDepthLadder.tsx', () => ({ ReplayDepthLadder: () => null }))
 const offscreen: any[] = [], composites: any[] = [], blits: any[] = [], rects: any[] = [], arcs: any[] = [], fills: any[] = [], strokes: any[] = []
 let historyPaints = 0, orderPaints = 0

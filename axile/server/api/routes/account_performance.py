@@ -1,6 +1,6 @@
 """账户回测设置；分析查询由 account_analysis 提供。"""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 
 from axile.server._native import _core
 from axile.server.db.models.base import now_str
@@ -14,10 +14,11 @@ router = APIRouter()
 async def save_performance_settings(account_id: int, settings: PerformanceSettings):
     """原子更新设置，由事实版本失效触发重算。"""
     try:
-        return await native_operation(
+        result = await native_operation(
             "account_update_backtest",
             {"account_id": account_id, "patch": settings.model_dump(mode="json"), "now": now_str()},
         )
+        return Response(result, media_type="application/json")
     except _core.NativeError as error:
         status = {"ACCOUNT_NOT_FOUND": 404, "ACCOUNT_CONFLICT": 409}.get(error.args[0], 503)
         raise HTTPException(status, detail={"code": error.args[0], "message": error.args[1]}) from error
