@@ -5,7 +5,8 @@ test('未添加的输入保持局部状态，校验气泡随修改收起，仅�
   const script = `
     import { expect, mock } from 'bun:test';
     const ui = ${JSON.stringify(new URL('../../', import.meta.url).pathname)};
-    const states = [], dependencies = [], cleanups = [], effects = []; let at = 0;
+    const states = [], dependencies = [], cleanups = [], effects = [], animations = []; let at = 0, refAt = 0;
+    const productButton = { focus() {}, animate(frames, options) { const animation = { frames, options, cancel() {} }; animations.push(animation); return animation } };
     let reduceMotion = false;
     globalThis.window = { matchMedia: () => ({ matches: reduceMotion }) };
     globalThis.requestAnimationFrame = () => 0;
@@ -13,7 +14,7 @@ test('未添加的输入保持局部状态，校验气泡随修改收起，仅�
     mock.module('react', () => ({
       useState(initial) { const i = at++; if (!(i in states)) states[i] = initial;
         return [states[i], value => { states[i] = typeof value === 'function' ? value(states[i]) : value }]; },
-      useRef: () => ({ current: null }),
+      useRef: () => ({ current: refAt++ === 0 ? { querySelector: () => productButton } : refAt === 2 ? { offsetWidth: 34 } : null }),
       useEffect(effect, next) { const i = at++; const previous = dependencies[i];
         if (!previous || next.some((value, j) => value !== previous[j])) {
           effects.push(() => { cleanups[i]?.(); cleanups[i] = effect() }); dependencies[i] = next;
@@ -39,7 +40,7 @@ test('未添加的输入保持局部状态，校验气泡随修改收起，仅�
     function all(node) { return Array.isArray(node) ? node.flatMap(all) : node?.props
       ? [node, ...all(node.props.children), ...all(node.props.content), ...all(node.props.trailing)] : [] }
     let nodes;
-    function render() { at = 0; nodes = all(AlgorithmScopePicker({ channel: 'ctp',
+    function render() { at = 0; refAt = 0; nodes = all(AlgorithmScopePicker({ channel: 'ctp',
       capability: { pattern: '[a-z]+', example: 'ag', description: '期货品种代码' },
       products, value: selected, onAdd: code => { added.push(code); products.push(code); selected = code }, onChange() {}, onRestoreDefault() { restored = true },
     })); for (const effect of effects.splice(0)) effect(); }
@@ -92,11 +93,9 @@ test('未添加的输入保持局部状态，校验气泡随修改收起，仅�
     expect(form().props['aria-hidden']).toBe(true);
     expect(trigger().props.inert).toBe(true);
     expect(nodes[0].props.className).toContain('h-12');
-    expect(nodes[0].props.style['--algorithm-added-width']).toBe('260px');
-    const event = { propertyName: 'width', target: { hasAttribute: name => name === 'aria-pressed' } };
-    nodes[0].props.onTransitionEnd({ ...event, propertyName: 'opacity' }); render();
-    expect(trigger().props.inert).toBe(true);
-    nodes[0].props.onTransitionEnd(event); render();
+    expect(animations.at(-1).frames).toEqual([{ width: '260px' }, { width: '34px' }]);
+    expect(animations.at(-1).options.duration).toBe(200);
+    animations.at(-1).onfinish(); render();
     expect(trigger().props.inert).toBe(false);
     expect(nodes.find(n => n.type === 'Segmented').props.value).toBe('SHFE.ag');
     open(); enter('rb'); await settle();
@@ -110,6 +109,7 @@ test('未添加的输入保持局部状态，校验气泡随修改收起，仅�
     expect(trigger().props.inert).toBe(false); expect(added).toEqual(['SHFE.ag']);
     reduceMotion = true; open(); enter('rb'); await settle(); add().props.onClick(); render();
     expect(added).toEqual(['SHFE.ag', 'SHFE.rb']); expect(trigger().props.inert).toBe(false);
+    expect(animations).toHaveLength(1);
     expect(nodes.find(n => n.type === 'Segmented').props.value).toBe('SHFE.rb');
     for (const cleanup of cleanups) cleanup?.();
   `

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { LoaderCircle, Plus, Trash2 } from 'lucide-react'
 import { ConfirmModal, type ConfirmSpec } from '@/components/ui/ConfirmModal'
 import { Segmented } from '@/components/ui/Segmented'
@@ -19,7 +19,6 @@ export function AlgorithmScopePicker({ channel, capability, products, value, onC
   const [focused, setFocused] = useState(false)
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null)
   const [settling, setSettling] = useState<string | null>(null)
-  const [settleWidth, setSettleWidth] = useState(260)
   const rowRef = useRef<HTMLDivElement>(null)
   const labelRef = useRef<HTMLSpanElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -70,13 +69,13 @@ export function AlgorithmScopePicker({ channel, capability, products, value, onC
   useEffect(() => {
     if (!settling) return
     focusProduct()
-    const width = labelRef.current?.offsetWidth ?? 100
-    let frame = requestAnimationFrame(() => {
-      frame = requestAnimationFrame(() => setSettleWidth(width))
+    const button = rowRef.current?.querySelector<HTMLButtonElement>('[aria-label="调仓算法范围"] > button:last-of-type')
+    if (!button?.animate) { setSettling(null); return }
+    const animation = button.animate([{ width: '260px' }, { width: `${labelRef.current?.offsetWidth ?? 100}px` }], {
+      duration: 200, easing: 'cubic-bezier(.4,0,.2,1)', fill: 'forwards',
     })
-    // 过渡被浏览器或系统偏好中断时，也要恢复添加入口。
-    const timer = setTimeout(() => setSettling(null), 400)
-    return () => { cancelAnimationFrame(frame); clearTimeout(timer) }
+    animation.onfinish = animation.oncancel = () => setSettling(null)
+    return () => { animation.onfinish = animation.oncancel = null; animation.cancel() }
   }, [settling])
 
   const resetInput = () => { setAdding(false); setFocused(false); setCode(''); setValidation(null) }
@@ -87,19 +86,15 @@ export function AlgorithmScopePicker({ channel, capability, products, value, onC
   const add = () => {
     if (!current?.code || error || pending || settling) return
     const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    if (!reduceMotion) { setSettleWidth(260); setSettling(current.code) }
+    if (!reduceMotion) setSettling(current.code)
     onAdd(current.code); resetInput()
     if (reduceMotion) requestAnimationFrame(focusProduct)
   }
-  return <div ref={rowRef} className="relative flex h-12 min-w-0 items-center gap-2 py-2"
-    style={{ '--algorithm-added-width': `${settleWidth}px` } as CSSProperties}
-    onTransitionEnd={event => {
-      if (settling && event.propertyName === 'width' && (event.target as HTMLElement).hasAttribute('aria-pressed')) setSettling(null)
-    }}>
+  return <div ref={rowRef} className="relative flex h-12 min-w-0 items-center gap-2 py-2">
     <span ref={labelRef} aria-hidden className="pointer-events-none absolute invisible inline-block whitespace-nowrap px-2.5 text-xs font-semibold">{settling && label(settling)}</span>
     <div className="min-w-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       <Segmented ariaLabel="调仓算法范围" size="sm" value={value} onChange={onChange}
-        className={`w-max shrink-0 [&>div]:ml-0 [&>div]:border-0 [&>div]:pl-0 ${settling ? '[&>button:last-of-type]:w-[var(--algorithm-added-width)] [&>button:last-of-type]:shrink-0 [&>button:last-of-type]:justify-start [&>button:last-of-type]:overflow-hidden [&>button:last-of-type]:whitespace-nowrap [&>button:last-of-type]:transition-[width] [&>button:last-of-type]:duration-200 [&>button:last-of-type]:ease-[cubic-bezier(.4,0,.2,1)] [&>button:last-of-type]:motion-reduce:transition-none [&>span]:transition-none' : ''}`}
+        className={`w-max shrink-0 [&>div]:ml-0 [&>div]:border-0 [&>div]:pl-0 ${settling ? '[&>button:last-of-type]:w-[260px] [&>button:last-of-type]:shrink-0 [&>button:last-of-type]:justify-start [&>button:last-of-type]:overflow-hidden [&>button:last-of-type]:whitespace-nowrap [&>button:last-of-type]:transition-none [&>span]:transition-none' : ''}`}
         options={[{ value: '', label: '默认' }, ...products.map(product => ({ value: product, label: label(product) }))]}
         trailing={capability && <div
           className={`relative h-6 shrink-0 overflow-hidden duration-200 ease-[cubic-bezier(.4,0,.2,1)] motion-reduce:transition-none ${settling ? 'w-0 transition-none' : `transition-[width] ${adding ? 'w-[260px]' : 'w-[100px]'}`}`}
