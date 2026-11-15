@@ -79,3 +79,11 @@ describe('配置摘要缓存', () => {
     expect(readAccountConfigSummary(424242)?.leverage).toBe('多 5× / 空 2×')
   })
 })
+
+it('品种算法在账户摘要中显示数量，避免误认为所有品种均使用默认算法', () => {
+  writeAccountConfigSummary(424244, {
+    algorithm: { method: 'TWAP', params: {} },
+    product_algorithms: { 'SHFE.ag': { algorithm: { method: 'SINGLE-MAKER', params: {} } } },
+  } as unknown as Account, { showShortLeverage: false })
+  expect(readAccountConfigSummary(424244)?.algorithm).toBe('TWAP · 1 个品种')
+})

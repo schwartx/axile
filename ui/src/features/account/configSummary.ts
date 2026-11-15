@@ -8,6 +8,7 @@
  * 持一份模块级缓存（AlgorithmEditor 的 ``_algosCache`` 同款先例）：任何页面拿到账户
  * 真源（轮询到位或保存响应）即写入，任何页面首帧同步读出，保证 FLIP 两端始终有落点。
  */
+import { productAlgorithmSummary } from '@/features/account/productAlgorithms'
 import type { Account } from '@/types/api'
 import { algorithmRefOf, describeAlgorithmRef } from '@/features/setup/algorithms'
 
@@ -86,7 +87,7 @@ export function writeAccountConfigSummary(
   cache.set(accountId, {
     leverage: describeLeverage(acc.long_leverage, acc.short_leverage, showShortLeverage),
     symbols: describeSymbolControl(acc.forbidden_symbols, acc.risk_symbols),
-    algorithm: describeAlgorithmRef(algorithmRefOf(acc.algorithm)),
+    algorithm: productAlgorithmSummary(acc),
     emptyAlgorithm: describeAlgorithmRef(algorithmRefOf(acc.empty_positions_algorithm)),
   })
 }

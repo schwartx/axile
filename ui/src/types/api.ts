@@ -17,6 +17,8 @@ export interface AlgorithmRef {
   params: Record<string, unknown>
 }
 
+export interface ProductAlgorithm { algorithm: AlgorithmRef }
+
 /** 渠道账户配置字段。 */
 export interface ChannelAccountFieldConstraints {
   endpoint?: {
@@ -81,6 +83,7 @@ export interface FuturesCloseCapability {
 
 export interface ChannelCapability {
   futures_close?: FuturesCloseCapability | null
+  algorithm_scope?: { pattern: string; example: string; description: string } | null
   connection_steps?: Array<{ id: string; label: string }>
   connection_validation?: { steps: Array<{ id: string; label: string }>; notice: string } | null
   channel: TradeChannel
@@ -239,6 +242,7 @@ export interface Account {
   weight_precision: number
   long_leverage: number | null
   short_leverage: number | null
+  product_algorithms?: Record<string, ProductAlgorithm>
   algorithm: Record<string, unknown>
   empty_positions_algorithm: Record<string, unknown> | null
   trade_rules: Record<string, unknown> | null

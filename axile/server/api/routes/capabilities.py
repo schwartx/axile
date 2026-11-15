@@ -1,10 +1,13 @@
 """交易渠道可用性查询路由."""
 
-from fastapi import APIRouter
+from typing import Annotated
+
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from axile.channels import (
     ChannelAccountForm,
+    ChannelAlgorithmScope,
     ChannelCalendar,
     ChannelDefaults,
     ChannelLeverage,
@@ -12,8 +15,10 @@ from axile.channels import (
     ChannelSchedule,
     ChannelUi,
     ChannelUnits,
+    get_channel,
     list_channels,
 )
+from axile.channels.algorithm_scopes import normalize_algorithm_scopes
 from axile.channels.contracts import ChannelConnectionValidation
 from axile.executor.connection_progress import ConnectionStepDefinition, connection_plan
 from axile.executor.futures_close_policy import FuturesCloseCapability
@@ -39,6 +44,7 @@ class ChannelCapabilityPublic(BaseModel):
     """
 
     futures_close: FuturesCloseCapability | None = None
+    algorithm_scope: ChannelAlgorithmScope | None = None
     channel: str
     label: str
     description: str
@@ -58,6 +64,20 @@ class ChannelCapabilityPublic(BaseModel):
     available: bool
     missing_packages: list[str]
     install_extra: str | None
+
+
+@router.get("/channels/{channel}/algorithm-scope")
+def validate_algorithm_scope(channel: str, code: Annotated[str, Query(min_length=1, max_length=80)]) -> dict[str, str]:
+    """使用与账户保存相同的渠道规则校验并规范化品种代码。"""
+    try:
+        plugin = get_channel(channel)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="交易渠道不存在") from error
+    try:
+        normalized = normalize_algorithm_scopes(plugin, {code: None})
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {"code": next(iter(normalized))}
 
 
 @router.get("/channels", response_model=list[ChannelCapabilityPublic])

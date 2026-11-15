@@ -344,6 +344,14 @@ class ChannelConnectionValidation(_FrozenDescriptorModel):
     notice: str = Field(min_length=1)
 
 
+class ChannelAlgorithmScope(_FrozenDescriptorModel):
+    """声明账户品种算法的代码格式，不包含具体账户配置。"""
+
+    pattern: str
+    example: str
+    description: str
+
+
 class ChannelDescriptor(_FrozenDescriptorModel):
     """
     描述前端与 API 可见的渠道静态能力.
@@ -389,6 +397,7 @@ class ChannelDescriptor(_FrozenDescriptorModel):
     units: ChannelUnits = Field(default_factory=ChannelUnits)
     ui: ChannelUi = Field(default_factory=ChannelUi)
     futures_close: FuturesCloseCapability | None = None
+    algorithm_scope: ChannelAlgorithmScope | None = None
     defaults: ChannelDefaults
     leverage: ChannelLeverage
     account_form: ChannelAccountForm
@@ -449,6 +458,7 @@ class ChannelPlugin:
     max_parallel_symbols: int | None = 1
     order_param_model: OrderParamModel = OrderParamModel.UNKNOWN
     canonicalize_symbol: CanonicalizeSymbol = _identity_symbol
+    algorithm_scope_key: CanonicalizeSymbol = _identity_symbol
     quantize_target_quantity: QuantizeTargetQuantity | None = None
     requires_pre_connect_guard: bool = False
     connect_account: Callable[[BaseAccountConfig], None] | None = None

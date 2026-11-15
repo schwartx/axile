@@ -9,8 +9,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import cast
 
+from axile.domain.execution import ExecutionKind
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.server.db.models.account import AccountSnapshot
+from axile.server.execution.execution_algorithms import resolve_execution_algorithm_name
 from axile.server.execution.worker_backend.protocol import WorkerBackendRequest
 
 
@@ -77,7 +79,7 @@ def _parse_execute_trade_request(request: WorkerBackendRequest) -> _ExecuteTrade
     audit_context = cast(dict[str, object], cast(dict[str, object], standard_input.extra).get("audit", {}))
     return _ExecuteTradeRequestContext(
         account=account,
-        algorithm_name=str(account.algorithm.get("method", "SINGLE-MAKER")),
+        algorithm_name=resolve_execution_algorithm_name(account, ExecutionKind.REBALANCE),
         trigger_source=cast(str, request.payload["trigger_source"]),
         standard_input=standard_input,
         audit_context=audit_context,

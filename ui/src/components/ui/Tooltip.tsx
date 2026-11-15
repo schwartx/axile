@@ -20,6 +20,7 @@ interface AnchorProps {
   onMouseLeave?: (e: unknown) => void
   onFocus?: (e: unknown) => void
   onBlur?: (e: unknown) => void
+  'aria-describedby'?: string
 }
 
 const GAP = 8
@@ -53,6 +54,7 @@ export function Tooltip({
   delay = 140,
   arrow = false,
   interactive = false,
+  open: controlledOpen,
 }: {
   content: ReactNode
   children: ReactElement
@@ -60,12 +62,15 @@ export function Tooltip({
   arrow?: boolean
   /** 允许进入浮层操作，离开后延迟关闭。 */
   interactive?: boolean
+  /** 显式控制显示，用于无需悬停即可出现的字段校验提示。 */
+  open?: boolean
 }): ReactElement {
   const id = useId()
   const anchorRef = useRef<HTMLElement | null>(null)
   const cardRef = useRef<HTMLDivElement>(null)
   const timer = useRef<number | undefined>(undefined)
-  const [open, setOpen] = useState(false)
+  const [hoverOpen, setOpen] = useState(false)
+  const open = controlledOpen ?? hoverOpen
   const [pos, setPos] = useState<TipPos | null>(null)
   const [dx, setDx] = useState(0)
   /** 箭头相对卡片左缘的水平位置（px），始终对准锚点中心并留边不脱卡。 */
@@ -75,6 +80,7 @@ export function Tooltip({
   const place = useCallback(() => {
     const el = anchorRef.current
     if (!el) return
+    if (!el.getClientRects().length) { setPos(null); return }
     const r = el.getBoundingClientRect()
     const placement: 'up' | 'down' = r.top > 140 ? 'up' : 'down'
     setPos({ centerX: r.left + r.width / 2, anchorTop: r.top, anchorBottom: r.bottom, placement })
@@ -116,9 +122,12 @@ export function Tooltip({
     const on = () => place()
     window.addEventListener('scroll', on, true)
     window.addEventListener('resize', on)
+    const observer = new ResizeObserver(on)
+    if (anchorRef.current) observer.observe(anchorRef.current)
     return () => {
       window.removeEventListener('scroll', on, true)
       window.removeEventListener('resize', on)
+      observer.disconnect()
     }
   }, [open, place])
 
@@ -138,7 +147,7 @@ export function Tooltip({
     // 箭头对准锚点中心（= 卡中心 - 夹取偏移），并留 12px 边避免脱出卡角。
     const caret = Math.max(12, Math.min(w - 12, half - shift))
     if (caret !== caretLeft) setCaretLeft(caret)
-  }, [open, pos, dx, caretLeft])
+  }, [open, pos, dx, caretLeft, content])
 
   const props = children.props as AnchorProps
   const anchor = cloneElement(children, {
@@ -164,7 +173,7 @@ export function Tooltip({
       props.onBlur?.(e)
       hide()
     },
-    'aria-describedby': open ? id : undefined,
+    'aria-describedby': [props['aria-describedby'], open ? id : undefined].filter(Boolean).join(' ') || undefined,
   } as Partial<AnchorProps>)
 
   return (

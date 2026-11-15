@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, computed_field, field_validator
+from pydantic import BaseModel, computed_field, field_validator, model_validator
 from sqlalchemy import Column, Connection, ForeignKey, Integer, Text, event
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import Mapper, relationship
@@ -33,6 +33,7 @@ from axile.server.db.models.account_validation import (
 )
 from axile.server.db.models.base import now_str
 from axile.server.db.models.performance import FeeRate, PerformanceSummary, WeightType
+from axile.server.db.models.product_algorithms import ProductAlgorithm
 
 if TYPE_CHECKING:
     from axile.server.db.models.account_asset import AccountAssetSnapshot
@@ -93,6 +94,7 @@ class AccountBase(BaseModel):
     algorithm: Dict[str, Any] = Field(
         description="下单算法,必填",
     )
+    product_algorithms: dict[str, ProductAlgorithm] = Field(default_factory=dict)
     empty_positions_algorithm: Optional[Dict[str, Any]] = Field(
         default=None,
         description="清仓算法, 非必填; null 时由执行逻辑回退到默认值",
@@ -150,6 +152,20 @@ class AccountBase(BaseModel):
     def _check_empty_positions_algorithm_field(cls, value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """按注册表校验清仓算法参数是否越界."""
         return _validate_algorithm_config(value, "清仓算法")
+
+    @model_validator(mode="after")
+    def validate_product_algorithms(self) -> "AccountBase":
+        """使用账户渠道规范化品种，并校验各算法的渠道兼容性。"""
+        if self.product_algorithms:
+            from axile.channels import get_channel
+            from axile.channels.algorithm_scopes import normalize_algorithm_scopes
+            from axile.server.db.models.account_validation import _check_algorithm_channel_compat
+
+            products = normalize_algorithm_scopes(get_channel(self.trade_channel), self.product_algorithms)
+            for key, profile in products.items():
+                _check_algorithm_channel_compat(profile.algorithm, str(self.trade_channel), f"{key} 品种算法")
+            self.product_algorithms = products
+        return self
 
 
 class AccountCreate(AccountBase):
@@ -327,6 +343,7 @@ class AccountPublic(SQLModel):
     long_leverage: Optional[float] = None
     short_leverage: Optional[float] = None
     algorithm: Dict[str, Any]
+    product_algorithms: dict[str, ProductAlgorithm] = Field(default_factory=dict)
     empty_positions_algorithm: Optional[Dict[str, Any]] = None
     trade_rules: Optional[Dict[str, Any]] = None
     futures_close_policy: FuturesClosePolicy = Field(default_factory=FuturesClosePolicy)
@@ -528,6 +545,7 @@ class AccountUpdate(SQLModel):
     long_leverage: Optional[float] = None
     short_leverage: Optional[float] = None
     algorithm: Optional[Dict[str, Any]] = None
+    product_algorithms: dict[str, ProductAlgorithm] = Field(default_factory=dict)
     empty_positions_algorithm: Optional[Dict[str, Any]] = None
     trade_rules: Optional[Dict[str, Any]] = None
     futures_close_policy: FuturesClosePolicy | None = None
