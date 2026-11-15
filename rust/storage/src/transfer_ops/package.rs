@@ -1,7 +1,6 @@
 //! ZIP 包的快照、文件选择、流式校验与接收落盘。
 use super::files::{self, invalid, Result, MAX_BYTES, MAX_FILES};
 use chrono::{DateTime, FixedOffset, SecondsFormat, TimeZone, Utc};
-use chrono_tz::Asia::Shanghai;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -63,7 +62,7 @@ impl Manifest {
         let manifest: Self = serde_json::from_value(value.clone()).map_err(invalid)?;
         files::identity(&manifest.batch)?;
         files::identity(&manifest.source_id)?;
-        if manifest.format != 1
+        if manifest.format != 2
             || !manifest.files.contains_key("database.sqlite3")
             || manifest.files.len() > MAX_FILES
         {
@@ -105,12 +104,13 @@ fn validate_name(name: &str) -> Result<()> {
             && parts[1].bytes().all(|b| b.is_ascii_digit()))
         || (parts.len() == 3
             && parts[0] == "replay"
-            && parts[1].starts_with("account-")
-            && parts[2] == ".replay-index.sqlite")
-        || (parts.len() == 4
-            && parts[0] == "replay"
-            && parts[1].starts_with("account-")
-            && parts[3].ends_with(".mcap"));
+            && parts[1]
+                .strip_prefix("account-")
+                .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+            && parts[2]
+                .strip_prefix("raw-")
+                .and_then(|s| s.strip_suffix(".mcap"))
+                .is_some_and(|s| crate::execution_replay::identifier(s).is_ok()));
     if !valid {
         return Err(invalid("无效数据包路径"));
     }
@@ -163,57 +163,16 @@ fn collect(
     end_time: DateTime<FixedOffset>,
     request: &Value,
 ) -> Result<BTreeMap<String, PathBuf>> {
-    let start = plan
-        .start
-        .map(|t| t.with_timezone(&Shanghai).format("%Y-%m-%d").to_string())
-        .unwrap_or_default();
-    let end = end_time
-        .with_timezone(&Shanghai)
-        .format("%Y-%m-%d")
-        .to_string();
     let mut files = BTreeMap::from([(
         "database.sqlite3".to_owned(),
         directory.join("database.sqlite3"),
     )]);
-    for account in children(&base.join("replay"))? {
-        if !account.is_dir()
-            || !account
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with("account-")
-        {
-            continue;
-        }
-        let index = account.join(".replay-index.sqlite");
-        if index.is_file() {
-            files::reject_links(&index)?;
-            let relative = index.strip_prefix(base).map_err(invalid)?;
-            let copy = directory.join(relative);
-            files::mkdir(copy.parent().unwrap())?;
-            super::snapshot_file(&index, &copy)?;
-            files.insert(files::archive_name(relative)?, copy);
-        }
-        for day in children(&account)? {
-            if !day.is_dir() {
-                continue;
-            }
-            let date = day.file_name().unwrap().to_string_lossy();
-            for path in children(&day)? {
-                let name = path.file_name().unwrap().to_string_lossy();
-                if path.is_file()
-                    && name.ends_with(".mcap")
-                    && (name.starts_with("fragment-")
-                        || (start.as_str() <= date.as_ref() && date.as_ref() <= end.as_str()))
-                {
-                    files.insert(
-                        files::archive_name(path.strip_prefix(base).map_err(invalid)?)?,
-                        path,
-                    );
-                }
-            }
-        }
-    }
+    files.extend(super::raw::collect(
+        base,
+        directory,
+        plan.start.map(|t| t.timestamp_micros()).unwrap_or(0),
+        end_time.timestamp_micros(),
+    )?);
     let directories = request["algorithm_directories"]
         .as_array()
         .ok_or_else(|| invalid("缺少算法目录"))?;
@@ -242,6 +201,18 @@ pub(super) fn export(database: &str, request: &Value) -> Result<Value> {
     let base = files::base(database)?;
     let outbox = files::root(database)?.join("outbox");
     files::mkdir(&outbox)?;
+    let pending = children(&outbox)?
+        .into_iter()
+        .filter(|p| p.join("data.axile").is_file())
+        .collect::<Vec<_>>();
+    if pending.len() >= 4 {
+        return Err(invalid("待确认数据包已达 4 个，请先确认或取消旧批次"));
+    }
+    let pending_bytes = pending.iter().try_fold(0u64, |n, p| {
+        fs::metadata(p.join("data.axile"))
+            .map(|m| n.saturating_add(m.len()))
+            .map_err(invalid)
+    })?;
     if fs2::available_space(&base).map_err(invalid)?
         < fs::metadata(database)
             .map_err(invalid)?
@@ -285,9 +256,12 @@ pub(super) fn export(database: &str, request: &Value) -> Result<Value> {
     if fs2::available_space(&base).map_err(invalid)? < size.saturating_add(256 * 1024 * 1024) {
         return Err(invalid("剩余磁盘不足以暂存数据包"));
     }
+    if pending_bytes.saturating_add(size) > MAX_BYTES {
+        return Err(invalid("待确认数据包总量超过 4 GiB，请先确认或取消旧批次"));
+    }
     let batch = uuid::Uuid::new_v4().simple().to_string();
     let manifest = serde_json::to_value(Manifest {
-        format: 1,
+        format: 2,
         batch: batch.clone(),
         source_id: source.to_owned(),
         start: plan.start.map(iso),
@@ -341,6 +315,9 @@ fn write_archive(path: &Path, files: &BTreeMap<String, PathBuf>, manifest: &Valu
         .sync_all()
         .map_err(invalid)?;
     output.persist(path).map_err(invalid)?;
+    if fs::metadata(path).map_err(invalid)?.len() > MAX_BYTES {
+        return Err(invalid("压缩包超过传送预算，请缩短范围"));
+    }
     files::sync_directory(path.parent().unwrap())
 }
 fn unpack(package: &Path, directory: &Path) -> Result<(Value, Manifest)> {
@@ -425,7 +402,7 @@ pub(super) fn import(database: &str, request: &Value) -> Result<Value> {
         temporary.path(),
     )?;
     for (name, entry) in &manifest.files {
-        if name == "database.sqlite3" {
+        if name == "database.sqlite3" || name.starts_with("replay/") {
             continue;
         }
         let target = destination(&base, &root, &manifest, name);
@@ -437,23 +414,20 @@ pub(super) fn import(database: &str, request: &Value) -> Result<Value> {
             return Err(invalid("同名录制内容冲突"));
         }
     }
+    super::raw::validate(temporary.path(), &manifest)?;
+    super::raw::check_destination(&base, temporary.path(), &manifest)?;
     super::import_snapshot(
         database,
         &json!({"source_id":manifest.source_id,"snapshot":temporary.path().join("database.sqlite3")}),
     )?;
     let mut code_roots = BTreeSet::new();
     for name in manifest.files.keys() {
-        if name == "database.sqlite3" {
+        if name == "database.sqlite3" || name.starts_with("replay/") {
             continue;
         }
         let target = destination(&base, &root, &manifest, name);
         files::mkdir(target.parent().unwrap())?;
-        if name.ends_with("/.replay-index.sqlite") {
-            super::import_index(
-                target.to_str().ok_or_else(|| invalid("无效索引路径"))?,
-                &json!({"snapshot":temporary.path().join(name)}),
-            )?;
-        } else if !target.exists() {
+        if !target.exists() {
             fs::rename(temporary.path().join(name), &target).map_err(invalid)?;
             files::sync_directory(target.parent().unwrap())?;
         }
@@ -466,6 +440,7 @@ pub(super) fn import(database: &str, request: &Value) -> Result<Value> {
             );
         }
     }
+    super::raw::install(&base, temporary.path(), &manifest)?;
     let receipt = json!({"batch":manifest.batch,"source_id":manifest.source_id,"manifest_sha256":files::manifest_hash(&value)?});
     files::write_json(
         &root.join(format!("receipt-{}.json", manifest.batch)),
@@ -478,8 +453,26 @@ pub(super) fn import(database: &str, request: &Value) -> Result<Value> {
 mod tests {
     use super::*;
     #[test]
+    fn corrupt_raw_index_cannot_generate_a_package_omitting_source() {
+        let base = tempfile::tempdir().unwrap();
+        let account = base.path().join("replay/account-7");
+        fs::create_dir_all(&account).unwrap();
+        fs::write(account.join(".replay-v2.sqlite"), []).unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let error = collect(
+            base.path(),
+            staging.path(),
+            &Plan::default(),
+            DateTime::parse_from_rfc3339("2026-11-15T00:00:00+08:00").unwrap(),
+            &json!({"algorithm_directories":[]}),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "TRANSFER_PACKAGE");
+        assert!(!staging.path().join("replay").exists());
+    }
+    #[test]
     fn manifest_rejects_paths_and_expansion_budget() {
-        let mut value = json!({"format":1,"batch":"a".repeat(32),"source_id":"b".repeat(32),"start":null,"end":"2026-01-01T00:00:00+00:00","executions":[],"files":{"database.sqlite3":{"sha256":"c".repeat(64),"size":0}}});
+        let mut value = json!({"format":2,"batch":"a".repeat(32),"source_id":"b".repeat(32),"start":null,"end":"2026-01-01T00:00:00+00:00","executions":[],"files":{"database.sqlite3":{"sha256":"c".repeat(64),"size":0}}});
         assert!(Manifest::parse(&value).is_ok());
         for name in [
             "../outside",

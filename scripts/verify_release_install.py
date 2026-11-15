@@ -24,7 +24,8 @@ def main() -> None:
     assert _core.TRANSFER_PACKAGE_VERSION == 1
     assert _core.PUBLIC_HEAD == "0037"
     assert _core.ANALYSIS_FACT_SCHEMA == 42
-    assert _core.EXECUTION_REPLAY_SCHEMA == 1
+    assert _core.EXECUTION_REPLAY_SCHEMA == 2
+    assert callable(_core.execution_replay_rebuild)
     static = package / "server" / "_static"
     assert (static / "index.html").is_file()
     assert list(static.rglob("*.wasm")), "wheel 缺少回放 WASM"

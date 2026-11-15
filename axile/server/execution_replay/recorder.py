@@ -16,16 +16,9 @@ from axile.server.execution_replay.contracts import encode_json, freeze_data, fr
 from axile.server.execution_replay.service import native_writer
 
 MAX_IDENTITIES = 4_096
+MAX_QUEUE_BYTES = 8 * 1024 * 1024
+MAX_EVENT_BYTES = 512 * 1024
 TAIL_US = 5_000_000
-_TERMINAL = frozenset({"filled", "canceled", "rejected", "expired"})
-_TRADE_FIELDS = ("symbol", "price", "quantity", "direction", "position_side", "offset", "order_id")
-
-
-def _remember_recent[K, V](values: dict[K, V], key: K, value: V) -> None:
-    values.pop(key, None)
-    values[key] = value
-    if len(values) > MAX_IDENTITIES:
-        values.pop(next(iter(values)))
 
 
 @dataclass
@@ -48,6 +41,8 @@ class _Session:
     next_poll: float = 0.0
     poll_pending: bool = False
     waiting_for_writer: bool = False
+    queue_bytes: int = 0
+    capture_streams: set[str] = field(default_factory=set)
 
 
 class ReplayRecorder:
@@ -94,29 +89,16 @@ class ReplayRecorder:
         self._session: _Session | None = None
         self._closed = False
         self._executions: dict[str, set[str]] = {}
-        self._positions: set[str] = set()
-        self._position_parts: set[tuple[str, str | None]] = set()
-        self._orders: set[tuple[str, str]] = set()
-        self._order_changes: dict[tuple[str, str], int] = {}
-        self._terminal_orders: dict[tuple[str, str], None] = {}
-        self._order_set_revisions: dict[str, int] = {}
-        self._order_set_observation: dict[str, tuple[int, int, int]] = {}
-        self._trade_facts: dict[str, dict[str, object]] = {}
-        self._order_executions: dict[tuple[str, str], str] = {}
-        self._order_origins: dict[tuple[str, str], str] = {}
-        self._command_metadata: dict[str, dict[str, str]] = {}
         self._interest_orders: set[str] = set()
         self._interest_positions: set[str] = set()
         self._tails: dict[str, int] = {}
-        self._tail_trades: dict[str, None] = {}
-        self._tail_commands: dict[str, None] = {}
 
     @staticmethod
     def _freeze_context(context: Mapping[str, object]) -> dict[str, object]:
         frozen = freeze_json(context)
         if not isinstance(frozen, dict):
             raise ValueError("invalid_replay_context")
-        frozen["schema_version"] = 1
+        frozen["schema_version"] = 2
         return frozen
 
     def status(self) -> dict[str, object]:
@@ -210,9 +192,6 @@ class ReplayRecorder:
                 self._stop_locked()
                 self._owner = executor
                 self._sync_generation += 1
-                self._positions.clear()
-                self._position_parts.clear()
-                self._orders.clear()
                 self._interest_orders.clear()
                 self._interest_positions.clear()
                 self._tails.clear()
@@ -239,19 +218,8 @@ class ReplayRecorder:
             return
         session = _Session(uuid4().hex, self._freeze_context(self._context))
         self._session = session
-        self._orders.clear()
-        self._order_changes.clear()
-        self._terminal_orders.clear()
-        self._order_set_revisions.clear()
-        self._order_set_observation.clear()
-        self._trade_facts.clear()
-        self._order_executions.clear()
-        self._order_origins.clear()
-        self._command_metadata.clear()
         self._interest_orders.clear()
         self._interest_positions.clear()
-        self._tail_trades.clear()
-        self._tail_commands.clear()
 
         def observe_session(topic: str, data: Mapping[str, object]) -> None:
             with self._condition:
@@ -305,23 +273,23 @@ class ReplayRecorder:
                     return
                 frozen = freeze_data(topic, data, session.context)
                 self._normalize_generation_locked(topic, frozen, session)
-                self._associate_locked(topic, frozen)
-                session.queue.append(
-                    (
-                        "message",
+                self._capture_interest_locked(frozen)
+                if topic.startswith(("/quote/", "/market_trade/")) and topic not in session.capture_streams:
+                    if len(session.capture_streams) >= 126:
+                        raise ValueError("replay_stream_budget")
+                    self._enqueue_locked(
+                        session,
+                        timestamp,
+                        "/capture",
                         {
-                            "schema_version": 1,
-                            "recording_id": session.recording_id,
-                            "capture_seq": session.sequence + 1,
-                            "time_us": timestamp,
-                            "topic": topic,
-                            "data": frozen,
+                            "symbol": topic.rsplit("/", 1)[-1],
+                            "streams": [topic],
+                            "boundary": "start",
                         },
                     )
-                )
-                session.sequence += 1
+                    session.capture_streams.add(topic)
+                self._enqueue_locked(session, timestamp, topic, frozen)
                 session.last_time_us = timestamp
-                self._track_locked(topic, frozen, timestamp)
                 self._condition.notify_all()
             except Exception as error:  # noqa: BLE001 - 采集旁路不得改变业务结果
                 code = (
@@ -330,6 +298,42 @@ class ReplayRecorder:
                     else "replay_capture_error"
                 )
                 self._stop_locked(code)
+
+    def _enqueue_locked(self, session: _Session, timestamp: int, topic: str, data: dict[str, object]) -> None:
+        text = encode_json(
+            {
+                "schema_version": 2,
+                "recording_id": session.recording_id,
+                "capture_seq": session.sequence + 1,
+                "time_us": timestamp,
+                "topic": topic,
+                "data": data,
+            }
+        )
+        size = len(text.encode("utf-8"))
+        if size > MAX_EVENT_BYTES or session.queue_bytes + size > MAX_QUEUE_BYTES:
+            raise ValueError("replay_capture_budget")
+        session.queue.append(("message", text))
+        session.queue_bytes += size
+        session.sequence += 1
+
+    def _capture_interest_locked(self, data: dict[str, object]) -> None:
+        # Keep directly observed interest until recording ends; no trade merge or owner inference.
+        direct = data.get("symbols")
+        symbols = {
+            value
+            for value in [data.get("symbol"), *(direct if isinstance(direct, list) else [])]
+            if isinstance(value, str) and value
+        }
+        for name in ("orders", "positions"):
+            rows = data.get(name, [])
+            if isinstance(rows, list):
+                symbols.update(
+                    row["symbol"] for row in rows if isinstance(row, dict) and isinstance(row.get("symbol"), str)
+                )
+        if len(self._interest_positions | symbols) > MAX_IDENTITIES:
+            raise ValueError("replay_interest_budget")
+        self._interest_positions.update(symbols)
 
     def begin_query(self, scope: list[str]) -> dict[str, object] | None:
         """短锁分配查询覆盖 token；发起次序与消息序号分别维护。"""
@@ -344,6 +348,9 @@ class ReplayRecorder:
             session.request_revision += 1
             while len(session.queries) + len(session.completed_queries) >= MAX_IDENTITIES and session.completed_queries:
                 del session.completed_queries[next(iter(session.completed_queries))]
+            if len(session.queries) >= MAX_IDENTITIES:
+                self._stop_locked("replay_query_budget")
+                return None
             key = ("symbols", tuple(sorted(set(scope)))) if scope else ("account", ())
             session.queries[session.request_revision] = self._sync_generation, key, session.sequence
             return {
@@ -388,8 +395,6 @@ class ReplayRecorder:
                 self._sync_generation += 1
                 session.queries.clear()
                 session.completed_queries.clear()
-                self._order_set_revisions.clear()
-                self._order_set_observation.clear()
                 if self._owner is not None:
                     setattr(self._owner, "_replay_sync_generation", self._sync_generation)
                 data["sync_generation"] = self._sync_generation
@@ -475,286 +480,11 @@ class ReplayRecorder:
             return True
         symbol = str(data.get("symbol") or topic.rsplit("/", 1)[-1])
         return (
-            symbol in self._positions
-            or symbol in self._interest_orders
+            symbol in self._interest_orders
             or symbol in self._interest_positions
-            or any(key[0] == symbol for key in self._orders)
             or any(symbol in symbols for symbols in self._executions.values())
             or timestamp < self._tails.get(symbol, 0)
         )
-
-    def _associate_locked(self, topic: str, data: dict[str, object]) -> None:
-        self._associate_command_locked(topic, data)
-        if topic == "/command" and data.get("operation") != "place_order":
-            return
-        self._associate_order_locked(data)
-
-    def _associate_command_locked(self, topic: str, data: dict[str, object]) -> None:
-        command_id = data.get("command_id")
-        if isinstance(command_id, str):
-            metadata = self._command_metadata.get(command_id, {})
-            for field, value in metadata.items():
-                if data.get(field) in (None, "", "unknown"):
-                    data[field] = value
-            if topic == "/command":
-                additions = {
-                    field: data[field]
-                    for field in ("execution_id", "origin")
-                    if isinstance(data.get(field), str) and data[field] not in ("", "unknown")
-                }
-                if any(field in metadata and metadata[field] != value for field, value in additions.items()):
-                    raise ValueError("replay_identity_conflict")
-                if additions:
-                    _remember_recent(self._command_metadata, command_id, {**metadata, **additions})
-
-    def _associate_order_locked(self, data: dict[str, object]) -> None:
-        symbol, order_id = data.get("symbol"), data.get("order_id")
-        if isinstance(symbol, str) and symbol and isinstance(order_id, str) and order_id:
-            key = symbol, order_id
-            execution_id = data.get("execution_id")
-            if isinstance(execution_id, str) and execution_id:
-                _remember_recent(self._order_executions, key, execution_id)
-            elif key in self._order_executions:
-                data["execution_id"] = self._order_executions[key]
-            origin = data.get("origin")
-            if isinstance(origin, str) and origin not in ("", "unknown"):
-                _remember_recent(self._order_origins, key, origin)
-            elif key in self._order_origins:
-                data["origin"] = self._order_origins[key]
-
-    def _track_locked(self, topic: str, data: dict[str, object], timestamp: int) -> None:
-        if topic == "/order":
-            if data.get("sync_generation") == self._sync_generation:
-                self._track_order_locked(data, timestamp)
-        elif topic == "/order_set":
-            self._track_order_set_locked(data, timestamp)
-        elif topic == "/account_observation":
-            self._track_positions_locked(data, timestamp)
-        elif topic == "/trade":
-            key, symbol = data.get("trade_key"), data.get("symbol")
-            self._track_trade_order_locked(data)
-            if data.get("identity_quality") == "stable" and isinstance(key, str) and key not in self._tail_trades:
-                _remember_recent(self._tail_trades, key, None)
-                if isinstance(symbol, str):
-                    self._tails[symbol] = timestamp + TAIL_US
-        elif topic == "/command" and data.get("phase") == "request":
-            key, symbol = data.get("command_id"), data.get("symbol")
-            if isinstance(key, str) and key not in self._tail_commands and isinstance(symbol, str):
-                _remember_recent(self._tail_commands, key, None)
-                self._tails[symbol] = timestamp + TAIL_US
-        while len(self._order_changes) > MAX_IDENTITIES:
-            removable = next((key for key in self._order_changes if key not in self._orders), None)
-            if removable is None:
-                break
-            del self._order_changes[removable]
-
-    def _track_seed_scope_locked(self, name: str, scope: tuple[str, tuple[str, ...]]) -> None:
-        session = self._session
-        if session is None or name not in session.seed_interest_scopes:
-            return
-        if scope[0] == "account":
-            session.seed_interest_scopes[name] = None
-        elif (symbols := session.seed_interest_scopes[name]) is not None:
-            symbols.update(scope[1])
-
-    @staticmethod
-    def _order_key(data: dict[str, object]) -> tuple[str, str] | None:
-        symbol, order_id = data.get("symbol"), data.get("order_id")
-        if not isinstance(symbol, str) or not symbol or not isinstance(order_id, str) or not order_id:
-            return None
-        return symbol, order_id
-
-    def _forget_order_locked(self, key: tuple[str, str], timestamp: int) -> None:
-        if key in self._orders:
-            self._orders.discard(key)
-            self._tails[key[0]] = timestamp + TAIL_US
-
-    def _track_order_locked(self, data: dict[str, object], timestamp: int, *, individual: bool = True) -> None:
-        key = self._order_key(data)
-        if key is None or self._session is None:
-            return
-        if individual and "query_basis" in data:
-            basis = data["query_basis"]
-            if (
-                not isinstance(basis, dict)
-                or self._order_changes.get(key, 0) > basis["start_seq"]
-                or basis["request_revision"] <= self._order_set_revisions.get(key[0], 0)
-                or any(
-                    (generation, sequence) > (self._sync_generation, basis["start_seq"])
-                    for generation, _, sequence in (
-                        self._order_set_observation.get(scope, (0, 0, 0)) for scope in (key[0], "")
-                    )
-                )
-            ):
-                return
-        if data.get("status") in _TERMINAL:
-            _remember_recent(self._terminal_orders, key, None)
-            self._forget_order_locked(key, timestamp)
-        elif key not in self._terminal_orders:
-            self._orders.add(key)
-        else:
-            return
-        if individual:
-            self._order_changes[key] = self._session.sequence
-
-    def _track_trade_order_locked(self, data: dict[str, object]) -> None:
-        trade = data.get("trade_key")
-        if data.get("identity_quality") != "stable" or not isinstance(trade, str):
-            return
-        previous = self._trade_facts.get(trade, {})
-        before = self._known_trade_facts(previous)
-        incoming_quality = data.get("field_quality")
-        incoming_quality = incoming_quality if isinstance(incoming_quality, dict) else {}
-        previous_quality = previous.get("field_quality")
-        previous_quality = previous_quality if isinstance(previous_quality, dict) else {}
-        quality = {**previous_quality, **incoming_quality}
-        merged = {**previous, "field_quality": quality}
-        for name in _TRADE_FIELDS:
-            value = data.get(name)
-            if name in before and incoming_quality.get(name) in {"missing", "invalid"}:
-                quality[name] = "known"
-                continue
-            if value is None:
-                continue
-            if name in {"direction", "position_side", "offset"} and isinstance(value, str):
-                value = value.casefold()
-            if name in before and name != "order_id" and value != before[name]:
-                continue
-            merged[name] = value
-        _remember_recent(self._trade_facts, trade, merged)
-        after = self._known_trade_facts(merged)
-        key = self._order_key(after)
-        if key is not None and before != after and self._session is not None:
-            self._order_changes[key] = self._session.sequence
-        elif key is None and self._session is not None:
-            # An unlinked correction may belong to any live order queried earlier.
-            for order in self._orders:
-                self._order_changes[order] = self._session.sequence
-
-    @staticmethod
-    def _known_trade_facts(data: dict[str, object]) -> dict[str, object]:
-        quality = data.get("field_quality")
-        quality = quality if isinstance(quality, dict) else {}
-        return {
-            field: data[field]
-            for field in _TRADE_FIELDS
-            if data.get(field) is not None and quality.get(field) not in {"missing", "invalid"}
-        }
-
-    def _order_scope_symbols_locked(self, scope: tuple[str, tuple[str, ...]], rows: list[dict]) -> set[str]:
-        if scope[0] == "symbols":
-            return set(scope[1])
-        return (
-            {key[0] for key in self._order_changes}
-            | {key[0] for key in self._orders}
-            | self._interest_orders
-            | set(self._order_set_revisions)
-            | {row["symbol"] for row in rows}
-        )
-
-    def _current_set_scope_locked(self, symbols: Iterable[str], revision: int) -> bool:
-        return all(revision > self._order_set_revisions.get(symbol, 0) for symbol in symbols)
-
-    def _observe_set_locked(self, symbol: str, revision: int, sequence: int) -> None:
-        if (self._sync_generation, revision) > self._order_set_observation.get(symbol, (0, 0, 0))[:2]:
-            self._order_set_observation[symbol] = self._sync_generation, revision, sequence
-
-    def _track_order_set_locked(self, data: dict[str, object], timestamp: int) -> None:
-        basis, scope, rows = data.get("query_basis"), self._scope_key(data.get("scope")), data.get("orders", [])
-        if (
-            self._session is None
-            or not isinstance(basis, dict)
-            or scope is None
-            or data.get("scope_complete") is not True
-            or data.get("synchronized") is not True
-            or data.get("sync_generation") != self._sync_generation
-            or not isinstance(rows, list)
-            or any(not isinstance(row, dict) or self._order_key(row) is None for row in rows)
-        ):
-            return
-        start, revision = basis["start_seq"], basis["request_revision"]
-        account = self._order_set_observation.get("")
-        if account is not None and account[:2] >= (self._sync_generation, revision):
-            return
-        symbols = self._order_scope_symbols_locked(scope, rows)
-        global_scope = scope[0] == "account" and self._current_set_scope_locked(symbols, revision)
-        for symbol in symbols:
-            if revision <= self._order_set_revisions.get(symbol, 0):
-                continue
-            self._order_set_revisions[symbol] = revision
-            self._observe_set_locked(symbol, revision, self._session.sequence)
-            self._track_seed_scope_locked("orders", ("symbols", (symbol,)))
-            self._interest_orders.discard(symbol)
-            present = set()
-            for row in rows:
-                if row["symbol"] != symbol:
-                    continue
-                key = self._order_key(row)
-                present.add(key)
-                if self._order_changes.get(key, 0) <= start:
-                    self._track_order_locked(row, timestamp, individual=False)
-            for key in tuple(self._orders):
-                if key[0] == symbol and key not in present and self._order_changes.get(key, 0) <= start:
-                    self._forget_order_locked(key, timestamp)
-        if global_scope:
-            self._observe_set_locked("", revision, self._session.sequence)
-            self._track_seed_scope_locked("orders", scope)
-
-    @staticmethod
-    def _position_update(row: object) -> tuple[tuple[str, str | None], bool] | None:
-        if not isinstance(row, dict):
-            return None
-        quality = row.get("field_quality")
-        quality = quality if isinstance(quality, dict) else {}
-        symbol = row.get("symbol")
-        if not isinstance(symbol, str) or not symbol or quality.get("symbol") in {"missing", "invalid"}:
-            return None
-        side = row.get("position_side")
-        if side not in {"NET", "LONG", "SHORT"} or quality.get("position_side") in {"missing", "invalid"}:
-            side = None
-        quantity = row.get("quantity")
-        is_zero = (
-            type(quantity) in (int, float) and quantity == 0 and quality.get("quantity") not in {"missing", "invalid"}
-        )
-        return (symbol, side), is_zero
-
-    def _track_positions_locked(self, data: dict[str, object], timestamp: int) -> None:
-        generation = data.get("sync_generation", self._sync_generation)
-        if type(generation) is not int or generation != self._sync_generation:
-            return
-        positions = data.get("positions", [])
-        if not isinstance(positions, list):
-            return
-        scope = self._scope_key(data.get("scope"))
-        if data.get("scope_complete") is True and scope is not None:
-            self._track_seed_scope_locked("positions", scope)
-            self._clear_interest_locked(self._interest_positions, data.get("scope"))
-            if scope[0] == "account":
-                self._position_parts.clear()
-            else:
-                self._position_parts.difference_update(key for key in tuple(self._position_parts) if key[0] in scope[1])
-        for row in positions:
-            update = self._position_update(row)
-            if update is None:
-                continue
-            key, is_zero = update
-            if is_zero:
-                if key[1] is not None:
-                    self._position_parts.discard(key)
-            else:
-                self._position_parts.add(key)
-        symbols = {key[0] for key in self._position_parts}
-        for symbol in self._positions - symbols:
-            self._tails[symbol] = timestamp + TAIL_US
-        self._positions = symbols
-
-    def _clear_interest_locked(self, interest: set[str], scope: object) -> None:
-        key = self._scope_key(scope)
-        if key is not None:
-            if key[0] == "account":
-                interest.clear()
-            else:
-                interest.difference_update(key[1])
 
     def begin_execution(
         self, execution_id: str, symbols: Iterable[str], data: Mapping[str, object] | None = None
@@ -762,6 +492,9 @@ class ReplayRecorder:
         """登记执行相关品种并记录开始，不发起行情订阅。"""
         execution_symbols = set(symbols)
         with self._condition:
+            if execution_id not in self._executions and len(self._executions) >= MAX_IDENTITIES:
+                self._stop_locked("replay_interest_budget")
+                return
             self._executions[execution_id] = execution_symbols
         self.observe(
             "/execution",
@@ -807,10 +540,12 @@ class ReplayRecorder:
                         self._condition.wait(0.1)
                         continue
                     item = session.queue.popleft()
+                    if item[0] == "message":
+                        session.queue_bytes -= len(item[1].encode("utf-8"))
                     if item[0].startswith("poll"):
                         session.poll_pending = False
                 if item[0] == "message":
-                    writer.append(encode_json(item[1]))
+                    writer.append(item[1])
                 elif item[0] == "seal":
                     writer.seal()
                 else:
@@ -829,6 +564,7 @@ class ReplayRecorder:
         finally:
             with self._condition:
                 session.queue.clear()
+                session.queue_bytes = 0
                 if self._session is session:
                     self._session = None
                     self._effective_version = self._config_version
@@ -921,6 +657,8 @@ class ReplayRecorder:
                 if self._session is session and not session.stopping:
                     for name, target in (("orders", self._interest_orders), ("positions", self._interest_positions)):
                         if (observed := session.seed_interest_scopes.get(name)) is not None:
+                            if len(target | groups[name]) > MAX_IDENTITIES:
+                                raise ValueError("replay_interest_budget")
                             target.update(groups[name] - observed)
         finally:
             with self._condition:

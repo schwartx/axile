@@ -3,6 +3,8 @@ pub mod account;
 pub mod book;
 pub mod cost;
 pub mod equity;
+pub mod replay;
+pub mod replay_interval;
 
 pub const PROTOCOL: u32 = 2;
 pub const ALGORITHM: &str = "local-analysis-1";

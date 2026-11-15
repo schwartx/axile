@@ -127,7 +127,10 @@ def export_package(plan: TransferPlan) -> tuple[Path, dict]:
 
 def import_package(package: Path) -> dict:
     """由 Rust 校验接收数据，并将收到的代码目录接入应用配置。"""
-    report = _operation("import_package", package=str(package))
+    from axile.server.execution_replay.reader import readers
+
+    with readers.maintenance():
+        report = _operation("import_package", package=str(package))
     code_roots = report["algorithm_directories"]
     if code_roots:
         from axile.common.config import settings as app_settings

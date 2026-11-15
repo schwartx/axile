@@ -5,6 +5,8 @@ import math
 from collections.abc import Mapping
 
 MAX_SAFE_INTEGER = 2**53 - 1
+MAX_FREEZE_BYTES = 512 * 1024
+MAX_FREEZE_NODES = 16_384
 
 DATA_FIELDS = frozenset(
     "schema_version symbol symbols source source_seq source_time_us source_time_quality source_precision "
@@ -15,7 +17,7 @@ DATA_FIELDS = frozenset(
     "status on_book confirmed_book order_stage reduce_only close_position time_in_force trigger_price trigger_condition "
     "replacement_order_id previous_order_id replaced_by command_phase create_time_us update_time_us "
     "trade_key identity_quality granularity aggressor is_maker fee fee_currency execution_type "
-    "association order_identity trade_identity associated_execution_id "
+    "association related_capture_seq order_identity trade_identity associated_execution_id "
     "bids asks available_depth depth_coverage book_valid valid_until_us last_price last_price_kind "
     "volume volume_kind turnover scope scope_complete sync_generation synchronized query_basis orders "
     "positions position_basis target target_quantity targets algorithm stage stage_id stage_targets ending_reason instrument streams "
@@ -40,27 +42,49 @@ def _number(value: int | float) -> int | float:
 
 
 def freeze_json(value: object) -> object:
-    """复制 JSON 原语，拒绝 SDK 对象、秘密字段及非有限数。"""
+    """有界复制 JSON 原语，在分配容器前检查节点和字节预算。"""
+    remaining_bytes = MAX_FREEZE_BYTES
+    remaining_nodes = MAX_FREEZE_NODES
+
+    def charge(size: int) -> None:
+        nonlocal remaining_bytes
+        remaining_bytes -= size
+        if remaining_bytes < 0:
+            raise ValueError("replay_capture_budget")
 
     def visit(item: object, depth: int) -> object:
+        nonlocal remaining_nodes
+        remaining_nodes -= 1
+        if remaining_nodes < 0:
+            raise ValueError("replay_structure_budget")
         if depth > 10:
             raise ValueError("replay_structure_budget")
+        charge(2)
         if item is None or isinstance(item, bool):
             return item
         if isinstance(item, (int, float)):
+            charge(24)
             return _number(item)
         if isinstance(item, str):
+            if len(item) > MAX_FREEZE_BYTES:
+                raise ValueError("replay_capture_budget")
+            charge(len(item.encode("utf-8")))
             return item
         if isinstance(item, Mapping):
+            if len(item) > remaining_nodes:
+                raise ValueError("replay_structure_budget")
             result = {}
             for key, nested in item.items():
                 if not isinstance(key, str) or key.lower() in _FORBIDDEN_KEYS:
                     raise ValueError("replay_forbidden_field")
-                if len(key.encode("utf-8")) > 128:
+                if len(key) > 128 or len(key.encode("utf-8")) > 128:
                     raise ValueError("replay_key_budget")
+                charge(len(key.encode("utf-8")) + 3)
                 result[key] = visit(nested, depth + 1)
             return result
         if isinstance(item, (list, tuple)):
+            if len(item) > remaining_nodes:
+                raise ValueError("replay_structure_budget")
             return [visit(nested, depth + 1) for nested in item]
         raise ValueError("replay_non_json_value")
 
@@ -73,7 +97,7 @@ def freeze_data(topic: str, data: Mapping[str, object], context: Mapping[str, ob
         raise ValueError("replay_unknown_topic")
     if topic.startswith(("/quote/", "/market_trade/")) and not topic.rsplit("/", 1)[-1]:
         raise ValueError("replay_missing_symbol")
-    if not isinstance(data, Mapping) or set(data) - DATA_FIELDS:
+    if not isinstance(data, Mapping) or len(data) > len(DATA_FIELDS) or set(data) - DATA_FIELDS:
         raise ValueError("replay_unknown_data_field")
     frozen = freeze_json(data)
     assert isinstance(frozen, dict)

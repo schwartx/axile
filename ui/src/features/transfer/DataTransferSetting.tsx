@@ -9,7 +9,7 @@ import { Segmented } from '@/components/ui/Segmented'
 import { TransferSourceInput } from '@/features/transfer/TransferSourceInput'
 import { DurationStepper } from '@/components/ui/DurationStepper'
 import { positiveInteger, transferDraft, transferPlan, type TransferDraft, type TransferPlan } from '@/features/transfer/transferForm'
-import { apiGet, apiSend, apiUpload, apiErrorFromBody } from '@/lib/api/client'
+import { apiGet, apiSend, apiUpload } from '@/lib/api/client'
 
 type Settings = { plan: Partial<TransferPlan>; last_run: { ok: boolean; at: string; error?: string } | null }
 const retentionFields = [{ key: 'execution_days', label: '执行记录' }, { key: 'replay_days', label: '回放' }] as const
@@ -39,6 +39,7 @@ function DataTransferModal({ open, onClose }: { open: boolean; onClose: () => vo
   const [range, setRange] = useState(false)
   const [busy, setBusy] = useState(false)
   const [offlineOpen, setOfflineOpen] = useState(false)
+  const [pendingBatch, setPendingBatch] = useState('')
   const offlineId = useId()
   const automaticId = useId()
   const [message, setMessage] = useState('')
@@ -149,14 +150,16 @@ function DataTransferModal({ open, onClose }: { open: boolean; onClose: () => vo
         <div className="min-h-0 overflow-hidden">
           <fieldset disabled={disabled} className="space-y-4 pt-3 disabled:opacity-70">
             <button type="button" className={buttonClass} disabled={!!formError} onClick={() => void run(async () => {
-              const response = await fetch('/api/v1/transfer/export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(effective()) })
-              if (!response.ok) throw apiErrorFromBody(response.status, response.statusText, await response.json())
-              download(await response.blob(), 'data.axile'); setMessage('数据包已导出；收到接收确认后才能清理')
+              const {batch} = await apiSend<{batch:string}>('POST','/transfer/packages',effective())
+              setPendingBatch(batch)
+              const link=document.createElement('a'); link.href=`/api/v1/transfer/packages/${batch}`; link.download='data.axile'; link.click()
+              setMessage('已开始下载数据包；收到接收确认后才能清理')
             })}>导出数据包</button>
+            {pendingBatch && <button type="button" className={buttonClass} onClick={()=>void run(async()=>{await apiSend('DELETE',`/transfer/packages/${pendingBatch}`);setPendingBatch('');setMessage('暂存包已取消，原始录制仍保留')})}>取消暂存数据包</button>}
             <p className="text-[13px] text-ink-3">首次接收需要空账户与组合，之后可重复接收同一来源。账户配置完整保留，导入后调度暂停。</p>
             <div className="grid gap-4 sm:grid-cols-2">
               <label className="text-[14px]">上传数据包<input className={`${TEXT} mt-2 file:mr-3 file:border-0 file:bg-fill file:px-3 file:py-1 file:text-ink-2`} type="file" accept=".axile" onChange={e => { const f = e.target.files?.[0]; if (f) void run(async () => { const receipt = await apiUpload('/transfer/import', f); download(new Blob([JSON.stringify(receipt)], { type: 'application/json' }), 'receipt.json'); setMessage('接收完成，已下载确认文件；将确认文件交给来源端即可清理') }) }} /></label>
-              <label className="text-[14px]">交回离线接收确认<input className={`${TEXT} mt-2 file:mr-3 file:border-0 file:bg-fill file:px-3 file:py-1 file:text-ink-2`} type="file" accept=".json" disabled={!!formError} onChange={e => { const f = e.target.files?.[0]; if (f) void run(async () => { await apiSend('POST', '/transfer/acknowledge', { receipt: JSON.parse(await f.text()), plan: effective() }); setMessage('接收确认已验证，按填写的保留规则清理') }) }} /></label>
+              <label className="text-[14px]">交回离线接收确认<input className={`${TEXT} mt-2 file:mr-3 file:border-0 file:bg-fill file:px-3 file:py-1 file:text-ink-2`} type="file" accept=".json" disabled={!!formError} onChange={e => { const f = e.target.files?.[0]; if (f) void run(async () => { if(f.size>65536)throw Error('接收确认超过大小限制'); await apiSend('POST', '/transfer/acknowledge', { receipt: JSON.parse(await f.text()), plan: effective() }); setMessage('接收确认已验证，按填写的保留规则清理') }) }} /></label>
             </div>
           </fieldset>
         </div>

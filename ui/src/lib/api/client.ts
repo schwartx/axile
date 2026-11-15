@@ -110,6 +110,7 @@ export async function apiSend<T>(
   path: string,
   body?: unknown,
   signal?: AbortSignal,
+  received?: (response: Response) => void,
 ): Promise<T> {
   const res = await fetch(BASE + path, {
     method,
@@ -117,6 +118,7 @@ export async function apiSend<T>(
     body: body === undefined ? undefined : JSON.stringify(body),
     signal,
   })
+  received?.(res)
   return parse<T>(res)
 }
 

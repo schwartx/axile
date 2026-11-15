@@ -1,12 +1,24 @@
 //! 待传批次、已收回执与可重复完成的历史清理。
 use super::files::{self, invalid, Result};
 use super::package::{self, Manifest, Plan};
-use chrono::{TimeZone, Utc};
-use chrono_tz::Asia::Shanghai;
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+pub(super) fn cancel(database: &str, request: &Value) -> Result<Value> {
+    let batch = super::text(request, "batch")?;
+    files::identity(batch)?;
+    let root = files::root(database)?;
+    let directory = root.join("outbox").join(batch);
+    files::reject_links(&directory)?;
+    // A cancellation removes the pending copy only; confirmed retention evidence remains available.
+    files::remove_file(&directory.join("data.axile"))?;
+    let pending = root.join("pending.json");
+    if pending.exists() && files::read_json(&pending)?["batch"] == batch {
+        files::remove_file(&pending)?;
+    }
+    Ok(json!({"canceled":true}))
+}
 
 pub(super) fn prepare(database: &str, request: &Value) -> Result<Value> {
     let root = files::root(database)?;
@@ -92,6 +104,13 @@ pub(super) fn acknowledge(database: &str, request: &Value) -> Result<Value> {
 }
 pub(super) fn prune_recordings_request(database: &str, request: &Value) -> Result<Value> {
     let manifest = Manifest::parse(&request["manifest"])?;
+    let directory = files::root(database)?.join("outbox").join(&manifest.batch);
+    let receipt = files::read_json(&directory.join("receipt.json"))?;
+    if receipt["manifest_sha256"] != files::manifest_hash(&request["manifest"])?
+        || receipt["source_id"] != manifest.source_id
+    {
+        return Err(invalid("清理需要已持久化的接收确认"));
+    }
     let cutoff = request["cutoff_us"]
         .as_i64()
         .ok_or_else(|| invalid("缺少保留时间"))?;
@@ -99,140 +118,11 @@ pub(super) fn prune_recordings_request(database: &str, request: &Value) -> Resul
 }
 fn prune_recordings(database: &str, manifest: &Manifest, cutoff: i64) -> Result<u64> {
     let base = files::base(database)?;
-    let day = Utc
-        .timestamp_micros(cutoff)
-        .single()
-        .ok_or_else(|| invalid("保留范围无效"))?
-        .with_timezone(&Shanghai)
-        .format("%Y-%m-%d")
-        .to_string();
-    let mut recordings = BTreeSet::new();
-    for name in manifest.files.keys() {
-        let path = Path::new(name);
-        let Some(file_name) = path.file_name().and_then(|v| v.to_str()) else {
-            continue;
-        };
-        if !name.starts_with("replay/") || !file_name.starts_with("recording-") {
-            continue;
-        }
-        if let Some(recording) = recording_id(file_name) {
-            recordings.insert((
-                path.parent().unwrap().parent().unwrap().to_owned(),
-                recording.to_owned(),
-            ));
-        }
-    }
     let mut removed = 0;
-    for (relative, recording) in recordings {
-        let account = base.join(&relative);
-        files::reject_links(&account)?;
-        let files_to_remove = recording_files(&account, &recording)?;
-        if files_to_remove.is_empty()
-            || !confirmed_recording(&base, manifest, &files_to_remove, &day)?
-        {
-            continue;
-        }
-        if super::prune_recording(
-            database,
-            &json!({"index":account.join(".replay-index.sqlite"),"recording":recording}),
-        )?["safe"]
-            != true
-        {
-            continue;
-        }
-        for path in files_to_remove {
-            files::remove_file(&path)?;
+    for (name, entry) in &manifest.files {
+        if name.starts_with("replay/") && super::raw::prune(&base, name, entry, cutoff)? {
             removed += 1;
         }
     }
     Ok(removed)
-}
-
-fn recording_files(account: &Path, recording: &str) -> Result<Vec<PathBuf>> {
-    let mut files_to_remove = Vec::new();
-    let mut active = false;
-    for entry in fs::read_dir(&account).map_err(invalid)? {
-        let entry = entry.map_err(invalid)?;
-        if entry.file_type().map_err(invalid)?.is_symlink() {
-            active = true;
-            continue;
-        }
-        if !entry.file_type().map_err(invalid)?.is_dir() {
-            continue;
-        }
-        for entry in fs::read_dir(entry.path()).map_err(invalid)? {
-            let entry = entry.map_err(invalid)?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.ends_with(".partial") {
-                active = true;
-            }
-            if recording_id(&name) == Some(recording) {
-                files_to_remove.push(entry.path());
-            }
-        }
-    }
-    Ok(if active { Vec::new() } else { files_to_remove })
-}
-fn confirmed_recording(
-    base: &Path,
-    manifest: &Manifest,
-    candidates: &[PathBuf],
-    day: &str,
-) -> Result<bool> {
-    for path in candidates {
-        let name = files::archive_name(path.strip_prefix(&base).map_err(invalid)?)?;
-        let Some(info) = manifest.files.get(&name) else {
-            return Ok(false);
-        };
-        if path
-            .parent()
-            .unwrap()
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .as_ref()
-            >= day
-            || fs::symlink_metadata(path)
-                .map_err(invalid)?
-                .file_type()
-                .is_symlink()
-        {
-            return Ok(false);
-        }
-        if files::digest(path)? != info.sha256 {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-fn recording_id(name: &str) -> Option<&str> {
-    let stem = name.strip_suffix(".mcap")?;
-    let (prefix, fragment) = match stem.strip_prefix("recording-") {
-        Some(value) => (value, false),
-        None => (stem.strip_prefix("fragment-")?, true),
-    };
-    let (recording, part) = prefix.rsplit_once('-')?;
-    if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    if !fragment {
-        return Some(recording);
-    }
-    let (recording, sequence) = recording.rsplit_once('-')?;
-    (!sequence.is_empty() && sequence.bytes().all(|byte| byte.is_ascii_digit()))
-        .then_some(recording)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn recording_identity_does_not_match_a_prefix() {
-        assert_eq!(recording_id("recording-a-000001.mcap"), Some("a"));
-        assert_eq!(recording_id("recording-a-12-000001.mcap"), Some("a-12"));
-        assert_eq!(recording_id("fragment-a-12-1-000000.mcap"), Some("a-12"));
-        assert_eq!(recording_id("recording-a-000001.py"), None);
-        assert_eq!(recording_id("recording-a-000001.mcap.partial"), None);
-    }
 }

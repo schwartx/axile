@@ -15,6 +15,40 @@ from axile.server.native_store import native_call
 router = APIRouter(prefix="/transfer", tags=["transfer"])
 
 
+def _package(batch: str) -> Path:
+    if len(batch) != 32 or any(c not in "0123456789abcdef" for c in batch):
+        raise HTTPException(422, "无效传送批次")
+    path = service.root() / "outbox" / batch / "data.axile"
+    if path.is_symlink() or path.parent.is_symlink() or not path.is_file():
+        raise HTTPException(404, "数据包已确认、取消或不存在")
+    return path
+
+
+@router.post("/packages")
+async def prepare_download(plan: dict):
+    """Prepare once, then let the browser download without a JavaScript-sized package buffer."""
+    try:
+        async with service._lock:
+            package, manifest = await native_call(service.export_package, _plan(plan))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"batch": manifest["batch"], "size": package.stat().st_size}
+
+
+@router.get("/packages/{batch}")
+async def download_package(batch: str):
+    """Stream a prepared package through the browser download manager."""
+    return FileResponse(_package(batch), filename="data.axile", media_type="application/octet-stream")
+
+
+@router.delete("/packages/{batch}")
+async def cancel_package(batch: str):
+    """Remove the pending copy while retaining original recordings."""
+    _package(batch)
+    async with service._lock:
+        return await native_call(service._operation, "cancel_package", batch=batch)
+
+
 def _plan(value: dict) -> service.TransferPlan:
     from pydantic import ValidationError
 

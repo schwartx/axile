@@ -1,0 +1,13 @@
+export type RawSession = { reader_epoch: string; session: string; session_proof?: string; recovery_wait_seconds: number }
+export type RawStream = { id: number; topic: string; symbol: string }
+export type RawRecording = { id: string; seq: number; watermark: number; start_us: number | null; state: string; commit_id: string; streams: RawStream[]; symbols?: string[]; symbols_more?: boolean }
+export type RawManifest = { schema_version: 2; account_id: number; execution_id: string; index_generation: string; recordings: RawRecording[] }
+export type RawLocation = { seq: number; time: number; block: number; line: number }
+export type RawBlockInfo = { id: number; length: number; raw_length: number; sha256: string; first_seq: number; last_seq: number }
+export type RawPlan = { account_id: number; execution_id: string; recording_id: string; through_seq: number; commit_id: string; cutoff_seq: number; index_generation: string; selected: RawLocation | null; evidence: RawLocation[]; previous?: RawLocation | null; next?: RawLocation | null; blocks: RawBlockInfo[]; planned_bytes: number; target_us: number }
+export type RawPreview = { capture_seq: number; time_us: number; topic: string; data: Record<string, unknown> }
+export type RawSubject = { id: number; kind: string; key: string; first_seq: number; aux?: Record<string, unknown> }
+export type RawBusiness = RawSubject & { data: Record<string, unknown>; observed_seq: number; last_fact_seq: number; valid: boolean; conflict: boolean; owner_conflict: boolean; resolved_seq: number; proofs: Record<string, unknown>; owner?: Record<string, unknown>; inference?: Record<string, { value: number | null; complete: boolean }>; baseline?: Record<string, unknown> }
+export type RawCursor = [number, number]
+export type RawTarget = { recording: RawRecording; stream: number; symbol?: string; time_us: number; capture_seq?: number; generation: string; business?: { kind: 'trade' | 'weak_trade' | 'command' | 'position' | 'order' | 'statistics' | 'interval'; after: RawCursor; cursor_generation?: string; interval?: { start_us: number; end_us: number; price_tick: number; distribution: boolean; viewport?: boolean } } }
+export type RawFrame = { target_us: number; target_seq: number; index_generation: string; quote: RawPreview | null; quote_valid: boolean; previous?: RawLocation | null; next?: RawLocation | null; evidence: RawPreview[]; planned_bytes: number; read_bytes: number; cumulative_bytes: number; roots: number; wasm_bytes: number; cache_bytes: number; cost_estimated?: boolean; dependency_plan?: { raw_bytes: number; index_step_limit: number; member_lookups: number; folds: number }; business?: { kind: string; subjects: RawBusiness[]; next: RawCursor | null } }

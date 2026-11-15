@@ -7,6 +7,7 @@ use std::path::Path;
 
 mod files;
 mod package;
+mod raw;
 mod state;
 
 fn err(e: impl std::fmt::Display) -> AnalysisError {
@@ -66,10 +67,36 @@ fn records(c: &Connection) -> Result<Value, AnalysisError> {
     Ok(json!(v))
 }
 pub fn transfer(path: &str, request: &Value) -> Result<Value, AnalysisError> {
+    let lease = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(files::root(path)?.join(".transfer.lock"))
+        .map_err(err)?;
+    fs2::FileExt::try_lock_exclusive(&lease).map_err(|_| err("另一项数据传送仍在执行"))?;
+    let root = files::root(path)?;
+    // With the process lease held, these private staging directories have no surviving writer.
+    for (parent, prefix) in [
+        (root.clone(), "receive-"),
+        (root.join("outbox"), ".export-"),
+    ] {
+        if !parent.exists() {
+            continue;
+        }
+        for entry in std::fs::read_dir(parent).map_err(err)? {
+            let entry = entry.map_err(err)?;
+            if entry.file_type().map_err(err)?.is_dir()
+                && entry.file_name().to_string_lossy().starts_with(prefix)
+            {
+                std::fs::remove_dir_all(entry.path()).map_err(err)?;
+            }
+        }
+    }
     match text(request, "action")? {
         "export_package" => package::export(path, request),
         "import_package" => package::import(path, request),
         "acknowledge" => state::acknowledge(path, request),
+        "cancel_package" => state::cancel(path, request),
         "prepare_package" => state::prepare(path, request),
         "prune_recordings" => state::prune_recordings_request(path, request),
         "backup_index" => {
