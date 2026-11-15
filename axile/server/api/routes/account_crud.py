@@ -40,6 +40,7 @@ from axile.server.db.models import (
     PortfolioAccountListPublic,
     PortfolioAccountPublic,
 )
+from axile.server.db.models.account import AccountSnapshot
 from axile.server.db.models.account_connection import AccountConnectionDetail
 from axile.server.db.models.account_validation import _check_algorithm_channel_compat
 from axile.server.db.models.performance import PerformanceSummary
@@ -297,6 +298,16 @@ def _build_account_update_data(account: AccountUpdate) -> dict[str, object]:
     if "account_control_override" in data and data["account_control_override"] is not None:
         data["account_control_override"] = AccountControlOverride.model_validate(data["account_control_override"])
     return data
+
+
+def _normalize_product_algorithm_update(account: Account, data: dict[str, object]) -> None:
+    """按更新后的渠道校验品种，并将规范化配置写入本次补丁。"""
+    if not {"product_algorithms", "trade_channel"} & data.keys():
+        return
+    validated = AccountSnapshot.model_validate(account.model_dump() | data)
+    data["product_algorithms"] = {
+        key: profile.model_dump(mode="json") for key, profile in validated.product_algorithms.items()
+    }
 
 
 async def _sync_portfolio_binding_update(
@@ -828,6 +839,7 @@ async def _update_account(
                 data["feishu_key"] = None
         if account.account_config is not None or account.trade_channel is not None:
             data["account_config"] = normalized_account_config
+        _normalize_product_algorithm_update(db_account, data)
         # 调度开关只改变后续触发；保留登录会话，避免停启或重复保存导致 SDK 重登录。
         runtime_changed = any(
             key in data and data[key] != getattr(db_account, key) for key in ("account_config", "trade_channel")

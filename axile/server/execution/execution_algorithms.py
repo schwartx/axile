@@ -55,6 +55,8 @@ def resolve_execution_algorithm_name(
     if execution_kind == ExecutionKind.CLEAR_POSITIONS:
         empty_algorithm = resolve_empty_positions_algorithm(account)
         return str(empty_algorithm.get("method", "SINGLE-MAKER"))
+    if account.product_algorithms:
+        return "按品种算法"
     return str(account.algorithm.get("method", "SINGLE-MAKER"))
 
 

@@ -25,6 +25,7 @@ from axile.server.db.models.account_validation import (
 )
 from axile.server.db.models.base import PydanticJSONType
 from axile.server.db.models.performance import FeeRate, WeightType
+from axile.server.db.models.product_algorithms import ProductAlgorithm
 
 
 class SettingsModel(BaseModel):
@@ -42,6 +43,7 @@ class ExecutionSettings(SettingsModel):
     long_leverage: float | None = None
     short_leverage: float | None = None
     algorithm: dict[str, Any] = Field(default_factory=dict)
+    product_algorithms: dict[str, ProductAlgorithm] = Field(default_factory=dict)
     empty_positions_algorithm: dict[str, Any] | None = None
     trade_rules: dict[str, Any] | None = None
     futures_close_policy: FuturesClosePolicy = Field(default_factory=FuturesClosePolicy)

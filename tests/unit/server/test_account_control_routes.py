@@ -84,6 +84,7 @@ def test_copy_account_keeps_secrets_server_side_and_source_untouched(monkeypatch
     """复制仅转移配置，来源及执行历史不会随新账户对象复制。"""
     source = _build_account()
     source.is_started = False
+    source.product_algorithms = {"SHFE.ag": {"algorithm": {"method": "TWAP", "params": {"total_duration": 30}}}}
     session = _RouteSession(source)
     bindings: list[tuple[int, int | None]] = []
 
@@ -112,6 +113,9 @@ def test_copy_account_keeps_secrets_server_side_and_source_untouched(monkeypatch
     assert copied.name == "新账户"
     assert copied.is_started is False
     assert all(copied.account_config[key] == value for key, value in source.account_config.items())
+    assert copied.product_algorithms == source.product_algorithms
+    copied.product_algorithms["SHFE.ag"].algorithm["params"]["total_duration"] = 60
+    assert source.product_algorithms["SHFE.ag"].algorithm["params"]["total_duration"] == 30
     assert copied.copied_from_account_id == 1
     assert copied.copied_from_account_name == source.name
     assert source.name == "ctp-testnet-sim"

@@ -25,6 +25,8 @@ import {
   validateAlgorithmRef,
   type AlgorithmRef,
 } from '@/features/setup/algorithms'
+import { AlgorithmScopePicker } from '@/features/account/AlgorithmScopePicker'
+import { algorithmScopeLabel, productAlgorithmDraft, productAlgorithmValue, productAlgorithmError } from '@/features/account/productAlgorithms'
 import { FuturesClosePolicyEditor } from '@/features/account/FuturesClosePolicyEditor'
 import { defaultClosePolicy } from '@/features/account/futuresClosePolicy'
 import { RuntimeSyncStatus } from '@/features/account/RuntimeSyncStatus'
@@ -98,6 +100,10 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
   const [trade, setTrade] = useState<AlgorithmRef | null>(() => algorithmRefOf(accountPreview?.algorithm))
   const [empty, setEmpty] = useState<AlgorithmRef | null>(() => algorithmRefOf(accountPreview?.empty_positions_algorithm))
   const [closePolicy, setClosePolicy] = useState(accountPreview?.futures_close_policy ?? defaultClosePolicy())
+  const [products, setProducts] = useState(() => productAlgorithmDraft(accountPreview?.product_algorithms))
+  const [scope, setScope] = useState('')
+  const [productErrors, setProductErrors] = useState<Record<string, string | null>>({})
+  const [inputRevision, setInputRevision] = useState(0)
   const [saving, setSaving] = useState(false)
   const [tradeError, setTradeError] = useState<string | null>(null)
   const [emptyError, setEmptyError] = useState<string | null>(null)
@@ -109,6 +115,12 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
     setTrade(algorithmRefOf(acc.algorithm) ?? descriptor.defaults.trade_algorithm)
     setEmpty(algorithmRefOf(acc.empty_positions_algorithm))
     setClosePolicy(acc.futures_close_policy ?? defaultClosePolicy())
+    setProducts(productAlgorithmDraft(acc.product_algorithms))
+    setScope('')
+    setProductErrors({})
+    setTradeError(null)
+    setEmptyError(null)
+    setInputRevision(previous => previous + 1)
     setSaveError(null)
     return true
   }, [acc, descriptor])
@@ -136,7 +148,7 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
   const tradeSame = trade == null || tradeSynopsis === savedTradeSum
   const emptySame = !isReady || describeAlgorithmRef(empty) === savedEmptySum
   const activeSlot = algorithmTransitionSlot(accountId)
-  const tradeNameVt = tSelf && tDetail && activeSlot === 'trade' && tradeSame
+  const tradeNameVt = tSelf && tDetail && activeSlot === 'trade' && tradeSame && scope === ''
     ? accountConfigVtName(accountId, 'algorithm') : undefined
   const emptyNameVt = tSelf && tDetail && activeSlot === 'empty' && emptySame
     ? accountConfigVtName(accountId, 'empty') : undefined
@@ -147,7 +159,7 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
       <div className="grid grid-cols-[3rem_minmax(0,1fr)] gap-x-3 gap-y-0.5">
         <span className="font-normal text-ink-3">下单</span>
         <span className="inline-block">
-          {tradeSynopsis}
+          {tradeSynopsis}{Object.keys(products).length > 0 && ` · ${Object.keys(products).length} 个品种`}
         </span>
         <span className="font-normal text-ink-3">清仓</span>
         <span className="inline-block">
@@ -172,12 +184,16 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
   const tradeChanged = norm(trade) !== norm(origTrade)
   const emptyChanged = norm(empty) !== norm(origEmpty)
   const closeChanged = norm(closePolicy) !== norm(acc.futures_close_policy ?? defaultClosePolicy())
-  const dirty = tradeChanged || emptyChanged || closeChanged
+  const productsValue = productAlgorithmValue(products)
+  const productsChanged = norm(productsValue) !== norm(productAlgorithmValue(acc.product_algorithms ?? {}))
+  const dirty = tradeChanged || emptyChanged || closeChanged || productsChanged
 
-  const err = tradeError ?? emptyError ?? algoParamError(trade) ?? algoParamError(empty)
+  const err = tradeError ?? emptyError ?? Object.keys(products).map(key => productErrors[key]).find(Boolean)
+    ?? algoParamError(trade) ?? algoParamError(empty) ?? productAlgorithmError(products)
   const changes: string[] = []
   if (closeChanged) changes.push('平仓规则已改')
   if (tradeChanged) changes.push('主交易算法已改')
+  if (productsChanged) changes.push('品种算法已改')
   if (emptyChanged) changes.push(empty ? '清仓算法已改' : '清仓算法已清除')
 
   const save = async () => {
@@ -191,6 +207,7 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
         : null
     }
     if (closeChanged) patch.futures_close_policy = closePolicy
+    if (productsChanged) patch.product_algorithms = productsValue
     if (saving) return
     runtime.invalidate()
     setSaving(true)
@@ -203,6 +220,9 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
       setTrade(algorithmRefOf(updated.algorithm) ?? descriptor.defaults.trade_algorithm)
       setEmpty(algorithmRefOf(updated.empty_positions_algorithm))
       setClosePolicy(updated.futures_close_policy ?? defaultClosePolicy())
+      setProducts(productAlgorithmDraft(updated.product_algorithms))
+      setProductErrors({})
+      setScope(previous => previous in (updated.product_algorithms ?? {}) ? previous : '')
       runtime.acceptSaved(updated.runtime_sync)
       // 保存响应直接写摘要缓存：返回详情时 hero「算法」值首帧即新值，FLIP 落地同文。
       writeAccountConfigSummary(accountId, updated, {
@@ -255,8 +275,36 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
         </Section>}
 
         <Section label="主交易算法">
-          <p className="mb-3 text-sm text-ink-3">用于常规定时调仓。</p>
-          {slotRow('trade', '算法', trade, (v) => { setSaveError(null); setTrade(v ?? descriptor.defaults.trade_algorithm) })}
+          <p className="mb-3 text-sm text-ink-3">用于常规定时调仓；未单独配置的品种使用默认算法。</p>
+          <div className="min-w-0 md:col-span-2">
+            <AlgorithmScopePicker key={inputRevision} channel={acc.trade_channel} capability={descriptor.algorithm_scope} products={Object.keys(products)} value={scope}
+              onChange={setScope}
+              onAdd={key => {
+                setSaveError(null)
+                setProducts(previous => ({ ...previous, [key]: { algorithm: structuredClone(trade) } }))
+                setProductErrors(previous => ({ ...previous, [key]: null }))
+                setScope(key)
+              }}
+              onRestoreDefault={() => {
+                setSaveError(null)
+                setProducts(previous => Object.fromEntries(Object.entries(previous).filter(([key]) => key !== scope)))
+                setScope('')
+              }} />
+          </div>
+          <div className={scope === '' ? 'min-w-0 md:col-span-2' : 'hidden'} inert={scope !== ''}>
+            {slotRow('trade', '算法', trade, (v) => { setSaveError(null); setTrade(v ?? descriptor.defaults.trade_algorithm) })}
+          </div>
+          {Object.entries(products).map(([key, profile]) => <div key={key} className={scope === key ? 'min-w-0 md:col-span-2' : 'hidden'} inert={scope !== key}>
+            <Row label={`${algorithmScopeLabel(acc.trade_channel, key)} 算法`} top span>
+              <AlgorithmEditor slot="trade" channel={acc.trade_channel} value={profile.algorithm}
+                onChange={value => {
+                  if (!value) return
+                  setSaveError(null)
+                  setProducts(previous => ({ ...previous, [key]: { algorithm: value } }))
+                }}
+                onValidationError={error => setProductErrors(previous => previous[key] === error ? previous : { ...previous, [key]: error })} />
+            </Row>
+          </div>)}
         </Section>
         <Section label="清仓算法">
           <p className="mb-3 text-sm text-ink-3">用于清仓执行。</p>

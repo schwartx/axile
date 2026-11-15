@@ -49,6 +49,7 @@ import { isExecutingStatus, phaseLabel, runVerb } from '@/features/dashboard/exe
 import { executionJustSettled, useRunning } from '@/stores/liveExec'
 import { useDomainStore } from '@/stores/domain'
 import { algorithmRefOf, describeAlgorithmRef } from '@/features/setup/algorithms'
+import { productAlgorithmSummary } from '@/features/account/productAlgorithms'
 import { algorithmCatalog } from '@/features/setup/algorithmCatalog'
 import { algorithmTransitionSlot, readAlgorithmAccountPreview, selectAlgorithmTransitionSlot, writeAlgorithmAccountPreview } from '@/features/account/algorithmNameTransition'
 import { isCurrentTabClick } from '@/lib/navigationPreparation'
@@ -300,7 +301,7 @@ export function AccountDetail({
     : (cachedConfig?.symbols ?? null)
   // 算法摘要不收短：TARGET-POS-TASK 等直接给完整参数句，配置带里整项分组 + 截断兜底。
   const algorithmText = acc
-    ? describeAlgorithmRef(algorithmRefOf(acc.algorithm))
+    ? productAlgorithmSummary(acc)
     : (cachedConfig?.algorithm ?? null)
   const emptyAlgorithmText = acc
     ? describeAlgorithmRef(algorithmRefOf(acc.empty_positions_algorithm))

@@ -326,12 +326,12 @@ export function EditSaveBar({
       <div aria-hidden className="shrink-0" style={{ height: open ? barHeight : 0 }} />
       <div
         ref={barRef}
-        className={`fixed right-0 bottom-0 left-[218px] z-30 border-t border-line bg-surface/85 backdrop-blur-md transition-opacity ${MOTION_LAYOUT} ${
+        className={`fixed right-0 bottom-0 left-0 md:left-[218px] z-30 border-t border-line bg-surface/85 backdrop-blur-md transition-opacity ${MOTION_LAYOUT} ${
           open ? 'opacity-100' : 'pointer-events-none opacity-0'
         }`}
         aria-hidden={!open}
       >
-        <div className="mx-auto w-full max-w-[2176px] px-10">
+        <div className="mx-auto w-full max-w-[2176px] px-4 md:px-10">
           <div className="flex items-center gap-4 py-3">
             <div className="min-w-0 flex-1">
               <div className="text-[12px] font-semibold tracking-wide text-ink-3">

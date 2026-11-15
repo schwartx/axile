@@ -6,7 +6,7 @@
 """
 
 from collections.abc import Mapping
-from typing import override
+from typing import cast, override
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -109,6 +109,8 @@ class UnifiedStandardInput(BaseModel):
         default={},
         description="按品种覆盖的交易算法配置",
     )
+
+    product_algorithms: SymbolAlgorithms = Field(default_factory=dict, description="渠道品种固定算法")
 
     # 交易规则
     trade_rules: dict[str, TradeRule] = Field(default={}, description="各品种的交易规则")
@@ -218,6 +220,15 @@ class UnifiedStandardInput(BaseModel):
             校验完成后的当前输入对象。
         """
         self.futures_close_policy.validate_channel(self.channel_type)
+        if self.product_algorithms:
+            from axile.channels import get_channel
+            from axile.channels.algorithm_scopes import normalize_algorithm_scopes
+
+            normalized_products = normalize_algorithm_scopes(get_channel(self.channel_type), self.product_algorithms)
+            for config in normalized_products.values():
+                if not config.get("method") or "params" not in config:
+                    raise ValueError("品种算法必须提供完整的 method 和 params")
+            object.__setattr__(self, "product_algorithms", normalized_products)
         channel_value = _channel_value(self.channel_type)
 
         # 验证账户配置与渠道类型匹配
@@ -307,6 +318,7 @@ class UnifiedStandardInput(BaseModel):
             last_target=_as_float_dict(data.get("last_target", {})),
             algorithm=algorithm,
             symbol_algorithms=symbol_algorithms,
+            product_algorithms=cast("SymbolAlgorithms", data.get("product_algorithms", {})),
             trade_rules=trade_rules,
             futures_close_policy=FuturesClosePolicy.model_validate(data.get("futures_close_policy") or {}),
             forbidden_symbols=_as_str_list(data.get("forbidden_symbols", [])),
@@ -336,6 +348,7 @@ class UnifiedStandardInput(BaseModel):
             "last_target": self.last_target,
             "algorithm": self.algorithm,
             "symbol_algorithms": self.symbol_algorithms,
+            "product_algorithms": self.product_algorithms,
             "trade_rules": self.trade_rules,
             "futures_close_policy": self.futures_close_policy.model_dump(),
             "forbidden_symbols": self.forbidden_symbols,
@@ -393,6 +406,18 @@ class UnifiedStandardInput(BaseModel):
                 fallback_method=str(self.algorithm.get("method", "SINGLE-MAKER")),
                 fallback_algorithm=self.algorithm,
             )
+        if self.product_algorithms:
+            from axile.channels import get_channel
+            from axile.channels.algorithm_scopes import normalize_algorithm_scopes
+
+            plugin = get_channel(self.channel_type)
+            try:
+                scope = plugin.algorithm_scope_key(symbol)
+                key = next(iter(normalize_algorithm_scopes(plugin, {scope: None})))
+            except ValueError as error:
+                raise ValueError(f"无法识别 {symbol} 的算法品种，已阻止使用账户默认算法：{error}") from error
+            if key in self.product_algorithms:
+                return dict(self.product_algorithms[key])
         return _normalize_algorithm_config(
             self.algorithm,
             fallback_method=str(self.algorithm.get("method", "SINGLE-MAKER")),
