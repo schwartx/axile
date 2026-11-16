@@ -6,6 +6,10 @@ import { Select } from '@/components/ui/Select'
 import { RawReader } from '@/features/replay/rawReader'
 import { RawReplayPlot } from '@/features/replay/RawReplayPlot'
 import type { RawCursor, RawFrame, RawManifest, RawTarget } from '@/features/replay/raw'
+import { useNavigate } from '@/components/ui/nav'
+import { ConfirmModal } from '@/components/ui/ConfirmModal'
+import { useWasmResource } from '@/lib/wasmResources'
+import { WasmDownloadProgress, downloadSize } from '@/components/ui/WasmDownloadProgress'
 
 const buttonClass = 'min-h-10 rounded-chip border border-line px-3 text-sm text-ink-2 hover:bg-fill disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-accent'
 const time = (us: number) => new Date(us / 1000).toLocaleString('zh-CN', { hour12: false }) + `.${String(us % 1_000_000).padStart(6, '0')}`
@@ -29,6 +33,36 @@ function IntervalView({data}:{data:Record<string,unknown>}) {
 }
 
 export function ExecutionReplayPage() {
+  const { id, executionId = '' } = useParams()
+  const accountId = Number(id)
+  const navigate = useNavigate()
+  const { resource, state } = useWasmResource('raw')
+  const [prompt, setPrompt] = useState(true)
+  const [accepted, setAccepted] = useState(false)
+  const [wasm, setWasm] = useState<ArrayBuffer | null>(null)
+  const [readError, setReadError] = useState<Error | null>(null)
+  const back = () => { resource.cancel(); void navigate(`/accounts/${accountId}/executions/${executionId}`, { replace: true }) }
+  const download = () => { setAccepted(true); setReadError(null); void resource.download() }
+  useEffect(() => () => resource.cancel(), [resource])
+  useEffect(() => {
+    if (state.phase !== 'cached') return
+    let active = true
+    void resource.read().then(([bytes]) => { if (active) setWasm(bytes!) }).catch(cause => { if (active) setReadError(cause instanceof Error ? cause : Error(String(cause))) })
+    return () => { active = false }
+  }, [resource, state.phase])
+  if (wasm) return <ExecutionReplay wasm={wasm} />
+  const needsConsent = prompt && !accepted && (state.phase === 'missing' || state.phase === 'error')
+  return <section>
+    <AccountPageTitle accountId={accountId} page="执行回放" flip={false} back={{ to: `/accounts/${accountId}/executions/${executionId}`, label: '返回执行详情' }} />
+    <ConfirmModal spec={needsConsent ? { title: '下载回放组件', body: `执行回放需要下载 ${downloadSize(resource.bytes)} 的本地组件。下载后保存在当前浏览器，是否继续？`, okText: '下载并进入回放', onConfirm: download } : null} onClose={() => setPrompt(false)} onCancel={back} />
+    <WasmDownloadProgress state={state} onCancel={back} onRetry={download} />
+    <ErrorNotice intent="read" title="回放组件读取失败" error={readError} onRetry={async () => { setReadError(null); await resource.check() }} />
+    <p role="status" className="py-3 text-sm text-ink-3">{state.phase === 'checking' ? '正在检查回放组件缓存…' : state.phase === 'cached' ? '正在初始化回放组件…' : '回放将在组件准备完成后加载。'}</p>
+    <button type="button" className={buttonClass} onClick={back}>返回执行详情</button>
+  </section>
+}
+
+function ExecutionReplay({ wasm }: { wasm: ArrayBuffer }) {
   const { id, executionId = '' } = useParams(), accountId = Number(id)
   const [manifest, setManifest] = useState<RawManifest | null>(null)
   const [recordingId, setRecording] = useState(''), [stream, setStream] = useState(0)
@@ -37,6 +71,7 @@ export function ExecutionReplayPage() {
   const [captureSeq, setCaptureSeq] = useState<number>()
   const [error, setError] = useState<Error | null>(null), [revision, setRevision] = useState(0)
   const [busy, setBusy] = useState(true), [playing, setPlaying] = useState(false)
+  const [initializing, setInitializing] = useState(false)
   const [kind, setKind] = useState<NonNullable<RawTarget['business']>['kind']>('trade')
   const [cursor, setCursor] = useState<RawCursor>([0, 0])
   const [cursorGeneration,setCursorGeneration] = useState<string>()
@@ -53,7 +88,7 @@ export function ExecutionReplayPage() {
     setBusy(true); setError(null); setManifest(null); setFrame(null); setPlaying(false); setCursor([0, 0]); setCaptureSeq(undefined)
     const instance = new RawReader(executionId, value => {
       if (active) { setFrame(value); setBusy(false) }
-    }, cause => { if (active) { setError(cause); setBusy(false); setPlaying(false) } })
+    }, cause => { if (active) { setError(cause); setBusy(false); setPlaying(false) } }, wasm, value => { if (active) setInitializing(value) })
     reader.current = instance
     void instance.manifest().then(value => {
       if (!active) return
@@ -68,7 +103,7 @@ export function ExecutionReplayPage() {
       if (!first) setBusy(false)
     }).catch(cause => { if (active) { setError(cause instanceof Error ? cause : Error(String(cause))); setBusy(false) } })
     return () => { active = false; instance.close(); reader.current = null }
-  }, [accountId, executionId, revision])
+  }, [accountId, executionId, revision, wasm])
 
   useLayoutEffect(() => {
     if (!recording || !manifest || recording.start_us === null) return
@@ -121,7 +156,7 @@ export function ExecutionReplayPage() {
         <input aria-label="回放时间" type="range" min={recording.start_us ?? 0} max={recording.watermark} step={1} value={target}
           onChange={event => { setPlaying(false); setCursor([0, 0]); setCaptureSeq(undefined); setTarget(Number(event.target.value)) }} />
       </label>
-      <p role="status" data-target-us={frame?.target_us} data-busy={busy} className="text-sm text-ink-3">{busy ? '计算中；下方保留上次已完成的时点。' : frame ? `已完成：${time(frame.target_us)}；观察序号 ${frame.target_seq}；盘口观察序号 ${quote?.capture_seq ?? '未知'}` : '尚无完成结果'}</p>
+      <p role="status" data-target-us={frame?.target_us} data-busy={busy} className="text-sm text-ink-3">{initializing ? '正在初始化回放组件…' : busy ? '计算中；下方保留上次已完成的时点。' : frame ? `已完成：${time(frame.target_us)}；观察序号 ${frame.target_seq}；盘口观察序号 ${quote?.capture_seq ?? '未知'}` : '尚无完成结果'}</p>
       <div className="rounded-card border border-line p-3">
           <div className="mb-3 flex flex-wrap items-center gap-3">
             <Select<NonNullable<RawTarget['business']>['kind']> ariaLabel="业务观察类型" value={kind} options={[

@@ -4,7 +4,7 @@ import type { ContractDiagnostic } from '@/components/ui/pythonEditorContract'
 import { pythonRequestError } from '@/components/ui/pythonQuickFixRequests'
 
 export interface PythonCheckSource {
-  status: 'checking' | 'succeeded' | 'failed'
+  status: 'disabled' | 'checking' | 'succeeded' | 'failed'
   diagnostics: (Diagnostic | ContractDiagnostic)[]
   error: Error | null
 }

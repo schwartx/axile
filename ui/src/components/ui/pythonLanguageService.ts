@@ -11,8 +11,9 @@ import { pythonVisualFeatures, quickFix, renamePythonSymbol } from '@/components
 import type { Diagnostic as ProtocolDiagnostic, DocumentSymbol, SymbolInformation } from 'vscode-languageserver-protocol'
 import { actionTargetsDiagnostic } from '@/components/ui/pythonQuickFixAvailability'
 import { pythonDefinitionClick } from '@/components/ui/pythonDefinitionClick'
+import { wasmResource } from '@/lib/wasmResources'
 
-export type LanguageStatus = 'connecting' | 'ready' | 'reconnecting'
+export type LanguageStatus = 'disabled' | 'connecting' | 'ready' | 'reconnecting'
 export type DocumentSymbols = DocumentSymbol[] | SymbolInformation[]
 /** 重连时只替换语言扩展，保留编辑文档、选择和撤销栈。 */
 export function connectPython(
@@ -153,6 +154,9 @@ export function connectPython(
       timer = setTimeout(connect, Math.min(1000 * 2 ** failures++, 15000))
     }
     currentWorker.onerror = event => { event.preventDefault(); failed(new Error(event.message || '本地代码分析器运行失败')) }
+    void wasmResource('editor').read().then(([wasm, library]) => {
+      if (!disposed && worker === currentWorker) currentWorker.postMessage({ kind: 'init', wasm, library }, [wasm!, library!])
+    }).catch(failed)
     watchdog = setTimeout(() => failed(new Error('本地代码分析器加载超时')), 120000)
     const attachClient = () => {
       const active = new LSPClient({
@@ -227,6 +231,7 @@ export function connectPython(
     clearTimeout(watchdog)
     client?.disconnect()
     worker?.terminate()
+    view.dispatch({ effects: slot.reconfigure([]) })
   }
 }
 

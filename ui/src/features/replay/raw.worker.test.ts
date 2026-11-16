@@ -8,7 +8,6 @@ mock.module('./raw-wasm/axile_replay_heat', () => ({
   BusinessDerivation: class { freed = false; needed() { return true } results() { if (this.freed) throw Error('freed'); return '{"quantity":23}' } free() { this.freed = true } },
   IntervalAnalysis: class { feed() {} begin_second() {} results() { return '{}' } free() {} },
 }))
-mock.module('./raw-wasm/axile_replay_heat_bg.wasm?url', () => ({ default: '' }))
 
 test('a mixed hit/miss page pins all hits before cache eviction, in preview and business reads', async () => {
   const originalSelf = globalThis.self
@@ -17,6 +16,8 @@ test('a mixed hit/miss page pins all hits before cache eviction, in preview and 
   globalThis.self = scope as unknown as typeof self
   try {
     await import('./raw.worker')
+    await scope.onmessage!({ data: { kind: 'init', wasm: new ArrayBuffer(0) } })
+    expect(replies.pop()).toEqual({ kind: 'initialized' })
     let id = 0
     const send = async (data: Record<string, unknown>) => {
       await scope.onmessage!({ data: { ...data, id: ++id } })

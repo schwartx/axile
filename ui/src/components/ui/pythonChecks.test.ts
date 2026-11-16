@@ -6,6 +6,7 @@ const snapshot: PythonChecks = { document: 'code', version: 1, generation: 1, ls
 test('only both completed sources can claim no static diagnostics', () => {
   expect(checksAreEmpty(snapshot)).toBe(true)
   expect(checksAreEmpty({ ...snapshot, lsp: checkingSource() })).toBe(false)
+  expect(checksAreEmpty({ ...snapshot, lsp: { ...empty, status: 'disabled' } })).toBe(false)
   const error = new Error('LSP 诊断失败\n尾部根因')
   const failed = checkSource({ status: 'rejected', reason: error })
   expect(failed.error).toBe(error)

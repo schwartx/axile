@@ -1,6 +1,4 @@
 import init, { Workspace, PositionEncoding, SemanticToken, type FileHandle } from './wasm/ty_wasm'
-import wasmUrl from './wasm/ty_wasm_bg.wasm.bin?url'
-import libraryUrl from './wasm/library.json.bin?url'
 import { Decompress } from 'fzstd'
 
 const MAX_BYTES = 2 * 1024 * 1024
@@ -17,22 +15,19 @@ function zstdStream() {
   })
 }
 
-const ready = (async () => {
+async function initialize(wasm: ArrayBuffer, libraryBytes: ArrayBuffer) {
+  if (!(wasm instanceof ArrayBuffer) || !(libraryBytes instanceof ArrayBuffer)) throw Error('请先下载完整的代码辅助组件')
   const wasmStream = zstdStream()
-  const wasm = await fetch(wasmUrl)
-  if (!wasm.ok || !wasm.body) throw new Error(`代码分析器加载失败：${wasm.status}`)
-  await init({ module_or_path: new Response(wasm.body.pipeThrough(wasmStream), { headers: { 'Content-Type': 'application/wasm' } }) })
+  await init({ module_or_path: new Response(new Response(wasm).body!.pipeThrough(wasmStream), { headers: { 'Content-Type': 'application/wasm' } }) })
   workspace = new Workspace('/draft', PositionEncoding.Utf16, {})
-  const response = await fetch(libraryUrl)
-  if (!response.ok || !response.body) throw new Error(`类型资源加载失败：${response.status}`)
-  const library: { files: Record<string, string> } = await new Response(response.body.pipeThrough(zstdStream())).json()
+  const library: { files: Record<string, string> } = await new Response(new Response(libraryBytes).body!.pipeThrough(zstdStream())).json()
   for (const [path, code] of Object.entries(library.files)) {
     files.set(`file://${path}`, { handle: workspace.openFile(path, code), code, readonly: true })
   }
   workspace.updateOptions({ environment: { 'extra-paths': ['/lib'], 'python-version': '3.12' } })
-})()
+}
+let ready: Promise<void>
 const failed = (cause: unknown) => postMessage(JSON.stringify({ type: 'failed', message: cause instanceof Error ? cause.message : String(cause) }))
-void ready.then(() => postMessage(JSON.stringify({ type: 'ready' })), failed)
 
 function getFile(uri: string) {
   const existing = files.get(uri)
@@ -122,6 +117,14 @@ async function dispatch(raw: string) {
 
 // Preserve didChange/request order even while WASM and the type library are loading.
 let pending = Promise.resolve()
-self.onmessage = (event: MessageEvent<string>) => {
-  pending = pending.then(() => dispatch(event.data)).catch(failed)
+self.onmessage = (event: MessageEvent<string | { kind: 'init'; wasm: ArrayBuffer; library: ArrayBuffer }>) => {
+  if (typeof event.data !== 'string') {
+    if (event.data.kind === 'init' && !ready) {
+      ready = initialize(event.data.wasm, event.data.library)
+      void ready.then(() => postMessage(JSON.stringify({ type: 'ready' })), failed)
+    }
+    return
+  }
+  const message = event.data
+  pending = pending.then(() => dispatch(message)).catch(failed)
 }

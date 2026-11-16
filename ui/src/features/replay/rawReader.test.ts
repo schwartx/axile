@@ -5,6 +5,56 @@ const originalFetch = globalThis.fetch
 const originalWorker = globalThis.Worker
 afterEach(() => { globalThis.fetch = originalFetch; globalThis.Worker = originalWorker })
 
+test('raw initialization completes before queries and preserves the bytes for Worker recovery', async () => {
+  const requests: any[] = []
+  let initialized!: () => void
+  globalThis.Worker = class {
+    onmessage: ((event: { data: any }) => void) | null = null
+    terminate() {}
+    postMessage(request: any) {
+      requests.push(request)
+      if (request.kind === 'init') initialized = () => this.onmessage?.({ data: { kind: 'initialized' } })
+      else queueMicrotask(() => this.onmessage?.({ data: { id: request.id, present: [], wasm_bytes: 65536, cache_bytes: 0 } }))
+    }
+  } as unknown as typeof Worker
+  const bytes = new ArrayBuffer(1)
+  const phases: boolean[] = []
+  const reader = new RawReader('E', () => {}, () => {}, bytes, value => phases.push(value))
+  const client = reader as unknown as { workerRequest(request: Record<string, unknown>, signal: AbortSignal): Promise<unknown> }
+  const signal = new AbortController().signal
+  try {
+    const query = client.workerRequest({ kind: 'has', keys: [] }, signal)
+    expect(requests.map(request => request.kind)).toEqual(['init'])
+    expect(phases).toEqual([true])
+    expect(requests[0].wasm).not.toBe(bytes)
+    initialized()
+    await expect(query).resolves.toMatchObject({ present: [] })
+    expect(phases).toEqual([true, false])
+    await client.workerRequest({ kind: 'has', keys: [] }, signal)
+    expect(requests.map(request => request.kind)).toEqual(['init', 'has', 'has'])
+    expect(bytes.byteLength).toBe(1)
+  } finally { reader.close() }
+})
+
+test('cancel during raw initialization terminates the Worker and rejects before any query', async () => {
+  let terminated = false
+  const kinds: string[] = []
+  globalThis.Worker = class {
+    onmessage = null
+    terminate() { terminated = true }
+    postMessage(request: any) { kinds.push(request.kind) }
+  } as unknown as typeof Worker
+  const reader = new RawReader('E', () => {}, () => {}, new ArrayBuffer(1))
+  const client = reader as unknown as { workerRequest(request: Record<string, unknown>, signal: AbortSignal): Promise<unknown> }
+  const abort = new AbortController()
+  const result = client.workerRequest({ kind: 'has', keys: [] }, abort.signal)
+  abort.abort()
+  await expect(result).rejects.toThrow('REPLAY_WORKER_CANCELED')
+  expect(terminated).toBeTrue()
+  expect(kinds).toEqual(['init'])
+  reader.close()
+})
+
 test('point quote validity comes from the bounded control fold and preserves an exact same-time event cursor', async () => {
   const requests: any[] = []
   globalThis.Worker = class {

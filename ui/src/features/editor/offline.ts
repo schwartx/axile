@@ -34,7 +34,9 @@ export async function prepareOfflineEditor() {
         else check()
       })
     })
-    await navigator.serviceWorker.ready
+    const ready = await navigator.serviceWorker.ready
+    // A navigation can commit between activation and its initial clients.claim().
+    if (!navigator.serviceWorker.controller) ready.active?.postMessage('claim-editor')
     check()
   } catch (cause) { publish(`离线资源准备失败：${cause instanceof Error ? cause.message : String(cause)}`) }
 }

@@ -88,7 +88,7 @@ export class RawReader {
     if (performance.now() - this.started >= (this.profile === 'interval' ? 120_000 : 60_000)) throw Error('REPLAY_ROOT_DEADLINE')
   }
 
-  constructor(private execution: string, private publish: (frame: RawFrame) => void, private fail: (cause: Error) => void) {}
+  constructor(private execution: string, private publish: (frame: RawFrame) => void, private fail: (cause: Error) => void, private wasm?: ArrayBuffer, private onInitializing?: (value: boolean) => void) {}
 
   private path(operation: string) { return `/account/executions/${encodeURIComponent(this.execution)}/replay/raw/${operation}` }
   private remember(manifest: RawManifest) {
@@ -368,9 +368,42 @@ export class RawReader {
     return { read, rows: rows.map(row => ({ ...row, bytes: buffers.get(row.block.id) })) }
   }
 
-  private workerRequest<T>(request: Record<string, unknown>, signal: AbortSignal): Promise<T> {
-    this.worker ??= new Worker(new URL('./raw.worker.ts', import.meta.url), { type: 'module' })
-    const worker = this.worker, id = ++this.workerId
+  private async initializeWorker(signal: AbortSignal): Promise<Worker> {
+    const worker = new Worker(new URL('./raw.worker.ts', import.meta.url), { type: 'module' })
+    this.worker = worker
+    if (this.wasm) {
+      this.onInitializing?.(true)
+      try {
+        await new Promise<void>((resolve, reject) => {
+          let finished = false
+          const finish = (cause?: Error) => {
+            if (finished) return
+            finished = true
+            clearTimeout(timer); signal.removeEventListener('abort', canceled)
+            worker.onmessage = null; worker.onerror = null
+            if (cause) reject(cause); else resolve()
+          }
+          const canceled = () => finish(Error('REPLAY_WORKER_CANCELED'))
+          const timer = setTimeout(() => finish(Error('回放组件初始化超时')), 30000)
+          worker.onerror = () => finish(Error('回放组件初始化失败'))
+          worker.onmessage = ({ data }) => {
+            if (data.kind === 'initialized') finish()
+            else if (data.kind === 'init-error') finish(Error(data.message))
+          }
+          signal.addEventListener('abort', canceled, { once: true })
+          if (signal.aborted) { canceled(); return }
+          const bytes = this.wasm!.slice(0)
+          try { worker.postMessage({ kind: 'init', wasm: bytes }, [bytes]) }
+          catch (cause) { finish(cause instanceof Error ? cause : Error(String(cause))) }
+        })
+      } catch (cause) { worker.terminate(); if (this.worker === worker) this.worker = null; throw cause }
+      finally { this.onInitializing?.(false) }
+    }
+    return worker
+  }
+
+  private async workerRequest<T>(request: Record<string, unknown>, signal: AbortSignal): Promise<T> {
+    const worker = this.worker ?? await this.initializeWorker(signal), id = ++this.workerId
     return new Promise((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout>
       let finished = false

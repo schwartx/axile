@@ -21,6 +21,7 @@ async function sourceCode(page: Page) {
 test.beforeEach(async ({ page }) => {
   page.on('pageerror', (error) => { throw error })
   await page.goto('/e2e/editor.html')
+  await page.getByRole('button', { name: '下载并开启', exact: true }).click()
   await expect(page.getByRole('status', { name: '代码分析器' })).toHaveAttribute('data-state', 'ready')
 })
 
@@ -121,6 +122,14 @@ test('definition opens a read-only source tab and rename is undoable', async ({ 
   expect(source).not.toBeNull()
   await page.keyboard.type('cannot_edit_source')
   await expect.poll(() => sourceCode(page)).toBe(source)
+  const toggle = page.getByRole('switch', { name: '本地代码辅助' })
+  await toggle.click()
+  await expect(page.getByRole('tab', { name: 'context.py', exact: true })).toHaveCount(0)
+  await toggle.click()
+  await expect(page.getByRole('status', { name: '代码分析器' })).toHaveAttribute('data-state', 'ready')
+  await page.locator('.cm-content').first().focus()
+  await page.keyboard.press('F12')
+  await expect(page.getByRole('tab', { name: 'context.py', exact: true })).toHaveAttribute('aria-selected', 'true')
   await page.getByRole('button', { name: '关闭 context.py', exact: true }).click()
   await expect(page.locator('.cm-content').first()).toBeFocused()
   await page.keyboard.press('Home')

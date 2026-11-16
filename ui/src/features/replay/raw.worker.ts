@@ -1,5 +1,4 @@
 import init, { BusinessBatch, BusinessDerivation, IntervalAnalysis, RawBlock } from './raw-wasm/axile_replay_heat'
-import wasmUrl from './raw-wasm/axile_replay_heat_bg.wasm?url'
 import type { RawBlockInfo, RawPreview, RawSubject } from './raw'
 import { RawScopes } from './rawScopes'
 
@@ -9,7 +8,7 @@ const cache = new Map<string, Uint8Array<ArrayBuffer>>()
 const pinned = new Set<string>()
 const rootPins = new Set<string>()
 let cacheBytes = 0, canceledThrough = 0
-const ready = init(wasmUrl)
+let ready: ReturnType<typeof init> | undefined
 const yieldTask = () => new Promise(resolve => setTimeout(resolve, 0))
 let batch: BusinessBatch | undefined
 let batchSlots = 0
@@ -92,14 +91,23 @@ function head(stream: Stream) {
   return stream.sequence
 }
 
-self.onmessage = async ({ data }: MessageEvent<Request>) => {
+self.onmessage = async ({ data }: MessageEvent<Request | { kind: 'init'; wasm: ArrayBuffer }>) => {
+  if (data.kind === 'init') {
+    if (ready) return
+    if (!(data.wasm instanceof ArrayBuffer)) { self.postMessage({ kind: 'init-error', message: '请先下载回放组件' }); return }
+    ready = init({ module_or_path: data.wasm })
+    try { await ready; self.postMessage({ kind: 'initialized' }) }
+    catch (cause) { self.postMessage({ kind: 'init-error', message: cause instanceof Error ? cause.message : String(cause) }) }
+    return
+  }
   if (data.kind === 'cancel') { canceledThrough = Math.max(canceledThrough, data.id); return }
   let previewBlock: RawBlock | undefined
   try {
     const wasm = await ready
+    if (!wasm) throw Error('回放组件尚未初始化')
     const check = () => {
       if (data.id <= canceledThrough) throw Error('REPLAY_WORKER_CANCELED')
-      if (wasm.memory.buffer.byteLength > WASM_LIMIT) throw Error('REPLAY_WORKER_BUDGET')
+      if (wasm!.memory.buffer.byteLength > WASM_LIMIT) throw Error('REPLAY_WORKER_BUDGET')
     }
     check()
     let output: Record<string, unknown>
@@ -254,7 +262,7 @@ self.onmessage = async ({ data }: MessageEvent<Request>) => {
     clearBatch()
     if (split) {
       const wasm = await ready
-      self.postMessage({ id: data.id, split: true, wasm_bytes: wasm.memory.buffer.byteLength, cache_bytes: cacheBytes })
+      self.postMessage({ id: data.id, split: true, wasm_bytes: wasm!.memory.buffer.byteLength, cache_bytes: cacheBytes })
     } else self.postMessage({ id: data.id, error: cause instanceof Error ? cause.message : String(cause) })
   } finally { previewBlock?.free(); if (data.kind === 'decode') pinned.delete(data.key) }
 }

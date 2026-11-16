@@ -2,7 +2,7 @@ import { defineConfig } from '@playwright/test'
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: 'editor-offline.e2e.ts',
+  testMatch: ['editor-offline.e2e.ts', 'wasm-loading.e2e.ts'],
   workers: 1,
   timeout: 30000,
   use: { baseURL: 'http://127.0.0.1:15480', headless: true, trace: 'retain-on-failure' },

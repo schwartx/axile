@@ -3,10 +3,13 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'node:path'
 import { editorOffline } from './scripts/editorOffline.ts'
+import { wasmAssets } from './scripts/wasmAssets.ts'
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), tailwindcss(), editorOffline()],
+  plugins: [react(), tailwindcss(), wasmAssets(), editorOffline()],
+  // Discover the Worker-only decoder before the first consented download can trigger a reload.
+  optimizeDeps: { include: ['fzstd'] },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

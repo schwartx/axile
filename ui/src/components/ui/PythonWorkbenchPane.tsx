@@ -171,7 +171,7 @@ export function PythonWorkbenchPane({
         title="代码检查"
         hideTitle
         headerExtra={<Segmented size="sm" className="my-auto" value={activeTab} options={outputTabs} onChange={(tab) => { setActiveTab(tab); setProblemsOpen(true) }} />}
-        statusOverride={activeTab === 'result' ? <span className="ml-auto self-center px-3 text-[12px] text-ink-3">{running ? '试跑中…' : stale ? '上次试跑结果' : result ? (result.valid ? '试跑通过' : '试跑失败') : '尚未试跑'}</span> : <span className="ml-auto self-center px-3 text-[12px] text-ink-3">{checkFailed ? '检查失败' : checkUnavailable ? '检查暂不可用' : quickFixFailed ? '快速修复暂不可用' : currentChecks?.lsp.status === 'succeeded' && currentChecks?.contract.status === 'succeeded' ? '检查完成' : '检查中…'}</span>}
+        statusOverride={activeTab === 'result' ? <span className="ml-auto self-center px-3 text-[12px] text-ink-3">{running ? '试跑中…' : stale ? '上次试跑结果' : result ? (result.valid ? '试跑通过' : '试跑失败') : '尚未试跑'}</span> : <span className="ml-auto self-center px-3 text-[12px] text-ink-3">{currentChecks?.lsp.status === 'disabled' ? '未启用本地代码辅助' : checkFailed ? '检查失败' : checkUnavailable ? '检查暂不可用' : quickFixFailed ? '快速修复暂不可用' : currentChecks?.lsp.status === 'succeeded' && currentChecks?.contract.status === 'succeeded' ? '检查完成' : '检查中…'}</span>}
         contentOverride={(
           activeTab === 'problems' ? (
             <div className="-mx-3.5 -my-3 divide-y divide-line/60">

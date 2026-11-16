@@ -820,6 +820,7 @@ for (const background of [true, false]) test(`quick fix failure preserves diagno
   let failed = true
   await quickFixWorker(page, background, () => failed)
   await page.goto('/e2e/errors.html?mode=python')
+  await page.getByRole('button', { name: '下载并开启', exact: true }).click()
   const panel = page.getByRole('region', { name: '代码检查' })
   await expect(page.getByRole('status', { name: '代码分析器' })).toHaveAttribute('data-state', 'ready')
   if (!background) {
@@ -861,6 +862,7 @@ test('advanced configuration read failure remains on page with full error and re
 test('static contract failure retains LSP diagnostics status and never claims no diagnostics', async ({ page }) => {
   await pythonReplies(page, ['axile/contract'], () => ({ error: { code: -32603, message: raw('契约') } }))
   await page.goto('/e2e/errors.html?mode=python')
+  await page.getByRole('button', { name: '下载并开启', exact: true }).click()
   const panel = page.getByRole('region', { name: '代码检查' })
   await expect(panel).toContainText('入口契约检查：检查失败')
   await expect(panel).toContainText('LSP 诊断：检查完成')
@@ -878,6 +880,7 @@ test('late static failure from an older document cannot replace a successful cur
     return { result: { diagnostics: [], fixes: [] } }
   })
   await page.goto('/e2e/errors.html?mode=python')
+  await page.getByRole('button', { name: '下载并开启', exact: true }).click()
   await expect.poll(() => oldRead).toBe(true)
   await page.locator('.cm-content').first().click()
   await page.keyboard.press('ControlOrMeta+a')
@@ -895,6 +898,7 @@ test('LSP failure leaves valid contract diagnostics visible with an explicit fai
     ? { error: { code: -32603, message: 'synthetic LSP failure' } }
     : { result: { diagnostics: [{ message: '有效契约诊断', source: '入口契约', severity: 2, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } }], fixes: [] } })
   await page.goto('/e2e/errors.html?mode=python')
+  await page.getByRole('button', { name: '下载并开启', exact: true }).click()
   const panel = page.getByRole('region', { name: '代码检查' })
   await expect(panel).toContainText('LSP 诊断：检查失败')
   await expect(panel).toContainText('入口契约检查：检查完成 · 1 条诊断')

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 
 export interface ConfirmSpec {
@@ -16,10 +16,13 @@ export interface ConfirmSpec {
 export function ConfirmModal({
   spec,
   onClose,
+  onCancel,
 }: {
   spec: ConfirmSpec | null
   onClose: () => void
+  onCancel?: () => void
 }) {
+  const cancel = useCallback(() => { onClose(); onCancel?.() }, [onClose, onCancel])
   const open = spec != null
   // 危险操作的默认焦点落在「取消」上：回车走安全路，琥珀色确认必须手点，摩擦才留得住。
   const danger = spec?.danger ?? false
@@ -34,7 +37,7 @@ export function ConfirmModal({
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose()
+        cancel()
         return
       }
       if (e.key !== 'Tab') return
@@ -53,7 +56,7 @@ export function ConfirmModal({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
+  }, [open, cancel])
 
   // 打开时把焦点放到「默认按钮」上（危险→取消、良性→确认）：浏览器原生「回车=激活聚焦按钮」，
   // 于是回车自动接对；关闭时把焦点还给触发者。
@@ -73,7 +76,7 @@ export function ConfirmModal({
         className={`fixed inset-0 z-[35] bg-scrim transition-opacity duration-150 ${
           open ? 'opacity-100' : 'pointer-events-none opacity-0'
         }`}
-        onClick={onClose}
+        onClick={cancel}
       />
       <div
         ref={dialogRef}
@@ -93,7 +96,7 @@ export function ConfirmModal({
               <button
                 ref={cancelRef}
                 className="inline-flex cursor-pointer items-center gap-1.5 rounded-[9px] border border-line bg-surface px-4 py-2 text-sm text-ink-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-2/55 focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
-                onClick={onClose}
+                onClick={cancel}
               >
                 取消
                 {danger && <span aria-hidden className="text-[13px] leading-none opacity-55">⏎</span>}
