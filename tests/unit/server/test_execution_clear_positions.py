@@ -11,53 +11,43 @@ from axile.domain.execution import ExecutionArtifactType
 from axile.server.db.models import Account
 from axile.server.execution import backend as execution_backend
 from axile.server.execution import clear_positions as clear_positions_execution
-from axile.server.execution import intents as execution_intents
 from axile.server.execution import lifecycle as execution_lifecycle
 from axile.server.execution.worker_backend import worker_audit, worker_state
 from tests.unit.server._execution_test_support import (
     FakeExecutor,
     FakeWorkerBackendManager,
-    WorkerCommandHarness,
     build_account,
     noop_account_control_guard,
     noop_append_execution_artifact,
     noop_append_execution_event,
 )
+from tests.unit.server._execution_test_support import _stub_intent_promotion as _stub_intent_promotion
+from tests.unit.server._execution_test_support import _worker_commands as _worker_commands
 
 
-@pytest.fixture(autouse=True)
-def _worker_commands(monkeypatch):
-    """在 worker 命令边界测试编排，IPC 传输由 manager 用例覆盖。"""
-    manager = WorkerCommandHarness()
-    monkeypatch.setattr(execution_backend, "get_worker_backend_manager", lambda: manager)
-    monkeypatch.setattr(worker_state, "create_executor_instance", lambda *args, **kwargs: FakeExecutor())
-    monkeypatch.setattr(worker_state, "build_account_control_guard", noop_account_control_guard)
-
-    async def flush(executor):
-        pass
-
-    monkeypatch.setattr(worker_state, "flush_account_control_records", flush)
-    monkeypatch.setattr(worker_audit, "append_execution_event_sync", lambda **kwargs: True)
-    monkeypatch.setattr(worker_audit, "append_execution_artifact_sync", lambda **kwargs: True)
-
-
-@pytest.fixture(autouse=True)
-def _stub_intent_promotion(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int]]:
-    """执行票状态机由 test_execution_intents.py 专门守护；分发层测试只记录 promote 调用。"""
-    calls: list[tuple[str, int]] = []
-
-    async def fake_promote(execution_id: str, account_id: int) -> None:
-        calls.append((execution_id, account_id))
-
-    monkeypatch.setattr(execution_intents, "promote_intent_to_running", fake_promote)
-    return calls
-
-
-def test_empty_positions_uses_default_algorithm_when_not_provided(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    "account_algorithm,requested_algorithm,expected",
+    [
+        pytest.param(None, None, {"method": "TARGET-POS-TASK", "params": {}}, id="default"),
+        pytest.param(
+            {"method": "SINGLE-MAKER", "params": {"max_wait_seconds": 90}},
+            None,
+            {"method": "SINGLE-MAKER", "params": {"max_wait_seconds": 90}},
+            id="account",
+        ),
+        pytest.param(
+            {"method": "SINGLE-MAKER", "params": {"max_wait_seconds": 90}},
+            {"method": "SINGLE-MAKER", "params": {"max_wait_seconds": 30}},
+            {"method": "SINGLE-MAKER", "params": {"max_wait_seconds": 30}},
+            id="explicit-override",
+        ),
+    ],
+)
+def test_empty_positions_selects_algorithm_and_serializes_result(
+    monkeypatch: pytest.MonkeyPatch, account_algorithm, requested_algorithm, expected
 ) -> None:
-    """未提供清仓算法时，应回退到默认清仓算法。"""
-    account = build_account()
+    """清仓算法按显式参数、账户配置、默认值选择，输出保留 JSON 契约。"""
+    account = build_account(empty_positions_algorithm=account_algorithm)
     fake_executor = FakeExecutor()
     captured: dict[str, object] = {}
 
@@ -78,9 +68,9 @@ def test_empty_positions_uses_default_algorithm_when_not_provided(
     monkeypatch.setattr(worker_state, "build_account_control_guard", noop_account_control_guard)
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
-    _ = asyncio.run(clear_positions_execution.__empty_positions(account))
+    _ = asyncio.run(clear_positions_execution.__empty_positions(account, algorithm=requested_algorithm))
 
-    assert fake_executor.empty_kwargs["algorithm"] == {"method": "TARGET-POS-TASK", "params": {}}
+    assert fake_executor.empty_kwargs["algorithm"] == expected
     result = captured["result"]
     assert isinstance(result, dict)
     assert result["memory"]["ts"] == "2026-03-11T21:20:13"
@@ -100,44 +90,6 @@ def test_clear_positions_request_accepts_database_trade_channel_string() -> None
 
     audit = cast("dict[str, object]", request.empty_kwargs["extra"])["audit"]
     assert cast("dict[str, object]", audit)["channel"] == "gm"
-
-
-def test_empty_positions_uses_account_level_algorithm_when_present(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """配置了账户级清仓算法时，应优先使用该算法。"""
-    account = build_account(
-        empty_positions_algorithm={
-            "method": "SINGLE-MAKER",
-            "params": {"max_wait_seconds": 90},
-        }
-    )
-    fake_executor = FakeExecutor()
-
-    async def fake_append_output_record(
-        *,
-        account: object,
-        raw_input: object,
-        output: object,
-        execution_id: str | None = None,
-        execution_kind: object = None,
-    ) -> tuple[SimpleNamespace, dict[str, object]]:
-        _ = account, raw_input, execution_id
-        return (
-            SimpleNamespace(id=103, is_success=1),
-            cast("dict[str, object]", cast(object, output).model_dump(mode="json")),
-        )
-
-    monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: fake_executor)
-    monkeypatch.setattr(worker_state, "build_account_control_guard", noop_account_control_guard)
-    monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
-
-    _ = asyncio.run(clear_positions_execution.__empty_positions(account))
-
-    assert fake_executor.empty_kwargs["algorithm"] == {
-        "method": "SINGLE-MAKER",
-        "params": {"max_wait_seconds": 90},
-    }
 
 
 def test_empty_positions_routes_gm_account_to_worker_manager(
@@ -276,52 +228,6 @@ def test_empty_positions_wraps_worker_failure_with_error_record(
     assert captured_error_record["execution_id"] == "exec-empty-worker-failed-1"
     assert captured_error_record["raw_result"]["technical_detail"] == "worker exploded"
     assert "RuntimeError: worker exploded" in captured_error_record["raw_result"]["traceback"]
-
-
-def test_empty_positions_uses_custom_algorithm_when_provided(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """显式提供的清仓算法应优先于默认算法。"""
-    account = build_account(
-        empty_positions_algorithm={
-            "method": "SINGLE-MAKER",
-            "params": {"max_wait_seconds": 90},
-        }
-    )
-    fake_executor = FakeExecutor()
-
-    async def fake_append_output_record(
-        *,
-        account: object,
-        raw_input: object,
-        output: object,
-        execution_id: str | None = None,
-        execution_kind: object = None,
-    ) -> tuple[SimpleNamespace, dict[str, object]]:
-        _ = account, raw_input, execution_id
-        return (
-            SimpleNamespace(id=104, is_success=1),
-            cast("dict[str, object]", cast(object, output).model_dump(mode="json")),
-        )
-
-    monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: fake_executor)
-    monkeypatch.setattr(worker_state, "build_account_control_guard", noop_account_control_guard)
-    monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
-
-    asyncio.run(
-        clear_positions_execution.__empty_positions(
-            account,
-            algorithm={
-                "method": "SINGLE-MAKER",
-                "params": {"max_wait_seconds": 90},
-            },
-        )
-    )
-
-    assert fake_executor.empty_kwargs["algorithm"] == {
-        "method": "SINGLE-MAKER",
-        "params": {"max_wait_seconds": 90},
-    }
 
 
 def test_empty_positions_binds_account_control_guard(

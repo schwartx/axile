@@ -286,21 +286,19 @@ def test_batch_export_splits_same_day_without_scanning_unselected_executions(evi
     assert data["account_operations"]["count"] == 0
 
 
-@pytest.mark.parametrize(
-    "ids,status",
-    [
+def test_batch_rejects_invalid_or_foreign_ids_as_a_whole(evidence_db):
+    seed(evidence_db, *complete_execution(), *complete_execution("other-account", account_id=2))
+    http = client(evidence_db)
+    for ids, status in [
         ([], 422),
         ([" "], 422),
         (["exec-1", "exec-1"], 422),
         ([f"exec-{i}" for i in range(101)], 422),
         (["missing"], 404),
         (["exec-1", "other-account"], 404),
-    ],
-)
-def test_batch_rejects_invalid_or_foreign_ids_as_a_whole(evidence_db, ids, status):
-    seed(evidence_db, *complete_execution(), *complete_execution("other-account", account_id=2))
-    response = client(evidence_db).post("/account/1/evidence", json={"execution_ids": ids})
-    assert response.status_code == status
+    ]:
+        response = http.post("/account/1/evidence", json={"execution_ids": ids})
+        assert response.status_code == status, ids
 
 
 def test_batch_preserves_owner_conflict_and_shared_resource_limits(evidence_db, monkeypatch):

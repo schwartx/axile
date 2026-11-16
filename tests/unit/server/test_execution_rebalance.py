@@ -30,12 +30,12 @@ from tests.unit.server._execution_test_support import (
     FakeSession,
     FakeWorkerBackendManager,
     WarningLogger,
-    WorkerCommandHarness,
     build_account,
-    noop_account_control_guard,
     noop_append_execution_artifact,
     noop_append_execution_event,
 )
+from tests.unit.server._execution_test_support import _stub_intent_promotion as _stub_intent_promotion
+from tests.unit.server._execution_test_support import _worker_commands as _worker_commands
 
 
 class _VolumeCalcStub(AbstractExecutorCapabilityMixin):
@@ -55,34 +55,6 @@ class _VolumeCalcStub(AbstractExecutorCapabilityMixin):
     ) -> float:
         del symbol
         return weight * account_assets.total_asset / price
-
-
-@pytest.fixture(autouse=True)
-def _worker_commands(monkeypatch):
-    """在 worker 命令边界测试编排，IPC 传输由 manager 用例覆盖。"""
-    manager = WorkerCommandHarness()
-    monkeypatch.setattr(execution_backend, "get_worker_backend_manager", lambda: manager)
-    monkeypatch.setattr(worker_state, "create_executor_instance", lambda *args, **kwargs: FakeExecutor())
-    monkeypatch.setattr(worker_state, "build_account_control_guard", noop_account_control_guard)
-
-    async def flush(executor):
-        pass
-
-    monkeypatch.setattr(worker_state, "flush_account_control_records", flush)
-    monkeypatch.setattr(worker_audit, "append_execution_event_sync", lambda **kwargs: True)
-    monkeypatch.setattr(worker_audit, "append_execution_artifact_sync", lambda **kwargs: True)
-
-
-@pytest.fixture(autouse=True)
-def _stub_intent_promotion(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int]]:
-    """执行票状态机由 test_execution_intents.py 专门守护；分发层测试只记录 promote 调用。"""
-    calls: list[tuple[str, int]] = []
-
-    async def fake_promote(execution_id: str, account_id: int) -> None:
-        calls.append((execution_id, account_id))
-
-    monkeypatch.setattr(execution_intents, "promote_intent_to_running", fake_promote)
-    return calls
 
 
 def test_calculate_target_volume_does_not_restore_forbidden_symbols_from_last_target() -> None:
@@ -124,11 +96,12 @@ def test_calculate_target_volume_does_not_restore_forbidden_symbols_from_last_ta
     assert logger.messages == []
 
 
-def test_trade_serializes_success_result_to_json_safe_dict(
+def test_trade_builds_input_and_persists_json_safe_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """将成功执行结果序列化为可安全写入 JSON 的载荷。"""
-    account = build_account()
+    """同次调仓验证模型输入、持久化快照与结果的 JSON 序列化。"""
+    account = build_account(feishu_key="secret-feishu-key")
+    fake_executor = FakeExecutor()
     captured: dict[str, object] = {}
 
     async def fake_get_latest_success_execute_record_by_account_id(_session: object, _account_id: int) -> None:
@@ -155,7 +128,7 @@ def test_trade_serializes_success_result_to_json_safe_dict(
         "get_latest_success_execute_record_by_account_id",
         fake_get_latest_success_execute_record_by_account_id,
     )
-    monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: FakeExecutor())
+    monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: fake_executor)
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
     _ = asyncio.run(rebalance_execution.trade(account, {"ag2612": 0.1}))
@@ -182,45 +155,6 @@ def test_trade_serializes_success_result_to_json_safe_dict(
     assert result["outcome"] == "completed"
     assert result["symbol_results"]["ag2612"]["algorithm"] == "SINGLE-MAKER"
     assert captured["execution_id"] is None
-
-
-def test_trade_builds_model_before_execute_and_persists_dict(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """标准输入在进入执行器前应已转成模型，落库时仍写入字典快照。"""
-    account = build_account(feishu_key="secret-feishu-key")
-    fake_executor = FakeExecutor()
-    captured: dict[str, object] = {}
-
-    async def fake_get_latest_success_execute_record_by_account_id(_session: object, _account_id: int) -> None:
-        return None
-
-    async def fake_append_output_record(
-        *,
-        account: object,
-        raw_input: object,
-        output: object,
-        execution_id: str | None = None,
-        execution_kind: object = None,
-    ) -> tuple[SimpleNamespace, dict[str, object]]:
-        _ = account, output
-        captured["raw_input"] = raw_input
-        captured["execution_id"] = execution_id
-        return (
-            SimpleNamespace(id=105, is_success=1),
-            cast("dict[str, object]", cast(UnifiedStandardOutput, output).model_dump(mode="json")),
-        )
-
-    monkeypatch.setattr(rebalance_execution, "SessionLocal", lambda: FakeSession())
-    monkeypatch.setattr(
-        rebalance_execution,
-        "get_latest_success_execute_record_by_account_id",
-        fake_get_latest_success_execute_record_by_account_id,
-    )
-    monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: fake_executor)
-    monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
-
-    _ = asyncio.run(rebalance_execution.trade(account, {"ag2612": 0.1}))
 
     assert isinstance(fake_executor.execute_input, UnifiedStandardInput)
     assert fake_executor.execute_input.curr_target == {"ag2612": 0.1}
@@ -620,62 +554,12 @@ def test_account_rebalance_persists_same_normalized_target_used_by_trade(
     assert captured["source"] == "execution"
 
 
-def test_trade_passes_execution_id_to_persisted_record(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """应将 execution 标识透传到执行记录持久化逻辑。"""
-    account = build_account()
-    captured: dict[str, object] = {}
-
-    async def fake_get_latest_success_execute_record_by_account_id(_session: object, _account_id: int) -> None:
-        return None
-
-    async def fake_append_output_record(
-        *,
-        account: object,
-        raw_input: object,
-        output: object,
-        execution_id: str | None = None,
-        execution_kind: object = None,
-    ) -> tuple[SimpleNamespace, dict[str, object]]:
-        _ = account, raw_input, output
-        captured["execution_id"] = execution_id
-        return (
-            SimpleNamespace(id=105, is_success=1),
-            cast("dict[str, object]", cast(UnifiedStandardOutput, output).model_dump(mode="json")),
-        )
-
-    monkeypatch.setattr(rebalance_execution, "SessionLocal", lambda: FakeSession())
-    monkeypatch.setattr(
-        rebalance_execution,
-        "get_latest_success_execute_record_by_account_id",
-        fake_get_latest_success_execute_record_by_account_id,
-    )
-    monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: FakeExecutor())
-    monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
-    monkeypatch.setattr(
-        worker_audit, "append_execution_event_sync", lambda **kw: asyncio.run(noop_append_execution_event(**kw))
-    )
-    monkeypatch.setattr(
-        worker_audit, "append_execution_artifact_sync", lambda **kw: asyncio.run(noop_append_execution_artifact(**kw))
-    )
-
-    _ = asyncio.run(
-        rebalance_execution.trade(
-            account,
-            {"ag2612": 0.1},
-            execution_id="exec-test-1",
-        )
-    )
-
-    assert captured["execution_id"] == "exec-test-1"
-
-
 def test_trade_emits_execution_events_and_artifacts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """成功执行交易时，应写入 execution 事件与附件。"""
     account = build_account(trade_rules={"ag2612": {"min_notional": 5.0}})
+    captured_execution_ids: list[str | None] = []
     captured_events: list[tuple[str, str]] = []
     captured_artifacts: list[str] = []
     artifact_versions: dict[str, int] = {}
@@ -710,7 +594,7 @@ def test_trade_emits_execution_events_and_artifacts(
         execution_id: str | None = None,
         execution_kind: object = None,
     ) -> tuple[SimpleNamespace, dict[str, object]]:
-        _ = account, raw_input, output, execution_id
+        captured_execution_ids.append(execution_id)
         return (
             SimpleNamespace(id=106, is_success=1),
             cast("dict[str, object]", cast(UnifiedStandardOutput, output).model_dump(mode="json")),
@@ -740,6 +624,7 @@ def test_trade_emits_execution_events_and_artifacts(
         )
     )
 
+    assert captured_execution_ids == ["exec-audit-1"]
     assert captured_events[0][0] == "execution_started"
     assert ("input_snapshotted", "COMMON.INPUT_SNAPSHOTTED") in captured_events
     assert ("target_computed", "COMMON.TARGET_COMPUTED") in captured_events

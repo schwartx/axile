@@ -10,6 +10,7 @@ import json
 from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, date, datetime
+from functools import partial
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -359,19 +360,17 @@ def test_all_pages_read_in_primary_key_order_including_seq_zero(database):
     assert [r["id"] for r in rows] == sorted(r["id"] for r in rows)
 
 
-@pytest.mark.parametrize(
-    "query",
-    [
+def test_invalid_range_timezone_and_profile(database):
+    client = _client(database)
+    for query in [
         "start_date=2026-10-16&end_date=2026-10-15",
         "start_date=2026-10-01&end_date=2026-11-01",
         "start_date=bad&end_date=2026-10-15",
         "start_date=2026-10-15&end_date=2026-10-15&timezone=Unknown/Zone",
         "start_date=2026-10-15&end_date=2026-10-15&legacy_timezone=Unknown/Zone",
         "start_date=2026-10-15&end_date=2026-10-15&profile=raw",
-    ],
-)
-def test_invalid_range_timezone_and_profile(database, query):
-    assert _client(database).get("/account/1/evidence?" + query).status_code == 422
+    ]:
+        assert client.get("/account/1/evidence?" + query).status_code == 422, query
 
 
 def test_not_found_and_cross_account_conflicts(database):
@@ -389,39 +388,25 @@ def test_empty_window_is_valid_and_has_no_fake_rows(database):
     assert _csv(archive, "executions.csv") == []
 
 
-def test_limits_fail_whole_export_and_cleanup_files(database, monkeypatch, tmp_path):
+@pytest.mark.parametrize("byte_limit", [None, 8000], ids=["download", "budget-failure"])
+def test_download_and_budget_failure_remove_temp_archive(database, monkeypatch, tmp_path, byte_limit):
     _seed(database, _intent(), _record(), _event())
-    factory = evidence_archive.TemporaryDirectory
-    created = []
-
-    def temporary(**kwargs):
-        directory = factory(dir=tmp_path, **kwargs)
-        created.append(Path(directory.name))
-        return directory
-
-    monkeypatch.setattr(evidence_archive, "TemporaryDirectory", temporary)
+    archive_dir = tmp_path / "archives"
+    archive_dir.mkdir()
     monkeypatch.setattr(
-        account_evidence, "ExportBudget", lambda: ExportBudget(limits=replace(EvidenceLimits(), bytes=8000))
+        evidence_archive, "TemporaryDirectory", partial(evidence_archive.TemporaryDirectory, dir=archive_dir)
     )
+    if byte_limit is not None:
+        monkeypatch.setattr(
+            account_evidence, "ExportBudget", lambda: ExportBudget(limits=replace(EvidenceLimits(), bytes=byte_limit))
+        )
     response = _client(database).get("/account/executions/exec-1/evidence")
-    assert response.status_code == 413
-    assert response.json()["detail"]["code"] == "EVIDENCE_TOO_LARGE"
-    assert all(not path.exists() for path in created)
-
-
-def test_normal_download_removes_temp_archive(database, monkeypatch, tmp_path):
-    _seed(database, _intent())
-    factory = evidence_archive.TemporaryDirectory
-    created = []
-
-    def temporary(**kwargs):
-        directory = factory(dir=tmp_path, **kwargs)
-        created.append(Path(directory.name))
-        return directory
-
-    monkeypatch.setattr(evidence_archive, "TemporaryDirectory", temporary)
-    _zip(_client(database).get("/account/executions/exec-1/evidence"))
-    assert created and all(not path.exists() for path in created)
+    if byte_limit is None:
+        _zip(response)
+    else:
+        assert response.status_code == 413
+        assert response.json()["detail"]["code"] == "EVIDENCE_TOO_LARGE"
+    assert not any(archive_dir.iterdir())
 
 
 def test_explicit_snapshot_does_not_mix_concurrent_commits(database, monkeypatch):
@@ -496,7 +481,7 @@ def test_archive_failure_and_asgi_disconnect_cleanup(tmp_path):
         build_archive(snapshot, EvidenceProfile.SHAREABLE, budget)
 
 
-def test_execution_environment_is_frozen_before_trade_and_clear(monkeypatch):
+def test_clear_positions_freezes_environment_and_metadata_failure_is_nonfatal(monkeypatch):
     calls = []
     monkeypatch.setattr(worker_audit, "append_execution_event_sync", lambda **kwargs: None)
     monkeypatch.setattr(worker_audit, "append_execution_artifact_sync", lambda **kwargs: calls.append(kwargs))
@@ -505,7 +490,16 @@ def test_execution_environment_is_frozen_before_trade_and_clear(monkeypatch):
         account=_account(), execution_id="frozen", algorithm_name="SINGLE-MAKER", executor=object()
     )
     environment_rows = [c for c in calls if c["artifact_type"] == ExecutionArtifactType.ENVIRONMENT_SNAPSHOT]
+    assert len(environment_rows) == 1
     assert environment_rows[0]["content"]["axile_version"] == "at-execution"
+
+    def fail(*args):
+        raise RuntimeError("metadata unavailable")
+
+    monkeypatch.setattr(worker_audit, "execution_environment", fail)
+    before_failure = len(calls)
+    worker_audit._append_environment("frozen", object(), "ctp", "SINGLE-MAKER")
+    assert len(calls) == before_failure
 
 
 def test_window_handles_dst_and_offset_aware_timestamps():
@@ -671,25 +665,6 @@ def test_core_read_failure_does_not_return_success_zip(database, monkeypatch):
     monkeypatch.setattr(collect, "_load_sources", fail)
     client = _client(database, raise_server_exceptions=False)
     assert client.get("/account/executions/exec-1/evidence").status_code == 500
-
-
-def test_worker_freezes_environment_and_metadata_failure_is_nonfatal(monkeypatch):
-    calls = []
-
-    def artifact(**kwargs):
-        calls.append(kwargs)
-
-    monkeypatch.setattr(worker_audit, "append_execution_artifact_sync", artifact)
-    monkeypatch.setattr(worker_audit, "execution_environment", lambda *args: {"axile_version": "frozen-worker"})
-    worker_audit._append_environment("worker", object(), "ctp", "SINGLE-MAKER")
-    assert calls[0]["content"]["axile_version"] == "frozen-worker"
-
-    def fail(*args):
-        raise RuntimeError("metadata unavailable")
-
-    monkeypatch.setattr(worker_audit, "execution_environment", fail)
-    worker_audit._append_environment("worker", object(), "ctp", "SINGLE-MAKER")
-    assert len(calls) == 1
 
 
 def test_redaction_preserves_token_contracts_and_removes_complete_quoted_secrets():
