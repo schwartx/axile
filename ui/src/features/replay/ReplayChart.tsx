@@ -543,9 +543,15 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
     return () => element.removeEventListener('wheel', wheel)
   }, [view, visibleRange, range, layout, size.height])
   const outside = view ? ownOrders.filter(order => order.price != null && (order.price < view.min || order.price > view.max)) : []
-  const bookRows: { price: number; quantity: number | null; side: string }[] = displayQuote ? [...displayQuote.asks.map(level => ({ ...level, side: '卖' })), ...displayQuote.bids.map(level => ({ ...level, side: '买' }))] : []
-  for (const order of depthOrders) if (order.price != null && !bookRows.some(level => level.price === order.price)) bookRows.push({ price: order.price, quantity: null, side: '档外' })
-  bookRows.sort((a, b) => b.price - a.price)
+  const accessibleBook = useMemo(() => {
+    const bookRows: { price: number; quantity: number | null; side: string }[] = displayQuote ? [...displayQuote.asks.map(level => ({ ...level, side: '卖' })), ...displayQuote.bids.map(level => ({ ...level, side: '买' }))] : []
+    for (const order of depthOrders) if (order.price != null && !bookRows.some(level => level.price === order.price)) bookRows.push({ price: order.price, quantity: null, side: '档外' })
+    bookRows.sort((a, b) => b.price - a.price)
+    return <div className={'sr-only'}><table className="num w-full text-right text-xs"><caption className="mb-2 text-left text-ink-2">{futureDepth ? '未到达 · 首个已录盘口' : '当前游标'} · 价格 / COB / ORD{instrument?.quantity_label ? `（${instrument.quantity_label}）` : ''}</caption><thead><tr className="text-ink-2"><th className="py-2 text-left">方向</th><th>价格</th><th>市场量</th><th>账户挂单</th></tr></thead><tbody>{bookRows.map((level, index) => {
+      const own = depthOrders.filter(order => order.price === level.price)
+      return <tr key={`${level.side}:${level.price}:${index}`} className="border-t border-line"><th className="py-2 text-left font-normal">{level.side}</th><td>{priceText(level.price)}</td><td>{quantityText(level.quantity)}</td><td>{own.length ? replayOrderOwnershipGroups(own, executionId).map(group => <span key={group.kind} className="block">{group.label} {quantityText(replayRemainingQuantity(group.orders))} · {group.orders.length}单{replayDepthOrderGroups(group.orders).map(side => <span key={side.direction ?? 'unknown'} className="block">{side.label} {quantityText(replayRemainingQuantity(side.orders))}</span>)}</span>) : '—'}</td></tr>
+    })}</tbody></table>{!displayQuote && <p className="py-3 text-xs text-ink-2">盘口未记录／已失效；自有委托仍可在订单表查看。</p>}</div>
+  }, [displayQuote, depthOrders, futureDepth, instrument.quantity_label, priceText, quantityText, executionId])
   const outsideDepth = displayQuote && view ? recordedDepth(displayQuote).filter(level => level.price < view.min || level.price > view.max).length : 0
   const focusOrder = () => {
     if (!selected || !view) return
@@ -639,10 +645,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
       </>}
     </div>
     <div className="replay-outside-orders flex flex-wrap gap-2" aria-label="价位范围之外的自有委托">{outside.map(order => <button key={order.key} className="min-h-8 cursor-pointer rounded-chip bg-fill px-2 text-xs text-ink-2 focus-visible:outline-2 focus-visible:outline-accent" onClick={() => { onSelectOrder(order.key); if (view && order.price != null) setManualView(centerReplayPrice(view, order.price)) }}>{order.price! > view!.max ? '上方' : '下方'} {order.order_id} · {replayOwnership(order, executionId).label} · {priceText(order.price)} · 定位</button>)}</div>
-    <div className={'sr-only'}><table className="num w-full text-right text-xs"><caption className="mb-2 text-left text-ink-2">{futureDepth ? '未到达 · 首个已录盘口' : '当前游标'} · 价格 / COB / ORD{instrument?.quantity_label ? `（${instrument.quantity_label}）` : ''}</caption><thead><tr className="text-ink-2"><th className="py-2 text-left">方向</th><th>价格</th><th>市场量</th><th>账户挂单</th></tr></thead><tbody>{bookRows.map((level, index) => {
-      const own = depthOrders.filter(order => order.price === level.price)
-      return <tr key={`${level.side}:${level.price}:${index}`} className="border-t border-line"><th className="py-2 text-left font-normal">{level.side}</th><td>{priceText(level.price)}</td><td>{quantityText(level.quantity)}</td><td>{own.length ? replayOrderOwnershipGroups(own, executionId).map(group => <span key={group.kind} className="block">{group.label} {quantityText(replayRemainingQuantity(group.orders))} · {group.orders.length}单{replayDepthOrderGroups(group.orders).map(side => <span key={side.direction ?? 'unknown'} className="block">{side.label} {quantityText(replayRemainingQuantity(side.orders))}</span>)}</span>) : '—'}</td></tr>
-    })}</tbody></table>{!displayQuote && <p className="py-3 text-xs text-ink-2">盘口未记录／已失效；自有委托仍可在订单表查看。</p>}</div>
+    {accessibleBook}
     <div id="replay-chart-legend" popover="auto" className="replay-chart-help" aria-label="图层与图例说明">
       <header className="replay-help-header"><h2 className="text-sm font-medium">图层与图例</h2><button type="button" popoverTarget="replay-chart-legend" popoverTargetAction="hide" className={controlClass} aria-label="关闭图例"><X size={15} aria-hidden /></button></header>
       <div className="replay-help-body">

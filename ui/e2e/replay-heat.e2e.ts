@@ -187,8 +187,14 @@ test('horizontal chart panning reuses ladder rows while vertical panning updates
   await page.mouse.move(x, y)
   await page.mouse.down()
   await page.evaluate(() => {
-    const state = window as Window & { panRowReads: number }
+    const state = window as Window & { panRowReads: number; panNumberFormats: number }
     state.panRowReads = 0
+    state.panNumberFormats = 0
+    const format = Number.prototype.toLocaleString
+    Number.prototype.toLocaleString = function(...args) {
+      if (Number(this) === 1) state.panNumberFormats++
+      return format.apply(this, args)
+    }
     const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetTop')!
     Object.defineProperty(HTMLElement.prototype, 'offsetTop', { ...descriptor, get() {
       if (this.hasAttribute('data-price')) state.panRowReads++
@@ -199,6 +205,7 @@ test('horizontal chart panning reuses ladder rows while vertical panning updates
     await page.mouse.move(x + 60, y, { steps: 12 })
     await page.mouse.move(x, y, { steps: 12 })
     expect(await page.evaluate(() => (window as Window & { panRowReads: number }).panRowReads)).toBe(0)
+    expect(await page.evaluate(() => (window as Window & { panNumberFormats: number }).panNumberFormats)).toBeLessThanOrEqual(2)
   } finally { await page.mouse.up() }
   await expect(page.locator('.replay-heat-scale')).toContainText('挂量峰值')
   const guides = page.locator('.replay-ladder-guide')
@@ -211,6 +218,13 @@ test('horizontal chart panning reuses ladder rows while vertical panning updates
   } finally { await page.mouse.up() }
   await expect(page.locator('.replay-heat-scale')).toContainText('挂量峰值')
   await expect(page.getByRole('list', { name: '当前已录价位' })).toContainText('买1')
+  await page.getByRole('button', { name: '验收场景' }).click()
+  await page.getByRole('option', { name: '盘口动效', exact: true }).click()
+  const accessibleBid = page.locator('.sr-only table tbody tr').filter({ has: page.getByRole('cell', { name: '100', exact: true }) }).locator('td').nth(1)
+  await page.getByRole('button', { name: '行情帧 1', exact: true }).click()
+  await expect(accessibleBid).toHaveText('1')
+  await page.getByRole('button', { name: '行情帧 2', exact: true }).click()
+  await expect(accessibleBid).toHaveText('4')
 })
 
 test('real Worker and WASM settle after chart drag, wheel and data replacement', async ({ page }) => {
