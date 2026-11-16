@@ -32,7 +32,7 @@
 
 ## 构建与验证
 
-沿用 `ui/scripts/build-replay-heat.ts` 和现有 WASM 产物，无额外运行时依赖。`bun run build` 会构建 WASM、检查类型并打包 Worker/WASM 静态资源。Rust target 应放在源码树外，使用固定工具链和 `--locked`。
+`ui/scripts/build-replay-heat.ts` 构建两份 WASM：默认产物提供账户成本、费率试算及区间分析，`raw-only` 产物提供当前原始回放的解码、业务推导与区间统计。运行 `bun run build:heat` 可单独生成这些产物；`bun run build` 会构建 WASM、检查类型并打包 Worker/WASM 静态资源。Rust target 应放在源码树外，使用固定工具链和 `--locked`。
 
 定向检查覆盖原有收益重放回归、原生分页与版本失效、WASM 与独立 JS 成本口径对照、未知深度、成交身份和 Worker 过期响应。前端交互需使用隔离数据库验收；真实账户与实盘执行不属于此功能的验证范围。
 
