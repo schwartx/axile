@@ -310,14 +310,23 @@ class ExecutionSession:
         """注册当前 symbol 的订单回调."""
         self._owner.register_order_callback_for_symbol(callback, self.symbol)
 
-    def register_price_callback(self, callback: PriceDataCallback) -> None:
-        """注册当前 symbol 的价格回调."""
+    def register_price_callback(self, callback: PriceDataCallback, *, bind_order_context: bool = True) -> None:
+        """注册当前 symbol 的行情回调。
+
+        Parameters
+        ----------
+        callback : PriceDataCallback
+            接收原始行情的回调函数。
+        bind_order_context : bool, default True
+            是否冻结盘口并绑定回调内下单的隐式报价证据。纯统计回调可关闭；
+            关闭后若需下单，必须显式提供行情证据。
+        """
         if callback in self._price_callbacks:
             return
 
         def on_price(price_data: UnifiedPriceData) -> None:
             # 回调只能为自身的同步下单提供证据，不能替换另一个调用正在使用的报价。
-            token = self._market_data.set(clone_price_data(price_data))
+            token = self._market_data.set(clone_price_data(price_data) if bind_order_context else None)
             try:
                 callback(price_data)
             finally:

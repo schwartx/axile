@@ -229,8 +229,8 @@ class ExecutorProtocol(Protocol):
         """注册订单更新回调函数."""
         ...
 
-    def register_price_callback(self, callback: PriceDataCallback) -> None:
-        """注册价格数据回调函数."""
+    def register_price_callback(self, callback: PriceDataCallback, *, bind_order_context: bool = True) -> None:
+        """注册行情回调；纯统计可关闭隐式下单报价上下文，避免深拷贝盘口。"""
         ...
 
     def register_trade_callback(self, callback: TradeRecordCallback) -> None:

@@ -6,7 +6,7 @@ from typing import Any, cast
 
 import pytest
 
-from axile.common.serialization import from_payload
+from axile.common.serialization import copy_data, from_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor.base import AbstractExecutor
 from axile.executor.abstract_executor.capability import AbstractExecutorCapabilityMixin
@@ -432,3 +432,86 @@ def test_execution_session_emits_audit_event_and_artifact(monkeypatch: pytest.Mo
         )
         is False
     )
+
+
+@pytest.mark.parametrize("bind_order_context", [True, False])
+def test_price_callback_controls_snapshot_copy_and_restores_context(monkeypatch, bind_order_context):
+    """统计回调省去复制，异常或嵌套调用仍恢复外层报价上下文。"""
+    from axile.executor import execution_session
+
+    owner = _SessionBoundaryExecutor()
+    session = ExecutionSession(owner, "rb2610")
+    registered = []
+    monkeypatch.setattr(owner, "register_price_callback_for_symbol", lambda cb, symbol: registered.append(cb))
+    monkeypatch.setattr(owner, "unregister_price_callback_for_symbol", lambda cb, symbol: registered.remove(cb))
+    quote = owner.get_market_data([session.symbol])[session.symbol]
+    outer = copy_data(quote, deep=True)
+    original_clone = execution_session.clone_price_data
+    copies = []
+
+    def clone(value):
+        copies.append(value)
+        return original_clone(value)
+
+    monkeypatch.setattr(execution_session, "clone_price_data", clone)
+    received = []
+
+    def callback(value):
+        received.append(value.volume)
+        assert value is quote
+        bound = session._market_data.get()
+        if bind_order_context:
+            assert bound is not value and bound == value
+        else:
+            assert bound is None
+        raise ValueError("callback failed")
+
+    token = session._market_data.set(outer)
+    try:
+        session.register_price_callback(callback, bind_order_context=bind_order_context)
+        session.register_price_callback(callback, bind_order_context=bind_order_context)
+        assert len(registered) == 1
+        with pytest.raises(ValueError, match="callback failed"):
+            registered[0](quote)
+        assert session._market_data.get() is outer
+        assert received == [quote.volume]
+        assert len(copies) == int(bind_order_context)
+        session.unregister_price_callback(callback)
+        assert registered == []
+    finally:
+        session._market_data.reset(token)
+
+
+def test_statistical_callback_cannot_borrow_enclosing_order_evidence(monkeypatch):
+    """嵌套统计回调不能借用外层隐式证据，显式报单和外层报价仍有效。"""
+    from axile.executor.market_data_validation import MarketDataUnavailableError
+
+    owner = _SessionBoundaryExecutor()
+    session = ExecutionSession(owner, "rb2610")
+    registered = []
+    monkeypatch.setattr(owner, "register_price_callback_for_symbol", lambda cb, symbol: registered.append(cb))
+    submitted = []
+
+    def submit(*args, **kwargs):
+        submitted.append(args)
+        return owner._place_order_impl(*args, **kwargs)
+
+    monkeypatch.setattr(owner, "place_order", submit)
+    quote = owner.get_market_data([session.symbol])[session.symbol]
+
+    def observer(value):
+        with pytest.raises(MarketDataUnavailableError, match="行情未就绪"):
+            session.place_order(OrderDirection.BUY, OrderType.LIMIT, 1, 100)
+        assert submitted == []
+        session.place_order(OrderDirection.BUY, OrderType.LIMIT, 1, 100, market_data=value)
+
+    def trading_callback(value):
+        registered[1](value)
+        assert session._market_data.get() == value
+        session.place_order(OrderDirection.BUY, OrderType.LIMIT, 1, 100)
+
+    session.register_price_callback(trading_callback)
+    session.register_price_callback(observer, bind_order_context=False)
+    registered[0](quote)
+    assert len(submitted) == 2
+    assert session._market_data.get() is None
