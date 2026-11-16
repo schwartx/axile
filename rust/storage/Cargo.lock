@@ -52,6 +52,7 @@ dependencies = [
  "base64",
  "chrono",
  "chrono-tz",
+ "flate2",
  "fs2",
  "libc",
  "mcap",

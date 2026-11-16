@@ -1,14 +1,21 @@
+#[cfg(not(feature = "raw-only"))]
 use std::collections::HashMap;
+#[cfg(not(feature = "raw-only"))]
 use wasm_bindgen::prelude::*;
+#[cfg(not(feature = "raw-only"))]
 mod account;
+#[cfg(feature = "raw-only")]
+mod raw;
 
 /// Normalized depth intervals: start, end, price, quantity (NaN means unknown).
 #[wasm_bindgen]
+#[cfg(not(feature = "raw-only"))]
 pub struct Heat {
     rows: Vec<f64>,
 }
 
 #[wasm_bindgen]
+#[cfg(not(feature = "raw-only"))]
 impl Heat {
     #[wasm_bindgen(constructor)]
     pub fn new(rows: Vec<f64>) -> Result<Heat, JsError> {

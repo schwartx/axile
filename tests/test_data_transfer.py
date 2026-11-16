@@ -35,6 +35,143 @@ def seed(path, ident=1):
         )
 
 
+def raw_manifest(database, execution):
+    from axile.server.execution_replay.reader import index, metadata
+
+    with index(database.parent / "replay", 1, lambda: None) as (c, _, _):
+        return metadata(c, {"operation": "manifest", "execution_id": execution})
+
+
+def raw_record(database, recording, stamp, **context):
+    writer = _core.ExecutionReplayWriter(
+        str(database.parent / "replay"), 1, recording, json.dumps({"schema_version": 2, **context})
+    )
+    writer.append(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "recording_id": recording,
+                "capture_seq": 1,
+                "time_us": stamp,
+                "topic": "/execution",
+                "data": {"execution_id": "exec-1", "phase": "start"},
+            }
+        )
+    )
+    writer.finish()
+
+
+def test_prepared_download_import_acknowledgement_and_cancel_routes(peers, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from axile.server.api.routes.transfer import router
+
+    source, target = peers
+    seed(source)
+    raw_record(source, "route-source", 1)
+    app = FastAPI()
+    app.include_router(router, prefix="/api/v1")
+    with TestClient(app) as client:
+        prepared = client.post("/api/v1/transfer/packages", json={})
+        assert prepared.status_code == 200
+        batch = prepared.json()["batch"]
+        response = client.get(f"/api/v1/transfer/packages/{batch}")
+        assert response.status_code == 200 and len(response.content) == prepared.json()["size"]
+        assert "attachment" in response.headers["content-disposition"]
+        assert client.get("/api/v1/transfer/packages/invalid").status_code == 422
+        monkeypatch.setattr(transfer, "database_path", lambda: str(target))
+        imported = client.post("/api/v1/transfer/import", files={"file": ("data.axile", response.content)})
+        assert imported.status_code == 200 and raw_manifest(target, "exec-1")["recordings"]
+        monkeypatch.setattr(transfer, "database_path", lambda: str(source))
+        acknowledged = client.post(
+            "/api/v1/transfer/acknowledge", json={"receipt": imported.json(), "plan": {"replay_days": 1}}
+        )
+        assert acknowledged.status_code == 200 and acknowledged.json()["removed_recordings"] == 1
+        raw_record(source, "retained", 2)
+        batch = client.post("/api/v1/transfer/packages", json={}).json()["batch"]
+        assert client.delete(f"/api/v1/transfer/packages/{batch}").json()["canceled"]
+        assert client.get(f"/api/v1/transfer/packages/{batch}").status_code == 404
+        assert (source.parent / "replay/account-1/raw-retained.mcap").exists()
+
+
+def test_raw_transitive_content_prefixes_rebuild_locally_and_pin_referenced_history(peers, monkeypatch):
+    source, target = peers
+    seed(source)
+    raw_record(source, "old", 1)
+    with sqlite3.connect(source.parent / "replay/account-1/.replay-v2.sqlite") as c:
+        commit = c.execute("SELECT commit_id FROM recordings WHERE id='old'").fetchone()[0]
+    stamp = int(datetime.now(UTC).timestamp() * 1_000_000)
+    raw_record(source, "current", stamp, content_refs=[{"recording": "old", "commit_id": commit}])
+    package, manifest = transfer.export_package(transfer.TransferPlan(start=datetime.now(UTC) - timedelta(hours=1)))
+    assert "replay/account-1/raw-old.mcap" in manifest["files"]
+    assert not any(".sqlite" in n for n in manifest["files"] if n.startswith("replay/"))
+    monkeypatch.setattr(transfer, "database_path", lambda: str(target))
+    receipt = transfer.import_package(package)
+    generation = raw_manifest(target, "exec-1")["index_generation"]
+    transfer.import_package(package)
+    assert raw_manifest(target, "exec-1")["index_generation"] == generation
+    monkeypatch.setattr(transfer, "database_path", lambda: str(source))
+    assert transfer.acknowledge(receipt, transfer.TransferPlan(replay_days=1))["removed_recordings"] == 0
+    assert (source.parent / "replay/account-1/raw-old.mcap").is_file()
+
+
+def test_read_lease_and_active_writer_defer_cleanup_and_previous_ordering_does_not_pin(peers, monkeypatch):
+    source, target = peers
+    seed(source)
+    raw_record(source, "old", 1)
+    raw_record(source, "current", int(datetime.now(UTC).timestamp() * 1_000_000), previous_recording_id="old")
+    package, _ = transfer.export_package(transfer.TransferPlan())
+    monkeypatch.setattr(transfer, "database_path", lambda: str(target))
+    receipt = transfer.import_package(package)
+    monkeypatch.setattr(transfer, "database_path", lambda: str(source))
+    lease = _core.ReplayReadLease(str(source.parent / "replay"), 1, "old")
+    assert transfer.acknowledge(receipt, transfer.TransferPlan(replay_days=1))["removed_recordings"] == 0
+    del lease
+    live = _core.ExecutionReplayWriter(str(source.parent / "replay"), 1, "live", '{"schema_version":2}')
+    assert transfer.acknowledge(receipt, transfer.TransferPlan(replay_days=1))["removed_recordings"] == 0
+    live.finish()
+    assert transfer.acknowledge(receipt, transfer.TransferPlan(replay_days=1))["removed_recordings"] == 1
+    assert not (source.parent / "replay/account-1/raw-old.mcap").exists()
+    assert (source.parent / "replay/account-1/raw-current.mcap").exists()
+
+
+def test_cancel_removes_only_pending_package_and_tombstone_cleanup_can_resume(peers, monkeypatch):
+    source, target = peers
+    seed(source)
+    raw_record(source, "old", 1)
+    package, manifest = transfer.export_package(transfer.TransferPlan())
+    transfer._operation("cancel_package", batch=manifest["batch"])
+    assert not package.exists() and (source.parent / "replay/account-1/raw-old.mcap").exists()
+    package, _ = transfer.export_package(transfer.TransferPlan())
+    monkeypatch.setattr(transfer, "database_path", lambda: str(target))
+    receipt = transfer.import_package(package)
+    monkeypatch.setattr(transfer, "database_path", lambda: str(source))
+    raw = source.parent / "replay/account-1/raw-old.mcap"
+    raw.rename(raw.with_suffix(".mcap.deleted"))
+    assert transfer.acknowledge(receipt, transfer.TransferPlan(replay_days=1))["removed_recordings"] == 1
+    assert not raw.exists() and not raw.with_suffix(".mcap.deleted").exists()
+
+
+def test_rebuild_recovers_uncommitted_cleanup_and_finishes_committed_cleanup(peers):
+    source, _ = peers
+    seed(source)
+    raw_record(source, "restore", 1)
+    account = source.parent / "replay/account-1"
+    raw = account / "raw-restore.mcap"
+    original = raw.read_bytes()
+    raw.rename(raw.with_suffix(".mcap.deleted"))
+    _core.execution_replay_rebuild(str(source.parent / "replay"), 1)
+    assert raw.read_bytes() == original and raw_manifest(source, "exec-1")["recordings"]
+    # A completed index transaction is the positive deletion decision; no data is resurrected.
+    with sqlite3.connect(account / ".replay-v2.sqlite") as db:
+        db.execute("DELETE FROM recordings WHERE id='restore'")
+    raw.rename(raw.with_suffix(".mcap.deleted"))
+    _core.execution_replay_rebuild(str(source.parent / "replay"), 1)
+    assert not raw.exists() and not raw.with_suffix(".mcap.deleted").exists()
+    assert not raw_manifest(source, "exec-1")["recordings"]
+
+
 def test_roundtrip_accumulates_and_preserves_source_cleanup(peers, monkeypatch):
     source, target = peers
     seed(source)
@@ -106,12 +243,12 @@ def test_replay_roundtrip_and_acknowledged_cleanup(peers, monkeypatch):
     """只有完整接收后的已关闭录制可清理，回放能在接收端重建索引。"""
     source, target = peers
     seed(source)
-    writer = _core.ExecutionReplayWriter(str(source.parent / "replay"), 1, "closed", '{"schema_version":1}')
+    writer = _core.ExecutionReplayWriter(str(source.parent / "replay"), 1, "closed", '{"schema_version":2}')
     for seq, stamp in enumerate((1, 100, 200), 1):
         writer.append(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "recording_id": "closed",
                     "capture_seq": seq,
                     "time_us": stamp,
@@ -127,8 +264,7 @@ def test_replay_roundtrip_and_acknowledged_cleanup(peers, monkeypatch):
     for name in manifest["files"]:
         if name.endswith(".mcap"):
             assert (target.parent / name).read_bytes() == (source.parent / name).read_bytes()
-    received = _core.execution_replay_manifest(str(target.parent / "replay"), 1, "exec-1", None)
-    assert json.loads(received)["recordings"]
+    assert raw_manifest(target, "exec-1")["recordings"]
     monkeypatch.setattr(transfer, "database_path", lambda: str(source))
     result = transfer.acknowledge(receipt, transfer.TransferPlan(replay_days=1))
     assert result["removed_recordings"] > 0
@@ -285,11 +421,11 @@ def test_pull_downloads_then_confirms_and_resumes_receipt(peers, monkeypatch, fa
 def test_live_recording_between_sealed_parts_is_not_removed(peers, monkeypatch):
     """会话仍开启时，即使当前没有 partial 文件也不得清理。"""
     source, target = peers
-    writer = _core.ExecutionReplayWriter(str(source.parent / "replay"), 1, "still-open", '{"schema_version":1}')
+    writer = _core.ExecutionReplayWriter(str(source.parent / "replay"), 1, "still-open", '{"schema_version":2}')
     writer.append(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "recording_id": "still-open",
                 "capture_seq": 1,
                 "time_us": 1,
@@ -298,11 +434,7 @@ def test_live_recording_between_sealed_parts_is_not_removed(peers, monkeypatch):
             }
         )
     )
-    writer.finish()
-
-    # 模拟两段之间：索引仍标记会话开启，当前没有 partial 文件。
-    with sqlite3.connect(source.parent / "replay/account-1/.replay-index.sqlite") as c:
-        c.execute("UPDATE recordings SET metadata=json_set(metadata,'$.state','recording')")
+    writer.seal()
     package, _ = transfer.export_package(transfer.TransferPlan())
     monkeypatch.setattr(transfer, "database_path", lambda: str(target))
     receipt = transfer.import_package(package)
@@ -371,11 +503,11 @@ def test_early_morning_range_includes_replay(peers, monkeypatch, offset):
     stamp = int((start + timedelta(minutes=30)).timestamp() * 1_000_000)
     with sqlite3.connect(source) as c:
         c.execute("UPDATE executerecord SET created_at_us=?", (stamp,))
-    writer = _core.ExecutionReplayWriter(str(source.parent / "replay"), 1, "night", '{"schema_version":1}')
+    writer = _core.ExecutionReplayWriter(str(source.parent / "replay"), 1, "night", '{"schema_version":2}')
     writer.append(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "recording_id": "night",
                 "capture_seq": 1,
                 "time_us": stamp,
@@ -392,10 +524,10 @@ def test_early_morning_range_includes_replay(peers, monkeypatch, offset):
     assert manifest["executions"] == ["exec-1"]
     assert any(name.endswith(".mcap") for name in manifest["files"])
     monkeypatch.setattr(transfer, "database_path", lambda: str(target))
-    transfer.import_package(package)
-    received = json.loads(_core.execution_replay_manifest(str(target.parent / "replay"), 1, "exec-1", None))
-    assert received["availability"] == "available"
+    receipt = transfer.import_package(package)
+    assert raw_manifest(target, "exec-1")["recordings"]
     monkeypatch.setattr(transfer, "database_path", lambda: str(source))
+    transfer.acknowledge(receipt, transfer.TransferPlan())
     result = transfer._operation(
         "prune_recordings", manifest=manifest, cutoff_us=int((start + timedelta(days=1)).timestamp() * 1_000_000)
     )
