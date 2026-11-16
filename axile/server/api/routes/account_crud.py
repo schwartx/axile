@@ -804,7 +804,7 @@ async def _update_account(
             and str(next_notification_code).strip() != DEFAULT_ACCOUNT_NOTIFICATION_CODE.strip()
         ):
             data["feishu_key"] = None
-        if account.account_config is not None or account.trade_channel is not None:
+        if data.get("account_config") is not None or data.get("trade_channel") is not None:
             data["account_config"] = normalized_account_config
         validated_account = parse_input(Account, to_payload(db_account) | data)
         if "product_algorithms" in data:

@@ -39,13 +39,14 @@ class PortfolioTarget:
     def from_result(cls, result: object) -> PortfolioTarget:
         """旧字典按权重解释，显式返回值必须完整声明口径与目标。"""
         if isinstance(result, cls):
-            return parse_input(cls, to_payload(result))
+            result = to_payload(result)
         if not isinstance(result, dict):
             raise TypeError(f"calculate_portfolio 必须返回目标字典，实际返回 {type(result).__name__}")
         if isinstance(result.get("mode"), str) or isinstance(result.get("targets"), dict):
             if set(result) != {"mode", "targets"}:
                 raise ValueError("显式组合目标必须且只能包含 mode 和 targets")
-            return parse_input(cls, result)
+            normalized = result | {"targets": cls.validate_targets(result["targets"])}
+            return parse_input(cls, normalized)
         return cls(targets=cls.validate_targets(result))
 
     __forbid_unknown__ = True

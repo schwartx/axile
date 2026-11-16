@@ -15,7 +15,7 @@
 
 编辑请求通过 `parse_input(Type, raw)` 解析。msgspec 根据类型注解及 `Meta` 检查输入结构和字段范围，然后调用对象的 `validate()` 检查业务组合约束。账户保存、算法参数解析、组合计算结果和外部 SDK 数据转换分别在所属入口检查，内部读取与转发不再重做校验。
 
-HTTP 路由使用 `Depends(json_body(Type))` 或 `Depends(query_params(Type))`，不把 dataclass 交给 FastAPI 再生成 Pydantic 模型。HTTP 参数错误仍返回 422；鉴权、字段白名单、凭据脱敏和数据库事务边界保持原有职责。
+HTTP 请求体通过 `Depends(json_body(Type))` 中的 `Body` 声明交给 FastAPI/Pydantic 解析，保留 JSON Content-Type 与对象结构检查；随后复用 `parse_input()` 检查配置字段和业务约束。查询参数使用 `Depends(query_params(Type))`。内部 dataclass 不交给框架重复构建模型。HTTP 参数错误仍返回 422；鉴权、字段白名单、凭据脱敏和数据库事务边界保持原有职责。
 
 PATCH 对象用 `msgspec.UNSET` 区分省略字段与显式 `null`。`to_payload(..., exclude_unset=True)` 只导出实际更新项，`false`、`0` 和空数组都是明确提供的值。
 

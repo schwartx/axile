@@ -36,6 +36,7 @@ with closing(sqlite3.connect(sys.argv[1], timeout=0.5)) as connection:
 """
 _WRITE_SUBMISSIONS = """
 import sys
+from axile.common.serialization import copy_data
 from axile.executor.order_submissions import OrderSubmissionFact
 from axile.server.order_submissions import _save_fact
 print('ready', flush=True)
@@ -47,7 +48,7 @@ for index in range(8):
     )
     _save_fact(sys.argv[1], fact)
 for revision in (0, 6, 2, 8):
-    _save_fact(sys.argv[1], fact.model_copy(update={
+    _save_fact(sys.argv[1], copy_data(fact, update={
         'submission_uid': 'shared', 'order_id': 'shared', 'request_id': 999,
         'revision': revision,
     }))

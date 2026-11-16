@@ -2,9 +2,11 @@
 
 import asyncio
 
+import numpy as np
 import pytest
 
 from axile.common.serialization import to_payload
+from axile.executor.models.portfolio_target import PortfolioTarget
 from axile.server.portfolio_function import _normalize_target
 
 CODE = "def calculate_portfolio(context):\n    return {'rb2610': 1.0}\n"
@@ -17,6 +19,15 @@ CODE = "def calculate_portfolio(context):\n    return {'rb2610': 1.0}\n"
 def test_target_must_be_finite_symbol_weight_mapping(target: object) -> None:
     with pytest.raises((TypeError, ValueError)):
         _normalize_target(target)
+
+
+@pytest.mark.parametrize("as_model", [False, True])
+def test_explicit_target_normalizes_numpy_numbers_before_parsing(as_model):
+    payload = {"mode": "quantity", "targets": {"600000.SH": np.float64(100)}}
+    target = _normalize_target(PortfolioTarget(**payload) if as_model else payload)
+    assert target.mode == "quantity"
+    assert target.targets == {"600000.SH": 100.0}
+    assert type(target.targets["600000.SH"]) is float
 
 
 def _account_payload(account_id: int) -> dict[str, object]:
