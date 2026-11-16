@@ -8,6 +8,7 @@ const savedWidths = new Map<string, string>()
 const slots: any[] = [], effects: (() => void)[] = [], timers = new Map<number, () => void>()
 let timerId = 0
 mock.module('react', () => ({
+  memo: (component: any) => component,
   useRef: (initial: any) => { const i = at++; return slots[i] ??= { current: initial } },
   useState: (initial: any) => {
     const i = at++; slots[i] ??= { value: initial }

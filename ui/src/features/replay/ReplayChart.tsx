@@ -1,5 +1,5 @@
 import { ResizeHandle } from '@/components/ui/ResizeHandle'
-import { useCallback, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react'
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react'
 import { ArrowLeft, ArrowRight, Check, Circle, Crosshair, Info, Minus, RotateCcw, X } from 'lucide-react'
 import { ValueSlider } from '@/components/ui/ValueSlider'
 import { Tooltip } from '@/components/ui/Tooltip'
@@ -42,6 +42,7 @@ interface Props {
 }
 
 const emptyBubbles: ReturnType<typeof replayMarketBubblesAt> = []
+const DepthLadder = memo(ReplayDepthLadder)
 
 const controlClass = 'inline-flex min-h-7 min-w-7 cursor-pointer items-center justify-center rounded-chip text-ink-2 hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default disabled:opacity-40'
 
@@ -189,6 +190,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
   }, [instrument.price_decimals, instrument.price_tick, historyQuotes, historyOrders, recorded.marketTrades, symbol])
   const axisPriceText = useCallback((price: number | null) => replayAxisPrice(price, { price_decimals: axisDecimals, price_tick: instrument.price_tick }), [axisDecimals, instrument.price_tick])
   const quantityText = useCallback((quantity: number | null) => replayNumber(quantity, instrument?.quantity_decimals ?? 6), [instrument?.quantity_decimals])
+  const selectDepthOrder = useCallback((key: string) => { onInspect(); onSelectOrder(key) }, [onInspect, onSelectOrder])
   const priceTick = instrument.price_tick ?? 10 ** -(axisDecimals ?? decimals)
   const hoverPrice = activeHover && view ? Math.round(replayYPrice(activeHover.y, view, layout) / priceTick) * priceTick : null
   const orderPrices = useMemo(() => [...new Set(depthOrders.flatMap(order => order.price != null ? [order.price] : []))], [depthOrders])
@@ -448,9 +450,11 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
     setTimeView(zoomReplayTime(visibleRange, factor, (visibleRange.start_us + visibleRange.end_us) / 2, range))
   }
   const pan = (dx: number, dy: number) => {
-    if (view) { const offset = (view.max - view.min) * dy; setManualView({ ...view, min: view.min + offset, max: view.max + offset }) }
-    const offset = (visibleRange.end_us - visibleRange.start_us) * dx
-    setTimeView(clampReplayView({ start_us: visibleRange.start_us + offset, end_us: visibleRange.end_us + offset }, range))
+    if (view && dy !== 0) { const offset = (view.max - view.min) * dy; setManualView({ ...view, min: view.min + offset, max: view.max + offset }) }
+    if (dx !== 0) {
+      const offset = (visibleRange.end_us - visibleRange.start_us) * dx
+      setTimeView(clampReplayView({ start_us: visibleRange.start_us + offset, end_us: visibleRange.end_us + offset }, range))
+    }
   }
   const inspectAt = (x: number, y: number, select = false) => {
     if (heatPending) { setHover(null); if (select) setInspection(null); return }
@@ -516,7 +520,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
     else {
       const shift = -dx / (layout.right - layout.left) * (drag.range.end_us - drag.range.start_us)
       const priceShift = dy / (layout.bottom - layout.top) * (drag.view.max - drag.view.min)
-      viewScheduler.schedule({ range: clampReplayView({ start_us: drag.range.start_us + shift, end_us: drag.range.end_us + shift }, range), view: { ...drag.view, min: drag.view.min + priceShift, max: drag.view.max + priceShift } })
+      viewScheduler.schedule({ range: dx === 0 ? drag.range : clampReplayView({ start_us: drag.range.start_us + shift, end_us: drag.range.end_us + shift }, range), view: dy === 0 ? drag.view : { ...drag.view, min: drag.view.min + priceShift, max: drag.view.max + priceShift } })
     }
   }
   useLayoutEffect(() => {
@@ -616,7 +620,7 @@ export function ReplayChart({ window: replayWindow, range, projection, symbol, e
         min={replayDepthMinWidth} max={maxDepthWidth} step={-24} onChange={setDepthWidth} onCommit={saveDepthWidth}
         onReset={() => saveDepthWidth(replayDepthMinWidth)} onResizeChange={setResizingDepth}
         valueAt={x => clampDepthWidth(size.width - (x - (holder.current?.getBoundingClientRect().left ?? 0)) + 8)} />}
-      {view && layout.columns && <ReplayDepthLadder quote={displayQuote} future={futureDepth} orders={depthOrders} view={view} layout={layout} height={height} executionId={executionId} selected={selectedOrder} onSelect={key => { onInspect(); onSelectOrder(key) }} priceText={priceText} quantityText={quantityText} hoverPrice={hoverPrice ?? undefined} />}
+      {view && layout.columns && <DepthLadder quote={displayQuote} future={futureDepth} orders={depthOrders} view={view} layout={layout} height={height} executionId={executionId} selected={selectedOrder} onSelect={selectDepthOrder} priceText={priceText} quantityText={quantityText} hoverPrice={hoverPrice ?? undefined} />}
       {inspection && <div className="replay-inspection-float" aria-label="图中记录浮卡" style={{
         width: inspectionWidth,
         left: Math.max(8, Math.min(layout.right - inspectionWidth - 8, inspection.x + 12 + inspectionWidth <= layout.right ? inspection.x + 12 : inspection.x - 12 - inspectionWidth)),

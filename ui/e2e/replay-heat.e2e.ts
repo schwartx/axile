@@ -174,6 +174,45 @@ test('large-canvas timeline drag reuses history while seeking in both directions
     }
   } finally { await context.close() }
 })
+test('horizontal chart panning reuses ladder rows while vertical panning updates price guides', async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 900 })
+  await page.goto('/tests/replay-depth.fixture.html')
+  const chart = page.getByRole('group', { name: /历史盘口热力图/ })
+  await expect(page.locator('.replay-heat-scale')).toContainText('挂量峰值')
+  await chart.focus()
+  await page.keyboard.press('Equal')
+  await expect(page.locator('.replay-heat-scale')).toContainText('挂量峰值')
+  const bounds = (await chart.boundingBox())!
+  const x = bounds.x + 150, y = bounds.y + 100
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  await page.evaluate(() => {
+    const state = window as Window & { panRowReads: number }
+    state.panRowReads = 0
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetTop')!
+    Object.defineProperty(HTMLElement.prototype, 'offsetTop', { ...descriptor, get() {
+      if (this.hasAttribute('data-price')) state.panRowReads++
+      return descriptor.get!.call(this)
+    } })
+  })
+  try {
+    await page.mouse.move(x + 60, y, { steps: 12 })
+    await page.mouse.move(x, y, { steps: 12 })
+    expect(await page.evaluate(() => (window as Window & { panRowReads: number }).panRowReads)).toBe(0)
+  } finally { await page.mouse.up() }
+  await expect(page.locator('.replay-heat-scale')).toContainText('挂量峰值')
+  const guides = page.locator('.replay-ladder-guide')
+  const before = await guides.evaluateAll(paths => paths.map(path => path.getAttribute('d')))
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  try {
+    await page.mouse.move(x, y + 25, { steps: 12 })
+    await expect.poll(() => guides.evaluateAll(paths => paths.map(path => path.getAttribute('d')))).not.toEqual(before)
+  } finally { await page.mouse.up() }
+  await expect(page.locator('.replay-heat-scale')).toContainText('挂量峰值')
+  await expect(page.getByRole('list', { name: '当前已录价位' })).toContainText('买1')
+})
+
 test('real Worker and WASM settle after chart drag, wheel and data replacement', async ({ page }) => {
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
