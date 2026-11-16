@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { analysisWorker } from '@/lib/analysisWorker'
 
 /** Dataset changes terminate the old worker; only the latest query may publish. */
-export function useLocalAnalysis<Q, R>(mode: 'account' | 'replay', input: object | null, query: Q | null) {
+export function useLocalAnalysis<Q, R>(input: object | null, query: Q | null) {
   const [result, setResult] = useState<{ input: object; query: Q; value: R } | null>(null)
   const [failure, setFailure] = useState<{ input: object; error: Error } | null>(null)
   const [initialized, setInitialized] = useState<object | null>(null)
@@ -23,7 +23,7 @@ export function useLocalAnalysis<Q, R>(mode: 'account' | 'replay', input: object
         const worker = new Worker(new URL('./analysis.worker.ts', import.meta.url), { type: 'module' })
         client = analysisWorker<Q, R>(worker, (query, value) => setResult({ input, query, value }), message => setFailure({ input, error: new Error(message) }), () => setInitialized(input))
         request.current = client.request
-        worker.postMessage({ kind: 'load', mode, input: serialized, wasm }, [wasm!])
+        worker.postMessage({ kind: 'load', input: serialized, wasm }, [wasm!])
         if (current.current) client.request(current.current)
       } catch (error) {
         if (active) { client?.close(); request.current = () => {}; setFailure({ input, error: error instanceof Error ? error : new Error(String(error)) }) }
@@ -31,7 +31,7 @@ export function useLocalAnalysis<Q, R>(mode: 'account' | 'replay', input: object
     }
     void load()
     return () => { active = false; client?.close(); request.current = () => {} }
-  }, [input, mode])
+  }, [input])
   useEffect(() => { if (query) request.current(query) }, [query])
   const error = input && failure?.input === input ? failure.error : null
   const value = input && result?.input === input && result.query === query && !error ? result.value : null

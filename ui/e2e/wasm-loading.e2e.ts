@@ -16,6 +16,7 @@ async function defaults(page: Page) {
       : path.endsWith('/session') ? { reader_epoch: 'test', session: 'session' }
       : path.endsWith('/control') ? { state: 'settled', session_bytes: 0 }
       : path.endsWith('/manifest') ? { schema_version: 2, account_id: 7, execution_id: 'E', index_generation: 'g', recordings: [{ id: 'R', seq: 0, watermark: 1, commit_id: 'c', start_us: 0, state: 'closed', streams: [], symbols: ['S'] }] }
+      : path.endsWith('/display-blocks') ? { ...context, through_seq: 0, blocks: [], next: null }
       : path.endsWith('/plan') ? { ...context, target_us: JSON.parse(route.request().postData()!).time_us, cutoff_seq: 1, selected: null, evidence: [], blocks: [], planned_bytes: 0 }
       : /\/(market-)?objects$/.test(path) ? { ...context, subjects: [], next: null }
       : path.endsWith('/business-blocks') ? { ...context, blocks: [], next: null }
@@ -56,7 +57,7 @@ test('raw replay shows progress after confirmation and reuses the cached version
     await page.screenshot({ path: 'test-results/wasm-replay-downloading.png', fullPage: true })
   } finally { release() }
   await expect(page.locator('.replay-chart')).toBeVisible()
-  await expect(page.getByRole('button', { name: '展开区间统计' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '展开区间统计' })).toHaveCount(0)
   expect(requests.length).toBe(2)
   await page.reload()
   await expect(page.getByRole('heading', { name: /执行回放/ })).toBeVisible()

@@ -145,7 +145,7 @@ function AccountHistory({ accountId }: { accountId: number }) {
   }, [costOpen, analysisReady, inputs.data, inputs.error, inputs.loading, inputs.refreshing, refreshInputs])
   const inputData = costOpen && analysisReady && inputs.data?.version === snapshot?.version && inputs.data?.range === displayedRange ? inputs.data : null
   const localQuery = useMemo(() => ({ ...selectionQuery(selection), record_id: selection?.kind === 'execution' ? String(selection.recordId) : undefined, symbol: costSymbol || undefined, side: costSide || undefined }), [selection, costSymbol, costSide])
-  const local = useLocalAnalysis<typeof localQuery, LocalResult>('account', inputData, localQuery)
+  const local = useLocalAnalysis<typeof localQuery, LocalResult>(inputData, localQuery)
   const symbols = useMemo(() => [...new Set(inputData?.records.flatMap(record => record.trades.map(trade => (trade as { symbol: string }).symbol)) ?? [])].sort(), [inputData])
   const feeInputs = usePolling(useCallback((signal: AbortSignal) => loadAnalysisInputs(accountId, snapshot!.version, displayedRange, 'fees', signal), [accountId, snapshot?.version, displayedRange]), {
     queryKey: `analysis-fees:${accountId}:${snapshot?.version}:${displayedRange}`, intervalMs: 0, enabled: !!snapshot?.version && dirty && analysisReady && trialEnabled, manual: true, retainDataWhenDisabled: true,
@@ -156,7 +156,7 @@ function AccountHistory({ accountId }: { accountId: number }) {
   }, [dirty, analysisReady, trialEnabled, feeInputs.data, feeInputs.error, feeInputs.loading, feeInputs.refreshing, refreshFeeInputs])
   const feeData = analysisReady && trialEnabled && feeInputs.data?.version === snapshot?.version && feeInputs.data?.range === displayedRange ? feeInputs.data : null
   const feeQuery = useMemo(() => dirty && parsed ? { fee_rate: parsed.backtest_fee_rate } : null, [dirty, parsed])
-  const trial = useLocalAnalysis<typeof feeQuery, FeeResult>('account', feeData, feeQuery)
+  const trial = useLocalAnalysis<typeof feeQuery, FeeResult>(feeData, feeQuery)
   const trialMessage = !analysisReady || !trialEnabled ? '本地试算尚未启用，当前显示正式曲线' : trial.value?.preview_error ?? (feeInputs.error || trial.error ? '试算不可用，当前显示正式曲线' : trial.value?.preview ? '图中回测曲线为本地试算；账户收益仍为正式记录' : '正在准备完整窗口，当前仍显示正式曲线')
   const chartData = useMemo(() => snapshot && dirty && parsed && trial.value?.preview ? previewPerformance(snapshot, trial.value.preview, parsed.backtest_fee_rate) : data, [snapshot, dirty, parsed, trial.value?.preview, data])
   const intervalCosts = usePolling(useCallback((s: AbortSignal) => getPerformanceCosts(accountId, { version: snapshot!.version, range: displayedRange, dimension: 'summary', ...JSON.parse(selectionKey) }, s), [accountId, snapshot?.version, displayedRange, selectionKey]), {
