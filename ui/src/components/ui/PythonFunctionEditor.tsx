@@ -553,7 +553,7 @@ export function PythonFunctionEditor({
       <span id={`${wasmId}-label`} className="sr-only">本地代码辅助</span>
       <span id={`${wasmId}-description`} className="sr-only">{wasmDescription}</span>
       <span role="status" aria-label="代码分析器" aria-description={analyzerDescription} data-state={languageStatus} className={languageStatus === 'reconnecting' ? 'text-warn' : ''}><InkRewrite text={languageStatus === 'disabled' ? '本地代码辅助' : analyzerLabel} tone="label" /></span>
-      <AccessibilitySwitch checked={editorEnabled || startRequested} labelledBy={`${wasmId}-label`} describedBy={`${wasmId}-description`} disabled={wasmState.phase === 'checking' || wasmState.phase === 'downloading'} onChange={value => { if (value) void startAnalysis(); else stopAnalysis() }} />
+      <AccessibilitySwitch compact checked={editorEnabled || startRequested} labelledBy={`${wasmId}-label`} describedBy={`${wasmId}-description`} disabled={wasmState.phase === 'checking' || wasmState.phase === 'downloading'} onChange={value => { if (value) void startAnalysis(); else stopAnalysis() }} />
       {wasmState.phase === 'missing' && <button type="button" className="text-accent focus-visible:outline-accent" onClick={() => void startAnalysis()}>{editorEnabled ? '下载更新并启用' : '下载并开启'}</button>}
     </div>
   </Tooltip>
