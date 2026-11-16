@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import { analysisWorker } from '@/lib/analysisWorker'
-import { wasmResource } from '@/lib/wasmResources'
 
 /** Dataset changes terminate the old worker; only the latest query may publish. */
 export function useLocalAnalysis<Q, R>(mode: 'account' | 'replay', input: object | null, query: Q | null) {
@@ -19,7 +18,7 @@ export function useLocalAnalysis<Q, R>(mode: 'account' | 'replay', input: object
       try {
         const serialized = JSON.stringify(input)
         if (new TextEncoder().encode(serialized).byteLength > 16 * 1024 * 1024) throw new Error('窗口超过 16 MiB，请缩短范围')
-        const [wasm] = await wasmResource('analysis').read()
+        const [wasm] = await (await import('@/lib/wasmResources')).wasmResource('analysis').read()
         if (!active) return
         const worker = new Worker(new URL('./analysis.worker.ts', import.meta.url), { type: 'module' })
         client = analysisWorker<Q, R>(worker, (query, value) => setResult({ input, query, value }), message => setFailure({ input, error: new Error(message) }), () => setInitialized(input))

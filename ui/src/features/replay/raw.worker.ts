@@ -11,6 +11,8 @@ let cacheBytes = 0, canceledThrough = 0
 let ready: ReturnType<typeof init> | undefined
 const yieldTask = () => new Promise(resolve => setTimeout(resolve, 0))
 let batch: BusinessBatch | undefined
+let displayBlock: RawBlock | undefined
+let displayRows: CachedBlock[] = [], displayOffset = 0
 let batchSlots = 0
 let interval: IntervalAnalysis | undefined, book = false
 type Link = { seq: number; object: number; conflict: boolean }
@@ -25,7 +27,7 @@ type Stream = { block?: RawBlock; sequence?: number; page: CachedBlock[]; offset
 const streams = new Map<number, Stream>()
 
 type Request = {
-  kind: 'cancel' | 'pin-root' | 'has' | 'cache' | 'decode' | 'business-begin' | 'business-page' | 'business-step' | 'business-result' | 'derive-begin' | 'derive-feed' | 'derive-result' | 'order-reset' | 'versions' | 'links' | 'interval-begin' | 'interval-feed' | 'interval-second' | 'interval-result' | 'checkpoint' | 'scope-revise' | 'root-begin'
+  kind: 'display-begin' | 'display-step' | 'cancel' | 'pin-root' | 'has' | 'cache' | 'decode' | 'business-begin' | 'business-page' | 'business-step' | 'business-result' | 'derive-begin' | 'derive-feed' | 'derive-result' | 'order-reset' | 'versions' | 'links' | 'interval-begin' | 'interval-feed' | 'interval-second' | 'interval-result' | 'checkpoint' | 'scope-revise' | 'root-begin'
   id: number; key: string; block: RawBlockInfo; bytes?: ArrayBuffer; keys: string[]
   sequences: number[]; quote_seq: number | null; stream: number; ended: boolean
   recording: string; through_seq: number; cutoff_seq: number; subjects: RawSubject[]; streams: number[]
@@ -111,7 +113,32 @@ self.onmessage = async ({ data }: MessageEvent<Request | { kind: 'init'; wasm: A
     }
     check()
     let output: Record<string, unknown>
-    if (data.kind === 'root-begin') { checkpoints.beginRoot(); rootPins.clear(); output = {} }
+    if (data.kind === 'display-begin') {
+      displayBlock?.free()
+      displayBlock = undefined
+      if (!Array.isArray(data.rows) || data.rows.length > 128 || data.rows.reduce((sum, row) => sum + row.block.length, 0) > 1024 * 1024) throw Error('REPLAY_DISPLAY_BATCH')
+      displayRows = data.rows; displayOffset = 0
+      output = {}
+    } else if (data.kind === 'display-step') {
+      const events: RawPreview[] = []
+      let size = 0
+      while (events.length < 16 && size < 256 * 1024) {
+        check()
+        if (!displayBlock) {
+          const row = displayRows[displayOffset++]
+          if (!row) break
+          const bytes = cache.get(row.key)
+          if (!bytes) throw Error('REPLAY_CACHE_MISS')
+          displayBlock = new RawBlock(bytes, row.block.raw_length)
+        }
+        const serialized = displayBlock.display_step()
+        const step = JSON.parse(serialized) as { events: RawPreview[]; done: boolean }
+        events.push(...step.events); size += serialized.length
+        if (!step.done) break
+        displayBlock.free(); displayBlock = undefined
+      }
+      output = { events, done: !displayBlock && displayOffset >= displayRows.length }
+    } else if (data.kind === 'root-begin') { checkpoints.beginRoot(); rootPins.clear(); output = {} }
     else if (data.kind === 'checkpoint' || data.kind === 'scope-revise') {
       if (data.scope_key.length > 128 || data.scope_group.length > 128) throw Error('REPLAY_SCOPE_BUDGET')
       const scope = data.kind === 'scope-revise' ? checkpoints.revise(data.scope_key,data.scope_group) : checkpoints.get(data.scope_key,data.scope_group,data.cutoff_seq)

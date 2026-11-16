@@ -12,7 +12,7 @@ pub(super) fn query(operation: &str, count: usize) -> Result<String, &'static st
         "control_blocks" => "SELECT block FROM scope_blocks WHERE recording=? AND kind=? AND symbol=? AND stream=? AND block>? AND first_seq<=? ORDER BY block LIMIT ?",
         "dependency_origin" => "SELECT 1 FROM relations r JOIN objects o ON o.id=r.target WHERE r.recording=? AND r.source=? AND r.role='related_capture_seq' AND r.seq>? AND r.seq<=? AND o.first_seq<=? LIMIT 1",
         "execution_recording" => "SELECT seq,watermark FROM recordings WHERE id=? AND EXISTS(SELECT 1 FROM executions WHERE recording=? AND id=?)",
-        "execution_recordings" => "SELECT r.id,r.seq,r.watermark,r.state,r.commit_id FROM recordings r JOIN executions e ON e.recording=r.id WHERE e.id=? ORDER BY r.id LIMIT 65",
+        "execution_recordings" => "SELECT r.id,r.seq,r.watermark,r.state,r.commit_id,r.context FROM recordings r JOIN executions e ON e.recording=r.id WHERE e.id=? ORDER BY r.id LIMIT 65",
         "frozen_block" => "SELECT id,stream,offset,length,raw_length,sha256,first_seq,last_seq FROM blocks WHERE recording=? AND id=? AND first_seq<=?",
         "frozen_blocks" => "SELECT id,stream,offset,length,raw_length,sha256,first_seq,last_seq FROM blocks WHERE recording=? AND id IN ({ids}) AND first_seq<=?",
         "generation" => "SELECT value FROM meta WHERE key='generation'",

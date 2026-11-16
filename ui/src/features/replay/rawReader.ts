@@ -1,5 +1,5 @@
 import { ApiError, apiSend, apiErrorFromBody } from '@/lib/api/client'
-import type { RawBlockInfo, RawBusiness, RawCursor, RawFrame, RawManifest, RawPlan, RawPreview, RawSession, RawSubject, RawTarget } from './raw'
+import type { RawBlockInfo, RawBusiness, RawCursor, RawFrame, RawManifest, RawPlan, RawPreview, RawRecording, RawSession, RawSubject, RawTarget } from './raw'
 import { RawScopes } from './rawScopes'
 
 const delay = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
@@ -158,6 +158,62 @@ export class RawReader {
         this.abort = null
         if (settled && this.latest && this.account > 0) void this.pump()
       }
+    }
+  }
+
+  /** Decode the original workbench's immutable recording, without replacing observations by display buckets. */
+  async displayWindow(recording: RawRecording, signal?: AbortSignal, symbols?: string[]): Promise<RawPreview[]> {
+    if (this.closed || !this.session || this.running || this.abort) throw Error('REPLAY_BUSY')
+    const abort = this.abort = new AbortController()
+    const canceled = () => abort.abort(signal?.reason)
+    signal?.addEventListener('abort', canceled, { once: true })
+    if (signal?.aborted) canceled()
+    const deadline = setTimeout(() => abort.abort(Error('回放读取超时')), 25000)
+    this.profile = 'interval'; this.beginRoot()
+    const result: RawPreview[] = []
+    // shortcut: the restored workbench needs a full recording; page its projection before raising these memory limits.
+    let rawBytes = 0
+    try {
+      const view = { recording: recording.id, through_seq: recording.seq, commit_id: recording.commit_id, index_generation: this.catalog!.index_generation }
+      if (recording.streams.length > 128) throw Error('REPLAY_DISPLAY_STREAM_BUDGET')
+      for (const stream of recording.streams) {
+        if (symbols?.length && stream.topic.startsWith('/quote/') && !symbols.includes(stream.topic.slice('/quote/'.length))) continue
+        if (symbols?.length && stream.topic.startsWith('/market_trade/') && !symbols.includes(stream.topic.slice('/market_trade/'.length))) continue
+        let after = 0
+        for (;;) {
+          const page = await this.data('display-blocks', { ...view, stream: stream.id, after_seq: after }, abort.signal) as { blocks: RawBlockInfo[]; next: number | null; commit_id: string; through_seq: number; recording_id: string; index_generation: string }
+          if (page.commit_id !== recording.commit_id || page.through_seq !== recording.seq || page.recording_id !== recording.id || page.index_generation !== view.index_generation || !Array.isArray(page.blocks) || page.blocks.length > 32) throw Error('REPLAY_DISPLAY_CONTEXT')
+          for (let offset = 0; offset < page.blocks.length;) {
+            const rows = []
+            let size = 0
+            while (offset < page.blocks.length && size + page.blocks[offset].length <= 1024 * 1024) {
+              const block = page.blocks[offset++]
+              rawBytes += block.raw_length
+              if (!Number.isSafeInteger(block.raw_length) || block.raw_length <= 0 || rawBytes > 64 * 1024 * 1024) throw Error('回放窗口超过 64 MiB，请选择更短录制段')
+              size += block.length
+              rows.push({ key: `${this.account}:${recording.id}:${block.sha256}:${block.length}:${block.raw_length}`, block })
+            }
+            if (!rows.length) throw Error('REPLAY_BLOCK_BUDGET')
+            const loaded = await this.prefetch(view, rows, abort.signal)
+            await this.workerRequest({ kind: 'cache', rows: loaded.rows }, abort.signal)
+            await this.workerRequest({ kind: 'display-begin', rows }, abort.signal)
+            for (;;) {
+              const step = await this.workerRequest<{ events: RawPreview[]; done: boolean }>({ kind: 'display-step' }, abort.signal)
+              if (!Array.isArray(step.events) || step.events.length > 31) throw Error('REPLAY_DISPLAY_RESULT')
+              for (const event of step.events) if (event.capture_seq <= recording.seq) result.push(event)
+              if (result.length > 100000) throw Error('回放窗口超过 100000 条观察，请选择更短录制段')
+              if (step.done) break
+            }
+          }
+          if (page.next == null) break
+          if (!Number.isSafeInteger(page.next) || page.next <= after || !page.blocks.length) throw Error('REPLAY_DISPLAY_CURSOR')
+          after = page.next
+        }
+      }
+      return result.sort((a, b) => a.capture_seq - b.capture_seq)
+    } finally {
+      clearTimeout(deadline); signal?.removeEventListener('abort', canceled)
+      try { await this.settle() } finally { this.abort = null }
     }
   }
 

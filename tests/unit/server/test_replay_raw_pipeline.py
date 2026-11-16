@@ -64,6 +64,35 @@ def test_native_context_budget_precedes_json_parsing_or_file_creation(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
+def test_display_blocks_keep_full_payload_and_frozen_source_context(recording):
+    path, _, token = recording
+    manifest, release, _ = reader.read(path, 7, "E", {**token, "operation": "manifest"})
+    release()
+    source = manifest["recordings"][0]
+    assert source["context"] == {"schema_version": 2}
+    view = {
+        **token,
+        "operation": "display-blocks",
+        "recording": "R",
+        "through_seq": source["seq"],
+        "commit_id": source["commit_id"],
+        "index_generation": manifest["index_generation"],
+        "stream": source["streams"][0]["id"],
+    }
+    page, release, _ = reader.read(path, 7, "E", view)
+    release()
+    assert page["next"] is None and len(page["blocks"]) == 1
+    assert (page["recording_id"], page["through_seq"], page["commit_id"]) == ("R", 100, source["commit_id"])
+    block, release, _ = reader.read(path, 7, "E", {**view, "operation": "block", "block": page["blocks"][0]["id"]})
+    release()
+    events = [json.loads(line) for line in zlib.decompress(block).splitlines()]
+    assert [event["capture_seq"] for event in events] == list(range(1, 101))
+    assert events[-1]["data"]["bids"] == [[100, 1]]
+    for invalid in ({"through_seq": 99}, {"commit_id": "0" * 64}, {"stream": True}, {"after_seq": -1}):
+        with pytest.raises(reader.ReadError):
+            reader.read(path, 7, "E", {**view, **invalid})
+
+
 def test_sqlite_interruption_preserves_the_budget_or_cancel_reason(recording):
     path, _, _ = recording
 
@@ -74,6 +103,54 @@ def test_sqlite_interruption_preserves_the_budget_or_cancel_reason(recording):
         with reader.index(path, 7, canceled) as (db, _, _):
             db.one("layout")
     assert error.value.status == 413
+
+
+def test_display_block_pages_do_not_include_blocks_after_the_frozen_commit(tmp_path):
+    writer = _core.ExecutionReplayWriter(str(tmp_path), 7, "R", '{"schema_version":2}')
+    for seq in range(1, 34):
+        writer.append(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "recording_id": "R",
+                    "capture_seq": seq,
+                    "time_us": seq,
+                    "topic": "/quote/S",
+                    "data": {"symbol": "S", "execution_id": "E"},
+                }
+            )
+        )
+        writer.seal()
+    with reader.index(tmp_path, 7, lambda: None) as (db, _, _):
+        manifest = reader.metadata(db, {"operation": "manifest", "execution_id": "E"})
+    writer.append(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "recording_id": "R",
+                "capture_seq": 34,
+                "time_us": 34,
+                "topic": "/quote/S",
+                "data": {"symbol": "S", "execution_id": "E"},
+            }
+        )
+    )
+    writer.finish()
+    source = manifest["recordings"][0]
+    view = {
+        "operation": "display-blocks",
+        "execution_id": "E",
+        "recording": "R",
+        "through_seq": source["seq"],
+        "commit_id": source["commit_id"],
+        "index_generation": manifest["index_generation"],
+        "stream": source["streams"][0]["id"],
+    }
+    with reader.index(tmp_path, 7, lambda: None) as (db, _, _):
+        first = reader.metadata(db, view)
+        last = reader.metadata(db, {**view, "after_seq": first["next"]})
+    assert len(first["blocks"]) == 32 and first["next"] == 33
+    assert [row["first_seq"] for row in last["blocks"]] == [33] and last["next"] is None
 
 
 def test_manifest_does_not_publish_a_stream_before_its_first_committed_observation(tmp_path):

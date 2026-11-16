@@ -1,8 +1,10 @@
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it, mock } from 'bun:test'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
-import { PythonRunPanel } from './PythonRunPanel'
+// Vite supplies this manifest; static-render tests never download editor components.
+mock.module('virtual:wasm-assets', () => ({ default: { analysis: [], raw: [], editor: [] } }))
+const { PythonRunPanel } = await import('./PythonRunPanel')
 
 describe('PythonRunPanel', () => {
   it('keeps a failed run out of the business result panel', () => {

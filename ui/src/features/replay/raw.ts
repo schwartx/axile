@@ -1,6 +1,6 @@
 export type RawSession = { reader_epoch: string; session: string; session_proof?: string; recovery_wait_seconds: number }
 export type RawStream = { id: number; topic: string; symbol: string }
-export type RawRecording = { id: string; seq: number; watermark: number; start_us: number | null; state: string; commit_id: string; streams: RawStream[]; symbols?: string[]; symbols_more?: boolean }
+export type RawRecording = { id: string; seq: number; watermark: number; start_us: number | null; state: string; commit_id: string; streams: RawStream[]; symbols?: string[]; symbols_more?: boolean; context?: Record<string, unknown> }
 export type RawManifest = { schema_version: 2; account_id: number; execution_id: string; index_generation: string; recordings: RawRecording[] }
 export type RawLocation = { seq: number; time: number; block: number; line: number }
 export type RawBlockInfo = { id: number; length: number; raw_length: number; sha256: string; first_seq: number; last_seq: number }

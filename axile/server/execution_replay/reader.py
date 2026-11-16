@@ -537,7 +537,8 @@ def metadata(db, request: dict, work=lambda amount, read_bytes=0: None) -> dict:
             symbols = [s[0] for s in db.rows("recording_symbols", [row["id"], row["seq"]])]
             recordings.append(
                 {
-                    **dict(row),
+                    **{key: row[key] for key in row.keys() if key != "context"},
+                    "context": json.loads(row["context"]) if "context" in row.keys() else {},
                     "start_us": start[0] if start else None,
                     "streams": streams,
                     "symbols": symbols[:128],
@@ -567,6 +568,25 @@ def metadata(db, request: dict, work=lambda amount, read_bytes=0: None) -> dict:
     if frozen is None or through != frozen["seq"]:
         raise ReadError("REPLAY_SOURCE_COMMIT")
     row = frozen
+    if request.get("operation") == "display-blocks":
+        from axile.server.execution_replay.raw_index import integer
+
+        stream = integer(request.get("stream"), minimum=1, maximum=65535)
+        after = integer(request.get("after_seq", 0), maximum=through)
+        identities = db.rows("quote_blocks", [recording, stream, after, through, 33])
+        blocks = (
+            [dict(row) for row in db.rows("blocks", [recording, *[row[0] for row in identities[:32]]])]
+            if identities
+            else []
+        )
+        return {
+            "blocks": blocks,
+            "next": blocks[-1]["first_seq"] + 1 if len(identities) > 32 else None,
+            "recording_id": recording,
+            "through_seq": through,
+            "commit_id": commit,
+            "index_generation": generation,
+        }
     if request.get("operation") in {"range-blocks", "business-blocks"}:
         from axile.server.execution_replay.raw_range import locations
 

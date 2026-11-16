@@ -58,6 +58,29 @@ impl RawBlock {
         self.advance(request).map_err(|e| JsError::new(&e))
     }
 
+    /// Original workbench events, decoded in bounded batches without a lossy preview.
+    pub fn display_step(&mut self) -> Result<String, JsError> {
+        let mut events = Vec::new();
+        let mut bytes = 0;
+        while events.len() < 16 {
+            let Some((size, _)) = self.next().map_err(|e| JsError::new(&e))? else {
+                break;
+            };
+            if size > 1024 * 1024 {
+                return Err(JsError::new("REPLAY_DISPLAY_EVENT_BUDGET"));
+            }
+            if !events.is_empty() && bytes + size > 256 * 1024 {
+                break;
+            }
+            let value: Value = serde_json::from_slice(&self.bytes[self.offset..self.offset + size])
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            self.offset += size + 1;
+            bytes += size;
+            events.push(value);
+        }
+        Ok(json!({"events":events,"done":self.offset>=self.bytes.len()}).to_string())
+    }
+
     /// A stream keeps only its current raw block; heads determine the global capture order.
     pub fn head(&self) -> Result<Option<f64>, JsError> {
         self.next()
@@ -356,6 +379,34 @@ impl RawBlock {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn display_batches_preserve_complete_events_and_original_numbers() {
+        let original = "单".repeat(1000);
+        let text = (1..=34).map(|seq| json!({"schema_version":2,"recording_id":"R","capture_seq":seq,"time_us":10,"topic":"/trade","data":{"order_id":original,"quantity":192512.80118503195,"attributes":{"native":"retained"}}}).to_string()+"\n").collect::<String>();
+        let mut block = RawBlock {
+            bytes: text.into_bytes(),
+            offset: 0,
+        };
+        let mut observations = Vec::new();
+        for expected in [16, 16, 2] {
+            let result: Value = serde_json::from_str(&block.display_step().unwrap()).unwrap();
+            let events = result["events"].as_array().unwrap();
+            assert_eq!(events.len(), expected);
+            observations.extend(events.iter().cloned());
+            assert_eq!(result["done"], observations.len() == 34);
+        }
+        assert_eq!(observations[33]["capture_seq"], 34);
+        assert_eq!(observations[0]["data"]["order_id"], original);
+        assert_eq!(
+            observations[0]["data"]["quantity"]
+                .as_f64()
+                .unwrap()
+                .to_bits(),
+            192512.80118503195_f64.to_bits()
+        );
+        assert_eq!(observations[0]["data"]["attributes"]["native"], "retained");
+    }
 
     #[test]
     fn raw_numbers_preserve_the_original_float() {
