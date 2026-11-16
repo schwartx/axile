@@ -174,7 +174,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
         self._lock = threading.RLock()
         self._monitoring = False
         self._closed = False
-        super().__init__(TradeChannel.TQ, account_config)
+        super().__init__(TradeChannel("tq"), account_config)
 
     def _config(self) -> TQAccountConfig:
         if not isinstance(self.account_config, TQAccountConfig):
@@ -198,7 +198,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
     def _initialize_connection(self, account_config: AccountConfig) -> None:
         if not isinstance(account_config, TQAccountConfig):
             raise TypeError("TQExecutor requires TQAccountConfig")
-        self._terminal_audit = OrderTerminalAudit(self.logger, TradeChannel.TQ)
+        self._terminal_audit = OrderTerminalAudit(self.logger, TradeChannel("tq"))
         connection_monitor(self).step("api_connection", "running")
         runtime = TQRuntime(lambda: self._build_api(account_config), connection=connection_monitor(self))
         runtime.add_listener(self._on_runtime_event)
@@ -563,7 +563,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
                 reason_code=result.error,
                 account_id=None,
                 execution_id=None,
-                channel=TradeChannel.TQ,
+                channel=TradeChannel("tq"),
                 operation="place_order",
                 symbol=symbol,
             )

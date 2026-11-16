@@ -46,7 +46,7 @@ class _SessionBoundaryExecutor(AbstractExecutor):
     def __init__(self) -> None:
         self.logger = _Logger()
         super().__init__(
-            TradeChannel.CTP,
+            TradeChannel("ctp"),
             CTPAccountConfig.model_validate(
                 {
                     "broker_id": "b",
@@ -174,7 +174,7 @@ def test_execution_session_proxies_symbol_scoped_owner_query_methods() -> None:
     captured: dict[str, object] = {"audit_metadata": {}}
 
     class _Owner(AbstractExecutorCapabilityMixin):
-        channel_type = TradeChannel.CTP
+        channel_type = TradeChannel("ctp")
         logger = _Logger()
 
         def get_current_volume(self, symbol: str, account_assets: UnifiedAccountAssets) -> float:
@@ -393,7 +393,7 @@ def test_execution_session_emits_audit_event_and_artifact(monkeypatch: pytest.Mo
     assert captured["event"] == {
         "execution_id": "exec-2",
         "account_id": 7,
-        "channel": TradeChannel.CTP,
+        "channel": TradeChannel("ctp"),
         "algorithm": "SINGLE-MAKER",
         "event_type": "execution_started",
         "status": "info",

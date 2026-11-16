@@ -103,7 +103,7 @@ def _handle_prepare(request: WorkerBackendRequest, state: _WorkerBackendState) -
             termination_controller=termination_controller,
             force_reconnect=bool(request.payload.get("force_reconnect", False)),
         )
-        if expected and account.trade_channel.value == "ctp":
+        if expected and str(account.trade_channel) == "ctp":
             trading_day = str(getattr(executor, "_trading_day", "") or "")
             if trading_day != expected:
                 raise RuntimeError(f"柜台交易日不匹配: expected={expected}, actual={trading_day or 'unknown'}")

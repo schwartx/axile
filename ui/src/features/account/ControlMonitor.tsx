@@ -24,8 +24,7 @@ import { SubmissionMonitor } from '@/features/account/SubmissionMonitor'
 import { ControlUsageNotice } from '@/features/account/ControlUsage'
 
 function metricRules(frame: ControlFrame | undefined): ControlRule[] {
-  // 旧数据只提供每日摘要时保留兼容；新快照从规则取固定分钟用量。
-  return [...(frame?.metrics ?? []), ...(frame?.rules ?? [])]
+  return frame?.rules ?? []
 }
 function controlValue(rule: ControlRule | undefined, live: boolean) {
   if (!rule || rule.value == null) return '未知'

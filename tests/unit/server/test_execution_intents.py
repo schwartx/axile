@@ -45,7 +45,7 @@ def _account(*, account_id: int = 1) -> Account:
         id=account_id,
         name="intent-test",
         market="期货",
-        trade_channel=TradeChannel.CTP,
+        trade_channel=TradeChannel("ctp"),
         account_control_preset="default",
         account_config={"api_key": "k", "secret_key": "s", "is_testnet": True},
         is_started=True,
@@ -139,7 +139,7 @@ def test_gm_intent_keeps_original_phase_and_settings(monkeypatch, cross_boundary
                 "account_update",
                 {
                     "account_id": 1,
-                    "patch": {"trade_channel": "gm", "gm_sessions": settings.model_dump()},
+                    "patch": {"trade_channel": "gm", "channel_options": {"gm": settings.model_dump()}},
                     "now": now.isoformat(),
                 },
             )
@@ -151,7 +151,11 @@ def test_gm_intent_keeps_original_phase_and_settings(monkeypatch, cross_boundary
             result = await submit_intent(1, ExecutionKind.REBALANCE, trigger_source, payload={"gm_session": context})
             await native_operation(
                 "account_update",
-                {"account_id": 1, "patch": {"gm_sessions": GMSessionSettings().model_dump()}, "now": now.isoformat()},
+                {
+                    "account_id": 1,
+                    "patch": {"channel_options": {"gm": GMSessionSettings().model_dump()}},
+                    "now": now.isoformat(),
+                },
             )
             saved = await get_intent(result.execution_id)
             assert saved.payload["gm_session"] == context
@@ -189,7 +193,11 @@ def test_manual_gm_intent_freezes_only_enabled_auction_permissions(monkeypatch, 
                 "account_update",
                 {
                     "account_id": 1,
-                    "patch": {"trade_channel": "gm", "gm_sessions": settings.model_dump(), "is_started": False},
+                    "patch": {
+                        "trade_channel": "gm",
+                        "channel_options": {"gm": settings.model_dump()},
+                        "is_started": False,
+                    },
                     "now": now.isoformat(),
                 },
             )
@@ -227,7 +235,7 @@ def test_coalesced_manual_gm_request_does_not_renew_original_phase(monkeypatch):
                 "account_update",
                 {
                     "account_id": 1,
-                    "patch": {"trade_channel": "gm", "gm_sessions": settings.model_dump()},
+                    "patch": {"trade_channel": "gm", "channel_options": {"gm": settings.model_dump()}},
                     "now": now.isoformat(),
                 },
             )

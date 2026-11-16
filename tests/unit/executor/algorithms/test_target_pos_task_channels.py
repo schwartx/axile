@@ -32,7 +32,7 @@ from tests.fixtures.algorithm_fakes import ClockStub
 
 def test_ctp_split_failure_keeps_already_submitted_order():
     executor = MagicMock()
-    executor.get_market_data.return_value = _FuturesExecutor(TradeChannel.CTP).get_market_data()
+    executor.get_market_data.return_value = _FuturesExecutor(TradeChannel("ctp")).get_market_data()
     executor.get_order_volume_bounds.return_value = (1, 1)
     order = UnifiedOrder(
         order_id="first",
@@ -87,7 +87,7 @@ def test_production_positions_aggregate_and_reach_target(reverse_rows, reverse_p
     assert (detail.long_total, detail.short_total, detail.net_position) == (5, 3, 2)
     assert detail.net_position == AbstractExecutorCapabilityMixin().get_current_volume("rb2610", book)
     assert (detail.long_today, detail.long_yesterday, detail.short_today, detail.short_yesterday) == (2, 3, 1, 2)
-    executor = _FuturesExecutor(TradeChannel.CTP)
+    executor = _FuturesExecutor(TradeChannel("ctp"))
     executor.get_account_assets = lambda: book
     result = ctp_target_pos_task_algorithm(
         cast("ExecutorProtocol", executor),
@@ -112,7 +112,7 @@ def test_production_positions_aggregate_and_reach_target(reverse_rows, reverse_p
 
 def test_final_check_does_not_accept_first_direction_as_net():
     book = _native_book()
-    executor = _FuturesExecutor(TradeChannel.CTP)
+    executor = _FuturesExecutor(TradeChannel("ctp"))
     executor.get_account_assets = lambda: book
     result = ctp_target_pos_task_algorithm(
         cast("ExecutorProtocol", executor),
@@ -155,7 +155,7 @@ def test_position_aggregation_boundaries(indices, expected):
 def test_inconsistent_position_blocks_orders(extra):
     book = _native_book()
     book.positions[0].extra = extra
-    executor = _FuturesExecutor(TradeChannel.CTP)
+    executor = _FuturesExecutor(TradeChannel("ctp"))
     executor.get_account_assets = lambda: book
     result = ctp_target_pos_task_algorithm(
         cast("ExecutorProtocol", executor),
@@ -363,7 +363,7 @@ class _FreshQuoteExecutor(_FuturesExecutor):
         return order
 
 
-@pytest.mark.parametrize("channel", [TradeChannel.CTP, TradeChannel.TQ])
+@pytest.mark.parametrize("channel", [TradeChannel("ctp"), TradeChannel("tq")])
 @pytest.mark.parametrize("price_strategy", ["PASSIVE", "ACTIVE"])
 @pytest.mark.parametrize("close_order_type", ["LIMIT", "MARKET"])
 def test_target_reprices_each_slice_after_slow_position_queries(channel, price_strategy, close_order_type):
@@ -389,7 +389,7 @@ def test_target_reprices_each_slice_after_slow_position_queries(channel, price_s
 
 
 def test_target_quote_loss_keeps_submitted_close_and_blocks_open(monkeypatch):
-    executor = _FreshQuoteExecutor(TradeChannel.CTP)
+    executor = _FreshQuoteExecutor(TradeChannel("ctp"))
     get_quote = executor.get_market_data
     monkeypatch.setattr(executor, "get_market_data", lambda: None if executor.orders else get_quote())
     result = ctp_target_pos_task_algorithm(
@@ -404,7 +404,7 @@ def test_target_quote_loss_keeps_submitted_close_and_blocks_open(monkeypatch):
 
 
 def test_target_send_wait_still_rejects_expired_quote_without_retry(monkeypatch):
-    executor = _FreshQuoteExecutor(TradeChannel.CTP)
+    executor = _FreshQuoteExecutor(TradeChannel("ctp"))
     place = executor.place_order
 
     def delayed_send(*args, **kwargs):
@@ -426,7 +426,7 @@ def test_target_send_wait_still_rejects_expired_quote_without_retry(monkeypatch)
 
 @pytest.mark.parametrize("submitted_first", [False, True])
 def test_target_quote_timeout_is_known_unsubmitted(monkeypatch, submitted_first):
-    executor = _FreshQuoteExecutor(TradeChannel.CTP)
+    executor = _FreshQuoteExecutor(TradeChannel("ctp"))
     get_quote = executor.get_market_data
 
     def timed_out_quote():
@@ -450,7 +450,7 @@ def test_target_quote_timeout_is_known_unsubmitted(monkeypatch, submitted_first)
 
 
 def test_target_submit_timeout_keeps_unknown_acceptance(monkeypatch):
-    executor = _FreshQuoteExecutor(TradeChannel.CTP)
+    executor = _FreshQuoteExecutor(TradeChannel("ctp"))
     place = MagicMock(side_effect=TimeoutError("报单等待超时"))
     monkeypatch.setattr(executor, "place_order", place)
     result = ctp_target_pos_task_algorithm(
@@ -464,7 +464,7 @@ def test_target_submit_timeout_keeps_unknown_acceptance(monkeypatch):
     assert result.orders == []
 
 
-@pytest.mark.parametrize("channel", [TradeChannel.CTP, TradeChannel.TQ])
+@pytest.mark.parametrize("channel", [TradeChannel("ctp"), TradeChannel("tq")])
 def test_target_pos_task_uses_same_close_then_open_flow(channel: TradeChannel) -> None:
     executor = _FuturesExecutor(channel)
     algorithm_input = AlgorithmInput(
@@ -503,7 +503,7 @@ def test_target_pos_task_params_expose_execution_defaults() -> None:
     }
 
 
-@pytest.mark.parametrize("channel", [TradeChannel.CTP, TradeChannel.TQ])
+@pytest.mark.parametrize("channel", [TradeChannel("ctp"), TradeChannel("tq")])
 def test_target_pos_task_market_close_keeps_offsets_and_limit_open(channel: TradeChannel) -> None:
     executor = _FuturesExecutor(channel)
     result = ctp_target_pos_task_algorithm(
@@ -525,7 +525,7 @@ def test_target_pos_task_market_close_keeps_offsets_and_limit_open(channel: Trad
     assert result.memory["execution_details"]["rb2610_adjustment"]["close_order_type"] == "MARKET"
 
 
-@pytest.mark.parametrize("channel", [TradeChannel.CTP, TradeChannel.TQ])
+@pytest.mark.parametrize("channel", [TradeChannel("ctp"), TradeChannel("tq")])
 def test_target_pos_task_market_open_does_not_require_quote(channel: TradeChannel) -> None:
     executor = _FuturesExecutor(channel)
     executor.short_today = executor.short_yesterday = 0
@@ -547,7 +547,7 @@ def test_target_pos_task_market_open_does_not_require_quote(channel: TradeChanne
 
 
 def test_target_pos_task_missing_quote_fails_limit_without_order() -> None:
-    executor = _FuturesExecutor(TradeChannel.CTP)
+    executor = _FuturesExecutor(TradeChannel("ctp"))
     executor.get_market_data = lambda: None
     result = ctp_target_pos_task_algorithm(
         cast("ExecutorProtocol", executor),
@@ -560,7 +560,7 @@ def test_target_pos_task_missing_quote_fails_limit_without_order() -> None:
 
 
 def test_target_pos_task_market_close_then_missing_quote_stops_limit_open() -> None:
-    executor = _FuturesExecutor(TradeChannel.CTP)
+    executor = _FuturesExecutor(TradeChannel("ctp"))
     executor.get_market_data = lambda: None
     result = ctp_target_pos_task_algorithm(
         cast("ExecutorProtocol", executor),
@@ -630,18 +630,18 @@ def test_target_pos_task_price_strategy_uses_expected_book_side(
     direction: OrderDirection,
     expected: float,
 ) -> None:
-    market_data = _FuturesExecutor(TradeChannel.CTP).get_market_data()
+    market_data = _FuturesExecutor(TradeChannel("ctp")).get_market_data()
 
     assert _calculate_order_price(market_data, price_strategy, direction) == expected
 
 
 def test_target_pos_task_active_price_falls_back_to_last_price() -> None:
-    market_data = _FuturesExecutor(TradeChannel.CTP).get_market_data().model_copy(update={"asks": []})
+    market_data = _FuturesExecutor(TradeChannel("ctp")).get_market_data().model_copy(update={"asks": []})
 
     assert _calculate_order_price(market_data, "ACTIVE", OrderDirection.BUY) == 3200
 
 
-@pytest.mark.parametrize("channel", [TradeChannel.CTP, TradeChannel.TQ])
+@pytest.mark.parametrize("channel", [TradeChannel("ctp"), TradeChannel("tq")])
 def test_target_pos_task_uses_account_close_policy(channel: TradeChannel) -> None:
     executor = _FuturesExecutor(channel)
     executor.close_policy = FuturesClosePolicy(fallback="today_first")
@@ -663,7 +663,7 @@ def test_target_pos_task_uses_account_close_policy(channel: TradeChannel) -> Non
 
 
 def test_target_pos_task_uses_product_rule_over_default() -> None:
-    executor = _FuturesExecutor(TradeChannel.CTP)
+    executor = _FuturesExecutor(TradeChannel("ctp"))
     executor.close_policy = FuturesClosePolicy(fallback="today_first", overrides={"RB": "yesterday_first"})
     algorithm_input = AlgorithmInput(
         symbol="rb2610",
@@ -685,7 +685,7 @@ def test_target_pos_task_uses_product_rule_over_default() -> None:
 def test_target_pos_task_propagates_session_recovery_from_final_account_query() -> None:
     class _RecoveryExecutor(_FuturesExecutor):
         def __init__(self) -> None:
-            super().__init__(TradeChannel.CTP)
+            super().__init__(TradeChannel("ctp"))
             self.account_asset_calls = 0
 
         def get_account_assets(self) -> UnifiedAccountAssets:
@@ -710,7 +710,7 @@ def test_target_pos_task_propagates_session_recovery_from_final_account_query() 
 
 @pytest.mark.parametrize("source", ["unavailable", "assumed", "error"])
 def test_target_pos_task_does_not_trade_when_start_snapshot_is_unknown(source):
-    executor = _FuturesExecutor(TradeChannel.CTP)
+    executor = _FuturesExecutor(TradeChannel("ctp"))
     executor.get_account_assets = MagicMock(
         return_value=UnifiedAccountAssets.unavailable().model_copy(update={"source": source})
     )
@@ -728,7 +728,7 @@ def test_target_pos_task_does_not_trade_when_start_snapshot_is_unknown(source):
 
 
 def test_target_pos_task_forwards_tracker_cancel_error(monkeypatch):
-    executor = _FuturesExecutor(TradeChannel.CTP)
+    executor = _FuturesExecutor(TradeChannel("ctp"))
     tracker = OrderTracker(executor)
     tracker.get_pending_count = MagicMock(return_value=1)
     tracker.get_all_orders = MagicMock(return_value=[])
@@ -763,7 +763,7 @@ def test_target_pos_task_forwards_tracker_cancel_error(monkeypatch):
 
 @pytest.mark.parametrize("source", ["unavailable", "assumed", "error"])
 def test_target_pos_task_does_not_claim_flat_when_final_snapshot_is_unavailable(source):
-    executor = _FuturesExecutor(TradeChannel.CTP)
+    executor = _FuturesExecutor(TradeChannel("ctp"))
     initial = executor.get_account_assets()
     unavailable = UnifiedAccountAssets.unavailable().model_copy(update={"source": source})
     executor.get_account_assets = MagicMock(side_effect=[initial, initial, unavailable])
@@ -785,7 +785,7 @@ def test_target_pos_task_does_not_claim_flat_when_final_snapshot_is_unavailable(
 @pytest.mark.parametrize("stage", ["submit", "final_query"])
 @pytest.mark.parametrize("error_type", [ExecutionTerminated, MemoryError])
 def test_target_pos_task_propagates_interruptions(monkeypatch, stage, error_type):
-    executor = _FuturesExecutor(TradeChannel.CTP)
+    executor = _FuturesExecutor(TradeChannel("ctp"))
     error = (
         ExecutionTerminated(reason="stop", mode="cancel_pending", cancel_failed_order_ids=["pending"])
         if error_type is ExecutionTerminated

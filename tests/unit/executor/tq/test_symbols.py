@@ -91,7 +91,7 @@ def test_unknown_and_ambiguous_symbols_fail_explicitly() -> None:
 def test_normalizes_all_standard_input_symbol_fields_without_mutating_source() -> None:
     resolver = _resolver()
     standard_input = UnifiedStandardInput(
-        channel_type=TradeChannel.TQ,
+        channel_type=TradeChannel("tq"),
         account_config=TQAccountConfig(
             account_mode="kq",
             tq_username="user",
@@ -119,7 +119,7 @@ def test_normalizes_all_standard_input_symbol_fields_without_mutating_source() -
 def test_rejects_conflicting_czce_alias_values() -> None:
     resolver = _resolver()
     standard_input = UnifiedStandardInput(
-        channel_type=TradeChannel.TQ,
+        channel_type=TradeChannel("tq"),
         account_config=TQAccountConfig(
             account_mode="kq",
             tq_username="user",

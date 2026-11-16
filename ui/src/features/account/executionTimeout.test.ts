@@ -17,7 +17,7 @@ describe('defaultExecutionTimeoutForChannel', () => {
         },
         ui: {
           account_connect_lead: '', leverage_title: '杠杆', leverage_note: '多空可分设',
-          long_leverage_label: '做多杠杆', short_leverage_label: '做空杠杆', show_short_leverage: true,
+          long_leverage_label: '做多杠杆', short_leverage_label: '做空杠杆', show_short_leverage: true, position_value_label: "货值",
         },
         defaults: {
           account_control_preset: 'default',

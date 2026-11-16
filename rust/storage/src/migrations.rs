@@ -11,6 +11,7 @@ use crate::error::AnalysisError;
 mod archival;
 mod error_patch;
 mod execution_views;
+pub(crate) mod legacy_result;
 mod private;
 mod quantity_targets;
 mod structured;

@@ -39,7 +39,7 @@ def test_independent_catalog_flush_preserves_running_usage_and_audit_ownership(n
         with closing(oracle_connect(native_database)) as connection, connection:
             insert_account(connection, account)
         snapshot = AccountSnapshot.model_validate(account.model_dump())
-        executor = CTPExecutor(TradeChannel.CTP)
+        executor = CTPExecutor(TradeChannel("ctp"))
         active = await persistence.build_account_control_guard(snapshot, "active-execution")
         executor.set_account_control_guard(active)
         active.begin_operation("query_orders").record_outcome("fetched")

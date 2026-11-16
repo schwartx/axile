@@ -51,7 +51,7 @@ def test_queued_execution_terminated_persists_record_and_updates_state(monkeypat
         status=ExecutionTaskStatus.RUNNING,
         created_at="2026-03-27T10:00:00",
         cancel_requested_at="2026-03-27T10:00:01",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         algorithm="SINGLE-MAKER",
     )
     outcomes = {"ag2612:old": {"request_status": "restricted", "terminal": False, "query_error": None}}
@@ -111,7 +111,7 @@ def test_queued_execution_terminated_persists_record_and_updates_state(monkeypat
         {
             "execution_id": execution_id,
             "account_id": 1,
-            "channel": TradeChannel.CTP,
+            "channel": TradeChannel("ctp"),
             "algorithm": "SINGLE-MAKER",
             "event_type": execution_lifecycle.ExecutionEventType.EXECUTION_TERMINATED,
             "status": execution_lifecycle.ExecutionEventStatus.WARNING,
@@ -152,7 +152,7 @@ def test_run_execution_task_uses_state_termination_fallbacks(monkeypatch, kind) 
         cancel_requested_at="2026-03-27T11:00:01",
         cancel_reason="risk stop",
         terminate_mode=ExecutionTerminateMode.CANCEL_PENDING,
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         algorithm="SINGLE-MAKER",
     )
     captured: dict[str, object] = {"events": []}
@@ -220,7 +220,7 @@ def test_run_execution_task_uses_state_termination_fallbacks(monkeypatch, kind) 
         {
             "execution_id": execution_id,
             "account_id": 1,
-            "channel": TradeChannel.CTP,
+            "channel": TradeChannel("ctp"),
             "algorithm": "SINGLE-MAKER",
             "event_type": execution_lifecycle.ExecutionEventType.EXECUTION_TERMINATED,
             "status": execution_lifecycle.ExecutionEventStatus.WARNING,
@@ -284,7 +284,7 @@ def test_run_execution_task_uses_saved_result_without_finishing_twice(monkeypatc
         execution_kind=kind,
         status=ExecutionTaskStatus.QUEUED,
         created_at="2026-03-27T12:00:00",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         algorithm="SINGLE-MAKER",
     )
     execution_registry.set_execution_task_state(execution_id, state)
@@ -399,7 +399,7 @@ def test_run_execution_task_rehydrates_queued_intent_without_memory(monkeypatch)
         kind=ExecutionKind.REBALANCE,
         trigger_source="manual",
         status=ExecutionTaskStatus.QUEUED,
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         algorithm="SINGLE-MAKER",
         payload={},
         created_at="2026-03-27T12:00:00",
@@ -452,7 +452,7 @@ def test_run_execution_task_missing_memory_skips_terminal_intent(monkeypatch) ->
         kind=ExecutionKind.REBALANCE,
         trigger_source="manual",
         status=ExecutionTaskStatus.TERMINATED,
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         algorithm="SINGLE-MAKER",
         payload={},
         created_at="2026-03-27T12:00:00",
@@ -497,7 +497,7 @@ def test_run_execution_task_retry_keeps_queued_slot(monkeypatch) -> None:
         execution_kind=ExecutionKind.REBALANCE,
         status=ExecutionTaskStatus.QUEUED,
         created_at="2026-03-27T12:00:00",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         algorithm="SINGLE-MAKER",
     )
     execution_registry.set_execution_task_state(execution_id, state)
@@ -535,7 +535,7 @@ def test_timeout_termination_is_distinguishable_from_operator(monkeypatch, kind)
         execution_kind=kind,
         status=ExecutionTaskStatus.RUNNING,
         created_at="2026-07-27T10:00:00",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         algorithm="SINGLE-MAKER",
     )
     captured: dict[str, object] = {"events": []}
@@ -590,7 +590,7 @@ def test_worker_backend_terminated_response_round_trips_trigger() -> None:
 
     response = _build_terminated_response(
         request_id="req-1",
-        account=SimpleNamespace(trade_channel=TradeChannel.GM),  # type: ignore[arg-type]
+        account=SimpleNamespace(trade_channel=TradeChannel("gm")),  # type: ignore[arg-type]
         exc=ExecutionTerminated(
             reason="执行总超时（180s）",
             mode=ExecutionTerminateMode.CANCEL_PENDING.value,
@@ -618,7 +618,7 @@ def test_worker_backend_terminated_response_defaults_trigger_to_operator() -> No
     response = WorkerBackendResponse(
         request_id="req-2",
         kind="terminated",
-        channel_type=TradeChannel.GM,
+        channel_type=TradeChannel("gm"),
         reason="manual stop",
         mode=ExecutionTerminateMode.GRACEFUL.value,
     )
@@ -640,7 +640,7 @@ def test_timeout_termination_sends_alert(monkeypatch, kind, trigger) -> None:
         execution_kind=kind,
         status=ExecutionTaskStatus.RUNNING,
         created_at="2026-07-27T10:00:00",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         algorithm="SINGLE-MAKER",
     )
     execution_registry.set_execution_task_state(execution_id, state)

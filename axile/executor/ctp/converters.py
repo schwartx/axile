@@ -102,7 +102,7 @@ def order_to_unified(row: object, *, trading_day: str, front_id: int, session_id
         order_type=price_type.value,
         volume=volume,
         price=_price(row, "LimitPrice"),
-        channel_type=TradeChannel.CTP,
+        channel_type=TradeChannel("ctp"),
         status=_ORDER_STATUS.get(_value(row, "OrderStatus"), OrderStatus.REJECTED),
         filled_volume=traded,
         avg_price=0.0,

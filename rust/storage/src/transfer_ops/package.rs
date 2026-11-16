@@ -407,10 +407,7 @@ pub(super) fn import(database: &str, request: &Value) -> Result<Value> {
         }
         let target = destination(&base, &root, &manifest, name);
         files::reject_links(&target)?;
-        if target.exists()
-            && !name.ends_with("/.replay-index.sqlite")
-            && files::digest(&target)? != entry.sha256
-        {
+        if target.exists() && files::digest(&target)? != entry.sha256 {
             return Err(invalid("同名录制内容冲突"));
         }
     }

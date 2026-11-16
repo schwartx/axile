@@ -306,7 +306,7 @@ def test_mutated_output_status_rederives_outcome_before_real_persistence(
                 status=ExecutionStatus.FAILED,
                 error="剩余一手",
                 account_assets=UnifiedAccountAssets.unavailable(),
-                channel_type=TradeChannel.TQ,
+                channel_type=TradeChannel("tq"),
             )
             assert business_evidence(output.outcome) == business_evidence("error")
             output.status = ExecutionStatus.PARTIAL

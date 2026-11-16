@@ -21,7 +21,7 @@ def test_live_mode_requires_explicit_selection_and_live_fields() -> None:
         }
     )
 
-    assert config.channel_type == TradeChannel.TQ
+    assert config.channel_type == TradeChannel("tq")
     assert config.account_mode == "live"
     assert config.broker_name == "broker"
     assert config.initial_balance == 10_000_000

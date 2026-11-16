@@ -133,7 +133,7 @@ class UnifiedStandardOutput(BaseModel):
     def __str__(self) -> str:
         """返回便于记录日志的简要字符串表示."""
         # 处理枚举类型
-        channel = self.channel_type.value if hasattr(self.channel_type, "value") else str(self.channel_type)
+        channel = str(self.channel_type)
         return (
             f"UnifiedStandardOutput("
             f"channel={channel}, "
@@ -156,7 +156,7 @@ class UnifiedStandardOutput(BaseModel):
         """
         # 如果channel_type不在extra中，添加进去
         if "channel_type" not in self.extra:
-            channel_value = self.channel_type.value if hasattr(self.channel_type, "value") else str(self.channel_type)
+            channel_value = str(self.channel_type)
             self.extra["channel_type"] = channel_value
 
         if ("error" not in self.model_fields_set or self.error is None) and self.error is None:

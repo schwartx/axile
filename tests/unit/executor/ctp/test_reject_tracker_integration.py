@@ -74,7 +74,7 @@ def test_native_reject_replays_only_into_matching_session(monkeypatch, callback,
         instrument.MaxMarketOrderVolume = 3
         assert session.get_order_volume_bounds(OrderType.LIMIT) == (3, 10)
         assert session.get_order_volume_bounds(OrderType.MARKET) == (1, 3)
-        assert session.get_max_order_volume(OrderType.MARKET) == 3
+        assert session.get_order_volume_bounds(OrderType.MARKET)[1] == 3
         with pytest.raises(ValueError, match="最小"):
             session.place_order(OrderDirection.BUY, OrderType.LIMIT, 2, 9000, offset_flag="open")
         assert len(captured) == 2
@@ -98,7 +98,7 @@ def test_native_reject_updates_control_attempt_without_refunding(monkeypatch, ca
         guard = AccountControlGuard(
             account_id=1,
             execution_id="control-reject",
-            channel=TradeChannel.CTP,
+            channel=TradeChannel("ctp"),
             policy=resolve_account_control_policy("default"),
             baseline=AccountControlCounterSnapshot(),
         )
@@ -119,7 +119,14 @@ def test_native_reject_updates_control_attempt_without_refunding(monkeypatch, ca
         event = frame["records"][0]
         assert event["outcome"] == "broker_rejected"
         assert event["metadata"]["error_id"] == 31
-        assert next(m["value"] for m in frame["metrics"] if m["operation"] == "place_order") == 1
+        assert (
+            next(
+                m["value"]
+                for m in frame["rules"]
+                if m["scope"] == "account" and m["rule"] == "per_day" and m["operation"] == "place_order"
+            )
+            == 1
+        )
     finally:
         executor.close()
 
@@ -141,7 +148,7 @@ def test_cancel_reject_updates_both_control_layers_separately(monkeypatch):
         guard = AccountControlGuard(
             account_id=1,
             execution_id="control-cancel",
-            channel=TradeChannel.CTP,
+            channel=TradeChannel("ctp"),
             policy=resolve_account_control_policy("default"),
             baseline=AccountControlCounterSnapshot(),
         )
@@ -159,7 +166,21 @@ def test_cancel_reject_updates_both_control_layers_separately(monkeypatch):
         events = [r for r in frame["records"] if r["operation"] in {"cancel_order", "cancel_order_ctp"}]
         assert len(events) == 2
         assert all(r["outcome"] == "broker_rejected" for r in events)
-        assert next(m["value"] for m in frame["metrics"] if m["operation"] == "cancel_order") == 1
-        assert next(m["value"] for m in frame["metrics"] if m["operation"] == "cancel_order_ctp") == 1
+        assert (
+            next(
+                m["value"]
+                for m in frame["rules"]
+                if m["scope"] == "account" and m["rule"] == "per_day" and m["operation"] == "cancel_order"
+            )
+            == 1
+        )
+        assert (
+            next(
+                m["value"]
+                for m in frame["rules"]
+                if m["scope"] == "account" and m["rule"] == "per_day" and m["operation"] == "cancel_order_ctp"
+            )
+            == 1
+        )
     finally:
         executor.close()

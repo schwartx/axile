@@ -37,7 +37,7 @@ def _row():
 
 @pytest.mark.parametrize("combination_multiplier", [0, 10])
 def test_ctp_full_refresh_uses_exactly_one_native_query_and_filters_combinations(combination_multiplier):
-    executor = CTPExecutor(TradeChannel.CTP)
+    executor = CTPExecutor(TradeChannel("ctp"))
     combination = SimpleNamespace(
         InstrumentID="SP b2702&b2703",
         ExchangeID="DCE",
@@ -55,7 +55,7 @@ def test_ctp_full_refresh_uses_exactly_one_native_query_and_filters_combinations
 
 
 def test_ctp_demand_query_is_scoped_to_the_missing_contract():
-    executor = CTPExecutor(TradeChannel.CTP)
+    executor = CTPExecutor(TradeChannel("ctp"))
     executor._query = Mock(return_value=[_row()])
     executor._query_catalog(["SHFE.rb2701"], 5)
     executor._query.assert_called_once()
@@ -67,7 +67,7 @@ def test_ctp_demand_query_is_scoped_to_the_missing_contract():
 
 
 def test_ctp_occupied_query_lock_has_a_short_wait_limit(monkeypatch):
-    executor = CTPExecutor(TradeChannel.CTP)
+    executor = CTPExecutor(TradeChannel("ctp"))
     monkeypatch.setattr(executor, "_catalog_checkpoint", lambda: None)
     with executor._query_lock:
         with pytest.raises(TimeoutError, match="等待 CTP 查询权超时"):
@@ -81,7 +81,7 @@ def _controlled_executor(monkeypatch, *, respond, override=None):
     monkeypatch.setattr("axile.executor.ctp.ctp_execute.get_default_clock", lambda: clock)
     monkeypatch.setattr("axile.executor.catalog_execution.clock_monotonic", clock.time)
     monkeypatch.setattr("axile.executor.instrument_catalog.clock_monotonic", clock.time)
-    executor = CTPExecutor(TradeChannel.CTP)
+    executor = CTPExecutor(TradeChannel("ctp"))
     executor._timeout = 0.2
     executor._ready = True
     monkeypatch.setattr(executor, "_require_active_connection", lambda: None)
@@ -92,7 +92,7 @@ def _controlled_executor(monkeypatch, *, respond, override=None):
         guard = AccountControlGuard(
             account_id=1,
             execution_id=f"catalog-{len(guards)}",
-            channel=TradeChannel.CTP,
+            channel=TradeChannel("ctp"),
             policy=resolve_account_control_policy("ctp", override),
             baseline=AccountControlCounterSnapshot(),
             wait_clock=clock,
@@ -175,7 +175,7 @@ def test_catalog_native_query_uses_execution_group_usage_before_sending(monkeypa
     execution = AccountControlGuard(
         account_id=1,
         execution_id="execution",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         policy=resolve_account_control_policy("ctp", override),
         baseline=AccountControlCounterSnapshot(),
         wait_clock=clock,
@@ -204,7 +204,7 @@ def test_public_order_is_blocked_by_catalog_usage_before_native_submission(monke
     execution = AccountControlGuard(
         account_id=1,
         execution_id="next-execution",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         policy=resolve_account_control_policy("ctp", override),
         baseline=AccountControlCounterSnapshot(),
         wait_clock=clock,

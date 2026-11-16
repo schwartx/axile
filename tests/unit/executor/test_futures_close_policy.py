@@ -50,7 +50,7 @@ def rates(yesterday=10, today=1, money=0):
 
 class Owner(FuturesCloseRuntimeMixin):
     def __init__(self, policy):
-        self.channel_type = TradeChannel.CTP
+        self.channel_type = TradeChannel("ctp")
         self.logger = MagicMock()
         self._trading_day = "20261016"
         self._instruments = {"ag2611": SimpleNamespace(VolumeMultiple=15)}
@@ -91,9 +91,9 @@ def test_override_normalization_and_validation():
     for overrides in ({"AG2611": "today_first"}, {"ag": "today_first", "AG": "yesterday_first"}):
         with pytest.raises(ValidationError):
             FuturesClosePolicy(overrides=overrides)
-    policy.validate_channel(TradeChannel.TQ)
+    policy.validate_channel(TradeChannel("tq"))
     with pytest.raises(ValueError, match="不支持"):
-        FuturesClosePolicy(mode="fee").validate_channel(TradeChannel.TQ)
+        FuturesClosePolicy(mode="fee").validate_channel(TradeChannel("tq"))
     assert rule_priority(FuturesClosePolicy(fallback="today_first"), "UNKNOWN") == ("today_first", "default")
     assert rule_priority(FuturesClosePolicy(fallback="today_first"), "AG") == ("yesterday_first", "preset")
 

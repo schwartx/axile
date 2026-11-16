@@ -289,7 +289,7 @@ def test_catalog_and_execution_guards_share_send_interval_but_keep_separate_reco
         AccountControlGuard(
             account_id=1,
             execution_id=task,
-            channel=TradeChannel.CTP,
+            channel=TradeChannel("ctp"),
             policy=resolve_account_control_policy("ctp"),
             baseline=AccountControlCounterSnapshot(),
             wait_clock=clock,

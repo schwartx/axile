@@ -32,7 +32,7 @@ function warningPercent(value: unknown): number | null {
 interface OperationQuotaState { known: boolean; warning: QuotaWarning | null }
 function operationQuotaState(frame: ControlFrame, operation: QuotaWarning['operation'], config: unknown, reliable: boolean): OperationQuotaState {
   if (!record(config)) return { known: true, warning: null }
-  const rule = [...frame.rules, ...frame.metrics].find(item => item.operation === operation && item.scope === 'account' && item.rule === 'per_day')
+  const rule = frame.rules.find(item => item.operation === operation && item.scope === 'account' && item.rule === 'per_day')
   if (!rule) return { known: false, warning: null }
   if (rule.limit == null || rule.limit === 0) return { known: true, warning: null }
   if (!nonnegativeInteger(rule.limit) || !nonnegativeInteger(rule.value)) return { known: false, warning: null }

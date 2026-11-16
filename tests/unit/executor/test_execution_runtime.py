@@ -29,7 +29,7 @@ class _RuntimeExecutor(AbstractExecutor):
     def __init__(self) -> None:
         self.logger = _Logger()
         super().__init__(
-            TradeChannel.CTP,
+            TradeChannel("ctp"),
             CTPAccountConfig.model_validate(
                 {
                     "broker_id": "b",
@@ -170,7 +170,7 @@ def test_execute_releases_runtime_between_runs(monkeypatch) -> None:
     executor = _RuntimeExecutor()
     standard_input = UnifiedStandardInput.from_dict(
         {
-            "channel_type": TradeChannel.CTP.value,
+            "channel_type": "ctp",
             "account_config": {
                 "broker_id": "b",
                 "investor_id": "i",

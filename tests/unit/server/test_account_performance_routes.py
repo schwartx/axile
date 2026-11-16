@@ -10,7 +10,7 @@ from axile.server._native import _core
 from axile.server.api.routes import account_performance as routes
 
 
-def test_backtest_save_normalizes_settings_in_one_native_call(monkeypatch):
+def test_backtest_save_uses_one_native_call(monkeypatch):
     result = {"backtest_weight_type": "cs", "backtest_fee_rate": 0.01}
     write = AsyncMock(return_value=json.dumps(result).encode())
     monkeypatch.setattr(routes, "native_operation", write)
@@ -18,7 +18,7 @@ def test_backtest_save_normalizes_settings_in_one_native_call(monkeypatch):
     app = FastAPI()
     app.include_router(routes.router)
     with TestClient(app) as client:
-        response = client.patch("/performance-settings/1", json={**result, "backtest_weight_type": "ts"})
+        response = client.patch("/performance-settings/1", json=result)
     assert response.status_code == 200 and response.json() == result
     write.assert_awaited_once_with(
         "account_update_backtest", {"account_id": 1, "patch": result, "now": "2026-01-01T09:00:00"}
@@ -34,3 +34,11 @@ def test_backtest_save_preserves_missing_account(monkeypatch):
     with TestClient(app) as client:
         response = client.patch("/performance-settings/1", json={"backtest_fee_rate": 0, "backtest_weight_type": "cs"})
     assert response.status_code == 404 and response.json()["detail"]["code"] == "ACCOUNT_NOT_FOUND"
+
+
+def test_backtest_save_rejects_retired_ts_mode():
+    app = FastAPI()
+    app.include_router(routes.router)
+    with TestClient(app) as client:
+        response = client.patch("/performance-settings/1", json={"backtest_weight_type": "ts", "backtest_fee_rate": 0})
+    assert response.status_code == 422

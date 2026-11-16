@@ -128,7 +128,7 @@ def order_to_unified(row: object, resolver: TQSymbolResolver) -> UnifiedOrder:
         order_type=OrderType.MARKET.value if _value(row, "price_type") == "ANY" else OrderType.LIMIT.value,
         volume=volume,
         price=_float(row, "limit_price"),
-        channel_type=TradeChannel.TQ,
+        channel_type=TradeChannel("tq"),
         status=_order_status(row),
         filled_volume=max(0.0, volume - left),
         avg_price=_float(row, "trade_price"),

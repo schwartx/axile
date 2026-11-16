@@ -19,7 +19,6 @@ from axile.executor.models.unified_input_accounts import (
     CTPAccountConfig,
     GMAccountConfig,
     TQAccountConfig,
-    _channel_value,
 )
 from axile.executor.models.unified_input_support import (
     SymbolAlgorithms,
@@ -138,7 +137,7 @@ class UnifiedStandardInput(BaseModel):
     @override
     def __str__(self) -> str:
         """返回便于记录日志的简要字符串表示."""
-        channel = _channel_value(self.channel_type)
+        channel = str(self.channel_type)
         algorithm_method = _algorithm_dict(self.algorithm).get("method", "Unknown")
         return f"UnifiedStandardInput(channel={channel}, symbols={len(self.curr_target)}, algorithm={algorithm_method})"
 
@@ -232,7 +231,7 @@ class UnifiedStandardInput(BaseModel):
                 if not config.get("method") or "params" not in config:
                     raise ValueError("品种算法必须提供完整的 method 和 params")
             object.__setattr__(self, "product_algorithms", normalized_products)
-        channel_value = _channel_value(self.channel_type)
+        channel_value = str(self.channel_type)
 
         # 验证账户配置与渠道类型匹配
         if hasattr(self.account_config, "channel_type"):
@@ -350,7 +349,7 @@ class UnifiedStandardInput(BaseModel):
             标准输入字典。
         """
         result = {
-            "channel_type": _channel_value(self.channel_type),
+            "channel_type": str(self.channel_type),
             "account_config": _serialize_account_config(self.account_config),
             "curr_target": self.curr_target,
             "target_mode": self.target_mode,

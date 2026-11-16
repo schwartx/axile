@@ -42,7 +42,7 @@ def make_guard(*, baseline_count=120, limit=500, clock=None, sleep=None):
     return AccountControlGuard(
         account_id=1,
         execution_id="exec-monitor",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         policy=policy,
         baseline=baseline,
         clock=clock,
@@ -51,7 +51,11 @@ def make_guard(*, baseline_count=120, limit=500, clock=None, sleep=None):
 
 
 def used(frame):
-    return next(m["value"] for m in frame["metrics"] if m["operation"] == "place_order")
+    return next(
+        m["value"]
+        for m in frame["rules"]
+        if m["scope"] == "account" and m["rule"] == "per_day" and m["operation"] == "place_order"
+    )
 
 
 def test_snapshot_replaces_values_and_never_consumes_quota():

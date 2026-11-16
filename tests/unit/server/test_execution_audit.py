@@ -23,7 +23,7 @@ def _event_kwargs():
     return {
         "execution_id": "exec-1",
         "account_id": 1,
-        "channel": TradeChannel.CTP,
+        "channel": TradeChannel("ctp"),
         "algorithm": "SINGLE-MAKER",
         "event_type": ExecutionEventType.SYMBOL_SKIPPED,
         "status": ExecutionEventStatus.WARNING,
@@ -133,7 +133,7 @@ def test_append_execution_event_sync_swallows_timeout(monkeypatch: pytest.Monkey
     result = execution_audit.append_execution_event_sync(
         execution_id="exec-1",
         account_id=1,
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         algorithm="SINGLE-MAKER",
         event_type=ExecutionEventType.EXECUTION_STARTED,
         status=ExecutionEventStatus.INFO,

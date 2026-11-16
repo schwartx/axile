@@ -35,7 +35,7 @@ def test_gm_balance_does_not_claim_success_with_unknown_diagnostic_fields(field,
         available_cash=30_000,
         total_asset=100_000,
         market_value=60_000,
-        extra={"channel_type": TradeChannel.GM, "total_asset_source": "gm.cash.nav", "gm_cash": cash},
+        extra={"channel_type": TradeChannel("gm"), "total_asset_source": "gm.cash.nav", "gm_cash": cash},
     )
     assert assets.validate_balance() is False
     assert assets.total_asset == 100_000
@@ -48,7 +48,7 @@ def test_gm_balance_does_not_override_nav_to_force_reconciliation(frozen):
         total_asset=100_000,
         market_value=60_000,
         extra={
-            "channel_type": TradeChannel.GM,
+            "channel_type": TradeChannel("gm"),
             "total_asset_source": "gm.cash.nav",
             "gm_cash": {
                 "nav": 100_000,
@@ -67,7 +67,7 @@ def test_gm_balance_without_cash_evidence_cannot_self_validate_old_formula():
         available_cash=30_000,
         total_asset=90_000,
         market_value=60_000,
-        extra={"channel_type": TradeChannel.GM},
+        extra={"channel_type": TradeChannel("gm")},
     )
     assert assets.validate_balance() is False
 
@@ -78,7 +78,7 @@ def test_gm_cash_balance_survives_serialization_and_checks_snapshot_identity():
         total_asset=100_000,
         market_value=59_999,
         extra={
-            "channel_type": TradeChannel.GM,
+            "channel_type": TradeChannel("gm"),
             "total_asset_source": "gm.cash.nav",
             "gm_cash": {
                 "nav": 100_000,
@@ -94,7 +94,7 @@ def test_gm_cash_balance_survives_serialization_and_checks_snapshot_identity():
     assert restored.model_copy(update={"available_cash": 40_000}).validate_balance() is False
 
 
-@pytest.mark.parametrize("channel", [None, TradeChannel.CTP])
+@pytest.mark.parametrize("channel", [None, TradeChannel("ctp")])
 def test_other_channel_balance_keeps_existing_relationship(channel):
     assets = UnifiedAccountAssets(
         available_cash=30_000,

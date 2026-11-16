@@ -89,7 +89,7 @@ def test_ctp_account_control_preset_uses_ctp_specific_limits() -> None:
     policy = resolve_account_control_policy("ctp")
 
     assert preset.preset_key == "ctp"
-    assert preset.compatible_trade_channels == {TradeChannel.CTP}
+    assert preset.compatible_trade_channels == {TradeChannel("ctp")}
     assert preset.policy.timezone == "Asia/Shanghai"
     assert preset.policy.operations["query_order"].account.per_minute.limit == 60
     assert preset.policy.operations["query_order"].account.per_day.limit == 2000
@@ -111,7 +111,7 @@ def test_ctp_account_control_preset_uses_ctp_specific_limits() -> None:
     assert policy.operations["cancel_order_ctp"].priority == 0
     assert preset.policy.groups["ctp_td_global"].min_interval_ms.limit == 1500
 
-    ensure_account_control_preset_compatible("ctp", TradeChannel.CTP)
+    ensure_account_control_preset_compatible("ctp", TradeChannel("ctp"))
     with pytest.raises(AccountControlConfigError, match="不兼容"):
         ensure_account_control_preset_compatible("ctp", TradeChannel("external-demo"))
 

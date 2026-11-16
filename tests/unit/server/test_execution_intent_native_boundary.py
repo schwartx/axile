@@ -24,7 +24,7 @@ def _snapshot(execution_id: str, account_id: int = 710) -> intents.IntentSnapsho
         kind=ExecutionKind.REBALANCE,
         trigger_source="manual",
         status=ExecutionTaskStatus.QUEUED,
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         algorithm="SINGLE-MAKER",
         payload={},
         created_at="2026-10-23T10:00:00+08:00",
@@ -43,10 +43,11 @@ def test_failed_insert_never_publishes_a_memory_queue(monkeypatch: pytest.Monkey
 
     account = SimpleNamespace(
         id=710,
-        trade_channel=TradeChannel.CTP,
-        gm_sessions=None,
+        trade_channel=TradeChannel("ctp"),
+        channel_options={},
         algorithm={"method": "SINGLE-MAKER"},
         algorithm_schedule=[],
+        product_algorithms={},
     )
     monkeypatch.setattr(intents, "native_operation", failed_operation)
     try:
@@ -94,7 +95,7 @@ def test_coalesce_only_clears_a_queue_proven_stale(monkeypatch: pytest.MonkeyPat
             raise RuntimeError("INTENT_CONFLICT", "intent no longer queued")
         raise RuntimeError("commit failed")
 
-    account = SimpleNamespace(id=710, trade_channel=TradeChannel.CTP)
+    account = SimpleNamespace(id=710, trade_channel=TradeChannel("ctp"))
     monkeypatch.setattr(intents, "native_operation", failed_operation)
     set_queued_execution(710, "stale-queue")
     try:
@@ -153,10 +154,11 @@ def test_native_supplement_rejection_keeps_its_domain_error(monkeypatch: pytest.
     payload = {"supplement_step_id": "expired-step"}
     account = SimpleNamespace(
         id=710,
-        trade_channel=TradeChannel.CTP,
-        gm_sessions=None,
+        trade_channel=TradeChannel("ctp"),
+        channel_options={},
         algorithm={"method": "SINGLE-MAKER"},
         algorithm_schedule=[],
+        product_algorithms={},
     )
 
     async def rejected(name, request):

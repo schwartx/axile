@@ -604,7 +604,7 @@ async def empty_all_positions(
     # 先停调度，再入队一次性清仓，避免 CRON 在人工清仓期间再次拉起执行。
     db_account = await stop_account_for_clear_positions(account_id)
     delete_job(sched, account_id)
-    if db_account.trade_channel in {TradeChannel.CTP, TradeChannel.TQ}:
+    if db_account.trade_channel in {TradeChannel("ctp"), TradeChannel("tq")}:
         await reconcile_china_channel_account(db_account)
 
     try:

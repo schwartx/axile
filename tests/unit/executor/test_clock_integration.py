@@ -17,6 +17,10 @@ class AdvancingClock:
     def __init__(self, timestamp: float) -> None:
         self.timestamp = timestamp
 
+    def monotonic(self) -> float:
+        """返回仿真计时值。"""
+        return self.time()
+
     def time(self) -> float:
         return self.timestamp
 

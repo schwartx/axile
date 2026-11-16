@@ -47,6 +47,10 @@ class _AdvancingClock:
         self._current_ts = start_time.timestamp()
         self.sleep_calls: list[float] = []
 
+    def monotonic(self) -> float:
+        """返回仿真计时值。"""
+        return self.time()
+
     def time(self) -> float:
         return self._current_ts
 
@@ -226,7 +230,7 @@ def test_guard_allows_high_priority_operation_ahead_of_queued_queries(
     guard = AccountControlGuard(
         account_id=12,
         execution_id="exec-priority",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         policy=resolve_account_control_policy(
             "default",
             AccountControlOverride.model_validate(
@@ -512,7 +516,7 @@ def test_ctp_order_waits_on_shared_group_after_query() -> None:
     guard = AccountControlGuard(
         account_id=66,
         execution_id="exec-shared-group",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         policy=resolve_account_control_policy("ctp"),
         baseline=AccountControlCounterSnapshot(),
         clock=_clock_from(
@@ -597,7 +601,7 @@ def test_guard_applies_group_per_minute_limit_across_baseline_operations() -> No
     guard = AccountControlGuard(
         account_id=67,
         execution_id="exec-shared-group-baseline",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         policy=resolve_account_control_policy(
             "ctp",
             AccountControlOverride.model_validate(
@@ -647,7 +651,7 @@ def test_guard_uses_recent_allowed_snapshot_for_shared_group_min_interval() -> N
     guard = AccountControlGuard(
         account_id=68,
         execution_id="exec-shared-group-recent",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         policy=resolve_account_control_policy(
             "ctp",
             AccountControlOverride.model_validate(

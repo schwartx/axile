@@ -33,7 +33,7 @@ def _intent(execution_id: str, status: ExecutionTaskStatus) -> IntentSnapshot:
         kind=ExecutionKind.REBALANCE,
         trigger_source="scheduler",
         status=status,
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         algorithm="SINGLE-MAKER",
         payload={},
         created_at="2026-10-23T10:00:00",

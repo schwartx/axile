@@ -7,11 +7,12 @@ from typing import Annotated, Any
 
 from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-not-found]
 from fastapi import APIRouter, HTTPException, Query, Response, status
-from pydantic import AwareDatetime, BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
 from axile.channels import get_channel
 from axile.channels.gm_sessions import GM_SPECIAL_WINDOWS, GMSessionSettings, gm_phase
+from axile.channels.schedule_settings import validate_schedule_options
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.trading_calendar import SHINNY_COVERAGE_END, SHINNY_COVERAGE_START
@@ -34,7 +35,9 @@ class SchedulePreviewRequest(BaseModel):
 
     trade_channel: TradeChannel
     cron_expr: str
-    gm_sessions: GMSessionSettings | None = None
+    model_config = ConfigDict(extra="forbid")
+    channel_options: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    _options = field_validator("channel_options")(validate_schedule_options)
     supplement: SupplementSettings | None = None
     scheduled_ats: list[AwareDatetime] | None = Field(
         default=None, min_length=1, max_length=100, description="仅重算指定基础触发的补发摘要，不推进预览游标"
@@ -113,13 +116,21 @@ def _selected_base_preview(payload: SchedulePreviewRequest, base: datetime) -> d
     """只重算已有基础触发的补发摘要，保持原时间点及日历动作。"""
     local_time = base.astimezone(SCHEDULER_TIMEZONE)
     decision = evaluate_channel_calendar_moment(
-        payload.trade_channel, local_time, windows=schedule_windows(payload.trade_channel, payload.gm_sessions)
+        payload.trade_channel,
+        local_time,
+        windows=schedule_windows(
+            payload.trade_channel, GMSessionSettings.from_channel_options(payload.channel_options)
+        ),
     )
     skipped = decision.status in {CalendarDecisionStatus.AVAILABLE_CLOSED, CalendarDecisionStatus.UNAVAILABLE}
     points = [local_time]
     if payload.supplement is not None and not skipped:
         points, _ = plan_supplements(
-            payload.trade_channel, payload.cron_expr, payload.supplement, local_time, payload.gm_sessions
+            payload.trade_channel,
+            payload.cron_expr,
+            payload.supplement,
+            local_time,
+            GMSessionSettings.from_channel_options(payload.channel_options),
         )
     return {
         "scheduled_at": local_time,
@@ -143,7 +154,7 @@ async def schedule_preview(payload: SchedulePreviewRequest) -> dict[str, Any]:
     """按时间游标只读预览未来 Cron 触发点及其交易日历动作。"""
     try:
         get_channel(str(payload.trade_channel))
-        schedule_windows(payload.trade_channel, payload.gm_sessions)
+        schedule_windows(payload.trade_channel, GMSessionSettings.from_channel_options(payload.channel_options))
     except (KeyError, ValueError) as exc:
         raise _field_error("trade_channel", str(exc)) from exc
 
@@ -159,7 +170,11 @@ async def schedule_preview(payload: SchedulePreviewRequest) -> dict[str, Any]:
             "has_more": False,
         }
     try:
-        triggers = effective_triggers(payload.cron_expr, payload.trade_channel, payload.gm_sessions)
+        triggers = effective_triggers(
+            payload.cron_expr,
+            payload.trade_channel,
+            GMSessionSettings.from_channel_options(payload.channel_options),
+        )
     except ValueError as exc:
         raise _field_error("cron_expr", str(exc)) from exc
 
@@ -193,12 +208,20 @@ async def schedule_preview(payload: SchedulePreviewRequest) -> dict[str, Any]:
         expanded = []
         for base in bases:
             decision = evaluate_channel_calendar_moment(
-                payload.trade_channel, base, windows=schedule_windows(payload.trade_channel, payload.gm_sessions)
+                payload.trade_channel,
+                base,
+                windows=schedule_windows(
+                    payload.trade_channel, GMSessionSettings.from_channel_options(payload.channel_options)
+                ),
             )
             points = [base]
             if decision.status not in {CalendarDecisionStatus.AVAILABLE_CLOSED, CalendarDecisionStatus.UNAVAILABLE}:
                 points, _ = plan_supplements(
-                    payload.trade_channel, payload.cron_expr, payload.supplement, base, payload.gm_sessions
+                    payload.trade_channel,
+                    payload.cron_expr,
+                    payload.supplement,
+                    base,
+                    GMSessionSettings.from_channel_options(payload.channel_options),
                 )
             for index, point in enumerate(points):
                 if point > start or (payload.after is None and point == start):
@@ -216,7 +239,11 @@ async def schedule_preview(payload: SchedulePreviewRequest) -> dict[str, Any]:
     for scheduled_at in page:
         local_time = scheduled_at.astimezone(SCHEDULER_TIMEZONE)
         decision = evaluate_channel_calendar_moment(
-            payload.trade_channel, local_time, windows=schedule_windows(payload.trade_channel, payload.gm_sessions)
+            payload.trade_channel,
+            local_time,
+            windows=schedule_windows(
+                payload.trade_channel, GMSessionSettings.from_channel_options(payload.channel_options)
+            ),
         )
         items.append(
             {

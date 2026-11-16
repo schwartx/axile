@@ -39,7 +39,7 @@ class _LifecycleRecorderExecutor(AbstractExecutor):
         self.calls: list[str] = []
         self.websocket_init_calls: list[list[str]] = []
         super().__init__(
-            TradeChannel.CTP,
+            TradeChannel("ctp"),
             CTPAccountConfig.model_validate(
                 {
                     "broker_id": "b",
@@ -161,7 +161,7 @@ class _LifecycleRecorderExecutor(AbstractExecutor):
 def _standard_input() -> UnifiedStandardInput:
     return UnifiedStandardInput.from_dict(
         {
-            "channel_type": TradeChannel.CTP.value,
+            "channel_type": "ctp",
             "account_config": {
                 "broker_id": "b",
                 "investor_id": "i",
@@ -189,7 +189,7 @@ def _output() -> UnifiedStandardOutput:
         inputs=_standard_input(),
         symbol_results={},
         status="NOOP",
-        channel_type=TradeChannel.CTP,
+        channel_type=TradeChannel("ctp"),
         success=True,
     )
 

@@ -92,6 +92,10 @@ class ClockStub:
     def __init__(self) -> None:
         self.current = 0.0
 
+    def monotonic(self) -> float:
+        """返回仿真计时值。"""
+        return self.time()
+
     def time(self) -> float:
         return self.current
 

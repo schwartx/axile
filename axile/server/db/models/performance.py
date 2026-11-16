@@ -2,9 +2,9 @@
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
-WeightType = Literal["ts", "cs"]
+WeightType = Literal["cs"]
 FeeRate = Annotated[float, Field(strict=True, ge=0, lt=1, allow_inf_nan=False)]
 RangeKey = Literal["30", "90", "all"]
 
@@ -15,9 +15,3 @@ class PerformanceSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     backtest_weight_type: WeightType
     backtest_fee_rate: FeeRate
-
-    @field_validator("backtest_weight_type")
-    @classmethod
-    def account_weight_mode(cls, value: WeightType) -> WeightType:
-        """旧 ts 配置兼容读入；账户资金权重必须求和，不能再次平均."""
-        return "cs"

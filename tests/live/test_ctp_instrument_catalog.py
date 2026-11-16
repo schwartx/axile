@@ -23,14 +23,14 @@ def test_ctp_catalog_live_read_only(monkeypatch):
     config = CTPAccountConfig.model_validate(json.loads(Path(os.environ["AXILE_CTP_CATALOG_CONFIG"]).read_text()))
     catalog = InstrumentCatalog()
     provider = LocalInstrumentCatalogProvider(catalog)
-    executor = CTPExecutor(TradeChannel.CTP)
+    executor = CTPExecutor(TradeChannel("ctp"))
     executor.account_config = config
     executor.set_instrument_catalog_provider(provider)
     executor.set_account_control_guard(
         AccountControlGuard(
             account_id=98,
             execution_id="catalog-read-only-acceptance",
-            channel=TradeChannel.CTP,
+            channel=TradeChannel("ctp"),
             policy=resolve_account_control_policy("ctp"),
             baseline=AccountControlCounterSnapshot(),
         )

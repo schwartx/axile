@@ -2,9 +2,7 @@ import type { PerformancePoint, PerformanceSettings } from '@/types/api'
 export { niceValueAxis as niceReturnAxis } from '@/components/viz/chartAxis'
 import { shanghaiTime } from './costs'
 
-export const WEIGHT_MODES: Array<{ value: 'ts' | 'cs'; label: string }> = [
-  { value: 'ts', label: '时序' }, { value: 'cs', label: '截面' },
-]
+
 
 export const FEE_PRESETS = ['0', '5', '15', '30'] as const
 export const FEE_OPTIONS = [...FEE_PRESETS.map(value => ({ value, label: value })), { value: 'custom', label: '自定义' }]
@@ -41,11 +39,11 @@ export function timeTicks(points: PerformancePoint[], x: (i: number) => number) 
   }))
 }
 
-export function settingsFromDraft(mode: 'ts' | 'cs', feeBp: string): PerformanceSettings | null {
+export function settingsFromDraft(feeBp: string): PerformanceSettings | null {
   if (!feeBp.trim()) return null
   const fee = Number(feeBp)
   if (!Number.isFinite(fee) || fee < 0 || fee >= 10000) return null
-  return { backtest_weight_type: mode, backtest_fee_rate: fee / 10000 }
+  return { backtest_weight_type: 'cs', backtest_fee_rate: fee / 10000 }
 }
 
 export function returnText(value: number | null | undefined, unit = '%'): string {

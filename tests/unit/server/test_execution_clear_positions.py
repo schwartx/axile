@@ -152,7 +152,7 @@ def test_empty_positions_routes_gm_account_to_worker_manager(
     account = build_account(
         name="gm-live-account",
         market="A股",
-        trade_channel=TradeChannel.GM,
+        trade_channel=TradeChannel("gm"),
         brokerage="gm",
         account_config={
             "account_id": "gm-account",
@@ -238,7 +238,7 @@ def test_empty_positions_routes_ctp_account_to_worker_manager(
     _ = asyncio.run(clear_positions_execution._run_clear_positions(account, execution_id="exec-ctp-worker-empty-1"))
 
     assert len(manager.empty_calls) == 1
-    assert cast(Account, manager.empty_calls[0]["account"]).trade_channel == TradeChannel.CTP
+    assert cast(Account, manager.empty_calls[0]["account"]).trade_channel == TradeChannel("ctp")
     result = captured["result"]
     assert isinstance(result, dict)
     assert result["memory"]["ts"] == "2026-03-11T21:20:13"
@@ -368,7 +368,7 @@ def test_empty_positions_binds_account_control_guard(
 
     assert captured == {
         "account_id": 1,
-        "channel": TradeChannel.CTP,
+        "channel": TradeChannel("ctp"),
         "execution_id": "exec-empty-bind-1",
     }
     assert fake_executor.executed_guard is fake_guard

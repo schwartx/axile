@@ -278,13 +278,12 @@ def quote(row: object, *, source: str = "gm.tick") -> dict[str, object]:
 def _position(row: object, source: str) -> dict[str, object]:
     f = Fields(row)
     data = _base(f, source)
-    available_field = "available_now" if f.value("available_now") is not None else "available"
     data.update(
         symbol=_symbol(f),
         position_side=f.enum("side", {"1": "LONG", "2": "SHORT"}),
         quantity=f.number("volume"),
         today_quantity=f.number("volume_today"),
-        available_quantity=f.number(available_field),
+        available_quantity=f.number("available_now"),
         frozen_quantity=f.number("order_frozen"),
         position_basis={"status": "unverified", "proof": None},
         source_time_us=_time(f, "updated_at"),

@@ -14,7 +14,7 @@ function warningFrame(used = 80, overrides: Partial<ControlFrame> = {}): Control
     saved_policy: { operations: { cancel_order: { daily_warning_percent: 90 } } },
     rules: [{ id: 'account:cancel_order:per_day', operation: 'cancel_order', scope: 'account', symbol: null,
       rule: 'per_day', value: used, limit: 100, remaining: Math.max(0, 100 - used), estimated_wait_ms: 0, on_trigger: 'block' }],
-    metrics: [], waiting_total: 0, waiting: [], records: [], ...overrides,
+    waiting_total: 0, waiting: [], records: [], ...overrides,
   }
 }
 

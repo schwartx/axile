@@ -300,7 +300,7 @@ def test_ctp_connection_exits_invalidate_the_recorded_generation(broker, tmp_pat
     executor = broker.executor
     recorder.attach(executor)
     recorder.configure(True, 1)
-    from tests.unit.server.test_execution_replay_native import wait_for
+    from tests.unit.server.test_execution_replay_recorder import eventually as wait_for
 
     wait_for(lambda: recorder.status()["state"] == "recording")
     before = recorder._sync_generation

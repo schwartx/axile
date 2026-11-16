@@ -33,7 +33,7 @@ def test_head_preserves_source_values_and_compact_display_separately(native_data
         native_database, {"status": "PARTIAL", "error": None, "execution_time": 0, "success": False}
     )
     assert row["outcome"] is None
-    assert business_evidence(row["display_outcome"]) == business_evidence("not_reached")
+    assert business_evidence(row["display_outcome"]) == business_evidence(None)
     assert business_evidence(row["task_status"]) == business_evidence("FAILED")
     assert business_evidence(restored) == business_evidence(
         {"status": "PARTIAL", "error": None, "execution_time": 0, "success": False}

@@ -49,7 +49,7 @@ def test_submission_revalidates_consumed_quote_after_real_guard_wait(monkeypatch
     guard = AccountControlGuard(
         account_id=1,
         execution_id="market-data-wait",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         policy=resolve_account_control_policy(
             "default",
             AccountControlOverride.model_validate(

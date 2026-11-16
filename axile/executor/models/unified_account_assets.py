@@ -200,7 +200,7 @@ class UnifiedAccountAssets(BaseModel):
             字段不完整时返回 ``False``。其他渠道保留可用资金加持仓市值的校验。
             本方法仅提供诊断，不重算或覆盖原生权益。
         """
-        if self.extra.get("channel_type") == TradeChannel.GM:
+        if self.extra.get("channel_type") == TradeChannel("gm"):
             return self._validate_gm_cash_balance()
         if self.market_value is None:
             return False

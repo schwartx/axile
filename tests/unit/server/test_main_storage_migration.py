@@ -266,3 +266,8 @@ def test_unpublished_revisions_are_rejected_without_creating_a_database(tmp_path
     with pytest.raises(_core.NativeError):
         native_store_call(path, "migration_upgrade", {"public": revision})
     assert not path.exists()
+
+
+def test_main_upgrade_to_current_head_uses_fixed_account_weight_mode(main_database):
+    native_store_call(main_database, "migration_upgrade", {"public": "0037"})
+    assert native_store_call(main_database, "account_get", {"account_id": 1})["backtest_weight_type"] == "cs"

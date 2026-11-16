@@ -101,7 +101,7 @@ async def _prepare_runtime_target(
     """仅在渠道准备边界识别明确的柜台未初始化；scheduler 错误不能降级。"""
     reset: bool | Literal["when_idle"] = target.reset_worker
     if mode in {"day", "night"}:
-        reset = "when_idle" if target.account.trade_channel == TradeChannel.CTP else True
+        reset = "when_idle" if target.account.trade_channel == TradeChannel("ctp") else True
     try:
         if target.account.archived_at is not None:
             from axile.server.connection_runtime import forget_session
@@ -120,7 +120,7 @@ async def _prepare_runtime_target(
         if prepared is False:
             return "pending", None
     except WorkerBackendExecutionError as exc:
-        if target.account.trade_channel != TradeChannel.CTP or exc.reason_code != "CTP_NOT_INITIALIZED":
+        if target.account.trade_channel != TradeChannel("ctp") or exc.reason_code != "CTP_NOT_INITIALIZED":
             raise
         logger.warning(
             "账户通道暂未就绪 account_id={} revision={} reason_code={}: {}",

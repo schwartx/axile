@@ -28,7 +28,7 @@ class _CtpSessionExecutor(AbstractExecutor):
         self.pending_orders: list[UnifiedOrder] = []
         self.cancelled_orders: list[tuple[str, str]] = []
         super().__init__(
-            TradeChannel.CTP,
+            TradeChannel("ctp"),
             CTPAccountConfig(
                 broker_id="b",
                 investor_id="i",
@@ -157,7 +157,7 @@ class _CtpSessionExecutor(AbstractExecutor):
 
 def _input() -> UnifiedStandardInput:
     return UnifiedStandardInput(
-        channel_type=TradeChannel.CTP,
+        channel_type=TradeChannel("ctp"),
         account_config=CTPAccountConfig(
             broker_id="b",
             investor_id="i",
@@ -250,7 +250,6 @@ def test_mixed_session_output_preserves_open_results_and_closed_targets(monkeypa
 def test_final_snapshot_failure_is_not_labeled_partial_session(monkeypatch):
     from axile.executor import execution_engine as engine_module
     from axile.executor.session_closed import session_closed_scope
-    from axile.server.execution.legacy_compat import normalize_legacy_result
 
     executor = _CtpSessionExecutor({"IF2609": "CTP.SESSION.CLOSED", "ag2612": None})
     monkeypatch.setattr(
@@ -273,7 +272,7 @@ def test_final_snapshot_failure_is_not_labeled_partial_session(monkeypatch):
     assert output.status == ExecutionStatus.PARTIAL
     assert output.error == "最终持仓查询失败"
     assert output.reason_code is None
-    assert session_closed_scope(normalize_legacy_result(output.model_dump(mode="json"))) is None
+    assert session_closed_scope(output.model_dump(mode="json")) is None
 
 
 def test_ctp_engine_sizes_closed_symbol_from_cached_quote_without_blocking_io(

@@ -472,13 +472,13 @@ class ExecutionEngine:
         max_workers = min(len(tasks), self._owner._max_parallel_symbol_workers())
         self._owner.logger.debug(
             "symbol 并发调度 channel={} tasks={} max_workers={}",
-            self._owner.channel_type.value,
+            str(self._owner.channel_type),
             len(tasks),
             max_workers,
         )
         with ThreadPoolExecutor(
             max_workers=max_workers,
-            thread_name_prefix=f"{self._owner.channel_type.value}-symbol-algo",
+            thread_name_prefix=f"{str(self._owner.channel_type)}-symbol-algo",
         ) as pool:
             for task in tasks:
                 futures[pool.submit(self._run_symbol_algorithm, task)] = task

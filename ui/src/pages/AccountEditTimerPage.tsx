@@ -64,7 +64,7 @@ export function AccountEditTimerPage() {
   /** 草稿重置为服务端当前节奏；数据未就绪时返回 false（供首帧初始化门控）。 */
   const resetTimer = useCallback(() => {
     if (!acc || !descriptor) return false
-    setTimer(parseSavedTimer(descriptor.schedule.kind, acc.cron_expr ?? '', descriptor.schedule.night, acc.supplement, acc.gm_sessions))
+    setTimer(parseSavedTimer(descriptor.schedule.kind, acc.cron_expr ?? '', descriptor.schedule.night, acc.supplement, acc.channel_options.gm))
     setSaveError(null)
     return true
   }, [acc, descriptor])
@@ -89,7 +89,7 @@ export function AccountEditTimerPage() {
   const cronPrev = acc.cron_expr ?? ''
   const supplement = timerSupplement(timer)
   const gmSessions = gmTimerSessions(acc.trade_channel, timer)
-  const sessionsChanged = JSON.stringify(gmSessions) !== JSON.stringify(gmTimerSessions(acc.trade_channel, { gm_sessions: acc.gm_sessions }))
+  const sessionsChanged = JSON.stringify(gmSessions) !== JSON.stringify(gmTimerSessions(acc.trade_channel, { gm_sessions: acc.channel_options.gm }))
   const dirty = !cronExprEqual(cronNext, cronPrev) || JSON.stringify(supplement) !== JSON.stringify(acc.supplement ?? null) || sessionsChanged
   const err = timerEditorError(timer)
   const changes = dirty ? [cronNext ? '定时任务已改' : '关闭自动调仓节奏'] : []
@@ -108,7 +108,7 @@ export function AccountEditTimerPage() {
       await updateAccount(accountId, {
         cron_expr: cronNext,
         supplement,
-        ...(sessionsChanged ? { gm_sessions: gmSessions } : {}),
+        ...(sessionsChanged ? { channel_options: { ...acc.channel_options, ...(gmSessions ? { gm: gmSessions } : {}) } } : {}),
       })
       toast(cronNext ? '节奏已更新' : '已关闭自动调仓节奏')
       void refreshAccounts()

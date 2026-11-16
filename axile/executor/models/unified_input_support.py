@@ -15,7 +15,6 @@ from axile.channels import get_channel
 from axile.common.trade_channel import TradeChannel
 from axile.executor.models.unified_input_accounts import (
     BaseAccountConfig,
-    _channel_value,
 )
 
 TradeRule = dict[str, object]
@@ -42,16 +41,9 @@ def _get_default_algorithm() -> dict[str, object]:
 
 
 def _coerce_channel_type(value: object) -> TradeChannel | None:
-    """尽可能将输入解析为当前模块使用的渠道枚举."""
-    if isinstance(value, TradeChannel):
-        return value
-
-    raw_value = getattr(value, "value", value)
-    if not isinstance(raw_value, str):
-        return None
-
+    """解析开放的渠道标识字符串。"""
     try:
-        return TradeChannel(raw_value)
+        return TradeChannel(value)
     except ValueError:
         return None
 
@@ -248,7 +240,7 @@ def _serialize_extra(
 ) -> dict[str, object]:
     """移除可由主字段推导出的冗余 extra 内容."""
     serialized = dict(extra)
-    if serialized.get("channel_type") == _channel_value(channel_type):
+    if serialized.get("channel_type") == str(channel_type):
         serialized.pop("channel_type", None)
     return serialized
 

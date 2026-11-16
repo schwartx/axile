@@ -90,6 +90,10 @@ def test_real_algorithm_split_keeps_pricing_evidence_during_refresh(monkeypatch,
     class Clock:
         now = 1_793_664_000.0
 
+        def monotonic(self) -> float:
+            """返回仿真计时值。"""
+            return self.time()
+
         def time(self):
             return self.now
 

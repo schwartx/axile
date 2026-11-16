@@ -3,7 +3,6 @@
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -16,8 +15,7 @@ from axile.executor.replay import (
     replay_enabled,
     set_replay_observer,
 )
-from axile.server.execution_replay import recorder as module
-from axile.server.execution_replay.contracts import DATA_FIELDS, freeze_data
+from axile.server.execution_replay.contracts import freeze_data
 from axile.server.execution_replay.recorder import ReplayRecorder
 
 
@@ -123,7 +121,7 @@ def test_frozen_payload_is_not_changed_by_later_callback_mutation(running):
     eventually(lambda: bool(writers[0].messages))
     message = writers[0].messages[0]
     assert message["data"]["actual_parameters"]["price"] == 12
-    assert message["schema_version"] == 1
+    assert message["schema_version"] == 2
     assert message["time_us"] == 1_000_000
 
 
@@ -202,31 +200,6 @@ def test_queue_accepts_more_than_4096_messages_without_waiting_for_native(tmp_pa
     assert len(writer.messages) == 5_000
 
 
-def test_queue_accepts_more_than_16_mib_without_stopping(tmp_path):
-    gate = threading.Event()
-    entered = threading.Event()
-    writer = FakeWriter()
-
-    def factory(*_args):
-        entered.set()
-        gate.wait(10)
-        return writer
-
-    recorder = ReplayRecorder(7, tmp_path, writer_factory=factory)
-    recorder.attach(SimpleNamespace())
-    recorder.configure(True, 1)
-    assert entered.wait(1)
-    try:
-        for _ in range(2_200):
-            recorder.observe("/command", {"phase": "request", "source": "X" * 8_000})
-        assert len(recorder._session.queue) == 2_200
-        assert recorder.status()["state"] != "error"
-    finally:
-        gate.set()
-        recorder.close(timeout=10)
-    assert len(writer.messages) == 2_200
-
-
 def test_disable_returns_while_native_append_is_blocked(running):
     recorder, owner, writers, _ = running
     gate = threading.Event()
@@ -251,36 +224,6 @@ def test_attach_none_unbinds_and_waits_for_normal_connection(running):
     eventually(lambda: len(writers) == 2 and recorder.status()["state"] == "recording")
     assert replay_enabled(replacement)
     assert replacement._replay_account_id == 7
-
-
-def test_related_symbols_share_execution_tail_and_duplicates_do_not_extend(running):
-    recorder, _, writers, now = running
-    recorder.begin_execution("E1", ["A"])
-    recorder.begin_execution("E2", ["A", "B"])
-    recorder.end_execution("E1")
-    now[0] += module.TAIL_US + 1
-    recorder.observe("/quote/A", {"symbol": "A", "bids": [], "asks": []})
-    recorder.end_execution("E2")
-    trade = {"symbol": "A", "trade_key": "stable-T", "identity_quality": "stable", "quantity": 1}
-    recorder.observe("/trade", trade)
-    now[0] += module.TAIL_US - 1
-    recorder.observe("/trade", trade)
-    now[0] += 2
-    recorder.observe("/quote/A", {"symbol": "A", "bids": [], "asks": []})
-    recorder.close()
-    quotes = [message for message in writers[0].messages if message["topic"] == "/quote/A"]
-    assert len(quotes) == 1
-    assert len([message for message in writers[0].messages if message["topic"] == "/trade"]) == 2
-
-
-def test_known_order_execution_survives_execution_end(running):
-    recorder, _, writers, _ = running
-    recorder.begin_execution("E1", ["A"])
-    recorder.observe("/order", {"symbol": "A", "order_id": "O1", "execution_id": "E1", "status": "working"})
-    recorder.end_execution("E1")
-    recorder.observe("/trade", {"symbol": "A", "order_id": "O1", "trade_key": "T1", "identity_quality": "stable"})
-    recorder.close()
-    assert writers[0].messages[-1]["data"]["execution_id"] == "E1"
 
 
 def test_command_lifecycle_preserves_exception_and_disabled_allocates_no_identity():
@@ -339,18 +282,6 @@ def test_native_time_dictionary_is_bounded_and_does_not_accept_sdk_objects():
     assert freeze_data("/trade", {"source_times": {"timestamp_ns": "1793318400123456789"}}, {})
     with pytest.raises(ValueError, match="invalid_source_times"):
         freeze_data("/trade", {"source_times": {"timestamp_ns": {"sdk": 1}}}, {})
-
-
-def test_reader_preserves_legal_native_cursor_budget(monkeypatch):
-    from axile.server.execution_replay import service
-
-    captured = []
-    monkeypatch.setattr(service, "_read", lambda *args: captured.append(json.loads(args[-1])) or {})
-    cursor = "A" * 16_000
-    service.replay_window("/server/replay", 7, "E1", {"recording_id": "R1", "cursor": cursor})
-    assert captured[0]["cursor"] == cursor
-    with pytest.raises(ValueError, match="invalid_replay_cursor"):
-        service.replay_window("/server/replay", 7, "E1", {"recording_id": "R1", "cursor": "A" * (512 * 1024 + 1)})
 
 
 def test_healthy_transport_does_not_restore_pre_disconnect_query_proof(running):
@@ -414,109 +345,6 @@ def test_each_connection_loss_revokes_queries_without_account_sync(running, fail
     )
     recorder.close()
     assert writers[0].messages[-1]["data"]["query_basis"] is None
-    assert ("A", "O") not in recorder._orders
-
-
-@pytest.mark.parametrize("rows", [[], [{"symbol": "A", "order_id": "O", "status": "canceled"}]])
-def test_complete_order_set_retires_capture_interest_after_the_tail(running, rows):
-    recorder, owner, writers, now = running
-    recorder.begin_execution("E", ["A"])
-    recorder.observe("/order", {"symbol": "A", "order_id": "O", "status": "working"})
-    recorder.end_execution("E")
-    token = begin_query(owner, ["A"])
-    recorder.observe(
-        "/order_set", {**token, "scope": ["A"], "scope_complete": True, "synchronized": True, "orders": rows}
-    )
-    recorder.observe("/quote/A", {"symbol": "A", "bids": [], "asks": []})
-    now[0] += module.TAIL_US + 1
-    recorder.observe("/quote/A", {"symbol": "A", "bids": [], "asks": []})
-    recorder.close()
-    assert ("A", "O") not in recorder._orders
-    assert len([message for message in writers[0].messages if message["topic"] == "/quote/A"]) == 1
-
-
-def test_order_set_prefix_keeps_new_orders_and_fills(running):
-    recorder, owner, _, _ = running
-    for identity in ("old", "filled"):
-        recorder.observe("/order", {"symbol": "A", "order_id": identity, "status": "working"})
-    token = begin_query(owner, ["A"])
-    recorder.observe("/order", {"symbol": "A", "order_id": "new", "status": "working"})
-    recorder.observe(
-        "/trade", {"symbol": "A", "order_id": "filled", "trade_key": "T", "identity_quality": "stable", "quantity": 1}
-    )
-    recorder.observe(
-        "/order_set", {**token, "scope": ["A"], "scope_complete": True, "synchronized": True, "orders": []}
-    )
-    assert recorder._orders == {("A", "new"), ("A", "filled")}
-
-
-def test_duplicate_trade_does_not_protect_an_order_from_a_new_complete_set(running):
-    recorder, owner, _, _ = running
-    recorder.observe("/order", {"symbol": "A", "order_id": "O", "status": "working"})
-    trade = {"symbol": "A", "order_id": "O", "trade_key": "T", "identity_quality": "stable", "quantity": 1}
-    recorder.observe("/trade", trade)
-    token = begin_query(owner, ["A"])
-    recorder.observe("/trade", trade)
-    recorder.observe(
-        "/order_set", {**token, "scope": ["A"], "scope_complete": True, "synchronized": True, "orders": []}
-    )
-    assert ("A", "O") not in recorder._orders
-
-
-def test_late_order_set_cannot_revive_removed_orders_in_an_overlapping_scope(running):
-    recorder, owner, _, _ = running
-    recorder.observe("/order", {"symbol": "A", "order_id": "OA", "status": "working"})
-    recorder.observe("/order", {"symbol": "B", "order_id": "OB", "status": "working"})
-    first = begin_query(owner, ["A", "B"])
-    second = begin_query(owner, ["A"])
-    assert first["query_basis"]["start_seq"] == second["query_basis"]["start_seq"]
-    recorder.observe(
-        "/order_set", {**second, "scope": ["A"], "scope_complete": True, "synchronized": True, "orders": []}
-    )
-    recorder.observe(
-        "/order_set",
-        {
-            **first,
-            "scope": ["A", "B"],
-            "scope_complete": True,
-            "synchronized": True,
-            "orders": [
-                {"symbol": "A", "order_id": "OA", "status": "working"},
-                {"symbol": "B", "order_id": "OB", "status": "canceled"},
-            ],
-        },
-    )
-    assert recorder._orders == set()
-
-
-@pytest.mark.parametrize("complete,synchronized", [(False, True), (True, False)])
-def test_partial_order_sets_and_old_generation_cannot_remove_capture_interest(running, complete, synchronized):
-    recorder, owner, _, _ = running
-    recorder.observe("/order", {"symbol": "A", "order_id": "O", "status": "working"})
-    token = begin_query(owner, ["A"])
-    recorder.observe(
-        "/order_set",
-        {**token, "scope": ["A"], "scope_complete": complete, "synchronized": synchronized, "orders": []},
-    )
-    recorder.observe("/connection", {"connected": False})
-    recorder.observe(
-        "/order_set", {**token, "scope": ["A"], "scope_complete": True, "synchronized": True, "orders": []}
-    )
-    recorder.observe(
-        "/order", {"symbol": "A", "order_id": "O", "status": "canceled", "sync_generation": token["sync_generation"]}
-    )
-    assert recorder._orders == {("A", "O")}
-
-
-def test_new_recording_does_not_inherit_order_interest_fences(running):
-    recorder, _, _, _ = running
-    recorder.observe("/order", {"symbol": "A", "order_id": "O", "status": "canceled"})
-    recorder.configure(False, 2)
-    eventually(lambda: recorder._session is None)
-    recorder.configure(True, 3)
-    eventually(lambda: recorder.status()["state"] == "recording")
-    recorder.observe("/order", {"symbol": "A", "order_id": "O", "status": "working"})
-    assert recorder._orders == {("A", "O")}
 
 
 def test_poll_seals_only_after_its_captured_queue_prefix(tmp_path):
@@ -603,28 +431,6 @@ def test_worker_shutdown_waits_for_recording_to_finish(running):
     assert writers[0].finished.is_set()
 
 
-def test_unlinked_trade_correction_protects_inflight_order_query(running, monkeypatch):
-    recorder, _, _, _ = running
-    monkeypatch.setattr(module, "MAX_IDENTITIES", 2)
-    recorder.observe("/order", {"symbol": "X", "order_id": "O", "status": "working"})
-    recorder.observe("/trade", {"symbol": "X", "order_id": "O", "trade_key": "T", "identity_quality": "stable"})
-    for key in ("T2", "T3"):
-        recorder.observe("/trade", {"symbol": "Y", "order_id": "Y", "trade_key": key, "identity_quality": "stable"})
-    token = recorder.begin_query(["X"])
-    recorder.observe("/trade", {"trade_key": "T", "identity_quality": "stable", "price": 12})
-    recorder.observe(
-        "/order_set",
-        {
-            **token,
-            "scope": {"kind": "symbols", "symbols": ["X"]},
-            "scope_complete": True,
-            "synchronized": True,
-            "orders": [],
-        },
-    )
-    assert ("X", "O") in recorder._orders
-
-
 def test_repeated_query_observation_keeps_its_original_coverage_proof(running):
     recorder, owner, writers, _ = running
     token = begin_query(owner, [])
@@ -662,10 +468,10 @@ def test_cached_seed_is_optional_and_uses_same_ordered_observer(tmp_path):
     recorder = ReplayRecorder(7, tmp_path, writer_factory=lambda *_: writer)
     recorder.attach(owner)
     recorder.configure(True, 1)
-    eventually(lambda: len(writer.messages) == 2)
+    eventually(lambda: len(writer.messages) == 3)
     recorder.close()
-    assert [message["topic"] for message in writer.messages] == ["/account_observation", "/quote/A"]
-    assert [message["capture_seq"] for message in writer.messages] == [1, 2]
+    assert [message["topic"] for message in writer.messages] == ["/account_observation", "/capture", "/quote/A"]
+    assert [message["capture_seq"] for message in writer.messages] == [1, 2, 3]
 
 
 def test_enabling_during_execution_seeds_carry_in_without_claiming_start(tmp_path):
@@ -677,84 +483,6 @@ def test_enabling_during_execution_seeds_carry_in_without_claiming_start(tmp_pat
     eventually(lambda: bool(writer.messages))
     recorder.close()
     assert writer.messages[0]["data"]["phase"] == "carry_in"
-
-
-def test_canonical_canceled_order_expires_after_tail_without_hiding_open_order(running):
-    recorder, _, writers, now = running
-    recorder.observe("/order", {"symbol": "A", "order_id": "O1", "status": "working"})
-    recorder.observe("/order", {"symbol": "B", "order_id": "O2", "status": "working"})
-    recorder.observe("/order", {"symbol": "A", "order_id": "O1", "status": "canceled", "remaining_quantity": 3})
-    recorder.observe("/quote/A", {"symbol": "A", "bids": [], "asks": []})
-    now[0] += module.TAIL_US + 1
-    recorder.observe("/quote/A", {"symbol": "A", "bids": [], "asks": []})
-    recorder.observe("/quote/B", {"symbol": "B", "bids": [], "asks": []})
-    recorder.close()
-    assert [message["topic"] for message in writers[0].messages if message["topic"].startswith("/quote/")] == [
-        "/quote/A",
-        "/quote/B",
-    ]
-
-
-def test_command_identity_owns_early_native_order_before_public_return(running):
-    recorder, _, writers, _ = running
-    recorder.observe(
-        "/command",
-        {
-            "command_id": "C1",
-            "operation": "place_order",
-            "phase": "request",
-            "execution_id": "E1",
-            "origin": "execution",
-        },
-    )
-    recorder.observe(
-        "/command",
-        {"command_id": "C1", "operation": "place_order", "phase": "native_request", "symbol": "A", "order_id": "O1"},
-    )
-    recorder.observe(
-        "/trade", {"symbol": "A", "order_id": "O1", "trade_key": "T1", "identity_quality": "stable", "quantity": 2}
-    )
-    recorder.close()
-    assert writers[0].messages[1]["data"]["execution_id"] == "E1"
-    assert writers[0].messages[2]["data"]["execution_id"] == "E1"
-    assert writers[0].messages[2]["data"]["origin"] == "execution"
-
-
-@pytest.mark.parametrize("original_execution,origin", [("original", "execution"), (None, "external")])
-def test_cancel_keeps_original_order_ownership(running, original_execution, origin):
-    recorder, _, writers, _ = running
-    recorder.observe(
-        "/order",
-        {"symbol": "A", "order_id": "O1", "status": "working", "execution_id": original_execution, "origin": origin},
-    )
-    recorder.observe(
-        "/command",
-        {
-            "command_id": "cancel",
-            "operation": "cancel_order",
-            "phase": "request",
-            "execution_id": "cancellation-execution",
-            "symbol": "A",
-            "order_id": "O1",
-        },
-    )
-    recorder.observe(
-        "/command",
-        {
-            "command_id": "cancel",
-            "operation": "cancel_order",
-            "phase": "native_request",
-            "symbol": "A",
-            "order_id": "O1",
-        },
-    )
-    recorder.observe(
-        "/trade", {"symbol": "A", "order_id": "O1", "trade_key": "T1", "identity_quality": "stable", "quantity": 2}
-    )
-    recorder.close()
-    assert writers[0].messages[2]["data"]["execution_id"] == "cancellation-execution"
-    assert writers[0].messages[3]["data"].get("execution_id") == original_execution
-    assert writers[0].messages[3]["data"]["origin"] == origin
 
 
 def test_only_active_execution_is_not_ownership_proof(running):
@@ -775,14 +503,6 @@ def test_nested_rows_use_declared_fields_and_position_extensions():
         freeze_data("/account_observation", {"positions": [{"symbol": "A", "attributes": {"cost_basis": 2}}]}, {})
     value = {"positions": [{"symbol": "A", "attributes": {"cost_basis": 2}}]}
     assert freeze_data("/account_observation", value, {"attributes": {"position": ["cost_basis"]}}) == value
-
-
-def test_python_allowed_fields_match_packaged_native_schema():
-    schema_path = Path(module.__file__).with_name("schemas") / "replay-v1.json"
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    assert DATA_FIELDS == set(schema["$defs"]["data"]["properties"])
-    scope = schema["$defs"]["scope"]
-    assert any("kind" in shape.get("properties", {}) for shape in scope["oneOf"])
 
 
 def test_environment_metadata_is_read_only_when_recording_starts(tmp_path):

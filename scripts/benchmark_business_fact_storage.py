@@ -490,7 +490,7 @@ def write_lifecycle_audit(item: dict, *, before: bool) -> None:
     from axile.executor.models.execution_result import ExecutionStatus
     from axile.server.execution.worker_backend import worker_audit
 
-    account = SimpleNamespace(id=1, trade_channel=TradeChannel.CTP)
+    account = SimpleNamespace(id=1, trade_channel=TradeChannel("ctp"))
     executor = SyntheticExecutor()
     raw_input = item["raw_input"]
     standard_input = SimpleNamespace(**raw_input)

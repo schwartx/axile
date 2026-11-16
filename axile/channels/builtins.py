@@ -375,7 +375,7 @@ def _create_ctp_executor(config: BaseAccountConfig):
 
     if not isinstance(config, CTPAccountConfig):
         raise TypeError("CTP 渠道需要 CTPAccountConfig")
-    executor = CTPExecutor(TradeChannel.CTP)
+    executor = CTPExecutor(TradeChannel("ctp"))
     executor.account_config = config
     return executor
 
@@ -535,7 +535,6 @@ def _gm_plugin() -> ChannelPlugin:
         algorithm_scope_key=gm_algorithm_scope,
         connect_account=_connect_gm_account,
         schedule_settings_model=GMSessionSettings,
-        legacy_schedule_field="gm_sessions",
         validate_connection=_validate_gm_connection,
         descriptor=ChannelDescriptor(
             connection_steps=_GM_STEPS,

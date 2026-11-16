@@ -20,7 +20,14 @@ def test_independent_pipe_reads_guard_without_business_command(monkeypatch):
         assert parent.poll(2)
         frame = parent.recv()
         assert frame["instance_id"] == guard.instance_id
-        assert next(m["value"] for m in frame["metrics"] if m["operation"] == "place_order") == 120
+        assert (
+            next(
+                m["value"]
+                for m in frame["rules"]
+                if m["scope"] == "account" and m["rule"] == "per_day" and m["operation"] == "place_order"
+            )
+            == 120
+        )
         assert guard.flush_records() == ([], [])
     finally:
         parent.send(None)

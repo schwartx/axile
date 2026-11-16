@@ -15,6 +15,10 @@ class _Clock:
     def __init__(self) -> None:
         self.now = 0.0
 
+    def monotonic(self) -> float:
+        """返回仿真计时值。"""
+        return self.time()
+
     def time(self) -> float:
         return self.now
 

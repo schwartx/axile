@@ -31,8 +31,7 @@ describe('positionValueLabelOf', () => {
     expect(positionValueLabelOf({ position_value_label: '名义价值' })).toBe('名义价值')
   })
 
-  it('兼容未携带新字段的旧服务', () => {
-    expect(positionValueLabelOf(undefined)).toBe('市值')
-    expect(positionValueLabelOf({})).toBe('市值')
+  it('渠道目录未就绪时不猜金额口径', () => {
+    expect(positionValueLabelOf(undefined)).toBe('未知')
   })
 })

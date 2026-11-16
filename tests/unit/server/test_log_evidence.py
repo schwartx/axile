@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from axile.common.log_files import LogDecoder
 from axile.server.evidence.archive import build_archive
 from axile.server.evidence.logs import collect_logs
 from axile.server.evidence.models import EvidenceError, EvidenceLimits, EvidenceProfile, EvidenceSnapshot, ExportBudget
@@ -177,13 +178,15 @@ def test_log_collection_preserves_cancellation(tmp_path):
 
 @pytest.mark.parametrize("difference", [0, -1])
 def test_blocked_budget_keeps_exact_utf8_size_and_newline(tmp_path, difference):
-    row = {
-        "context": {"account_id": 7, "execution_id": "E1", "details": ["汉🙂"] * 12_000},
-        "message": "记录",
-    }
-    content = json.dumps(row, ensure_ascii=False) + "\n"
+    protocol = records()[:2] + [
+        ["C", 1, {"account_id": 7, "execution_id": "E1", "details": ["汉🙂"] * 12_000}],
+        ["E", 1, 0, 1, 1, None, ["记录"]],
+    ]
+    decoder = LogDecoder()
+    row = next(value for entry in protocol if (value := decoder.feed(entry)) is not None)
+    content = "".join(json.dumps(entry, ensure_ascii=False) + "\n" for entry in protocol)
     (tmp_path / "axile-large.jsonl").write_text(content, encoding="utf-8")
-    size = len(content.encode("utf-8"))
+    size = len((json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8"))
     budget = ExportBudget(limits=replace(EvidenceLimits(), bytes=size + difference))
     if difference:
         with pytest.raises(EvidenceError) as caught:
@@ -209,8 +212,11 @@ def test_large_record_keeps_interrupt_checks_between_blocks(tmp_path, monkeypatc
                 else:
                     now[0] = 2.0
 
-    row = {"context": {"account_id": 7, "execution_id": "E1", "details": [0] * 50_000}, "message": "记录"}
-    content = json.dumps(row, ensure_ascii=False) + "\n"
+    protocol = records()[:2] + [
+        ["C", 1, {"account_id": 7, "execution_id": "E1", "details": [0] * 50_000}],
+        ["E", 1, 0, 1, 1, None, ["记录"]],
+    ]
+    content = "".join(json.dumps(entry, ensure_ascii=False) + "\n" for entry in protocol)
     (tmp_path / "axile-large.jsonl").write_text(content, encoding="utf-8")
     budget = InterruptedBudget(limits=replace(EvidenceLimits(), seconds=1.0))
     with pytest.raises(EvidenceError) as caught:

@@ -111,26 +111,6 @@ def validate_windows_directory(value: str) -> str:
     raise ValueError("请输入 Windows 绝对路径")
 
 
-def _channel_value(channel: object) -> str:
-    """
-    返回用于日志与序列化的规范化渠道字符串.
-
-    Parameters
-    ----------
-    channel : object
-        渠道对象或原始渠道值。
-
-    Returns
-    -------
-    str
-        规范化后的渠道字符串。
-    """
-    channel_value = getattr(channel, "value", None)
-    if isinstance(channel_value, str):
-        return channel_value
-    return str(channel)
-
-
 class BaseAccountConfig(BaseModel):
     """
     基础账户配置抽象模型.
@@ -148,7 +128,7 @@ class BaseAccountConfig(BaseModel):
     @override
     def __str__(self) -> str:
         """返回便于记录日志的简要字符串表示."""
-        return f"{_channel_value(self.channel_type)}AccountConfig"
+        return f"{self.channel_type}AccountConfig"
 
 
 class CTPAccountConfig(BaseAccountConfig):
@@ -215,8 +195,7 @@ class CTPAccountConfig(BaseAccountConfig):
         if not isinstance(data, dict):
             return data
         normalized = dict(data)
-        normalized.pop("quote_max_age_seconds", None)  # 兼容已保存的 CTP 账户配置。
-        normalized["channel_type"] = TradeChannel.CTP
+        normalized["channel_type"] = TradeChannel("ctp")
         return normalized
 
 
@@ -287,7 +266,7 @@ class GMAccountConfig(BaseAccountConfig):
         if not isinstance(data, dict):
             return data
         normalized = dict(data)
-        normalized["channel_type"] = TradeChannel.GM
+        normalized["channel_type"] = TradeChannel("gm")
         mode = normalized.get("connection_mode")
         if mode == "terminal":
             normalized.pop("serv_addr", None)
@@ -350,7 +329,7 @@ class TQAccountConfig(BaseAccountConfig):
         if not isinstance(data, dict):
             return data
         normalized = dict(data)
-        normalized["channel_type"] = TradeChannel.TQ
+        normalized["channel_type"] = TradeChannel("tq")
         mode = normalized.get("account_mode")
         if mode != "live":
             for key in ("broker_name", "account_id", "account_password"):

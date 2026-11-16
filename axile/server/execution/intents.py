@@ -7,6 +7,7 @@ from typing import Any, Literal, cast
 
 import loguru
 
+from axile.channels.gm_sessions import GMSessionSettings
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
 from axile.server._native import _core
@@ -294,14 +295,13 @@ async def _insert_intent(
         from axile.channels.gm_sessions import (
             AUCTION_PHASES,
             SHANGHAI,
-            GMSessionSettings,
             check_gm_operation,
             gm_phase,
             gm_session_context,
         )
         from axile.executor.algorithms.utils.clock import clock_now
 
-        sessions = account.gm_sessions or GMSessionSettings()
+        sessions = GMSessionSettings.from_channel_options(account.channel_options) or GMSessionSettings()
         now = clock_now(tz=SHANGHAI)
         context = cast("dict[str, Any] | None", payload.get("gm_session"))
         phase = gm_phase(now)
@@ -343,7 +343,7 @@ def _request_context(account: AccountContext, payload: dict[str, object]) -> dic
     from axile.server.execution.supplements import calendar_context
 
     return (
-        calendar_context(str(account.trade_channel), account.gm_sessions)
+        calendar_context(str(account.trade_channel), GMSessionSettings.from_channel_options(account.channel_options))
         if payload.get("supplement_step_id") is not None
         else calendar_context(None)
     )

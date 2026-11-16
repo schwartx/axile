@@ -186,7 +186,7 @@ def test_fallback_order_validation_reaches_final_submission_boundary(monkeypatch
     guard = AccountControlGuard(
         account_id=1,
         execution_id="fallback-boundary",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         policy=resolve_account_control_policy(
             "default",
             AccountControlOverride.model_validate(
@@ -243,7 +243,7 @@ def test_fallback_final_validation_uses_order_purpose_and_frozen_quote(monkeypat
     guard = AccountControlGuard(
         account_id=1,
         execution_id="fallback-purpose",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         policy=resolve_account_control_policy(
             "default",
             AccountControlOverride.model_validate(

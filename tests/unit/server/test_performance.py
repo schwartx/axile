@@ -204,7 +204,7 @@ def test_quick_path_pairs_day_points_with_same_participants():
     items = [obs(1), obs(2, {"A": 110.0}, asset=110), obs(2, asset=120), obs(3, {"A": 121.0}, asset=121)]
     items[2].target = None
     items[2].id = 99
-    settings = PerformanceSettings(backtest_weight_type="ts", backtest_fee_rate=0)
+    settings = PerformanceSettings(backtest_weight_type="cs", backtest_fee_rate=0)
     full = calculate_performance(items, settings, "all")
     quick = calculate_performance(items, settings, "all", include_backtest=False)
     assert [(p["date"], p["observed_at"], p["account_return"]) for p in quick["points"]] == [
@@ -513,7 +513,7 @@ def test_below_min_weight_excluded_from_portfolio_pnl():
 @pytest.mark.parametrize("fee", [True, None, "0.01", float("nan"), float("inf"), -0.1, 1.0])
 def test_invalid_settings_rejected(fee):
     with pytest.raises(ValidationError):
-        PerformanceSettings(backtest_weight_type="ts", backtest_fee_rate=fee)
+        PerformanceSettings(backtest_weight_type="cs", backtest_fee_rate=fee)
 
 
 def test_empty_and_single_observation():
@@ -548,7 +548,7 @@ def test_account_only_matches_full_without_building_or_running_wbt(monkeypatch, 
             item.target = None
     elif scenario == "empty":
         items = []
-    settings = PerformanceSettings(backtest_weight_type="ts", backtest_fee_rate=0)
+    settings = PerformanceSettings(backtest_weight_type="cs", backtest_fee_rate=0)
     full = calculate_performance(items, settings, range_key)
 
     def forbidden(*args, **kwargs):

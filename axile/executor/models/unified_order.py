@@ -50,15 +50,6 @@ from axile.executor.models.value_conversion import PriceValueConversion  # noqa:
 ExtraData = dict[str, object]
 
 
-def _order_update_time(data: dict[str, object]) -> str:
-    """从旧版显式时间或时间戳恢复订单更新时间。"""
-    extra = cast(ExtraData, data["extra"])
-    explicit = extra.get("_update_time_str")
-    if isinstance(explicit, str):
-        return explicit
-    return datetime.fromtimestamp(cast(float, data["update_timestamp"])).isoformat()
-
-
 class OrderDirection(str, Enum):
     """订单方向枚举."""
 
@@ -246,11 +237,6 @@ class UnifiedOrder(BaseModel):
         default_factory=_get_now_iso,
         description="创建时间（ISO格式）",
     )
-    update_timestamp: float = Field(
-        default_factory=_get_now_timestamp,
-        description="更新时间戳（秒）",
-        exclude=True,  # 序列化时排除
-    )
 
     # === 渠道特有数据 ===
     extra: ExtraData = Field(
@@ -258,18 +244,9 @@ class UnifiedOrder(BaseModel):
         description="渠道特有数据，包含原始订单数据和渠道特定字段",
     )
     update_time: str = Field(
-        default_factory=_order_update_time,
+        default_factory=_get_now_iso,
         description="更新时间（ISO格式，跨进程序列化时保留原值）",
     )
-
-    @override
-    def model_post_init(self, context: object) -> None:
-        """让兼容时间戳与持久化时间一致，包括跳过校验的构造入口。"""
-        try:
-            self.update_timestamp = datetime.fromisoformat(self.update_time).timestamp()
-        except (ValueError, OverflowError, OSError):
-            # 旧渠道允许原生时间文本；解析失败仍保留原文。
-            pass
 
     # === 计算字段（缓存计算结果） ===
     @computed_field
@@ -404,8 +381,6 @@ class UnifiedOrder(BaseModel):
                 "raw_order_data": kwargs.get("raw_order_data", {}),
             }
         )
-        if isinstance(update_time_str, str):
-            order.extra["_update_time_str"] = update_time_str
 
         # 未被统一模型消费的字段全部保留，供渠道插件自行解释。
         reserved_fields = {"status", "filled_volume", "avg_price", "create_time", "update_time", "raw_order_data"}

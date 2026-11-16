@@ -88,7 +88,7 @@ def test_fresh_two_sided_order_book_is_usable():
 
 
 class Owner(AbstractExecutorCapabilityMixin):
-    channel_type = TradeChannel.GM
+    channel_type = TradeChannel("gm")
     logger = logger
 
     def __init__(self, q):

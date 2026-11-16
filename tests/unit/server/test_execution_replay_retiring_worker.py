@@ -9,7 +9,6 @@ import pytest
 
 from axile.server.execution.worker_backend import replay
 from axile.server.execution.worker_backend.protocol import WorkerBackendResponse
-from axile.server.execution_replay.service import replay_window
 from tests.unit.server.test_execution_replay_control_delivery import eventually
 from tests.unit.server.test_execution_replay_control_delivery import runtime as runtime
 
@@ -45,33 +44,6 @@ def retiring(runtime):
         business.close()
         peer.close()
         assert not drop.is_alive() and not server.is_alive()
-
-
-@pytest.mark.parametrize("replacement", [False, True])
-def test_off_reaches_the_retiring_worker_before_its_busy_trade_finishes(runtime, replacement):
-    recorder = runtime.first.state.replay_recorder
-    identity = recorder.status()["recording_id"]
-    with retiring(runtime):
-        if replacement:
-            latest = runtime.spawn()
-        off = runtime.save(False)
-        with recorder._condition:
-            result = runtime.backend._replay_control_blocking(off, True)
-            assert result["desired"] is False
-            assert result["config_version"] == off.replay_config_version
-            # 旧实例尚未确认，不能用新实例的 disabled 或“注册表已空”冒充完成。
-            assert result["effective_version"] is None
-        eventually(lambda: recorder.status()["state"] == "disabled")
-        recorder.observe("/command", {"execution_id": "E", "command_id": "after-off", "phase": "request"})
-        if replacement:
-            assert latest.state.replay_recorder is None
-            assert latest.state.replay_config.enabled is False
-    result = runtime.backend._replay_control_blocking(off, False)
-    assert result["effective_version"] == off.replay_config_version
-    page = replay_window(
-        runtime.root, runtime.account.id, "E", {"recording_id": identity, "start_us": 0, "end_us": 2**53 - 1}
-    )
-    assert all(message["data"].get("command_id") != "after-off" for message in page["messages"])
 
 
 def test_forced_retirement_remains_pending_until_the_process_has_really_exited(runtime, monkeypatch):

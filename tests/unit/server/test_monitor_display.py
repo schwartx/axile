@@ -50,7 +50,6 @@ def test_monitor_display_keeps_defaults_and_filters_nested_internal_fields():
         saved_policy={},
         saved_fingerprint="saved",
         rules=[rule],
-        metrics=[],
         waiting_total=1,
         waiting=[
             dict(

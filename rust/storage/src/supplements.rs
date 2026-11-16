@@ -112,7 +112,6 @@ fn account_schedule(
                 .as_object_mut()
                 .ok_or_else(|| invalid("排程配置必须是对象"))?,
         )?;
-        schedule["gm_sessions"] = schedule["channel_options"]["gm"].clone();
         Ok(json!({"trade_channel":channel,"portfolio_id":portfolio,"schedule":schedule}))
     })
     .transpose()
@@ -163,18 +162,13 @@ fn fingerprint_wire(value: &Value) -> Result<String, AnalysisError> {
 }
 
 fn fingerprint(account: &Value) -> Result<String, AnalysisError> {
-    let mut value = json!([
+    let value = json!([
         account["schedule"]["cron_expr"],
         account["schedule"]["supplement"],
         account["trade_channel"],
-        account["portfolio_id"]
+        account["portfolio_id"],
+        account["schedule"]["channel_options"]
     ]);
-    if !account["schedule"]["gm_sessions"].is_null() {
-        value
-            .as_array_mut()
-            .unwrap()
-            .push(account["schedule"]["gm_sessions"].clone());
-    }
     Ok(format!(
         "{:x}",
         Sha256::digest(fingerprint_wire(&value)?.as_bytes())
@@ -288,7 +282,7 @@ pub fn step(path: &str, request: &Value) -> Result<Value, AnalysisError> {
         };
         let account = account_schedule(connection, integer(&group, "account_id")?)?;
         Ok(
-            json!({"step":step,"group":group,"channel":account.as_ref().map(|account| &account["trade_channel"]),"gm_sessions":account.as_ref().map(|account| &account["schedule"]["gm_sessions"])}),
+            json!({"step":step,"group":group,"channel":account.as_ref().map(|account| &account["trade_channel"]),"channel_options":account.as_ref().map(|account| &account["schedule"]["channel_options"])}),
         )
     })
 }
@@ -317,7 +311,7 @@ pub fn execution_requests(path: &str, request: &Value) -> Result<Value, Analysis
             .transpose()?
             .flatten();
         Ok(
-            json!({"steps":steps,"channel":account.as_ref().map(|account| &account["trade_channel"]),"gm_sessions":account.as_ref().map(|account| &account["schedule"]["gm_sessions"])}),
+            json!({"steps":steps,"channel":account.as_ref().map(|account| &account["trade_channel"]),"channel_options":account.as_ref().map(|account| &account["schedule"]["channel_options"])}),
         )
     })
 }
@@ -814,17 +808,10 @@ mod tests {
     }
 
     #[test]
-    fn schedule_storage_shape_preserves_gm_permissions_and_fingerprint() {
+    fn schedule_options_preserve_gm_permissions_and_affect_fingerprint() {
         let connection = fixture();
-        let sessions = json!({"opening_locked":{"enabled":true,"time":"09:24"}});
-        let legacy = json!({"is_started":true,"cron_expr":"0 9 * * *","supplement":{"count":1,"interval_minutes":1},"gm_sessions":sessions});
-        connection
-            .execute(
-                "UPDATE account_settings SET schedule=?1 WHERE account_id=1",
-                [legacy.to_string()],
-            )
-            .unwrap();
         let before = account_schedule(&connection, 1).unwrap().unwrap();
+        let sessions = json!({"opening_locked":{"enabled":true,"time":"09:24"}});
         let canonical = json!({"is_started":true,"cron_expr":"0 9 * * *","supplement":{"count":1,"interval_minutes":1},"channel_options":{"gm":sessions}});
         connection
             .execute(
@@ -833,17 +820,16 @@ mod tests {
             )
             .unwrap();
         let after = account_schedule(&connection, 1).unwrap().unwrap();
-        assert_eq!(before, after);
-        assert_eq!(after["schedule"]["gm_sessions"], sessions);
-        assert_eq!(fingerprint(&before).unwrap(), fingerprint(&after).unwrap());
+        assert_eq!(after["schedule"]["channel_options"]["gm"], sessions);
+        assert_ne!(fingerprint(&before).unwrap(), fingerprint(&after).unwrap());
     }
 
     #[test]
-    fn fingerprint_preserves_existing_python_deduplication_keys() {
+    fn fingerprint_matches_canonical_python_deduplication_keys() {
         let connection = fixture();
         assert_eq!(
             fingerprint(&account_schedule(&connection, 1).unwrap().unwrap()).unwrap(),
-            "976b25430f5eecc1a70d71023c8a7b1490665f0965e65164538e2c95536f355a"
+            "ad73b54e5cd6ed5bcbdbf9f15afabc8ddee540a3177e00267ceaf71044da97e4"
         );
         assert_eq!(
             fingerprint_wire(&json!(["渠道🦀",{"b":2,"a":1}])).unwrap(),

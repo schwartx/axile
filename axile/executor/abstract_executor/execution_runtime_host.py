@@ -139,7 +139,7 @@ class AbstractExecutorExecutionRuntimeHostMixin:
         """确保连接有效，连接断开时抛出异常。"""
         executor = _executor(self)
         if not executor._verify_connection():
-            raise ConnectionError(f"{executor.channel_type.value} 连接无效，请检查网络和账户配置")
+            raise ConnectionError(f"{str(executor.channel_type)} 连接无效，请检查网络和账户配置")
 
     def _sync_active_runtime_bindings(self) -> None:
         """将宿主上的 binding 变更同步到当前 active runtime。"""

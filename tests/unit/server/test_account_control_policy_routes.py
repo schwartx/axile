@@ -11,7 +11,7 @@ from axile.executor.account_control.models import AccountControlOverride
 from axile.server.api.routes import account_control_policy_routes
 
 
-def _account(*, channel: TradeChannel = TradeChannel.CTP) -> SimpleNamespace:
+def _account(*, channel: TradeChannel = TradeChannel("ctp")) -> SimpleNamespace:
     return SimpleNamespace(
         id=1,
         trade_channel=channel,

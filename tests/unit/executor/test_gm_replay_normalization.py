@@ -249,3 +249,13 @@ def test_invalid_trigger_price_cannot_confirm_plain_limit_book(stop_price):
     data = replay.order({"status": 1, "order_type": 1, "stop_price": stop_price})
     assert data["confirmed_book"] is False
     assert data["field_quality"]["stop_price"] == "invalid"
+
+
+def test_position_requires_current_available_now_field():
+    from axile.executor.gm.gm_execute import _gm_available_volume
+
+    assert _gm_available_volume({"available_now": 600, "available": 800}) == 600
+    with pytest.raises(KeyError, match="available_now"):
+        _gm_available_volume({"available": 800})
+    observation = replay.account_observation({"nav": 1000}, [{"available": 800}])
+    assert observation["positions"][0]["available_quantity"] is None

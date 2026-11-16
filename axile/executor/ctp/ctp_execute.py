@@ -1879,7 +1879,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 execution_error=_session_block_message(reason_code),
                 account_id=None,
                 execution_id=None,
-                channel=TradeChannel.CTP,
+                channel=TradeChannel("ctp"),
                 operation="place_order",
                 symbol=symbol,
             )
@@ -2235,10 +2235,6 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             order_type,
             trade_rule if isinstance(trade_rule, dict) else None,
         )
-
-    def get_max_order_volume(self, symbol, order_type=OrderType.LIMIT, trade_rule=None):
-        """兼容仅查询上限的调用方。"""
-        return self.get_order_volume_bounds(symbol, order_type, trade_rule)[1]
 
     @override
     def _calculate_generic_sizing(

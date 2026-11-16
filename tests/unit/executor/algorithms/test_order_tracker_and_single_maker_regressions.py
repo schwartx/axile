@@ -765,32 +765,11 @@ def test_single_maker_market_order_on_invalid_book(
     assert captured["price"] == 0.0
 
 
-def test_single_maker_active_blocks_invalid_book(monkeypatch: pytest.MonkeyPatch) -> None:
-    tracker = MagicMock()
-    monkeypatch.setattr(single_maker_impl, "setup_order_tracker", lambda *_a, **_k: tracker)
-    monkeypatch.setattr(single_maker_impl, "teardown_order_tracker", lambda *_a, **_k: None)
-    submit = MagicMock()
-    monkeypatch.setattr(single_maker_impl, "submit_and_track_split_orders", submit)
-    executor = _SingleMakerExecutor()
-    monkeypatch.setattr(executor, "get_market_data", _invalid_book_tick)
-    algorithm_input = AlgorithmInput(
-        symbol="rb2610",
-        target_volume=1.0,
-        trade_rule={},
-        params=single_maker_impl.SingleMakerParams(price_strategy="PASSIVE", on_missing_book="active"),
-    )
-
-    result = single_maker_impl.single_maker_callback(cast("ExecutorProtocol", executor), algorithm_input)
-
-    submit.assert_not_called()
-    assert result.status == ExecutionStatus.BLOCKED
-    assert result.reason_code == "COMMON.MARKET_DATA.UNAVAILABLE"
-
-
 def test_single_maker_params_on_missing_book_validation() -> None:
-    """on_missing_book 默认 skip，接受 skip/active/market，拒绝非法值。"""
+    """on_missing_book 默认 skip，接受 skip/market，拒绝非法值。"""
     assert single_maker_impl.SingleMakerParams().on_missing_book == "skip"
-    assert single_maker_impl.SingleMakerParams(on_missing_book="active").on_missing_book == "active"
+    with pytest.raises(ValueError):
+        single_maker_impl.SingleMakerParams(on_missing_book="active")  # type: ignore[arg-type]
     assert single_maker_impl.SingleMakerParams(on_missing_book="market").on_missing_book == "market"
     with pytest.raises(ValidationError):
         single_maker_impl.SingleMakerParams(on_missing_book="bogus")  # type: ignore[arg-type]

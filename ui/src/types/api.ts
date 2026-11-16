@@ -135,7 +135,7 @@ export interface ChannelCapability {
     long_leverage_label: string
     short_leverage_label: string
     show_short_leverage: boolean
-    position_value_label?: string
+    position_value_label: string
   }
   defaults: {
     account_control_preset: string
@@ -227,7 +227,7 @@ export interface Account {
   copied_from_account_id?: number | null
   copied_from_account_name?: string | null
   runtime_sync?: AccountRuntimeSync | null
-  backtest_weight_type?: 'ts' | 'cs'
+  backtest_weight_type?: 'cs'
   backtest_fee_rate?: number
   id: number | null
   name: string
@@ -239,7 +239,7 @@ export interface Account {
   connection_values?: Record<string, unknown>
   is_started: boolean
   cron_expr: string
-  gm_sessions?: GMSessions | null
+  channel_options: Record<string, Record<string, unknown>> & { gm?: GMSessions }
   supplement?: { count: number; interval_minutes: number } | null
   has_pending_supplement?: boolean
   remark: string | null
@@ -278,7 +278,7 @@ export interface Account {
 }
 
 export interface PerformanceSettings {
-  backtest_weight_type: 'ts' | 'cs'
+  backtest_weight_type: 'cs'
   backtest_fee_rate: number
 }
 

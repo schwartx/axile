@@ -91,7 +91,7 @@ class OrderTerminalAudit:
                 return False
             if self._worker is None:
                 self._worker = threading.Thread(
-                    target=self._run, name=f"{self._channel.value}-terminal-audit", daemon=True
+                    target=self._run, name=f"{str(self._channel)}-terminal-audit", daemon=True
                 )
                 self._worker.start()
             self._pending.add(order.order_id)
@@ -162,8 +162,8 @@ class OrderTerminalAudit:
                 },
             )
         except Exception:
-            self._logger.exception("{} 订单终态审计写入失败 order_id={}", self._channel.value, order.order_id)
+            self._logger.exception("{} 订单终态审计写入失败 order_id={}", str(self._channel), order.order_id)
             return False
         if not written:
-            self._logger.warning("{} 订单终态审计未写入，保留对账重试 order_id={}", self._channel.value, order.order_id)
+            self._logger.warning("{} 订单终态审计未写入，保留对账重试 order_id={}", str(self._channel), order.order_id)
         return written

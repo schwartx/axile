@@ -299,11 +299,11 @@ def _build_rebalance_standard_input(
             },
         }
     )
-    if account.trade_channel == TradeChannel.GM:
+    if account.trade_channel == TradeChannel("gm"):
         if gm_session is not None or trigger_source == "scheduler":
             from axile.channels.gm_sessions import GMSessionSettings
 
-            sessions = getattr(account, "gm_sessions", None) or GMSessionSettings()
+            sessions = GMSessionSettings.from_channel_options(account.channel_options) or GMSessionSettings()
             cast("dict[str, Any]", standard_input.extra["audit"])["gm_session"] = gm_session or gm_session_context(
                 sessions.model_dump(), clock_now(tz=SHANGHAI)
             )
@@ -388,7 +388,6 @@ async def trade(
     execution_id: str | None = None,
     trigger_source: str = "scheduler",
     logger: "loguru.Logger | None" = None,
-    cleanup: bool = True,
     normalized_target: dict[str, float] | None = None,
     target_mode: TargetMode = "weight",
     portfolio_id: int | None = None,
@@ -408,9 +407,6 @@ async def trade(
         本次执行的触发来源。
     logger : loguru.Logger | None, optional
         用于输出日志的 logger；未提供时使用全局 logger。
-    cleanup : bool, optional
-        兼容保留；常驻 worker 统一完成每次执行的收尾。
-
     portfolio_id : int | None, optional
         调仓绑定的组合；认领成功后、派发 worker 前保存目标快照。
 

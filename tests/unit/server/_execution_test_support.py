@@ -151,7 +151,7 @@ class FakeExecutor:
             memory={"ts": datetime(2026, 3, 11, 21, 20, 13)},
             inputs=None,
             execution_time=0.1,
-            channel_type=TradeChannel.CTP,
+            channel_type=TradeChannel("ctp"),
             symbol_results={
                 "ag2612": AlgorithmResult(
                     symbol="ag2612",
@@ -181,7 +181,7 @@ class FakeExecutor:
             memory={"ts": datetime(2026, 3, 11, 21, 20, 13)},
             inputs=None,
             execution_time=0.1,
-            channel_type=TradeChannel.CTP,
+            channel_type=TradeChannel("ctp"),
             symbol_results={},
             status=ExecutionStatus.SUCCEEDED,
             success=True,
@@ -262,7 +262,7 @@ def build_account(**overrides: object) -> Account:
         "id": 1,
         "name": "ctp-sim",
         "market": "期货",
-        "trade_channel": TradeChannel.CTP,
+        "trade_channel": TradeChannel("ctp"),
         "account_control_preset": "default",
         "account_control_override": None,
         "account_config": {
@@ -313,7 +313,7 @@ def account_settings_values(account: Account) -> dict[str, object]:
             "write_empty_record",
             "execution_timeout",
         ),
-        "schedule": ("is_started", "cron_expr", "gm_sessions", "supplement"),
+        "schedule": ("is_started", "cron_expr", "channel_options", "supplement"),
         "notification": ("feishu_key", "execution_notification_code"),
         "backtest": ("backtest_weight_type", "backtest_fee_rate"),
     }

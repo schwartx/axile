@@ -55,7 +55,7 @@ def test_account_block_uses_existing_family_and_no_invented_code():
     tracker = OrderTracker(_FakeExecutor())
     tracker.record_exception(
         AccountControlBlockedError(
-            "账户受阻", account_id=1, execution_id=None, channel=TradeChannel.GM, operation="place_order"
+            "账户受阻", account_id=1, execution_id=None, channel=TradeChannel("gm"), operation="place_order"
         )
     )
     result = summarize_outcome(0, 0, 1, [], [], **tracker.outcome_inputs())
@@ -113,7 +113,7 @@ class _Logger:
 
 
 class _FakeExecutor:
-    channel_type = TradeChannel.GM
+    channel_type = TradeChannel("gm")
     symbol = "SHSE.600000"
 
     def __init__(self) -> None:
@@ -655,6 +655,10 @@ class _FixedClock:
     def __init__(self, now: float = 1000.0) -> None:
         self.now = now
 
+    def monotonic(self) -> float:
+        """返回仿真计时值。"""
+        return self.time()
+
     def time(self) -> float:
         return self.now
 
@@ -1114,7 +1118,7 @@ def test_resident_account_does_not_poll_even_if_legacy_interval_is_configured():
 @pytest.mark.parametrize("fallback", [False, True])
 def test_cancel_restriction_keeps_old_order_then_fill_clears_error(monkeypatch, fallback):
     executor = _ChaseExecutor()
-    executor.channel_type = TradeChannel.CTP
+    executor.channel_type = TradeChannel("ctp")
     tracker = OrderTracker(
         executor=executor,
         chase_config=ChaseConfig(enabled=True, ticks=1, max_count=0 if fallback else 5, interval=0),

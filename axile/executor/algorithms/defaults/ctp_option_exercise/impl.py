@@ -159,7 +159,7 @@ def _is_terminal(record: object) -> bool:
 
 @register_algorithm(
     "CTP_OPTION_EXERCISE",
-    channels=[TradeChannel.CTP],
+    channels=[TradeChannel("ctp")],
     params_class=CTPOptionExerciseParams,
     slots=[],
     label="CTP 期权行权",

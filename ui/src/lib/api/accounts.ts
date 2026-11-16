@@ -219,7 +219,7 @@ export function previewSchedule(
   return apiSend<SchedulePreview>('POST', '/account/schedule-preview', {
     trade_channel: tradeChannel,
     cron_expr: cronExpr,
-    gm_sessions: params.gm_sessions ?? null,
+    channel_options: params.gm_sessions ? { gm: params.gm_sessions } : {},
     supplement: params.supplement ?? null,
     ...(params.scheduled_ats ? { scheduled_ats: params.scheduled_ats } : {}),
     after: params.after ?? null,

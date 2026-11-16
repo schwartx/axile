@@ -73,7 +73,7 @@ function AccountHistory({ accountId }: { accountId: number }) {
     savePerformanceView(accountId, { scale, markers, backtestMode })
   }, [accountId, range, view, scale, selection, markers, backtestMode])
   const [showEvents, setShowEvents] = useState(false)
-  const [draft, setDraft] = useState<{ mode: 'ts' | 'cs'; fee: string } | null>(null)
+  const [draft, setDraft] = useState<{ fee: string } | null>(null)
   const [saved, setSaved] = useState<PerformanceSettings | null>(null)
   const [saving, setSaving] = useState(false)
   const [editingFee, setEditingFee] = useState(false)
@@ -122,9 +122,8 @@ function AccountHistory({ accountId }: { accountId: number }) {
   const portfolios = usePolling(useCallback((s: AbortSignal) => getPortfolios(s, 'all'), []), { queryKey: 'performance-portfolios', intervalMs: 0 })
   const portfolioNames = useMemo(() => new Map(portfolios.data?.data.flatMap(p => p.id == null ? [] : [[p.id, p.name] as const]) ?? []), [portfolios.data])
   const settings = saved ?? account.data ?? data?.settings
-  const mode = 'cs'
   const fee = draft?.fee ?? String(Number(((settings?.backtest_fee_rate ?? 0) * 10000).toFixed(8)))
-  const parsed = useMemo(() => settingsFromDraft(mode, fee), [mode, fee])
+  const parsed = useMemo(() => settingsFromDraft(fee), [fee])
   const dirty = parsed != null && parsed.backtest_fee_rate !== settings?.backtest_fee_rate
   const [costSymbol, setCostSymbol] = useState('')
   const [costSide, setCostSide] = useState('')
@@ -195,7 +194,7 @@ function AccountHistory({ accountId }: { accountId: number }) {
 
   const controls = <div data-testid="performance-controls" className="flex min-w-0 flex-wrap items-center gap-2 sm:ml-auto sm:justify-end">
         <fieldset disabled={saving || !settings || !!account.data?.archived_at} className="flex min-w-0 flex-wrap items-center gap-2 disabled:opacity-60">
-          <FeeControl fee={fee} onChange={value => setDraft({ mode, fee: value })} onEditingChange={setEditingFee} />
+          <FeeControl fee={fee} onChange={value => setDraft({ fee: value })} onEditingChange={setEditingFee} />
         </fieldset>
         <div className="flex items-center gap-2">
           <button type="button" aria-label={saving ? '保存中' : '保存并计算'} title={dirty ? '参数已修改，保存并计算' : '保存并计算'} disabled={!dirty || saving || !settings} onClick={() => void save()} className="flex h-9 w-9 items-center justify-center rounded border border-line text-sm disabled:opacity-40"><Save size={14} /></button>

@@ -1,7 +1,5 @@
 """统一订单的成交关联、剩余数量及零数量保护。"""
 
-from datetime import datetime
-
 import pytest
 
 from axile.executor.models.unified_order import (
@@ -85,27 +83,16 @@ def test_order_update_time_survives_construction_and_json_roundtrip(construct, u
     order = UnifiedOrder.model_construct(**payload) if construct else UnifiedOrder.model_validate(payload)
     for _ in range(2):
         assert order.update_time == updated
-        assert order.update_timestamp == datetime.fromisoformat(updated).timestamp()
         dumped = order.model_dump(mode="json")
         assert "update_timestamp" not in dumped
         assert dumped["extra"] == {}
         order = UnifiedOrder.model_validate_json(order.model_dump_json())
 
 
-def test_order_legacy_timestamp_and_explicit_time_are_preserved():
+def test_order_create_preserves_explicit_time():
     order = UnifiedOrder.create("O-time", "rb2610", "BUY", "LIMIT", 1, update_time="2026-10-15T18:38:33")
     assert UnifiedOrder.model_validate(order.model_dump()).update_time == order.update_time
-    payload = order.model_dump()
-    payload.pop("update_time")
-    payload["extra"] = {}
-    payload["update_timestamp"] = 1.0
-    restored = UnifiedOrder.model_validate(payload)
-    assert restored.update_time == datetime.fromtimestamp(1).isoformat()
-    assert UnifiedOrder.model_validate(restored.model_dump()).update_timestamp == 1.0
-    payload["extra"] = {"_update_time_str": "2026-10-15T18:38:33"}
-    assert UnifiedOrder.model_validate(payload).update_time == "2026-10-15T18:38:33"
-    payload["update_time"] = "2026-10-16T18:38:33"
-    assert UnifiedOrder.model_validate(payload).update_time == "2026-10-16T18:38:33"
+    assert "_update_time_str" not in order.extra
 
 
 class TestUnifiedOrderTrades:
