@@ -32,7 +32,7 @@ class _Logger:
 
 
 class _FakeExecutor:
-    channel_type = TradeChannel.GM
+    channel_type = TradeChannel("gm")
     symbol = "rb2610"
 
     def __init__(self) -> None:

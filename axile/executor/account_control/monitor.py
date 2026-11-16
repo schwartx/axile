@@ -124,18 +124,6 @@ def render_guard_snapshot(guard: AccountControlGuard) -> dict[str, Any]:
         }
         for q in sorted(guard._wait_queue, key=lambda q: (q.priority, q.seq))[:100]
     ]
-    metrics = [
-        {
-            **row,
-            "label": "今日报单额度用量"
-            if row["operation"] == "place_order"
-            else "今日撤单额度用量"
-            if row["operation"] == "cancel_order"
-            else row["operation"],
-        }
-        for row in rows
-        if row["scope"] == "account" and row["rule"] == "per_day"
-    ]
     return {
         "account_id": guard.account_id,
         "execution_id": guard.execution_id,
@@ -151,7 +139,6 @@ def render_guard_snapshot(guard: AccountControlGuard) -> dict[str, Any]:
         "actual_policy": policy,
         "actual_fingerprint": policy_fingerprint(policy),
         "rules": rows,
-        "metrics": metrics,
         "waiting": queue,
         "waiting_total": len(guard._wait_queue),
         "records": [event.model_dump(mode="json") for event in reversed(guard._events)],

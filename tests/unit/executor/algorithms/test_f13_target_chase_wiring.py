@@ -22,7 +22,7 @@ from axile.executor.models.unified_price import UnifiedPriceData
 
 class _Exec:
     def __init__(self) -> None:
-        self.channel_type = TradeChannel.CTP
+        self.channel_type = TradeChannel("ctp")
         self.symbol = "rb2610"
         self.logger = MagicMock()
         self.long_today = 0

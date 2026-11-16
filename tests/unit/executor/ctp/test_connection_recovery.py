@@ -41,7 +41,7 @@ class ScriptedBroker:
     """按 OpenCTP 请求/回调签名回放启动流程，并允许在任一请求注入故障。"""
 
     def __init__(self, monkeypatch, *, day="20260909", session=2):
-        self.executor = CTPExecutor(TradeChannel.CTP)
+        self.executor = CTPExecutor(TradeChannel("ctp"))
         self.executor.set_instrument_catalog_provider(LocalInstrumentCatalogProvider(InstrumentCatalog()))
         self.executor.account_config = CTPAccountConfig(
             broker_id="9999",
@@ -454,7 +454,7 @@ def test_quote_timeout_can_recover_with_fresh_quote_without_disconnect(broker):
 @pytest.mark.parametrize(("day", "session"), [("20260909", 3), ("20260910", 4)])
 def test_worker_rebuilds_disconnected_ctp_with_fresh_stages_and_metadata(broker, monkeypatch, day, session):
     old = broker.start()
-    account = build_account(trade_channel=TradeChannel.CTP)
+    account = build_account(trade_channel=TradeChannel("ctp"))
     state = worker_state._WorkerBackendState(
         executor=old,
         account_id=account.id,

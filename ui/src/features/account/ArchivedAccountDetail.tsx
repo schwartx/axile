@@ -24,7 +24,7 @@ export function ArchivedAccountDetail({ account, onChanged }: {
   const channel = useChannelDescriptor(account.trade_channel)
   const cron = account.cron_expr.trim()
   const schedule = cron && channel?.schedule
-    ? describeCron(channel.schedule.kind, cron, channel.schedule.night, account.gm_sessions)
+    ? describeCron(channel.schedule.kind, cron, channel.schedule.night, account.channel_options.gm)
     : null
   const portfolio = usePolling(useCallback((signal: AbortSignal) => getPortfolio(account.portfolio_id!, signal), [account.portfolio_id]), {
     queryKey: `archived-account:${account.id}:portfolio:${account.portfolio_id}`,

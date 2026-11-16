@@ -99,57 +99,11 @@ pub fn transfer(path: &str, request: &Value) -> Result<Value, AnalysisError> {
         "cancel_package" => state::cancel(path, request),
         "prepare_package" => state::prepare(path, request),
         "prune_recordings" => state::prune_recordings_request(path, request),
-        "backup_index" => {
-            snapshot_file(Path::new(path), Path::new(text(request, "snapshot")?))?;
-            Ok(json!({"ok":true}))
-        }
-        "import_index" => import_index(path, request),
         "export" => export_snapshot(path, request),
         "import" => import_snapshot(path, request),
-        "prune_recording" => prune_recording(path, request),
         "prune" => prune_history(path, request),
         _ => Err(err("未知传送操作")),
     }
-}
-
-fn import_index(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    let source = Path::new(text(request, "snapshot")?);
-    if !Path::new(path).exists() {
-        crate::execution_replay_index::BlockIndex::create(Path::new(path))?;
-    }
-    let c = Connection::open(path).map_err(err)?;
-    c.execute(
-        "ATTACH DATABASE ?1 AS incoming",
-        [source.to_string_lossy().as_ref()],
-    )
-    .map_err(err)?;
-    if tables(&c, "main")? != tables(&c, "incoming")? {
-        return Err(err("录制索引版本不一致"));
-    }
-    for t in tables(&c, "main")? {
-        let schema = |db: &str| {
-            c.query_row(
-                &format!("SELECT sql FROM {db}.sqlite_master WHERE type='table' AND name=?1"),
-                [&t],
-                |r| r.get::<_, String>(0),
-            )
-            .map_err(err)
-        };
-        if schema("main")? != schema("incoming")? {
-            return Err(err("录制索引结构不一致"));
-        }
-    }
-    let tx = c.unchecked_transaction().map_err(err)?;
-    for t in tables(&tx, "main")? {
-        tx.execute_batch(&format!(
-            "INSERT OR IGNORE INTO main.{0} SELECT * FROM incoming.{0}",
-            quote(&t)
-        ))
-        .map_err(err)?;
-    }
-    tx.execute_batch("INSERT INTO recordings SELECT * FROM incoming.recordings WHERE true ON CONFLICT(recording) DO UPDATE SET metadata=excluded.metadata").map_err(err)?;
-    tx.commit().map_err(err)?;
-    Ok(json!({"ok":true}))
 }
 
 fn snapshot_file(source: &Path, target: &Path) -> Result<(), AnalysisError> {
@@ -360,45 +314,6 @@ fn import_snapshot(path: &str, request: &Value) -> Result<Value, AnalysisError> 
     let result = json!({"source_id":source,"executions":records(c)?});
     tx.commit().map_err(err)?;
     Ok(result)
-}
-
-fn prune_recording(_path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    let index = Path::new(text(request, "index")?);
-    let recording = text(request, "recording")?;
-    if !recording
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    {
-        return Err(err("无效录制 ID"));
-    }
-    if !index.exists() {
-        return Ok(json!({"safe":false}));
-    }
-    let c = Connection::open(index).map_err(err)?;
-    c.execute_batch("PRAGMA busy_timeout=5000").map_err(err)?;
-    let tx = c.unchecked_transaction().map_err(err)?;
-    let active:i64=tx.query_row("SELECT count(*) FROM recordings WHERE (recording=?1 AND (json_extract(metadata,'$.unsealed_start_us') IS NOT NULL OR json_extract(metadata,'$.state') IS NOT 'closed')) OR json_extract(metadata,'$.previous_recording_id')=?1",[recording],|r|r.get(0)).map_err(err)?;
-    if active > 0 {
-        return Ok(json!({"safe":false}));
-    }
-    for table in [
-        "files",
-        "sealed_files",
-        "blocks",
-        "watermarks",
-        "checkpoints",
-        "facts",
-        "recording_executions",
-        "recordings",
-    ] {
-        tx.execute(
-            &format!("DELETE FROM {} WHERE recording=?1", quote(table)),
-            [recording],
-        )
-        .map_err(err)?;
-    }
-    tx.commit().map_err(err)?;
-    Ok(json!({"safe":true}))
 }
 
 fn prune_history(path: &str, request: &Value) -> Result<Value, AnalysisError> {

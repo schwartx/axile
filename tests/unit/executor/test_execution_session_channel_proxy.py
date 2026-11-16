@@ -60,7 +60,7 @@ class _CapableOwner:
 class _PlainOwner:
     """模拟 CTP / GM owner：无 WebSocket 相关能力."""
 
-    channel_type = TradeChannel.CTP
+    channel_type = TradeChannel("ctp")
 
     def __init__(self) -> None:
         self.logger = _Logger()
@@ -119,7 +119,7 @@ def test_unsupported_volume_bounds_preserve_fractional_market_order():
     from tests.fixtures.algorithm_fakes import FallbackExecutor
 
     owner = FallbackExecutor()
-    owner.channel_type = TradeChannel.GM
+    owner.channel_type = TradeChannel("gm")
     owner.get_market_data = lambda: None
     session = ExecutionSession(owner=cast("Any", owner), symbol="rb2610")
     assert session.get_order_volume_bounds(OrderType.MARKET, {"max_single_order_size": 0.1}) is None

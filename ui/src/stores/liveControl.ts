@@ -34,7 +34,6 @@ export interface ControlFrame {
   actual_policy: ControlWarningPolicy | null
   saved_policy: ControlWarningPolicy | null
   rules: ControlRule[]
-  metrics: ControlRule[]
   waiting_total: number
   waiting: { id: number; operation: string; symbol: string | null; priority: number; waited_ms: number; kind: string; estimated_wait_ms?: number; hits: Record<string, unknown>[] }[]
   records: { event_uid: string; occurred_at_ms: number; operation: string; symbol: string | null; decision: string; outcome: string; metadata: Record<string, unknown> }[]

@@ -85,7 +85,6 @@ class AccountControlMonitorPublic:
     saved_policy: dict[str, Any]
     saved_fingerprint: str
     rules: list[ControlRulePublic]
-    metrics: list[ControlRulePublic]
     waiting: list[ControlWaitingPublic]
     waiting_total: int
     records: list[ControlRecordPublic]
@@ -101,7 +100,6 @@ def public_frame(values: dict[str, Any]) -> dict[str, Any]:
     """按展示字段构造快照；内部审计与预警字段留在运行时。"""
     frame = _row(AccountControlMonitorPublic, values)
     frame.rules = [_row(ControlRulePublic, row) for row in frame.rules]
-    frame.metrics = [_row(ControlRulePublic, row) for row in frame.metrics]
     frame.waiting = [_row(ControlWaitingPublic, row) for row in frame.waiting]
     frame.records = [_row(ControlRecordPublic, row) for row in frame.records]
     if frame.order_submissions is not None:

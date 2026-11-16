@@ -82,7 +82,7 @@ def test_open_contract_preserves_cached_price_when_snapshot_fails() -> None:
 
 
 def test_one_sided_tick_updates_valuation_without_replacing_order_quote() -> None:
-    executor = CTPExecutor(TradeChannel.CTP)
+    executor = CTPExecutor(TradeChannel("ctp"))
     executor._trading_day = "20260909"
     executor._subscriptions.add("rb2610")
     previous = fresh_quote("rb2610", "20260909")

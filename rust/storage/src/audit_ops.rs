@@ -5,7 +5,7 @@ use std::path::Path;
 use rusqlite::{params, types::ValueRef, Connection, Row};
 use serde_json::{json, Map, Value};
 
-use crate::business_facts_ops::{result_head, summary_refs};
+use crate::business_facts_ops::summary_refs;
 use crate::{error::AnalysisError, storage_connection, writer_scope};
 
 fn invalid(message: impl ToString) -> AnalysisError {
@@ -313,7 +313,6 @@ fn public_event(item: &mut Value) -> Result<(), AnalysisError> {
         return Err(invalid("事件渠道或详情无效"));
     }
     item["channel"] = json!(channel);
-    result_head::normalize_event_details(&mut item["details"]);
     Ok(())
 }
 

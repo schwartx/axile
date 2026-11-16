@@ -20,7 +20,7 @@ def preheat_window(current: datetime | None = None) -> tuple[str, float] | None:
     """返回有效盘前场次与截止时间，恰好距开盘三分钟仍允许。"""
     now = current or clock_now(tz=_SHANGHAI)
     now = now.astimezone(_SHANGHAI) if now.tzinfo else now.replace(tzinfo=_SHANGHAI)
-    windows = get_channel(TradeChannel.CTP).descriptor.schedule.windows
+    windows = get_channel(TradeChannel("ctp")).descriptor.schedule.windows
     day = [parse_hhmm(w.start) for w in windows if not is_overnight_window(w.start, w.end)]
     night = [parse_hhmm(w.start) for w in windows if is_overnight_window(w.start, w.end)]
     for name, prepared, opens in (("day", "08:30", day), ("night", "20:30", night)):
@@ -31,7 +31,7 @@ def preheat_window(current: datetime | None = None) -> tuple[str, float] | None:
         begin = datetime.combine(now.date(), parse_hhmm(prepared), tzinfo=_SHANGHAI)
         if not begin <= now <= cutoff:
             continue
-        decision = evaluate_channel_calendar_moment(TradeChannel.CTP, opening)
+        decision = evaluate_channel_calendar_moment(TradeChannel("ctp"), opening)
         if decision.status is not CalendarDecisionStatus.AVAILABLE_OPEN:
             logger.info("跳过目录预热 | session={} calendar={}", name, decision.status)
             return None

@@ -29,7 +29,7 @@ class Executor:
 
 
 def account(**kwargs):
-    return build_account(id=7, trade_channel=TradeChannel.GM, **kwargs)
+    return build_account(id=7, trade_channel=TradeChannel("gm"), **kwargs)
 
 
 def harness(monkeypatch):

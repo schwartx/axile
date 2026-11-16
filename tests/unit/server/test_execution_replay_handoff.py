@@ -1,119 +1,15 @@
 """录制保持开启的 worker 交接；控制管道与 MCAP 均使用真实实现。"""
 
-import subprocess
-import sys
 import threading
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from axile.executor.replay import capture_receipt, observe_receipt
 from axile.server._native import _core
-from axile.server.execution_replay import recorder as recorder_module
 from axile.server.execution_replay.recorder import ReplayRecorder
-from axile.server.execution_replay.service import replay_window
 from tests.unit.server.test_execution_replay_control_delivery import eventually
 from tests.unit.server.test_execution_replay_control_delivery import runtime as runtime
 from tests.unit.server.test_execution_replay_recorder import FakeWriter
-from tests.unit.server.test_execution_replay_retiring_worker import retiring
-
-
-def test_on_worker_handoff_resumes_without_a_new_configuration_version(runtime, monkeypatch):
-    created = []
-
-    def spawn(account_id):
-        created.append(runtime.spawn())
-        return created[-1].handle
-
-    monkeypatch.setattr(runtime.backend, "_spawn_worker", spawn)
-    try:
-        with retiring(runtime):
-            runtime.backend._get_or_create_worker(runtime.account.id)
-            latest = created[-1]
-            result = runtime.backend._replay_control_blocking(runtime.account, True)
-            eventually(lambda: latest.state.replay_recorder is not None)
-            recorder = latest.state.replay_recorder
-            eventually(lambda: recorder.status().get("reason") is not None or recorder.status()["state"] == "error")
-            pending = recorder.status()
-            assert pending["state"] == "starting", pending
-            assert pending["effective_version"] is None
-            assert "error" not in pending
-            assert result["desired"] is True and result["effective_version"] is None
-            identity = pending["recording_id"]
-            recorder.begin_execution("handoff", ["X"])
-            recorder.observe("/command", {"command_id": "queued", "operation": "place_order", "phase": "request"})
-        eventually(lambda: recorder.status()["state"] == "recording")
-        recovered = runtime.backend._replay_control_blocking(runtime.account, False)
-        assert recovered["state"] == "recording"
-        assert recovered["effective_version"] == runtime.account.replay_config_version
-        assert recorder.status()["recording_id"] == identity
-        recorder.end_execution("handoff")
-        assert recorder.close()["state"] == "disabled"
-        page = replay_window(
-            runtime.root,
-            runtime.account.id,
-            "handoff",
-            {
-                "recording_id": identity,
-                "start_us": 0,
-                "end_us": 2**53 - 1,
-            },
-        )
-        assert any(message["data"].get("command_id") == "queued" for message in page["messages"])
-        assert len({message["capture_seq"] for message in page["messages"]}) == len(page["messages"])
-    finally:
-        # 替身 process 始终存活，测试结束不将其留给 manager 的 atexit 关闭。
-        runtime.backend._retiring_workers.clear()
-
-
-@pytest.mark.parametrize("release", ["finish", "crash"])
-def test_real_process_writer_lock_handoff(tmp_path, release):
-    child = """
-import json,sys
-sys.path.insert(0,sys.argv[2])
-from axile.server._native import _core
-w=_core.ExecutionReplayWriter(sys.argv[1],7,'old','{"schema_version":1}')
-w.append(json.dumps({'schema_version':1,'recording_id':'old','capture_seq':1,'time_us':1,
-                    'topic':'/execution','data':{'execution_id':'old','phase':'start'}}))
-print('ready',flush=True)
-input()
-w.finish()
-"""
-    process = subprocess.Popen(
-        [sys.executable, "-c", child, str(tmp_path), str(Path(__file__).parents[3])],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    recorder = ReplayRecorder(7, tmp_path, now_us=lambda: 100)
-    try:
-        assert process.stdout.readline().strip() == "ready"
-        recorder.attach(SimpleNamespace())
-        recorder.configure(True, 1)
-        eventually(lambda: recorder.status().get("reason") is not None or recorder.status()["state"] == "error")
-        assert recorder.status()["state"] == "starting"
-        recorder.begin_execution("new", ["X"])
-        recorder.observe("/command", {"command_id": "queued", "phase": "request"})
-        identity = recorder.status()["recording_id"]
-        if release == "finish":
-            process.communicate("release\n", timeout=3)
-        else:
-            process.kill()
-            process.communicate(timeout=3)
-        eventually(lambda: recorder.status()["state"] == "recording")
-        with pytest.raises(BlockingIOError):
-            recorder_module.native_writer(str(tmp_path), 7, "third", '{"schema_version":1}')
-        recorder.end_execution("new")
-        assert recorder.close()["state"] == "disabled"
-        page = replay_window(tmp_path, 7, "new", {"recording_id": identity, "start_us": 0, "end_us": 101})
-        assert any(message["data"].get("command_id") == "queued" for message in page["messages"])
-    finally:
-        recorder.close()
-        if process.poll() is None:
-            process.kill()
-            process.communicate(timeout=3)
 
 
 @pytest.mark.parametrize("action", ["off", "disconnect"])
@@ -210,45 +106,6 @@ def test_native_failure_is_not_retried_as_handoff(tmp_path, monkeypatch, failure
         assert recorder.status()["error"] == "replay_writer_error"
         assert len(attempts) == 1
     finally:
-        recorder.close()
-
-
-@pytest.mark.parametrize("switch", ["off_on", "resource"])
-def test_waiting_segment_cannot_capture_into_its_replacement(tmp_path, switch):
-    held = _core.ExecutionReplayWriter(str(tmp_path), 7, "held", '{"schema_version":1}')
-    owner = SimpleNamespace()
-    recorder = ReplayRecorder(7, tmp_path, now_us=lambda: 100)
-    try:
-        recorder.attach(owner)
-        recorder.configure(True, 1)
-        eventually(lambda: recorder.status().get("reason") is not None)
-        previous = recorder.status()["recording_id"]
-        receipt = capture_receipt(owner)
-        recorder.begin_execution("E", ["X"])
-        recorder.observe("/command", {"command_id": "old-queued", "phase": "request"})
-        if switch == "off_on":
-            recorder.configure(False, 2)
-            recorder.configure(True, 3)
-        else:
-            recorder.attach(SimpleNamespace(), {"channel": "fresh"})
-        assert recorder.status()["state"] == "closing"
-        held.finish()
-        eventually(lambda: recorder.status()["state"] == "recording" and recorder.status()["recording_id"] != previous)
-        identity = recorder.status()["recording_id"]
-        observe_receipt(receipt, "/command", {"command_id": "late-old", "phase": "returned"})
-        recorder.observe("/command", {"command_id": "fresh", "phase": "request"})
-        recorder.end_execution("E")
-        recorder.close()
-        old_page = replay_window(tmp_path, 7, "E", {"recording_id": previous, "start_us": 0, "end_us": 101})
-        assert [
-            message["data"]["command_id"] for message in old_page["messages"] if message["topic"] == "/command"
-        ] == ["old-queued"]
-        page = replay_window(tmp_path, 7, "E", {"recording_id": identity, "start_us": 0, "end_us": 101})
-        assert [message["data"]["command_id"] for message in page["messages"] if message["topic"] == "/command"] == [
-            "fresh"
-        ]
-    finally:
-        held.finish()
         recorder.close()
 
 

@@ -51,7 +51,7 @@ class FuturesClosePolicy(BaseModel):
 
     def validate_channel(self, channel: object) -> None:
         """自动费用比较仅由 CTP 提供，其他渠道不能伪装支持。"""
-        if self.mode == "fee" and channel != TradeChannel.CTP:
+        if self.mode == "fee" and channel != TradeChannel("ctp"):
             raise ValueError("当前渠道不支持低手续费优先")
 
 

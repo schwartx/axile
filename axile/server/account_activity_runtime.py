@@ -101,7 +101,7 @@ def _time(value: str | None) -> float:
 
 def _query(executor: Any, symbol: str | None) -> None:
     activity = executor.account_orders.activity
-    channel = str(getattr(executor.channel_type, "value", executor.channel_type))
+    channel = str(executor.channel_type)
     errors: list[str] = []
     if channel not in {"ctp", "tq", "gm"}:
         if symbol is None and _query_symbol(executor, None, errors, allow_unsupported=True):
@@ -173,7 +173,7 @@ def run_activity_command(executor: Any, payload: dict[str, Any]) -> dict[str, An
     ended_orders = [order for order in orders if order["status"] in {"已撤销", "已拒绝", "已过期"}]
     failures = sorted(snapshot["failures"], key=lambda row: (_time(row["time"]), row["event_id"]), reverse=True)
     result = {
-        "channel": str(getattr(executor.channel_type, "value", executor.channel_type)),
+        "channel": str(executor.channel_type),
         "orders": orders[:limit],
         "ended_orders": ended_orders[:limit],
         "trades": [_trade(trade) for trade in trades[:limit]],

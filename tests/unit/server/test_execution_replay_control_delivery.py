@@ -16,7 +16,6 @@ from axile.server.execution.worker_backend.protocol import (
     WorkerReplayStatus,
     WorkerTerminationSignal,
 )
-from axile.server.execution_replay.service import replay_window
 from tests.conftest import native_store_call
 
 
@@ -104,38 +103,6 @@ def runtime(native_database, monkeypatch):
         instance.child.close()
         if instance.state.replay_recorder is not None:
             instance.state.replay_recorder.close()
-
-
-def test_saved_off_is_delivered_after_pending_timeout_without_any_status_poll(runtime):
-    backend, first = runtime.backend, runtime.first
-    recorder = first.state.replay_recorder
-    recording = recorder.status()["recording_id"]
-    results = {}
-    with recorder._condition:
-        old = threading.Thread(
-            target=lambda: results.setdefault("old", backend._replay_control_blocking(runtime.account, False))
-        )
-        old.start()
-        eventually(lambda: first.handle.replay_pending is not None)
-        off = runtime.save(False)
-        update = threading.Thread(target=lambda: results.setdefault("off", backend._replay_control_blocking(off, True)))
-        update.start()
-        old.join(3)
-        update.join(3)
-        assert not old.is_alive() and not update.is_alive()
-        assert results["off"]["effective_version"] is None
-    # 不再调用 manager GET；排队配置必须独立于旧状态回复生效。
-    eventually(lambda: recorder.status()["state"] == "disabled")
-    assert recorder.status()["config_version"] == off.replay_config_version
-    recorder.observe("/command", {"execution_id": "E", "command_id": "after-off", "phase": "request"})
-    page = replay_window(
-        runtime.root, runtime.account.id, "E", {"recording_id": recording, "start_us": 0, "end_us": 2**53 - 1}
-    )
-    identities = [event["data"].get("command_id") for event in page["messages"]]
-    assert "before-off" in identities and "after-off" not in identities
-    confirmed = backend._replay_control_blocking(off, False)
-    assert confirmed["desired"] is False and confirmed["state"] == "disabled"
-    assert confirmed["effective_version"] == off.replay_config_version
 
 
 def test_lock_timeout_does_not_drop_off_or_claim_an_unacknowledged_version(runtime):

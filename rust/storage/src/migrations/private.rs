@@ -6,7 +6,7 @@ use rusqlite::{params, Connection, Params, Row};
 use serde_json::{json, Map, Value};
 
 use crate::business_detail;
-use crate::business_facts_ops::{result_extensions, result_head, result_symbols};
+use crate::business_facts_ops::{result_extensions, result_symbols};
 use crate::error::AnalysisError;
 
 use super::error_patch::{self, Change};
@@ -151,7 +151,7 @@ fn write_result(
     changes: &[Change],
 ) -> Result<()> {
     let record_id = id(record)?;
-    let head = result_head::execution_head_values(
+    let head = crate::migrations::legacy_result::execution_head_values(
         document,
         record.get("is_success").and_then(Value::as_i64),
     )?;

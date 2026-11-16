@@ -208,7 +208,7 @@ def test_gm_terminal_audit_keeps_original_execution_and_writes_once(monkeypatch,
         assert instance._terminal_audit.flush()
         (event,) = events
         assert event["event_type"] == ExecutionEventType.ORDER_TERMINAL
-        assert event["channel"] == TradeChannel.GM
+        assert event["channel"] == TradeChannel("gm")
         assert event["execution_id"] == "original"
         assert event["algorithm"] == "symbol-maker"
         assert event["order_id"] == order.order_id

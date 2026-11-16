@@ -15,7 +15,6 @@ from loguru import logger
 
 from axile.common.config import settings
 from axile.common.logging import LogComponent
-from axile.common.trade_channel import TradeChannel
 from axile.server.core.logging_sink import NativeLogSink
 
 _sink: NativeLogSink | None = None
@@ -124,7 +123,7 @@ def execution_log_context(
     account_name : str | None, default=None
         账户名称，便于人工辨识。
     channel : object | None, default=None
-        交易渠道；``TradeChannel`` 会被展开为 ``.value`` 字符串。
+        交易渠道标识。
     execution_id : str | None, default=None
         本次执行的全局标识；填入后可 ``grep`` 出一次执行的全部日志。
     symbol : str | None, default=None
@@ -135,11 +134,10 @@ def execution_log_context(
     dict[str, object]
         可直接传入 ``logger.contextualize`` / ``logger.bind`` 的上下文字典。
     """
-    channel_value = channel.value if isinstance(channel, TradeChannel) else channel
     return {
         "account_id": account_id,
         "account_name": account_name,
-        "channel": channel_value,
+        "channel": channel,
         "execution_id": execution_id,
         "symbol": symbol,
     }

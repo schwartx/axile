@@ -85,7 +85,7 @@ def test_order_evidence_prevents_a_neutral_session_title_in_lightweight_results(
     )
     output = UnifiedStandardOutput(
         status=ExecutionStatus.BLOCKED,
-        channel_type=TradeChannel.TQ,
+        channel_type=TradeChannel("tq"),
         account_assets=UnifiedAccountAssets.unavailable(),
         symbol_results={
             "m2701": AlgorithmResult(

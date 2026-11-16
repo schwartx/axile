@@ -153,45 +153,37 @@ def test_batch_times_match_local_time_across_seconds_and_dst(tmp_path, monkeypat
         "2026-03-08T07:00:00.000001Z",
         "2026-11-01T05:59:59.999999Z",
         "2026-11-01T06:00:00.000001Z",
-        "2026-11-01T01:30:00.123456",
-        "2026-03-08T02:30:00.999999",
+        "2026-11-01T01:30:00.123456Z",
+        "2026-03-08T02:30:00.999999Z",
         "2026-10-27T00:00:00.123456+00:00:00.5",
     ]
-    path = write(tmp_path / "times.jsonl", [{"timestamp": stamp, "message": stamp, "context": {}} for stamp in stamps])
+    paths = []
+    for index, stamp in enumerate(stamps):
+        paths.append(
+            write(
+                tmp_path / f"time-{index}.jsonl",
+                [
+                    ["H", 1, {"run_id": str(index), "time_base": stamp, "time_unit": "us"}],
+                    ["T", 1, "INFO", "{message}", ["message"], {}],
+                    ["E", 1, 0, 1, 0, None, [stamp]],
+                ],
+            )
+        )
     try:
         with monkeypatch.context() as patch:
             patch.setenv("TZ", zone)
             time.tzset()
-            rows = read_logs([path])
+            rows = read_logs(paths)
             expected = [
                 datetime.fromisoformat(row["timestamp"]).astimezone().strftime("%y%m%d %H:%M:%S.%f")[:-3]
                 + f" INFO  [系统] {row['message']}"
                 for row in rows
             ]
-            assert format_logs([path]) == "\n".join(expected)
-            assert format_logs([path], "tree") == "\n".join(expected)
+            assert format_logs(paths) == "\n".join(expected)
+            assert format_logs(paths, "tree") == "\n".join(expected)
             assert [render_record(row) for row in rows] == expected
     finally:
         time.tzset()
-
-
-def test_batch_preserves_legacy_template_and_public_mutable_record_semantics(tmp_path):
-    legacy = {
-        "timestamp": "2026-10-27T00:00:00Z",
-        "context": {},
-        "template": "值 {value}",
-        "fields": ["value"],
-        "args": ["current"],
-        "message": "stale",
-        "exception": "stale exception",
-    }
-    path = write(tmp_path / "legacy.jsonl", [legacy])
-    assert format_logs([path]).endswith("值 current")
-    assert format_logs([path], "tree").endswith("值 current")
-    row = read_logs([write(tmp_path / "native.jsonl", lines())])[1]
-    row["args"][0] = "edited"
-    assert "订单 edited" in render_record(row)
-    assert "订单 edited" in render_tree([row])
 
 
 def test_batch_keeps_conflicts_from_differently_rendered_equal_numbers(tmp_path):
@@ -251,28 +243,9 @@ def test_offset_header_preserves_cached_span_times_and_record_independence(tmp_p
     assert records[1]["spans"][0]["name"] == "检查"
 
 
-def test_legacy_and_native_logs_sort_by_absolute_time_in_timeline_and_tree(tmp_path):
-    legacy = write(
-        tmp_path / "legacy.jsonl",
-        [
-            {"timestamp": "2026-10-26T08:00:00.000+08:00", "message": "较早的旧日志", "context": {}},
-            {"message": "时间未知的旧日志", "context": {}},
-        ],
-    )
-    rows = lines()
-    rows[0][2]["time_base"] = "2026-10-26T00:00:01Z"
-    native = write(tmp_path / "native.jsonl", rows)
-    records = read_logs([native, legacy])
-    assert records[0]["message"] == "时间未知的旧日志"
-    assert records[1]["message"] == "较早的旧日志"
-    assert records[2]["message"] == "过程开始"
-    tree = render_tree(records)
-    assert tree.index("时间未知的旧日志") < tree.index("较早的旧日志") < tree.index("检查 #1")
-
-
-def test_invalid_legacy_timestamp_is_a_log_decode_error(tmp_path):
+def test_dictionary_log_records_are_rejected(tmp_path):
     path = write(tmp_path / "legacy.jsonl", [{"timestamp": "invalid", "context": {}}])
-    with pytest.raises(LogDecodeError, match="timestamp"):
+    with pytest.raises(LogDecodeError, match="nonempty array"):
         read_logs([path])
 
 

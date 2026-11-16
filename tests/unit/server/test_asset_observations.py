@@ -142,14 +142,14 @@ def test_non_trading_producer_does_not_claim_zero_balance():
     from axile.executor.models.unified_input import GMAccountConfig, UnifiedStandardInput
 
     executor = SimpleNamespace(
-        channel_type=TradeChannel.GM,
+        channel_type=TradeChannel("gm"),
         account_orders=AccountOrderBook(),
         require_execution_runtime=lambda: SimpleNamespace(elapsed_seconds=lambda: 0.1),
     )
     result = AbstractExecutorCapabilityMixin._create_non_trading_output(
         executor,
         UnifiedStandardInput(
-            channel_type=TradeChannel.GM,
+            channel_type=TradeChannel("gm"),
             account_config=GMAccountConfig(
                 account_id="test", token="test", connection_mode="terminal", terminal_path="C:/gm"
             ),

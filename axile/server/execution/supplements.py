@@ -34,8 +34,7 @@ def fingerprint(account: AccountSnapshot) -> str:
     """仅调度身份、渠道和绑定参与组去重。"""
     assert account.supplement is not None
     value = [account.cron_expr, account.supplement.model_dump(), str(account.trade_channel), account.portfolio_id]
-    if account.gm_sessions is not None:
-        value.append(account.gm_sessions.model_dump())
+    value.append(account.channel_options)
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
@@ -63,12 +62,20 @@ async def create_group(account_id: int, base: datetime) -> None:
         if is_blank_cron_expr(account.cron_expr):
             return
         trigger = combine_cron_triggers(
-            effective_triggers(account.cron_expr, account.trade_channel, getattr(account, "gm_sessions", None))
+            effective_triggers(
+                account.cron_expr,
+                account.trade_channel,
+                GMSessionSettings.from_channel_options(account.channel_options),
+            )
         )
         if trigger.get_next_fire_time(None, base) != base:
             return
         planned, expires = plan_supplements(
-            account.trade_channel, account.cron_expr, account.supplement, base, account.gm_sessions
+            account.trade_channel,
+            account.cron_expr,
+            account.supplement,
+            base,
+            GMSessionSettings.from_channel_options(account.channel_options),
         )
         group = {
             "id": new_execution_id(),
@@ -137,7 +144,7 @@ async def fire_step(step_id: str) -> None:
     if snapshot is None or snapshot["step"]["status"] != "pending" or snapshot["group"]["status"] != "active":
         return
     group = snapshot["group"]
-    sessions = GMSessionSettings.model_validate(snapshot["gm_sessions"]) if snapshot.get("gm_sessions") else None
+    sessions = GMSessionSettings.from_channel_options(snapshot["channel_options"])
     context = calendar_context(snapshot["channel"], sessions)
     status = context["calendar_status_by_channel"].get(snapshot["channel"])
     if status in {CalendarDecisionStatus.AVAILABLE_CLOSED, CalendarDecisionStatus.UNAVAILABLE}:

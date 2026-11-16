@@ -43,7 +43,7 @@ def guard(*, limit=5, percent=80, baseline=None, now=None, operation="place_orde
     return AccountControlGuard(
         account_id=1,
         execution_id="warning-test",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         policy=policy,
         baseline=baseline or AccountControlCounterSnapshot(),
         clock=lambda: now[0] if now else BASE,

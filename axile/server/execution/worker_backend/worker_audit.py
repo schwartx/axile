@@ -159,7 +159,7 @@ def _append_trade_pre_execute_audit(
     )
     audit_id = input_id
     batch = ExecutionAuditBatch(max_entries=PRE_EXECUTE_AUDIT_LIMIT)
-    _add_environment(batch, execution_id, executor, account.trade_channel.value, algorithm_name)
+    _add_environment(batch, execution_id, executor, str(account.trade_channel), algorithm_name)
     batch.add_event(
         build_execution_event(
             execution_id=execution_id,
@@ -263,7 +263,7 @@ def _append_empty_positions_pre_execute_audit(
         schema_version=3,
         content=make_artifact_reference(view="input", input_id=input_id),
     )
-    _add_environment(batch, execution_id, executor, account.trade_channel.value, algorithm_name)
+    _add_environment(batch, execution_id, executor, str(account.trade_channel), algorithm_name)
     batch.add_event(
         build_execution_event(
             execution_id=execution_id,

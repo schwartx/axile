@@ -34,7 +34,7 @@ function channel(
       leverage_note: '',
       long_leverage_label: '做多杠杆',
       short_leverage_label: '做空杠杆',
-      show_short_leverage: true,
+      show_short_leverage: true, position_value_label: "货值",
     },
     defaults: {
       account_control_preset: 'default',

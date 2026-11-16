@@ -40,7 +40,7 @@ def validate_connection(config: BaseAccountConfig, report: ConnectionProgress) -
     """只创建临时执行器；无论验证结果如何，都释放原生 API。"""
     if not isinstance(config, CTPAccountConfig):
         raise TypeError("CTP 配置类型不匹配")
-    executor = CTPExecutor(TradeChannel.CTP)
+    executor = CTPExecutor(TradeChannel("ctp"))
     try:
         executor.account_config = config
 
@@ -54,7 +54,7 @@ def validate_connection(config: BaseAccountConfig, report: ConnectionProgress) -
             AccountControlGuard(
                 account_id=validation_identity.int,
                 execution_id=f"connection-validation-{validation_identity.hex}",
-                channel=TradeChannel.CTP,
+                channel=TradeChannel("ctp"),
                 policy=resolve_account_control_policy("ctp"),
                 baseline=AccountControlCounterSnapshot(),
             )

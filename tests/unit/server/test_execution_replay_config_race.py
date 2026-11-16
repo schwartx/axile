@@ -1,6 +1,5 @@
 """录制意愿读取当前数据库版本，不继承在途交易的旧设置。"""
 
-import threading
 from types import SimpleNamespace
 
 import pytest
@@ -10,7 +9,6 @@ from axile.server.core import db
 from axile.server.db.models.account import Account, AccountCreate, AccountSnapshot
 from axile.server.execution.worker_backend import manager, replay, worker, worker_state
 from axile.server.execution.worker_backend.protocol import WorkerBackendRequest
-from axile.server.execution_replay.service import replay_manifest
 from tests.conftest import native_store_call
 
 
@@ -142,35 +140,6 @@ def test_current_configuration_read_failure_does_not_replay_a_stale_on_intent(sa
         assert state.replay_config is None
         assert state.replay_recorder is None
         assert not (path.parent / "replay").exists()
-    finally:
-        if state.replay_recorder is not None:
-            state.replay_recorder.close()
-
-
-def test_authoritative_on_configuration_survives_old_off_resources_and_records(saved_account):
-    path, latest = saved_account
-    stale = latest.model_copy(update={"replay_recording_enabled": False, "replay_config_version": 0})
-    selected = replay.current_replay_config(stale)
-    assert selected is not None and selected.enabled
-    executor = SimpleNamespace()
-    state = worker._WorkerBackendState(account_id=latest.id, executor=executor)
-    try:
-        assert replay.configure_worker_replay(state, selected)["state"] == "waiting_connection"
-        worker_state._configure_executor_resources(state, stale, executor)
-        assert state.replay_config is selected
-        state.connected_once = True
-        state.replay_connection_observer(True)
-        recorder = state.replay_recorder
-        wake = threading.Event()
-        for _ in range(200):
-            if recorder.status()["state"] != "starting":
-                break
-            wake.wait(0.01)
-        assert recorder.status()["state"] == "recording"
-        recorder.begin_execution("current-enabled", ["X"])
-        recorder.end_execution("current-enabled")
-        assert recorder.close()["state"] == "disabled"
-        assert replay_manifest(path.parent / "replay", latest.id, "current-enabled")["availability"] == "available"
     finally:
         if state.replay_recorder is not None:
             state.replay_recorder.close()

@@ -28,22 +28,16 @@ pub(crate) mod evidence_ops;
 pub(crate) mod execution_ops;
 pub(crate) mod execution_reads;
 pub(crate) mod execution_replay;
+#[cfg(feature = "python")]
+mod execution_replay_python;
 mod execution_replay_raw;
 mod execution_replay_raw_index;
 mod execution_replay_raw_locations;
 mod execution_replay_raw_market;
-mod execution_replay_raw_rebuild;
 mod execution_replay_raw_queries;
 #[cfg(feature = "python")]
 mod execution_replay_raw_read;
-pub(crate) mod execution_replay_block;
-pub(crate) mod execution_replay_fragments;
-pub(crate) mod execution_replay_index;
-pub(crate) mod execution_replay_projection;
-#[cfg(feature = "python")]
-mod execution_replay_python;
-pub(crate) mod execution_replay_reader;
-pub(crate) mod execution_replay_recovery;
+mod execution_replay_raw_rebuild;
 pub(crate) mod execution_view;
 pub mod executions;
 pub(crate) mod fact_attempts;
@@ -64,7 +58,6 @@ pub mod logging;
 mod logging_python;
 mod logging_rotation;
 pub(crate) mod maintenance_ops;
-pub(crate) mod transfer_ops;
 pub(crate) mod migrations;
 pub(crate) mod notification_context;
 pub(crate) mod notifications;
@@ -82,6 +75,7 @@ pub mod symbols;
 pub(crate) mod target_ops;
 pub(crate) mod time_check;
 pub(crate) mod time_us;
+pub(crate) mod transfer_ops;
 pub(crate) mod writer_scope;
 
 use rusqlite::Connection;

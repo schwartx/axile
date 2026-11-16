@@ -21,5 +21,5 @@ class SupplementSettings(SettingsModel):
 class BacktestSettings(SettingsModel):
     """账户业绩计算使用的回测口径。"""
 
-    backtest_weight_type: WeightType = "ts"
+    backtest_weight_type: WeightType = "cs"
     backtest_fee_rate: FeeRate = 0.0

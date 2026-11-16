@@ -18,7 +18,7 @@ from axile.executor.models.unified_price import UnifiedPriceData
 class _EmptyPositionsExecutor(AbstractExecutor):
     def __init__(self, account_assets: UnifiedAccountAssets) -> None:
         self._account_assets = account_assets
-        super().__init__(TradeChannel.CTP, None)
+        super().__init__(TradeChannel("ctp"), None)
 
     def _initialize_connection(self, account_config: object) -> None:
         self.account_config = account_config
@@ -169,7 +169,7 @@ def test_empty_positions_builds_final_input_without_losing_rules_or_notification
     expected = UnifiedStandardOutput(
         account_assets=assets,
         status=ExecutionStatus.SUCCEEDED,
-        channel_type=TradeChannel.CTP,
+        channel_type=TradeChannel("ctp"),
         success=True,
     )
 
@@ -202,7 +202,7 @@ def test_empty_positions_builds_final_input_without_losing_rules_or_notification
         is expected
     )
     actual, flags = captured.pop()
-    assert actual.channel_type == TradeChannel.CTP and actual.account_config == executor.account_config
+    assert actual.channel_type == TradeChannel("ctp") and actual.account_config == executor.account_config
     assert actual.curr_target == {"A": 0.0}
     assert actual.last_target == {"A": 0.25, "B": -0.75}
     assert actual.trade_rules == {"A": {"price": "ACTIVE"}}

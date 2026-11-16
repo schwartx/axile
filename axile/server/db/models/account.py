@@ -12,12 +12,7 @@ from pydantic import (
     model_validator,
 )
 
-from axile.channels.gm_sessions import GMSessionSettings
-from axile.channels.schedule_settings import (
-    legacy_schedule_values,
-    normalize_schedule_options,
-    validate_schedule_options,
-)
+from axile.channels.schedule_settings import validate_schedule_options
 from axile.common.trade_channel import TradeChannel
 from axile.executor.futures_close_policy import FuturesClosePolicy
 from axile.executor.models.unified_input import DEFAULT_EXECUTION_TIMEOUT_SECONDS
@@ -48,7 +43,7 @@ AccountControlOverrideData = Annotated[
 class AccountBase(BaseModel):
     """账户模型共用字段."""
 
-    backtest_weight_type: WeightType = Field(default="ts")
+    backtest_weight_type: WeightType = Field(default="cs")
     backtest_fee_rate: FeeRate = Field(default=0.0)
     name: str = Field(description="账户名称, 必填")
     market: str = Field(description="交易市场标识, 例如: A股、期货等, 必填")
@@ -60,7 +55,8 @@ class AccountBase(BaseModel):
     )
     account_config: Dict[str, Any] = Field(description="账户配置, JSON格式, 包含登录信息、API密钥等, 必填")
     is_started: bool = Field(description="账户是否已启动, 布尔值, 必填")
-    gm_sessions: GMSessionSettings | None = None
+    channel_options: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    _options = field_validator("channel_options")(validate_schedule_options)
     supplement: SupplementSettings | None = None
     cron_expr: str = Field(description="定时任务表达式, 符合crontab语法, 必填")
     remark: Optional[str] = Field(description="账户备注信息, 可选")
@@ -147,18 +143,6 @@ class AccountCreate(AccountBase):
 class AccountSnapshot(AccountBase):
     """执行时使用的普通 Python 数据快照，不携带 session 或 ORM 关系。"""
 
-    channel_options: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    _options = field_validator("channel_options")(validate_schedule_options)
-
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_channel_options(cls, value: Any) -> Any:
-        """进程快照兼容旧字段，并通过插件恢复对应配置模型。"""
-        if not isinstance(value, dict):
-            return value
-        normalized = normalize_schedule_options(value)
-        return normalized | legacy_schedule_values(normalized["channel_options"])
-
     id: int | None = None
     copied_from_account_id: int | None = None
     copied_from_account_name: str | None = None
@@ -221,7 +205,8 @@ class AccountUpdate(Model):
     account_config: Optional[Dict[str, Any]] = None
     is_started: Optional[bool] = None
     cron_expr: Optional[str] = None
-    gm_sessions: GMSessionSettings | None = None
+    channel_options: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    _options = field_validator("channel_options")(validate_schedule_options)
     supplement: SupplementSettings | None = None
     remark: Optional[str] = None
     brokerage: Optional[str] = None

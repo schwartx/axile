@@ -1102,7 +1102,7 @@ pub(crate) fn json_text(
 }
 
 #[cfg(test)]
-pub(super) fn frozen_cases(kind: &str) -> Vec<Value> {
+pub(crate) fn frozen_cases(kind: &str) -> Vec<Value> {
     let fixture: Value =
         serde_json::from_str(include_str!("testdata/head_symbols_inputs_v0037.json")).unwrap();
     fixture["cases"]

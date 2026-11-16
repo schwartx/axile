@@ -246,8 +246,6 @@ def test_roundtrip_preview_matches_prior_notification_semantics_without_channel(
     account = build_account(portfolio_id=None)
     old_payload = deepcopy(payload)
     old_payload["inputs"]["account_config"] = account.account_config
-    original_order = old_payload["symbol_results"]["rb2610"]["orders"][0]
-    original_order["extra"]["_update_time_str"] = original_order["update_time"]
     monkeypatch.setattr(feishu_notifications, "clock_now", lambda: datetime(2026, 10, 20, 1, tzinfo=UTC))
     monkeypatch.setattr(account_feishu, "clock_now", lambda: datetime(2026, 10, 20, 1, tzinfo=UTC))
     previous = feishu_notifications.build_execution_notification_context(

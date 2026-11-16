@@ -39,7 +39,7 @@ class _TerminationTestExecutor(AbstractExecutor):
         self.execution_orders = execution_orders or []
         self.cancel_attempts: list[tuple[str, str]] = []
         super().__init__(
-            TradeChannel.CTP,
+            TradeChannel("ctp"),
             CTPAccountConfig.model_validate(
                 {
                     "broker_id": "b",
@@ -246,6 +246,10 @@ class _FakeClock:
         self.sleeps: list[float] = []
         self.event_waits: list[float] = []
         self._wake_event = wake_event
+
+    def monotonic(self) -> float:
+        """返回仿真计时值。"""
+        return self.time()
 
     def time(self) -> float:
         return 0.0

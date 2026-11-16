@@ -111,7 +111,7 @@ def test_account_control_event_write_and_guard_emit_monotonic_seq() -> None:
             "account_id": 1,
             "control_date": "2026-03-22",
             "execution_id": "exec-seq",
-            "channel": TradeChannel.CTP,
+            "channel": TradeChannel("ctp"),
             "operation": "place_order",
             "symbol": "rb2610",
             "metadata": {"order_id": "oid-1"},
@@ -130,7 +130,7 @@ def test_account_control_event_write_and_guard_emit_monotonic_seq() -> None:
     guard = AccountControlGuard(
         account_id=1,
         execution_id="exec-seq",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         policy=resolve_account_control_policy(
             "default",
             AccountControlOverride.model_validate(normalize_account_control_override({"place_order": {"per_day": 1}})),

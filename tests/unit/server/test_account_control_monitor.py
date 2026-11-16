@@ -144,7 +144,11 @@ async def _ignore_warnings():
 
 
 def used(frame):
-    return next(m["value"] for m in frame["metrics"] if m["operation"] == "place_order")
+    return next(
+        m["value"]
+        for m in frame["rules"]
+        if m["scope"] == "account" and m["rule"] == "per_day" and m["operation"] == "place_order"
+    )
 
 
 def test_reconnecting_to_expired_cache_does_not_make_monitor_values_fresh(monkeypatch):

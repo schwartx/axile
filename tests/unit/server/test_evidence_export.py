@@ -73,7 +73,7 @@ def _account(account_id=1):
         id=account_id,
         name=f"private-account-{account_id}",
         market="期货",
-        trade_channel=TradeChannel.CTP,
+        trade_channel=TradeChannel("ctp"),
         account_control_preset="ctp",
         account_config={"password": "live-credential"},
         is_started=False,
@@ -98,7 +98,7 @@ def _intent(execution_id="exec-1", **overrides):
             "kind": ExecutionKind.REBALANCE,
             "trigger_source": "manual",
             "status": ExecutionTaskStatus.SUCCEEDED,
-            "channel": TradeChannel.CTP,
+            "channel": TradeChannel("ctp"),
             "algorithm": "SINGLE-MAKER",
             "created_at": "2026-10-15T09:00:00+08:00",
             "started_at": "2026-10-15T09:00:01+08:00",
@@ -113,7 +113,7 @@ def _event(execution_id="exec-1", seq=1, **overrides):
         **{
             "account_id": 1,
             "execution_id": execution_id,
-            "channel": TradeChannel.CTP,
+            "channel": TradeChannel("ctp"),
             "algorithm": "SINGLE-MAKER",
             "event_uid": f"{execution_id}-{seq}",
             "event_type": ExecutionEventType.EXECUTION_STARTED,
@@ -134,7 +134,7 @@ def _control(execution_id="exec-1", seq=1, **overrides):
             "account_id": 1,
             "execution_id": execution_id,
             "control_date": "2026-10-15",
-            "channel": TradeChannel.CTP,
+            "channel": TradeChannel("ctp"),
             "seq": seq,
             "event_uid": f"control-{execution_id}-{seq}",
             "operation": "cancel_order",
@@ -521,13 +521,14 @@ def test_logs_capture_bounds_owner_and_shareable_projection(database, tmp_path, 
     directory = tmp_path / "logs"
     directory.mkdir()
     lines = [
-        {
-            "timestamp": "2026-10-15T09:00:00+08:00",
-            "context": {"account_id": 1, "execution_id": "exec-1"},
-            "message": "password=log-secret",
-        },
-        {"context": {"account_id": 2, "execution_id": "exec-1"}, "message": "wrong-account"},
-        {"context": {"account_id": 2, "execution_id": "other"}, "message": "unrelated"},
+        ["H", 1, {"run_id": "export", "time_base": "2026-10-15T09:00:00+08:00", "time_unit": "us"}],
+        ["T", 1, "INFO", "{message}", ["message"], {}],
+        ["C", 1, {"account_id": 1, "execution_id": "exec-1"}],
+        ["C", 2, {"account_id": 2, "execution_id": "exec-1"}],
+        ["C", 3, {"account_id": 2, "execution_id": "other"}],
+        ["E", 1, 0, 1, 1, None, ["password=log-secret"]],
+        ["E", 2, 1, 1, 2, None, ["wrong-account"]],
+        ["E", 3, 2, 1, 3, None, ["unrelated"]],
     ]
     (directory / "axile.jsonl").write_text("".join(json.dumps(row) + "\n" for row in lines) + "{broken}\n")
     monkeypatch.setattr(account_evidence.settings, "app_log_dir", directory)

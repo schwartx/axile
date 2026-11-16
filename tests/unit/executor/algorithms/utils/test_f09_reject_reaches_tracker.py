@@ -11,7 +11,7 @@ from axile.executor.models.unified_order import OrderDirection, OrderType, Unifi
 
 
 class _Exec:
-    channel_type = TradeChannel.GM
+    channel_type = TradeChannel("gm")
     symbol = "rb2610"
 
     def __init__(self) -> None:

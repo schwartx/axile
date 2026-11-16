@@ -69,7 +69,7 @@ async def reconcile_china_channel_account(
             return False
     elif reset:
         await manager.drop_account(account.id)
-    if account.trade_channel in {TradeChannel.CTP, TradeChannel.TQ} and account.is_started:
+    if account.trade_channel in {TradeChannel("ctp"), TradeChannel("tq")} and account.is_started:
         await manager.prepare_account(account)
     return True
 

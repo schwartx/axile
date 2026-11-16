@@ -1,10 +1,10 @@
 import { create } from 'zustand'
 import type { AccountConnectionDetail } from '@/types/api'
 
-/** 后端故障标识跨轮询稳定；旧接口的失败观察时间仅作为兼容回退。 */
+/** 后端故障标识跨轮询稳定。 */
 export function connectionAlertId(accountId: number, detail: AccountConnectionDetail): string | null {
   if (detail.status !== 'unavailable') return null
-  const id = detail.error?.connection_event_id ?? detail.last_failure?.observed_at ?? detail.observed_at
+  const id = detail.error?.connection_event_id
   return typeof id === 'string' ? `${accountId}:${id}` : null
 }
 

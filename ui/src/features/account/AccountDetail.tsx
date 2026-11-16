@@ -277,7 +277,7 @@ export function AccountDetail({
   // 定时任务：把存储的 crontab 反解成设置向导同款人话（命中预设时如「每 15 分钟 · 补发 2 次」）；
   // 命不中则退为「自定义执行节奏」。未来时刻统一使用服务端 APScheduler 真源，不在此处近似推算。
   const cronExpr = account.data?.cron_expr ?? ''
-  const cronHuman = cronExpr && scheduleKind ? describeCron(scheduleKind, cronExpr, channelSchedule?.night, account.data?.gm_sessions) : null
+  const cronHuman = cronExpr && scheduleKind ? describeCron(scheduleKind, cronExpr, channelSchedule?.night, account.data?.channel_options.gm) : null
 
   // Hero 配置带（杠杆 / 品种控制 / 算法）：取自本组件已在轮询的账户详情，零新增请求。
   // 配置事实而非盈亏或偏离：中性色、零动效；每项兼作对应编辑分区的入口。
@@ -391,8 +391,7 @@ export function AccountDetail({
     }
   }
 
-  // 兼容尚未重启、dashboard 暂未携带 remark 的开发服务；详情到位后仍能展示已保存备注。
-  const remark = account.data?.remark ?? item.remark
+  const remark = item.remark
   const connection = useAccountConnection(accountId)
   const connectedAssets = useConnectedAssets(accountId, () => {
     void refreshAssetSnapshots()
@@ -867,7 +866,7 @@ export function AccountDetail({
         tradeChannel={item.trade_channel}
         cronExpr={cronExpr}
         supplement={account.data?.supplement}
-        gmSessions={account.data?.gm_sessions}
+        channelOptions={account.data?.channel_options}
         onClose={() => setTimerOpen(false)}
         onSaved={() => {
           account.refresh()

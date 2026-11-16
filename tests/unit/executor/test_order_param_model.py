@@ -19,7 +19,7 @@ class _Logger:
 
 def test_session_reads_real_executor_capability() -> None:
     class Owner(AbstractExecutorCapabilityMixin):
-        channel_type = TradeChannel.CTP
+        channel_type = TradeChannel("ctp")
         logger = _Logger()
 
     session = ExecutionSession(owner=cast("Any", Owner()), symbol="rb2610")
@@ -28,7 +28,7 @@ def test_session_reads_real_executor_capability() -> None:
 
 def test_channel_plugin_defaults_to_unknown() -> None:
     """ChannelPlugin 未声明时默认 UNKNOWN(外部插件注册后自声明)."""
-    gm = get_channel(TradeChannel.GM)
+    gm = get_channel(TradeChannel("gm"))
     plugin = ChannelPlugin(
         descriptor=gm.descriptor,
         account_config_model=gm.account_config_model,
@@ -41,16 +41,16 @@ def test_channel_plugin_defaults_to_unknown() -> None:
 
 def test_builtin_channels_declare_models() -> None:
     """内置三渠道声明正确的订单参数模型."""
-    assert get_channel(TradeChannel.CTP).order_param_model is OrderParamModel.OFFSET
-    assert get_channel(TradeChannel.TQ).order_param_model is OrderParamModel.OFFSET
-    assert get_channel(TradeChannel.GM).order_param_model is OrderParamModel.DIRECTIONAL
+    assert get_channel(TradeChannel("ctp")).order_param_model is OrderParamModel.OFFSET
+    assert get_channel(TradeChannel("tq")).order_param_model is OrderParamModel.OFFSET
+    assert get_channel(TradeChannel("gm")).order_param_model is OrderParamModel.DIRECTIONAL
 
 
 def test_session_order_param_model_duck_typed_forward() -> None:
     """ExecutionSession 鸭子类型转发 owner 声明;替身未提供时回退 UNKNOWN."""
 
     class _Owner:
-        channel_type = TradeChannel.CTP
+        channel_type = TradeChannel("ctp")
 
         def __init__(self, model: object) -> None:
             self.logger = _Logger()
@@ -67,7 +67,7 @@ def test_session_order_param_model_duck_typed_forward() -> None:
     assert session_none.order_param_model is OrderParamModel.UNKNOWN
 
     class _BareOwner:
-        channel_type = TradeChannel.CTP
+        channel_type = TradeChannel("ctp")
 
         def __init__(self) -> None:
             self.logger = _Logger()

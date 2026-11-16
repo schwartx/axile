@@ -69,7 +69,7 @@ class _TestExecutor(AbstractExecutor):
         self.shared_state = shared_state or _SharedState()
         self.shared_state.executor_ids.append(id(self))
         super().__init__(
-            TradeChannel.CTP,
+            TradeChannel("ctp"),
             CTPAccountConfig.model_validate(
                 {
                     "broker_id": "b",
@@ -237,7 +237,7 @@ def test_unrecognized_product_blocks_execution_before_dispatch(monkeypatch):
     dispatched = []
     monkeypatch.setattr(execution_engine, "resolve_algorithm", lambda *args: dispatched.append(args))
     standard = UnifiedStandardInput(
-        channel_type=TradeChannel.CTP,
+        channel_type=TradeChannel("ctp"),
         account_config=executor.account_config,
         curr_target={"NOTREAL2612": 0.1},
         product_algorithms={"ag": {"method": "TWAP", "params": {}}},
@@ -303,7 +303,7 @@ def test_execute_continues_other_symbols_and_marks_overall_failure(
     output = executor.execute(
         UnifiedStandardInput.from_dict(
             {
-                "channel_type": TradeChannel.CTP.value,
+                "channel_type": "ctp",
                 "account_config": {
                     "broker_id": "b",
                     "investor_id": "i",
@@ -364,7 +364,7 @@ def test_execute_single_symbol_failure_is_aggregated(
     output = executor.execute(
         UnifiedStandardInput.from_dict(
             {
-                "channel_type": TradeChannel.CTP.value,
+                "channel_type": "ctp",
                 "account_config": {
                     "broker_id": "b",
                     "investor_id": "i",
@@ -432,7 +432,7 @@ def test_execute_serial_dispatch_treats_explicit_failed_status_as_failure(
     output = executor.execute(
         UnifiedStandardInput.from_dict(
             {
-                "channel_type": TradeChannel.CTP.value,
+                "channel_type": "ctp",
                 "account_config": {
                     "broker_id": "b",
                     "investor_id": "i",
@@ -500,7 +500,7 @@ def test_execute_does_not_treat_memory_error_key_as_failure_when_status_succeeds
     output = executor.execute(
         UnifiedStandardInput.from_dict(
             {
-                "channel_type": TradeChannel.CTP.value,
+                "channel_type": "ctp",
                 "account_config": {
                     "broker_id": "b",
                     "investor_id": "i",
@@ -570,7 +570,7 @@ def test_execute_runs_reduce_phase_before_open_phase(
     output = executor.execute(
         UnifiedStandardInput.from_dict(
             {
-                "channel_type": TradeChannel.CTP.value,
+                "channel_type": "ctp",
                 "account_config": {
                     "broker_id": "b",
                     "investor_id": "i",
@@ -636,7 +636,7 @@ def test_execute_splits_reverse_symbol_into_two_phases_and_replans_open_phase(
     output = executor.execute(
         UnifiedStandardInput.from_dict(
             {
-                "channel_type": TradeChannel.CTP.value,
+                "channel_type": "ctp",
                 "account_config": {
                     "broker_id": "b",
                     "investor_id": "i",
@@ -707,7 +707,7 @@ def test_execute_only_cancels_all_orders_once_across_two_phases(
     output = executor.execute(
         UnifiedStandardInput.from_dict(
             {
-                "channel_type": TradeChannel.CTP.value,
+                "channel_type": "ctp",
                 "account_config": {
                     "broker_id": "b",
                     "investor_id": "i",
@@ -743,7 +743,7 @@ def test_execute_skips_cancel_all_orders_when_all_symbols_are_noop(
     output = executor.execute(
         UnifiedStandardInput.from_dict(
             {
-                "channel_type": TradeChannel.CTP.value,
+                "channel_type": "ctp",
                 "account_config": {
                     "broker_id": "b",
                     "investor_id": "i",
@@ -808,7 +808,7 @@ def test_execute_aborts_before_dispatch_when_cancel_all_orders_fails(
         executor.execute(
             UnifiedStandardInput.from_dict(
                 {
-                    "channel_type": TradeChannel.CTP.value,
+                    "channel_type": "ctp",
                     "account_config": {
                         "broker_id": "b",
                         "investor_id": "i",
@@ -878,7 +878,7 @@ def test_execute_blocks_open_phase_when_reduce_phase_has_failure(
     output = executor.execute(
         UnifiedStandardInput.from_dict(
             {
-                "channel_type": TradeChannel.CTP.value,
+                "channel_type": "ctp",
                 "account_config": {
                     "broker_id": "b",
                     "investor_id": "i",
@@ -948,7 +948,7 @@ def test_execute_maps_account_control_block_to_blocked_result(
                 "account control blocked rb2610",
                 account_id=1,
                 execution_id="exec-guard",
-                channel=TradeChannel.CTP,
+                channel=TradeChannel("ctp"),
                 operation="place_order",
                 symbol="rb2610",
             )
@@ -960,7 +960,7 @@ def test_execute_maps_account_control_block_to_blocked_result(
     output = executor.execute(
         UnifiedStandardInput.from_dict(
             {
-                "channel_type": TradeChannel.CTP.value,
+                "channel_type": "ctp",
                 "account_config": {
                     "broker_id": "b",
                     "investor_id": "i",
@@ -1128,6 +1128,10 @@ class _VirtualClock:
         with self._lock:
             self._advanced += max(seconds, 0.0)
 
+    def monotonic(self) -> float:
+        """返回仿真计时值。"""
+        return self.time()
+
     def time(self) -> float:
         with self._lock:
             return self._base + self._advanced
@@ -1195,7 +1199,7 @@ def _use_virtual_clock(monkeypatch: pytest.MonkeyPatch) -> _VirtualClock:
 def _multi_symbol_input(symbols: list[str], *, execution_timeout: int) -> UnifiedStandardInput:
     return UnifiedStandardInput.from_dict(
         {
-            "channel_type": TradeChannel.CTP.value,
+            "channel_type": "ctp",
             "account_config": {
                 "broker_id": "b",
                 "investor_id": "i",
@@ -1309,7 +1313,7 @@ def test_execute_empty_target_on_flat_account_is_noop(monkeypatch, last_target) 
     monkeypatch.setattr(executor, "_place_order_impl", unexpected_call)
     output = executor.execute(
         UnifiedStandardInput(
-            channel_type=TradeChannel.CTP,
+            channel_type=TradeChannel("ctp"),
             account_config=executor.account_config,
             curr_target={},
             last_target=last_target,
@@ -1346,7 +1350,7 @@ def test_execute_empty_target_dispatches_existing_position_to_zero(monkeypatch, 
     monkeypatch.setattr(execution_engine_module, "resolve_algorithm", resolve_algorithm)
     output = executor.execute(
         UnifiedStandardInput(
-            channel_type=TradeChannel.CTP,
+            channel_type=TradeChannel("ctp"),
             account_config=executor.account_config,
             curr_target={},
         )

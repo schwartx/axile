@@ -1,9 +1,7 @@
 //! 唯一的执行通知投影；正常执行、预览和补发共用，不打开数据库。
 
 use crate::business_facts_ops::encode::is_truthy as truthy;
-use crate::business_facts_ops::result_head::{
-    outcome_from_status, session_code, status_from_outcome,
-};
+use crate::business_facts_ops::result_head::outcome_from_status;
 use crate::error::AnalysisError;
 use crate::json_codec::number_value;
 use serde_json::{json, Map, Value};
@@ -63,7 +61,7 @@ pub(crate) fn preview(
     {
         return Ok(captured.clone());
     }
-    let mut result = fill_missing_fields(&detail["result"])?;
+    let mut result = detail["result"].clone();
     if !result.is_object() {
         return Err(AnalysisError::new(
             "NOTIFICATION_INPUT",
@@ -79,22 +77,6 @@ pub(crate) fn preview(
     Ok(context)
 }
 
-fn fill_missing_fields(value: &Value) -> Result<Value, AnalysisError> {
-    let mut normalized = crate::business_facts_ops::result_head::normalize_legacy_result(value)?;
-    if let (Some(source), Some(target)) = (value.as_object(), normalized.as_object_mut()) {
-        target.extend(source.clone());
-        if let Some(symbols) = target
-            .get_mut("symbol_results")
-            .and_then(Value::as_object_mut)
-        {
-            for symbol in symbols.values_mut() {
-                *symbol = fill_missing_fields(symbol)?;
-            }
-        }
-    }
-    Ok(normalized)
-}
-
 fn successful(value: &Value) -> bool {
     matches!(value.as_str(), Some("SUCCEEDED" | "NOOP"))
 }
@@ -107,35 +89,12 @@ fn outcome(status: &Value) -> Value {
 }
 
 fn result_metadata(result: &Value, default_status: &str) -> Value {
-    let status = result.get("status").cloned().unwrap_or_else(|| {
-        json!(result["outcome"]
-            .as_str()
-            .and_then(status_from_outcome)
-            .unwrap_or(default_status))
-    });
-    let error = if result.get("error").is_none() && !successful(&status) {
-        result
-            .get("outcome_reason")
-            .or_else(|| result.get("msg"))
-            .or_else(|| result["memory"].get("message"))
-    } else {
-        result.get("error")
-    }
-    .cloned()
-    .unwrap_or(Value::Null);
-    let mut reason = result["reason_code"].clone();
-    if result.get("reason_code").is_none() {
-        reason = result["memory"]["symbol_decision_reason_code"].clone();
-        if reason.as_str().map(session_code) == Some("COMMON.SESSION.CLOSED")
-            || (status == "BLOCKED"
-                && matches!(
-                    error.as_str(),
-                    Some("非交易时段" | "当前不在交易时段" | "当前不在交易时间")
-                ))
-        {
-            reason = json!("COMMON.SESSION.CLOSED")
-        }
-    }
+    let status = result
+        .get("status")
+        .cloned()
+        .unwrap_or_else(|| json!(default_status));
+    let error = result["error"].clone();
+    let reason = result["reason_code"].clone();
     json!({"status":status,"success":successful(&status),"error":error,"reason_code":reason,"outcome":result.get("outcome").filter(|value| !value.is_null()).cloned().unwrap_or_else(|| outcome(&status)),"outcome_reason":result.get("outcome_reason").cloned().unwrap_or(error)})
 }
 
@@ -579,7 +538,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn metadata_keeps_notification_defaults_explicit_nulls_and_historical_reasons() {
+    fn metadata_uses_canonical_fields_and_preserves_explicit_nulls() {
         for (input, status, outcome, error, reason) in [
             (
                 json!({}),
@@ -596,7 +555,7 @@ mod tests {
                 Value::Null,
             ),
             (
-                json!({"outcome":"completed"}),
+                json!({"status":"SUCCEEDED","outcome":"completed"}),
                 json!("SUCCEEDED"),
                 json!("completed"),
                 Value::Null,
@@ -617,7 +576,7 @@ mod tests {
                 Value::Null,
             ),
             (
-                json!({"status":"BLOCKED","memory":{"message":"原始错误","symbol_decision_reason_code":"CTP.SESSION.CLOSED"}}),
+                json!({"status":"BLOCKED","error":"原始错误","reason_code":"COMMON.SESSION.CLOSED"}),
                 json!("BLOCKED"),
                 json!("blocked"),
                 json!("原始错误"),
@@ -635,7 +594,7 @@ mod tests {
                 json!("BLOCKED"),
                 json!("blocked"),
                 json!("非交易时段"),
-                json!("COMMON.SESSION.CLOSED"),
+                Value::Null,
             ),
         ] {
             let actual = result_metadata(&input, "FAILED");
@@ -671,7 +630,7 @@ mod tests {
 
     #[test]
     fn historical_preview_distinguishes_missing_and_null_input() {
-        let mut detail = json!({"input":{"curr_target":{"A":0.0}},"result":{"outcome":"completed","channel_type":"ctp",
+        let mut detail = json!({"input":{"curr_target":{"A":0.0}},"result":{"status":"SUCCEEDED","outcome":"completed","channel_type":"ctp",
             "account_assets":{"total_asset":0,"available_cash":0,"market_value":null,"positions":[]}}});
         assert_eq!(
             preview(&detail, "account", "now", "original").unwrap()["targets"]["current"],

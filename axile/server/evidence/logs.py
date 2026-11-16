@@ -133,12 +133,12 @@ class _LogCollector:
                     self.report["issues"].append("log_dropped_events")
             before = self.budget.rows, self.budget.bytes
             try:
-                self._append(row, render=isinstance(value, list))
+                self._append(row)
             except (ValueError, TypeError):
                 self.budget.rows, self.budget.bytes = before
                 self.report["issues"].append("log_invalid_protocol")
 
-    def _append(self, row: dict, *, render: bool) -> None:
+    def _append(self, row: dict) -> None:
         """按定义展开后的字节检查预算，重复材料不重复计入。"""
         context = row["context"]
         if context.get("execution_id") not in self.ids:
@@ -146,22 +146,20 @@ class _LogCollector:
         if context.get("account_id") not in (None, self.account_id):
             self.report["issues"].append("log_owner_conflict")
             return
-        identity = (row["run_id"], row["seq"]) if "run_id" in row and "seq" in row else None
-        if identity is not None and identity in self.seen:
+        identity = (row["run_id"], row["seq"])
+        if identity in self.seen:
             previous = self.seen[identity]
-            if render:
-                previous = {key: value for key, value in previous.items() if key not in ("message", "exception")}
+            previous = {key: value for key, value in previous.items() if key not in ("message", "exception")}
             if previous != row:
                 self.report["issues"].append("log_event_conflict")
             return
         # 字典引用可放大单条事件，逐块计量而不先分配完整展开文本。
         self.budget.check(rows=1, size=1)
-        if render:
-            remaining = self.budget.limits.bytes - self.budget.bytes
-            try:
-                row["message"], row["exception"] = message_text(row, max_bytes=remaining)
-            except OverflowError:
-                self.budget.check(size=remaining + 1)
+        remaining = self.budget.limits.bytes - self.budget.bytes
+        try:
+            row["message"], row["exception"] = message_text(row, max_bytes=remaining)
+        except OverflowError:
+            self.budget.check(size=remaining + 1)
         pending = 0
         threshold = min(64 * 1024, self.budget.limits.bytes - self.budget.bytes)
         for chunk in json.JSONEncoder(ensure_ascii=False, allow_nan=False).iterencode(row):
@@ -171,6 +169,5 @@ class _LogCollector:
                 pending = 0
                 threshold = min(64 * 1024, self.budget.limits.bytes - self.budget.bytes)
         self.budget.check(size=pending)
-        if identity is not None:
-            self.seen[identity] = row
+        self.seen[identity] = row
         self.records.append(row)

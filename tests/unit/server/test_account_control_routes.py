@@ -46,7 +46,7 @@ class _Scheduler:
 def _build_account(
     *,
     preset: str = "default",
-    trade_channel: TradeChannel = TradeChannel.CTP,
+    trade_channel: TradeChannel = TradeChannel("ctp"),
     override: dict[str, object] | None = None,
     **changes: object,
 ) -> Account:
@@ -649,7 +649,7 @@ def test_update_gm_resets_only_changed_connection(account_client, patch, reset_e
     client, database = account_client
     _seed_account(
         database,
-        trade_channel=TradeChannel.GM,
+        trade_channel=TradeChannel("gm"),
         account_config={
             "connection_mode": "service",
             "account_id": "test-account",
@@ -1087,7 +1087,7 @@ def test_copy_normalizes_legacy_blank_notification_without_changing_source(accou
 def test_non_gm_account_rejects_special_sessions_without_mutation(account_client, creating):
     client, database = account_client
     account_id = _seed_account(database).id
-    patch = {"gm_sessions": {"opening_cancelable": {"enabled": True, "time": "09:15"}}}
+    patch = {"channel_options": {"gm": {"opening_cancelable": {"enabled": True, "time": "09:15"}}}}
     response = (
         client.post("/account/", json={**_account_payload(), **patch})
         if creating
@@ -1095,7 +1095,7 @@ def test_non_gm_account_rejects_special_sessions_without_mutation(account_client
     )
     assert response.status_code == 422
     assert "仅适用于股票" in response.json()["detail"]
-    assert native_store_call(database, "account_get", {"account_id": account_id})["gm_sessions"] is None
+    assert native_store_call(database, "account_get", {"account_id": account_id})["channel_options"] == {}
 
 
 @pytest.mark.parametrize("creating", [True, False])

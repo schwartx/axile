@@ -244,7 +244,7 @@ def test_execute_trade_drops_ctp_worker_after_session_recovery_without_replay(
         return WorkerBackendResponse(
             request_id=request.request_id,
             kind="error",
-            channel_type=TradeChannel.CTP,
+            channel_type=TradeChannel("ctp"),
             error=WorkerBackendErrorPayload(
                 type="ctp_session_recovery_required",
                 message="ReqQryTradingAccount同步拒绝: return_code=-2",
@@ -274,10 +274,10 @@ def test_execute_trade_drops_ctp_worker_after_session_recovery_without_replay(
 @pytest.mark.parametrize("execution_timeout", [0, 180, 3600, 86400])
 def test_gm_worker_receive_timeout_uses_configured_budget(monkeypatch, execution_timeout):
     manager = WorkerBackendManager(execute_recv_timeout=600)
-    account = build_account(id=2, trade_channel=TradeChannel.GM)
+    account = build_account(id=2, trade_channel=TradeChannel("gm"))
     now = datetime(2026, 9, 1, 9, 15, tzinfo=SHANGHAI)
     standard_input = SimpleNamespace(
-        channel_type=TradeChannel.GM,
+        channel_type=TradeChannel("gm"),
         execution_timeout=execution_timeout,
         extra={"audit": {"gm_session": {"wait_until": now.replace(minute=30).isoformat()}}},
     )
@@ -291,7 +291,7 @@ def test_gm_worker_receive_timeout_uses_configured_budget(monkeypatch, execution
         return WorkerBackendResponse(
             request_id=request.request_id,
             kind="error",
-            channel_type=TradeChannel.GM,
+            channel_type=TradeChannel("gm"),
             error=WorkerBackendErrorPayload(type="test_error", message="test"),
         )
 
@@ -316,7 +316,7 @@ def test_gm_worker_receive_timeout_uses_configured_budget(monkeypatch, execution
 def test_empty_positions_keeps_paused_gm_session(monkeypatch: pytest.MonkeyPatch) -> None:
     """清仓结束后保留登录会话，供当前委托查询及后续执行复用。"""
     manager = WorkerBackendManager()
-    account = build_account(id=2, trade_channel=TradeChannel.GM, is_started=False)
+    account = build_account(id=2, trade_channel=TradeChannel("gm"), is_started=False)
     dropped = []
 
     async def prepare(*_args, **_kwargs):
@@ -359,7 +359,7 @@ def test_clear_positions_preserves_termination_during_prepare(monkeypatch: pytes
     from axile.server.execution.worker_backend import worker
 
     manager = WorkerBackendManager()
-    account = build_account(id=2, trade_channel=TradeChannel.CTP)
+    account = build_account(id=2, trade_channel=TradeChannel("ctp"))
     state = worker._WorkerBackendState(account_id=2)
     termination = ExecutionTerminated(
         reason="operator_cancel",
@@ -413,7 +413,7 @@ def test_empty_positions_drops_ctp_worker_after_session_recovery(monkeypatch: py
         return WorkerBackendResponse(
             request_id=request.request_id,
             kind="error",
-            channel_type=TradeChannel.CTP,
+            channel_type=TradeChannel("ctp"),
             error=WorkerBackendErrorPayload(
                 type="ctp_session_recovery_required",
                 message="ReqQryTradingAccount同步拒绝: return_code=-2",
@@ -452,7 +452,7 @@ def test_empty_positions_keeps_replacement_after_ctp_session_recovery(monkeypatc
         return WorkerBackendResponse(
             request_id=request.request_id,
             kind="error",
-            channel_type=TradeChannel.CTP,
+            channel_type=TradeChannel("ctp"),
             error=WorkerBackendErrorPayload(
                 type="ctp_session_recovery_required",
                 message="ReqQryOrder同步拒绝: return_code=-2",
@@ -489,7 +489,7 @@ def test_session_recovery_rebuilds_worker_only_for_the_next_request(monkeypatch:
             return WorkerBackendResponse(
                 request_id=stale.connection.last_request_id,
                 kind="error",
-                channel_type=TradeChannel.CTP,
+                channel_type=TradeChannel("ctp"),
                 error=WorkerBackendErrorPayload(
                     type="ctp_session_recovery_required",
                     message="ReqQryTradingAccount同步拒绝: return_code=-2",
@@ -569,7 +569,7 @@ def test_manager_maps_structured_error_to_failed_output() -> None:
     response = WorkerBackendResponse(
         request_id="req-1",
         kind="error",
-        channel_type=TradeChannel.CTP,
+        channel_type=TradeChannel("ctp"),
         error=WorkerBackendErrorPayload(
             type="runtime_error",
             message="boom",
@@ -581,7 +581,7 @@ def test_manager_maps_structured_error_to_failed_output() -> None:
 
     assert output.success is False
     assert output.status == ExecutionStatus.FAILED
-    assert output.channel_type == TradeChannel.CTP
+    assert output.channel_type == TradeChannel("ctp")
     assert output.get_error_message() == "boom"
     assert output.account_assets.source == "unavailable"
     assert output.extra["worker_error"] == {
@@ -607,7 +607,7 @@ def test_calculate_portfolio_keeps_replacement_after_ctp_session_recovery(monkey
         return WorkerBackendResponse(
             request_id=request.request_id,
             kind="error",
-            channel_type=TradeChannel.CTP,
+            channel_type=TradeChannel("ctp"),
             error=WorkerBackendErrorPayload(
                 type="ctp_session_recovery_required",
                 message="ReqQryTradingAccount同步拒绝: return_code=-2",
@@ -723,7 +723,7 @@ def test_execution_activity_keeps_latest_catalog_source_in_negative_timezone(mon
     try:
         for account_id, last_execution in [(1, "12:00:00"), (2, "13:00:00")]:
             manager.configure_catalog_account(
-                build_account(id=account_id, trade_channel=TradeChannel.CTP, is_started=True),
+                build_account(id=account_id, trade_channel=TradeChannel("ctp"), is_started=True),
                 last_execution=f"2026-10-30T{last_execution}.000000Z",
             )
         manager._record_catalog_execution(1)

@@ -768,7 +768,7 @@ export function AcctConfirm() {
         account_config: visibleChannelAccountConfig(accountFields(descriptor), acct.config),
         is_started: acct.autoOn,
         cron_expr: cronExpr,
-        gm_sessions: acct.channel === 'gm' ? acct.gm_sessions ?? null : null,
+        channel_options: acct.channel === 'gm' && acct.gm_sessions ? { gm: acct.gm_sessions } : {},
         supplement: acct.supN > 0 ? { count: acct.supN, interval_minutes: acct.supM } : null,
         remark: null,
         brokerage: acct.channel,

@@ -27,8 +27,6 @@ from tests.unit.server._runtime_db_support import runtime_database, runtime_rows
 class _NativeContext:
     def __init__(self, account: SimpleNamespace | None = None) -> None:
         self.account = vars(account).copy() if account is not None else None
-        if self.account is not None and self.account.get("gm_sessions") is not None:
-            self.account["gm_sessions"] = self.account["gm_sessions"].model_dump(mode="json")
         self.added: list[SimpleNamespace] = []
         self.audit_error: Exception | None = None
 
@@ -48,7 +46,8 @@ def _account(*, started: bool = True) -> SimpleNamespace:
         name="测试账户",
         is_started=started,
         cron_expr="30 9 * * *",
-        trade_channel=TradeChannel.CTP,
+        trade_channel=TradeChannel("ctp"),
+        channel_options={},
         supplement=None,
         archived_at=None,
     )
@@ -139,11 +138,13 @@ def test_delayed_gm_trigger_cannot_cross_phase_or_hide_calendar_failure(monkeypa
     from axile.channels.gm_sessions import GMSessionSettings
 
     account = _account()
-    account.trade_channel = TradeChannel.GM
-    account.gm_sessions = GMSessionSettings(
-        opening_cancelable={"enabled": True, "time": "09:15"},
-        opening_locked={"enabled": True, "time": "09:20"},
-    )
+    account.trade_channel = TradeChannel("gm")
+    account.channel_options = {
+        "gm": GMSessionSettings(
+            opening_cancelable={"enabled": True, "time": "09:15"},
+            opening_locked={"enabled": True, "time": "09:20"},
+        ).model_dump(mode="json")
+    }
     session = _NativeContext(account)
     planned = datetime(2026, 9, 1, 9, 19, tzinfo=SCHEDULER_TIMEZONE)
     monkeypatch.setattr(execution_scheduler, "native_operation", session.call)
@@ -322,7 +323,8 @@ def test_schedule_preview_returns_raw_cron_points_with_cursor(monkeypatch: pytes
 
     monkeypatch.setattr(account_schedule, "clock_now", lambda *, tz: evaluated)
     payload = account_schedule.SchedulePreviewRequest(
-        trade_channel=TradeChannel.CTP,
+        trade_channel=TradeChannel("ctp"),
+        channel_options={},
         cron_expr="30 9 * * *",
         limit=2,
     )
@@ -373,8 +375,8 @@ def test_gm_schedule_preview_and_trigger_share_selected_phases(
     day_decision = _decision(CalendarDecisionStatus.AVAILABLE_OPEN)
     monkeypatch.setattr(trading_calendar, "evaluate_channel_calendar_day", lambda *_a, **_kw: day_decision)
     account = _account()
-    account.trade_channel = TradeChannel.GM
-    account.gm_sessions = sessions
+    account.trade_channel = TradeChannel("gm")
+    account.channel_options = {"gm": sessions.model_dump(mode="json")}
     context = _NativeContext(account)
     monkeypatch.setattr(execution_scheduler, "native_operation", context.call)
     submitted = []
@@ -391,7 +393,7 @@ def test_gm_schedule_preview_and_trigger_share_selected_phases(
             account_schedule.SchedulePreviewRequest(
                 trade_channel="gm",
                 cron_expr=f"{minute} {hour} * * *",
-                gm_sessions=sessions,
+                channel_options={"gm": sessions.model_dump(mode="json")},
                 scheduled_ats=[moment],
             )
         )
@@ -407,8 +409,10 @@ def test_gm_auction_with_supplements_uses_serialized_session_settings(monkeypatc
 
     moment = datetime(2026, 10, 9, 9, 20, tzinfo=SCHEDULER_TIMEZONE)
     account = _account()
-    account.trade_channel = TradeChannel.GM
-    account.gm_sessions = GMSessionSettings(opening_locked={"enabled": True, "time": "09:20"})
+    account.trade_channel = TradeChannel("gm")
+    account.channel_options = {
+        "gm": GMSessionSettings(opening_locked={"enabled": True, "time": "09:20"}).model_dump(mode="json")
+    }
     account.supplement = {"count": 4, "interval_minutes": 1}
     context = _NativeContext(account)
     monkeypatch.setattr(execution_scheduler, "native_operation", context.call)
@@ -462,7 +466,11 @@ def test_special_sessions_rejected_for_non_gm_preview():
                 account_schedule.SchedulePreviewRequest(
                     trade_channel="ctp",
                     cron_expr="15 9 * * *",
-                    gm_sessions=GMSessionSettings(opening_cancelable={"enabled": True, "time": "09:15"}),
+                    channel_options={
+                        "gm": GMSessionSettings(opening_cancelable={"enabled": True, "time": "09:15"}).model_dump(
+                            mode="json"
+                        )
+                    },
                 )
             )
         )

@@ -1,3 +1,4 @@
+import type { Account } from '@/types/api'
 /**
  * 账户详情「自动执行」轻量节奏弹层（方案 B）。
  *
@@ -108,7 +109,7 @@ export interface TimerQuickModalProps {
   /** 当前存储的 cron_expr。 */
   cronExpr: string
   supplement?: Supplement | null
-  gmSessions?: GMSessions | null
+  channelOptions: Account['channel_options'] | undefined
   onClose: () => void
   /** 保存成功后刷新详情 / next_run / 仪表盘。 */
   onSaved: () => void
@@ -125,11 +126,12 @@ function TimerQuickModalReady({
   nightSchedule,
   cronExpr,
   supplement,
-  gmSessions,
+  channelOptions,
   tradeChannel,
   onClose,
   onSaved,
 }: TimerQuickModalProps & { scheduleKind: ScheduleKind; nightSchedule?: NightSchedule | null }) {
+  const gmSessions = channelOptions?.gm
   const toast = useToastStore((s) => s.toast)
   const market = scheduleKind
   const [state, setState] = useState<TimerEditorState>(() => draftFromCron(market, cronExpr, nightSchedule, supplement, gmSessions).state)
@@ -206,7 +208,7 @@ function TimerQuickModalReady({
       await updateAccount(accountId, {
         cron_expr: cronNext,
         supplement: nextSupplement,
-        ...(sessionsChanged ? { gm_sessions: nextSessions } : {}),
+        ...(sessionsChanged ? { channel_options: { ...channelOptions, ...(nextSessions ? { gm: nextSessions } : {}) } } : {}),
       })
       toast(cronNext ? '节奏已更新' : '已关闭自动调仓节奏')
       onSaved()

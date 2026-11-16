@@ -13,8 +13,7 @@ from axile.server.core import db
 from axile.server.db.models.account import Account, AccountCreate, AccountSnapshot
 from axile.server.execution.resident_connection import disconnect_resident_executor
 from axile.server.execution.worker_backend import replay, worker_state
-from axile.server.execution_replay.service import replay_manifest
-from tests.unit.server.test_execution_replay_native import wait_for
+from tests.unit.server.test_execution_replay_recorder import eventually as wait_for
 
 
 class Executor:
@@ -111,31 +110,6 @@ def recording(runtime, execution):
     return recorder
 
 
-@pytest.mark.parametrize("control_first", [False, True])
-def test_frozen_trade_uses_actual_context_and_later_same_version_resource_can_change(
-    runtime, monkeypatch, control_first
-):
-    allow_fixture_replay("tq", monkeypatch)
-    current = runtime.update(trade_channel="tq", account_config={"fixture": "new"})
-    stale = replay.current_replay_config(runtime.old)
-    fresh = replay.current_replay_config(current)
-    assert stale.config_version == fresh.config_version > runtime.old.replay_config_version
-    replay.configure_worker_replay(runtime.state, fresh if control_first else stale)
-    first = runtime.resolve(runtime.old)
-    recorder = recording(runtime, "A")
-    assert recorder._context["channel"] == "ctp"
-    previous_id = recorder.status()["recording_id"]
-
-    replay.configure_worker_replay(runtime.state, fresh)
-    second = runtime.resolve(current)
-    assert second is not first and second.channel == "tq"
-    wait_for(lambda: recorder.status().get("recording_id") != previous_id)
-    recording(runtime, "B").close()
-    manifest = replay_manifest(runtime.root, current.id, "B")
-    assert [item["context"]["channel"] for item in manifest["recordings"]] == ["tq"]
-    assert runtime.state.replay_config.config_version == current.replay_config_version
-
-
 def test_switch_to_unsupported_channel_does_not_keep_old_supported_declaration(runtime, monkeypatch):
     allow_fixture_replay("gm", monkeypatch, supported=False)
     current = runtime.update(trade_channel="gm", account_config={"fixture": "new"})
@@ -152,23 +126,6 @@ def test_switch_to_unsupported_channel_does_not_keep_old_supported_declaration(r
     assert recorder.status()["state"] == "unsupported"
     assert recorder._context["channel"] == "gm"
     assert getattr(second, "_replay_observer", None) is None
-
-
-def test_new_credentials_bind_the_new_owner_even_when_the_declaration_is_unchanged(runtime):
-    current = runtime.update(account_config={"fixture": "new"})
-    replay.configure_worker_replay(runtime.state, replay.current_replay_config(runtime.old))
-    first = runtime.resolve(runtime.old)
-    recorder = recording(runtime, "A")
-    previous_id = recorder.status()["recording_id"]
-    replay.configure_worker_replay(runtime.state, replay.current_replay_config(current))
-    second = runtime.resolve(current)
-    wait_for(lambda: recorder.status().get("recording_id") != previous_id)
-    recording(runtime, "B").close()
-    assert not first.ready and second.credentials == {"fixture": "new"}
-    assert getattr(first, "_replay_observer", None) is None
-    assert [item["context"]["channel"] for item in replay_manifest(runtime.root, current.id, "B")["recordings"]] == [
-        "ctp"
-    ]
 
 
 def test_new_resource_snapshot_cannot_restore_an_old_on_intent(runtime):

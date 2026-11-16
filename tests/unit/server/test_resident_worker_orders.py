@@ -13,7 +13,7 @@ from tests.unit.server.test_resident_connection import Executor
 
 
 def setup_worker(monkeypatch):
-    account = AccountSnapshot.model_validate(build_account(id=7, trade_channel=TradeChannel.GM).model_dump())
+    account = AccountSnapshot.model_validate(build_account(id=7, trade_channel=TradeChannel("gm")).model_dump())
     state = worker_state._WorkerBackendState()
     created, initialized, closed, commands = [], [], [], []
 

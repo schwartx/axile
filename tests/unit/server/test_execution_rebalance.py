@@ -218,10 +218,8 @@ def test_trade_serializes_success_result_to_json_safe_dict(
     assert captured["execution_id"] is None
 
 
-@pytest.mark.parametrize("cleanup", [False, True])
 def test_trade_builds_model_before_execute_and_persists_dict(
     monkeypatch: pytest.MonkeyPatch,
-    cleanup: bool,
 ) -> None:
     """标准输入在进入执行器前应已转成模型，落库时仍写入字典快照。"""
     account = build_account(feishu_key="secret-feishu-key")
@@ -244,7 +242,7 @@ def test_trade_builds_model_before_execute_and_persists_dict(
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: fake_executor)
     monkeypatch.setattr(rebalance_execution, "append_execute_record_from_output", fake_append_output_record)
 
-    _ = asyncio.run(rebalance_execution.trade(account, {"ag2612": 0.1}, cleanup=cleanup))
+    _ = asyncio.run(rebalance_execution.trade(account, {"ag2612": 0.1}))
 
     assert isinstance(fake_executor.execute_input, UnifiedStandardInput)
     assert fake_executor.cleanup is False
@@ -304,7 +302,7 @@ def test_trade_uses_gm_channel_default_leverages_when_unset(
     account = build_account(
         name="gm-ashare-account",
         market="A股",
-        trade_channel=TradeChannel.GM,
+        trade_channel=TradeChannel("gm"),
         brokerage="gm",
         account_config={
             "account_id": "gm-account",
@@ -356,7 +354,7 @@ def test_trade_routes_gm_account_to_worker_manager(
     account = build_account(
         name="gm-live-account",
         market="A股",
-        trade_channel=TradeChannel.GM,
+        trade_channel=TradeChannel("gm"),
         brokerage="gm",
         account_config={
             "account_id": "gm-account",
@@ -469,9 +467,9 @@ def test_trade_routes_ctp_account_to_worker_manager(
     )
 
     assert len(manager.trade_calls) == 1
-    assert cast(Account, manager.trade_calls[0]["account"]).trade_channel == TradeChannel.CTP
+    assert cast(Account, manager.trade_calls[0]["account"]).trade_channel == TradeChannel("ctp")
     assert cast("dict[str, object]", manager.trade_calls[0]["standard_input_dict"])["channel_type"] == str(
-        TradeChannel.CTP
+        TradeChannel("ctp")
     )
 
 
@@ -482,7 +480,7 @@ def test_trade_persists_failed_gm_worker_output(
     account = build_account(
         name="gm-live-account",
         market="A股",
-        trade_channel=TradeChannel.GM,
+        trade_channel=TradeChannel("gm"),
         brokerage="gm",
         account_config={
             "account_id": "gm-account",
@@ -502,7 +500,7 @@ def test_trade_persists_failed_gm_worker_output(
             memory={"message": "boom"},
             inputs=None,
             execution_time=0.0,
-            channel_type=TradeChannel.GM,
+            channel_type=TradeChannel("gm"),
             symbol_results={},
             status=ExecutionStatus.FAILED,
             error="boom",
@@ -790,7 +788,7 @@ def test_trade_prepares_execution_runtime_before_pre_execute_audit_events(
         ) -> UnifiedStandardOutput:
             _ = retain_runtime
             self.execute_seq = self.next_audit_seq()
-            return super().execute(_standard_input, cleanup=cleanup)
+            return super().execute(_standard_input)
 
     async def fake_append_execution_event(**kwargs: object) -> bool:
         captured_event_seqs.append(cast(int, kwargs["seq"]))
@@ -886,7 +884,7 @@ def test_trade_completion_event_matches_output_status(
                 memory={"message": error_message},
                 inputs=None,
                 execution_time=0.1,
-                channel_type=TradeChannel.CTP,
+                channel_type=TradeChannel("ctp"),
                 symbol_results={},
                 status=output_status,
                 error=error_message,
@@ -1008,7 +1006,7 @@ def test_trade_binds_account_control_guard(
 
     assert captured == {
         "account_id": 1,
-        "channel": TradeChannel.CTP,
+        "channel": TradeChannel("ctp"),
         "execution_id": "exec-bind-1",
     }
     assert fake_executor.executed_guard is fake_guard
@@ -1041,7 +1039,7 @@ def test_standard_input_accepts_database_trade_channel_string(trigger_source) ->
         gm_session=context,
     )
 
-    assert standard_input.channel_type == TradeChannel.GM
+    assert standard_input.channel_type == TradeChannel("gm")
     assert standard_input.curr_target == {"600000.SH": 0.1}
     assert standard_input.last_target == {"000001.SZ": 0.2}
     assert cast("dict[str, object]", standard_input.extra["audit"])["channel"] == "gm"
@@ -1070,7 +1068,7 @@ def test_account_execution_timeout_flows_into_standard_input(timeout: int) -> No
 def test_standard_input_execution_timeout_defaults_to_180() -> None:
     """未显式提供时，标准输入的总超时应回落到 180 秒的默认额度。"""
     payload: dict[str, object] = {
-        "channel_type": TradeChannel.CTP.value,
+        "channel_type": "ctp",
         "account_config": {
             "broker_id": "9999",
             "investor_id": "test",

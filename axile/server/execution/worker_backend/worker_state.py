@@ -337,7 +337,7 @@ def _configure_executor_resources(state: _WorkerBackendState, account: AccountSn
 
     bind_worker_replay_resources(state, account, executor)
     state.replay_connection_observer = lambda ready: sync_worker_replay_connection(state, ready)
-    if account.trade_channel == TradeChannel.CTP:
+    if account.trade_channel == TradeChannel("ctp"):
         setattr(executor, "logger", getattr(executor, "logger", logger).bind(account_id=account.id))
         from axile.server.execution.catalog_control import catalog_control_scope
 

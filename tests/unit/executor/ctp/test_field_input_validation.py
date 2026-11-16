@@ -86,10 +86,11 @@ def test_query_rejected_before_any_send(entry):
     executor._config.assert_not_called()
 
 
-def test_legacy_quote_max_age_is_ignored(config):
+def test_removed_quote_max_age_is_rejected(config):
     legacy_data = {**config.model_dump(), "quote_max_age_seconds": 30.0}
 
-    assert CTPAccountConfig.model_validate(legacy_data).model_dump() == config.model_dump()
+    with pytest.raises(ValueError):
+        CTPAccountConfig.model_validate(legacy_data)
     assert "quote_max_age_seconds" not in CTPAccountConfig.model_json_schema()["properties"]
 
 
@@ -132,7 +133,7 @@ def test_manual_cancel_rejected_before_worker_dispatch(value, monkeypatch):
     monkeypatch.setattr(account_orders, "_state", state)
     payload = OrderCancelRequest(request_id="offline", order_id=value, symbol="rb2612")
     with pytest.raises(ValueError):
-        asyncio.run(account_orders.cancel_account_order(SimpleNamespace(trade_channel=TradeChannel.CTP), payload))
+        asyncio.run(account_orders.cancel_account_order(SimpleNamespace(trade_channel=TradeChannel("ctp")), payload))
     state.assert_not_called()
 
 
@@ -195,7 +196,7 @@ def test_manual_cancel_accepts_negative_session_before_worker_dispatch(monkeypat
     state = Mock(side_effect=RuntimeError("worker dispatch reached"))
     monkeypatch.setattr(account_orders, "_state", state)
     payload = OrderCancelRequest(request_id="offline", order_id="20261104:1:-978444561:8", symbol="rb2612")
-    account = SimpleNamespace(trade_channel=TradeChannel.CTP)
+    account = SimpleNamespace(trade_channel=TradeChannel("ctp"))
     with pytest.raises(RuntimeError, match="worker dispatch reached"):
         asyncio.run(account_orders.cancel_account_order(account, payload))
     state.assert_called_once_with(account)

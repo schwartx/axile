@@ -326,10 +326,10 @@ def test_command_terminal_outside_recent_window_survives_equal_version_mirror(co
     account, binding = session()
     book = AccountOrderBook()
     book.replace([], 0)
-    terminal = order(order_id="0", status="已撤销", update_timestamp=1)
+    terminal = order(order_id="0", status="已撤销", update_time="1970-01-01T00:00:01Z")
     book.apply(terminal)
     for index in range(1, 513):
-        book.apply(order(order_id=str(index), status="已撤销", update_timestamp=1))
+        book.apply(order(order_id=str(index), status="已撤销", update_time="1970-01-01T00:00:01Z"))
     executor = SimpleNamespace(
         account_orders=book,
         get_pending_orders=lambda _: [],

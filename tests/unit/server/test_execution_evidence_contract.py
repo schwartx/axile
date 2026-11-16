@@ -147,7 +147,7 @@ async def _persist_contract_result(output, worker_raw, before_assets, monkeypatc
             patch.setattr(worker_audit, "append_execution_event_sync", lambda **kwargs: None)
             patch.setattr(worker_audit, "persist_post_execute_assets_sync", post_writer)
             worker_audit._append_success_audit(
-                account=SimpleNamespace(id=1, trade_channel=TradeChannel.CTP),
+                account=SimpleNamespace(id=1, trade_channel=TradeChannel("ctp")),
                 execution_id="contract",
                 algorithm_name="contract",
                 output=output,
@@ -203,7 +203,7 @@ async def _persist_contract_result(output, worker_raw, before_assets, monkeypatc
 def build_contract_wire(case, monkeypatch):
     """实际生成、落库并读回结果；fixture 只保留跨层消费的字段，避免时间戳噪声。"""
     inputs = case["input"]
-    owner = Mock(channel_type=TradeChannel.CTP, get_account_assets=_snapshot_reader(inputs["after"]))
+    owner = Mock(channel_type=TradeChannel("ctp"), get_account_assets=_snapshot_reader(inputs["after"]))
     runtime = Mock(memory={}, elapsed_seconds=Mock(return_value=1))
     output = ExecutionEngine(owner, runtime)._create_standard_output_from_results(
         _standard_input(),
@@ -293,7 +293,7 @@ def test_pre_execute_audit_references_committed_input_and_preserves_missing_asse
     )
     monkeypatch.setattr(worker_audit, "execution_environment", lambda *_args: {"synthetic": True})
     common = {
-        "account": SimpleNamespace(id=1, trade_channel=TradeChannel.CTP),
+        "account": SimpleNamespace(id=1, trade_channel=TradeChannel("ctp")),
         "execution_id": "contract-pre",
         "algorithm_name": "contract",
         "executor": object(),

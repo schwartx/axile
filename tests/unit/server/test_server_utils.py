@@ -25,7 +25,7 @@ def _build_account() -> Account:
         id=1,
         name="ctp-testnet-sim",
         market="期货",
-        trade_channel=TradeChannel.CTP,
+        trade_channel=TradeChannel("ctp"),
         account_control_preset="default",
         account_control_override=None,
         account_config={

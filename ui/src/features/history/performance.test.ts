@@ -1,12 +1,11 @@
 import { expect, test } from 'bun:test'
-import { axisPercent, chartTime, feeOption, niceReturnAxis, returnPaths, returnText, settingsFromDraft, timeTicks, WEIGHT_MODES } from './performance'
+import { axisPercent, chartTime, feeOption, niceReturnAxis, returnPaths, returnText, settingsFromDraft, timeTicks } from './performance'
 import type { PerformancePoint } from '@/types/api'
 
-test('模式使用中文标签，费率从 BP 转为账户小数配置', () => {
-  expect(WEIGHT_MODES.map(m => m.label)).toEqual(['时序', '截面'])
-  expect(settingsFromDraft('ts', '2')).toEqual({ backtest_weight_type: 'ts', backtest_fee_rate: 0.0002 })
-  for (const value of ['', ' ', '-1', '10000', 'NaN', 'Infinity']) expect(settingsFromDraft('ts', value)).toBeNull()
-  expect(settingsFromDraft('cs', '0')?.backtest_fee_rate).toBe(0)
+test('费率从 BP 转为账户小数配置', () => {
+  expect(settingsFromDraft('2')).toEqual({ backtest_weight_type: 'cs', backtest_fee_rate: 0.0002 })
+  for (const value of ['', ' ', '-1', '10000', 'NaN', 'Infinity']) expect(settingsFromDraft(value)).toBeNull()
+  expect(settingsFromDraft('0')?.backtest_fee_rate).toBe(0)
 })
 
 test('缺失收益断线，真实零收益保留', () => {
@@ -25,7 +24,7 @@ test('费率预设按数值匹配，自定义保留小数和非法输入', () =>
   for (const fee of ['0', '5', '15', '30']) expect(feeOption(fee)).toBe(fee)
   expect(feeOption('5.0')).toBe('5')
   for (const fee of ['', ' ', '2.5', '-1']) expect(feeOption(fee)).toBe('custom')
-  expect(settingsFromDraft('ts', '2.5')?.backtest_fee_rate).toBe(0.00025)
+  expect(settingsFromDraft('2.5')?.backtest_fee_rate).toBe(0.00025)
 })
 
 test('小幅收益刻度保持可区分并消除负零', () => {

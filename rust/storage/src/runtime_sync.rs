@@ -322,7 +322,7 @@ pub fn scheduler_account(path: &str, value: &Value) -> Result<Value, AnalysisErr
         .map_err(|error| AnalysisError::new("INVALID_DATA", error.to_string()))?;
     Ok(
         json!({"trade_channel":channel,"is_started":schedule.is_started,
-        "cron_expr":schedule.cron_expr,"gm_sessions":schedule.channel_options["gm"],"channel_options":schedule.channel_options,"supplement":schedule.supplement,"portfolio_id":portfolio_id}),
+        "cron_expr":schedule.cron_expr,"channel_options":schedule.channel_options,"supplement":schedule.supplement,"portfolio_id":portfolio_id}),
     )
 }
 

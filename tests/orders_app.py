@@ -50,7 +50,7 @@ account = build_account(
     id=1,
     portfolio_id=None,
     name="tq-browser",
-    trade_channel=TradeChannel.TQ,
+    trade_channel=TradeChannel("tq"),
     brokerage="tq",
     account_config={"account_mode": "kq", "tq_username": "fixture", "tq_password": "fixture"},
 )

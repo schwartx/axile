@@ -10,7 +10,7 @@ async def validate_execution_requests(execution_id: str) -> bool:
     snapshot = await native_operation("supplement_execution_requests", {"execution_id": execution_id})
     if not snapshot["steps"]:
         return True
-    sessions = GMSessionSettings.model_validate(snapshot["gm_sessions"]) if snapshot.get("gm_sessions") else None
+    sessions = GMSessionSettings.from_channel_options(snapshot["channel_options"])
     result = await native_operation(
         "supplement_validate_requests",
         {"execution_id": execution_id, **calendar_context(snapshot["channel"], sessions)},

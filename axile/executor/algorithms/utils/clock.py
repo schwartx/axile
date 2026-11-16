@@ -32,6 +32,10 @@ class Clock(Protocol):
         """
         ...
 
+    def monotonic(self) -> float:
+        """返回单调递增的超时计时值。"""
+        ...
+
     def sleep(self, seconds: float) -> None:
         """
         等待指定秒数.
@@ -161,12 +165,8 @@ def set_default_clock(clock: Clock) -> None:
 
 
 def clock_monotonic(clock: Clock | None = None) -> float:
-    """读取超时计时值；旧版自定义时钟沿用其仿真时间戳。"""
-    resolved = _resolve_clock(clock)
-    monotonic = getattr(resolved, "monotonic", None)
-    if callable(monotonic):
-        return cast(Callable[[], float], monotonic)()
-    return resolved.time()
+    """读取时钟提供的超时计时值。"""
+    return _resolve_clock(clock).monotonic()
 
 
 async def clock_async_sleep(seconds: float, clock: Clock | None = None) -> None:

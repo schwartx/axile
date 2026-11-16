@@ -53,6 +53,11 @@ class GMSessionSettings(BaseModel):
             raise ValueError("当前渠道尚未验证盘后定价交易能力，暂不能启用")
         return self
 
+    @classmethod
+    def from_channel_options(cls, options: dict[str, Any]) -> "GMSessionSettings | None":
+        """从渠道配置读取 GM 排程；未配置时保留普通交易日历。"""
+        return cls.model_validate(options["gm"]) if "gm" in options else None
+
     def validate_channel(self, channel: str) -> None:
         """特殊阶段配置仅允许用于 GM。"""
         if str(channel) != "gm":

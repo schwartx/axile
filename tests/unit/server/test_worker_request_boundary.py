@@ -23,14 +23,14 @@ def test_worker_result_roundtrip_preserves_order_observation_time():
         volume=1,
         price=1,
         status="已撤销",
-        update_timestamp=1,
+        update_time="1970-01-01T00:00:01Z",
     )
     output.symbol_results["ag2612"].orders = [order]
     payload = _dump_output_payload(output)
     response = WorkerBackendResponse(request_id="order-time", kind="result", output_payload=payload)
     restored = WorkerBackendManager._build_output(response)
     assert _dump_output_payload(restored) == payload
-    assert restored.orders[0].update_timestamp == 1
+    assert restored.orders[0].update_time == "1970-01-01T00:00:01Z"
 
 
 @pytest.mark.parametrize("command", ["execute_trade", "empty_positions"])

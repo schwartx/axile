@@ -129,7 +129,9 @@ class ExecutionSession:
     @property
     def supports_quote_at_send(self) -> bool:
         """只有在原生发送点校验和定价的执行器才能接收延后报价。"""
-        return self.channel_type == TradeChannel.CTP and getattr(self._owner, "supports_quote_at_send", False) is True
+        return (
+            self.channel_type == TradeChannel("ctp") and getattr(self._owner, "supports_quote_at_send", False) is True
+        )
 
     def place_order(
         self,
@@ -299,13 +301,6 @@ class ExecutionSession:
             if callable(getter)
             else None
         )
-
-    def get_max_order_volume(
-        self, order_type: OrderType = OrderType.LIMIT, trade_rule: dict[str, object] | None = None
-    ) -> int | None:
-        """兼容仅查询上限的调用方。"""
-        bounds = self.get_order_volume_bounds(order_type, trade_rule)
-        return bounds[1] if bounds is not None else None
 
     def get_min_notional(self) -> float | None:
         """获取当前 symbol 下单的最小名义价值."""

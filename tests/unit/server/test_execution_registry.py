@@ -282,7 +282,7 @@ def test_terminate_running_account_execution_persists_immediately_terminated_que
         execution_kind=ExecutionKind.REBALANCE,
         status=ExecutionTaskStatus.QUEUED,
         created_at="2026-03-22T18:00:00",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         algorithm="SINGLE-MAKER",
         task=task,
     )
@@ -382,7 +382,7 @@ def test_terminate_running_account_execution_idempotent_for_queued(
         execution_kind=ExecutionKind.REBALANCE,
         status=ExecutionTaskStatus.QUEUED,
         created_at="2026-03-22T18:00:00",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         algorithm="SINGLE-MAKER",
     )
     execution_registry.set_execution_task_state(execution_id, state)
@@ -439,7 +439,7 @@ def test_terminate_running_account_execution_idempotent_for_running(
         status=ExecutionTaskStatus.RUNNING,
         created_at="2026-03-22T18:00:00",
         started_at="2026-03-22T18:00:01",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         algorithm="SINGLE-MAKER",
         cancel_event=cancel_event,
     )

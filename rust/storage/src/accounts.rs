@@ -42,13 +42,7 @@ const EXECUTION: &[&str] = &[
     "replay_recording_enabled",
     "execution_timeout",
 ];
-const SCHEDULE: &[&str] = &[
-    "is_started",
-    "cron_expr",
-    "gm_sessions",
-    "channel_options",
-    "supplement",
-];
+const SCHEDULE: &[&str] = &["is_started", "cron_expr", "channel_options", "supplement"];
 const NOTIFICATION: &[&str] = &["feishu_key", "execution_notification_code"];
 const BACKTEST: &[&str] = &["backtest_weight_type", "backtest_fee_rate"];
 const GROUPS: &[(&str, &[&str])] = &[
@@ -143,20 +137,11 @@ fn object(text: &str) -> Result<Map<String, Value>, AnalysisError> {
 }
 
 pub(crate) fn normalize_schedule(values: &mut Map<String, Value>) -> Result<(), AnalysisError> {
-    let mut options = match values.remove("channel_options") {
+    let options = match values.remove("channel_options") {
         None | Some(Value::Null) => Map::new(),
         Some(Value::Object(options)) => options,
         Some(_) => return Err(invalid("channel_options 必须是对象")),
     };
-    if let Some(legacy) = values.remove("gm_sessions") {
-        if legacy.is_null() {
-            options.remove("gm");
-        } else if legacy.is_object() {
-            options.insert("gm".into(), legacy);
-        } else {
-            return Err(invalid("gm_sessions 必须是对象或空值"));
-        }
-    }
     if options.values().any(|value| !value.is_object()) {
         return Err(invalid("渠道调度配置必须是对象"));
     }
@@ -184,6 +169,8 @@ fn account_row(row: &Row<'_>, states: bool) -> Result<Value, AnalysisError> {
         let group: String = row.get(IDENTITY.len() + offset).map_err(sql)?;
         data.extend(object(&group)?);
     }
+    // 账户资金权重始终使用求和口径，由当前引擎定义。
+    data.insert("backtest_weight_type".into(), json!("cs"));
     if data.get("algorithm_schedule").is_none_or(Value::is_null) {
         data.insert("algorithm_schedule".into(), json!([]));
     }
@@ -191,7 +178,6 @@ fn account_row(row: &Row<'_>, states: bool) -> Result<Value, AnalysisError> {
         data.insert("product_algorithms".into(), json!({}));
     }
     normalize_schedule(&mut data)?;
-    data.insert("gm_sessions".into(), data["channel_options"]["gm"].clone());
     data.entry("replay_recording_enabled")
         .or_insert(json!(false));
     validate_replay_recording(data.get("replay_recording_enabled"), "ACCOUNT_DATA")?;
@@ -455,9 +441,6 @@ fn insert_on(connection: &Connection, data: &Value, now: &str) -> Result<i64, An
         let mut values = settings(data, fields);
         if *group == "schedule" {
             let values = values.as_object_mut().expect("settings object");
-            if data.get("gm_sessions").is_none() {
-                values.remove("gm_sessions");
-            }
             normalize_schedule(values)?;
         }
         arguments.push(argument(&values));
@@ -519,7 +502,6 @@ fn public_account(mut account: Value, request: &Value) -> Result<Value, Analysis
         "account_config",
         "feishu_key",
         "connection_state",
-        "channel_options",
         "replay_config_version",
     ] {
         data.remove(name);
@@ -806,7 +788,6 @@ pub fn account_update(path: &str, request: &Value) -> Result<Value, AnalysisErro
         let schedule_changed = [
             "cron_expr",
             "supplement",
-            "gm_sessions",
             "channel_options",
             "trade_channel",
             "portfolio_id",
@@ -1065,7 +1046,7 @@ mod tests {
             "futures_close_policy":{"mode":"rules","fallback":"yesterday_first","overrides":{}},
             "forbidden_symbols":null,"risk_symbols":null,"write_empty_record":null,"execution_timeout":120,
             "is_started":false,"cron_expr":"","supplement":null,"feishu_key":"webhook",
-            "execution_notification_code":null,"backtest_weight_type":"ts","backtest_fee_rate":0})
+            "execution_notification_code":null,"backtest_weight_type":"cs","backtest_fee_rate":0})
     }
 
     #[test]
@@ -1157,66 +1138,34 @@ mod tests {
     }
 
     #[test]
-    fn schedule_options_preserve_legacy_reads_and_clear_only_gm_on_patch() {
+    fn schedule_options_roundtrip_and_replace_atomically() {
         let connection = database();
         let mut input = account();
-        input["gm_sessions"] = json!({"opening_locked": {"enabled": true, "time": "09:24"}});
-        let canonical = {
-            let mut canonical = input.clone();
-            canonical.as_object_mut().unwrap().remove("gm_sessions");
-            canonical["channel_options"] = json!({"gm":input["gm_sessions"]});
-            canonical
-        };
-        let id = insert_on(&connection, &canonical, "2026-10-23T09:00:00").unwrap();
-        let stored: String = connection
-            .query_row(
-                "SELECT schedule FROM account_settings WHERE account_id=?1",
-                [id],
-                |row| row.get(0),
-            )
-            .unwrap();
-        let stored: Value = serde_json::from_str(&stored).unwrap();
-        assert!(stored.get("gm_sessions").is_none());
-        assert_eq!(stored["channel_options"]["gm"], input["gm_sessions"]);
+        input["channel_options"] = json!({"gm":{"opening_locked":{"enabled":true,"time":"09:24"}},"external":{"enabled":true}});
+        let id = insert_on(&connection, &input, "2026-10-23T09:00:00").unwrap();
         assert_eq!(
-            snapshot_on(&connection, id).unwrap().unwrap()["gm_sessions"],
-            input["gm_sessions"]
+            snapshot_on(&connection, id).unwrap().unwrap()["channel_options"],
+            input["channel_options"]
         );
-        connection.execute(
-            "UPDATE account_settings SET schedule=?1 WHERE account_id=?2",
-            params![json!({"is_started":false,"cron_expr":"","gm_sessions":input["gm_sessions"],"supplement":null}).to_string(), id]
-        ).unwrap();
-        let legacy = snapshot_on(&connection, id).unwrap().unwrap();
-        assert_eq!(legacy["gm_sessions"], input["gm_sessions"]);
-        assert_eq!(legacy["channel_options"]["gm"], input["gm_sessions"]);
-        let other =
-            json!({"channel_options":{"gm":input["gm_sessions"],"external":{"enabled":true}}});
         patch_on(
             &connection,
             id,
-            other.as_object().unwrap(),
+            json!({"channel_options":{"external":{"enabled":true}}})
+                .as_object()
+                .unwrap(),
             "2026-10-23T09:01:00",
         )
         .unwrap();
-        patch_on(
-            &connection,
-            id,
-            json!({"gm_sessions":null}).as_object().unwrap(),
-            "2026-10-23T09:02:00",
-        )
-        .unwrap();
         let saved = snapshot_on(&connection, id).unwrap().unwrap();
-        assert!(saved["gm_sessions"].is_null());
         assert_eq!(
             saved["channel_options"],
             json!({"external":{"enabled":true}})
         );
-        let invalid_patch = json!({"channel_options": {"gm":false}});
         assert!(writer_scope::immediate(&connection, || patch_on(
             &connection,
             id,
-            invalid_patch.as_object().unwrap(),
-            "2026-10-23T09:03:00"
+            json!({"channel_options":{"gm":false}}).as_object().unwrap(),
+            "2026-10-23T09:02:00"
         ))
         .is_err());
         assert_eq!(snapshot_on(&connection, id).unwrap().unwrap(), saved);

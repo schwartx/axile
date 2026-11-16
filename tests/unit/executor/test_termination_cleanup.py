@@ -21,6 +21,10 @@ class Clock:
     def __init__(self):
         self.now = 0.0
 
+    def monotonic(self) -> float:
+        """返回仿真计时值。"""
+        return self.time()
+
     def time(self):
         return self.now
 
@@ -33,7 +37,7 @@ class Clock:
 
 
 class Owner:
-    channel_type = TradeChannel.CTP
+    channel_type = TradeChannel("ctp")
     logger = MagicMock()
 
     def __init__(self, clock, *, query_error=False, terminal=True):
@@ -43,7 +47,7 @@ class Owner:
         self.guard = AccountControlGuard(
             account_id=1,
             execution_id="exec",
-            channel=TradeChannel.CTP,
+            channel=TradeChannel("ctp"),
             policy=resolve_account_control_policy("ctp"),
             baseline=AccountControlCounterSnapshot(),
             wait_clock=clock,

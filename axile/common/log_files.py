@@ -142,7 +142,7 @@ def render_record(record: dict[str, Any], *, color: bool = False) -> str:
 def _render_record(
     record: dict[str, Any], *, color: bool = False, prepared: bool = False, times: dict[datetime, str] | None = None
 ) -> str:
-    """批量读取产生的记录可复用正文，旧版字典仍按原规则解释。"""
+    """批量读取产生的记录可复用正文。"""
     timestamp = _display_time(record.get("timestamp", ""), times)
     level = "WARN" if record.get("level") == "WARNING" else str(record.get("level", "INFO"))
     component = record.get("metadata", {}).get("component", record.get("component", "系统"))
@@ -200,9 +200,6 @@ class LogDecoder:
 
     def feed(self, row: Any, *, render: bool = True) -> dict[str, Any] | None:
         """接收定义或事件；证据收集可延迟正文展开至归属和预算检查后。"""
-        if isinstance(row, dict):
-            _require(self.run_id is None and isinstance(row.get("context"), dict), "invalid legacy log record")
-            return row
         _require(isinstance(row, list) and bool(row), "log record must be a nonempty array")
         kind = row[0]
         if kind == "H":
@@ -329,12 +326,6 @@ class LogDecoder:
 
 def iter_file(path: Path, definitions: dict[tuple, object] | None = None) -> Iterable[dict[str, Any]]:
     """读取普通文件或 gzip；损坏记录带文件与行号报告，不静默跳过。"""
-    for record, _ in _iter_file(path, definitions):
-        yield record
-
-
-def _iter_file(path: Path, definitions: dict[tuple, object] | None) -> Iterable[tuple[dict[str, Any], bool]]:
-    """正文复用标识仅随内部结果传递，不混入日志字段。"""
     decoder = LogDecoder(definitions)
     opener = gzip.open if path.suffix == ".gz" else open
     try:
@@ -344,7 +335,7 @@ def _iter_file(path: Path, definitions: dict[tuple, object] | None) -> Iterable[
                     _require(line.endswith(b"\n"), "incomplete log line")
                     record = decoder.feed(decode_json(line))
                     if record is not None:
-                        yield record, decoder.run_id is not None
+                        yield record
                 except (ValueError, TypeError, UnicodeDecodeError) as error:
                     raise LogDecodeError(f"{path.name}:{number}: {error}") from error
     except (OSError, EOFError, zlib.error) as error:
@@ -353,44 +344,35 @@ def _iter_file(path: Path, definitions: dict[tuple, object] | None) -> Iterable[
 
 def read_logs(paths: Iterable[Path]) -> list[dict[str, Any]]:
     """合并进程及轮转分片；同一事件重复输入不重复展示。"""
-    return [record for record, _ in _read_logs(paths)]
-
-
-def _read_logs(paths: Iterable[Path]) -> list[tuple[dict[str, Any], bool]]:
-    """保留记录来源，避免把旧版字典中的 message 当作可信展开结果。"""
-    events: dict[tuple, tuple[dict[str, Any], bool]] = {}
+    events: dict[tuple, dict[str, Any]] = {}
     definitions: dict[tuple, object] = {}
     for path in paths:
-        for index, (record, prepared) in enumerate(_iter_file(path, definitions)):
-            key = (record.get("run_id", str(path)), record.get("seq", index))
-            _require(key not in events or events[key][0] == record, "conflicting event across files")
-            events[key] = record, prepared
-    records = list(events.values())
-    del events
-    records.sort(key=lambda item: _log_order(item[0]))
-    return records
+        for record in iter_file(path, definitions):
+            key = (record["run_id"], record["seq"])
+            _require(key not in events or events[key] == record, "conflicting event across files")
+            events[key] = record
+    return sorted(events.values(), key=_log_order)
 
 
 def format_logs(paths: Iterable[Path], mode: str = "timeline", *, color: bool = False) -> str:
     """批量输出时间线、过程树或计数，复用解码时已展开的正文。"""
-    records = _read_logs(paths)
+    records = read_logs(paths)
     if mode == "stats":
-        stats = log_statistics(record for record, _ in records)
-        if issues := _sequence_gaps(record for record, _ in records):
+        stats = log_statistics(records)
+        if issues := _sequence_gaps(records):
             stats["issues"] = issues
         return json.dumps(stats, ensure_ascii=False, indent=2)
     times: dict[datetime, str] = {}
     if mode == "tree":
-        unprepared = {id(record) for record, expanded in records if not expanded}
-        return _render_tree((record for record, _ in records), unprepared, times)
+        return _render_tree(records, set(), times)
     if mode != "timeline":
         raise ValueError("unknown log display mode")
     return "\n".join(
         chain(
-            _sequence_gaps(record for record, _ in records),
+            _sequence_gaps(records),
             (
-                _render_record(record, color=color, prepared=expanded, times=times)
-                for record, expanded in records
+                _render_record(record, color=color, prepared=True, times=times)
+                for record in records
                 if not record.get("metadata", {}).get("log_stats")
             ),
         )
@@ -447,7 +429,7 @@ def _tree(records: Iterable[dict[str, Any]]) -> tuple[list[dict], dict[tuple, di
     for record in records:
         if record.get("metadata", {}).get("log_stats"):
             continue
-        run = record.get("run_id", "legacy")
+        run = record["run_id"]
         for span in record.get("spans", []):
             key = (run, span["id"])
             if key in nodes:

@@ -39,6 +39,10 @@ class _FrozenClock:
         self.now = 1_793_664_000.0
         self.waits: list[float] = []
 
+    def monotonic(self) -> float:
+        """返回仿真计时值。"""
+        return self.time()
+
     def time(self) -> float:
         return self.now
 
@@ -396,7 +400,7 @@ def test_single_maker_missing_book_market_fallback_keeps_freshness_and_limit_gua
     assert clock.waits == []
 
 
-@pytest.mark.parametrize("on_missing_book", ["skip", "active", "market"])
+@pytest.mark.parametrize("on_missing_book", ["skip", "market"])
 @pytest.mark.parametrize("bids,asks", [([], []), ([(99, 0)], [(101, 0)]), ([(0, 1)], [(0, 1)])])
 @pytest.mark.parametrize("target_volume", [1, -1])
 def test_single_maker_missing_book_requires_explicit_market(

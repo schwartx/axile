@@ -5,7 +5,7 @@ use uuid::Uuid;
 use super::*;
 use crate::business_detail;
 use crate::business_facts_ops::{
-    encode, result_extensions, result_head, result_orders, result_symbols, result_trades,
+    encode, result_extensions, result_orders, result_symbols, result_trades,
 };
 
 const TARGET_FIELDS: &[&str] = &[
@@ -328,7 +328,7 @@ fn backfill_records(connection: &Connection) -> Result<()> {
                     },
                 );
             }
-            result_head::write_result_head(
+            crate::migrations::legacy_result::write_result_head(
                 connection,
                 record_id,
                 &raw_result,
@@ -910,7 +910,8 @@ fn verify_conversion(connection: &Connection) -> Result<()> {
         }
         let is_success = value(&record, "is_success").as_i64();
         let mut expected_rows = result_children(id, &expected)?;
-        let (head, cancellations) = result_head::encode_head(id, &expected, is_success)?;
+        let (head, cancellations) =
+            crate::migrations::legacy_result::encode_head(id, &expected, is_success)?;
         expected_rows.extend([
             ("executerecord", vec![head]),
             ("execution_termination_cancel_failure", cancellations),

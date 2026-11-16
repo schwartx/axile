@@ -137,7 +137,7 @@ ACCOUNT_CONTROL_PRESETS: dict[str, AccountControlPresetDefinition] = {
     ),
     "ctp": AccountControlPresetDefinition(
         preset_key="ctp",
-        compatible_trade_channels=frozenset({TradeChannel.CTP}),
+        compatible_trade_channels=frozenset({TradeChannel("ctp")}),
         operation_groups={
             operation: frozenset({CTP_TRADER_API_THROTTLE_GROUP})
             for operation in {"place_order", *CTP_TRADER_API_OPERATIONS}

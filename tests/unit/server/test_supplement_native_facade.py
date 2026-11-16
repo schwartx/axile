@@ -58,6 +58,7 @@ def test_calendar_closed_cancels_before_submitting_any_intent(monkeypatch):
                 "step": {"status": "pending"},
                 "group": {"id": "g", "account_id": 1, "status": "active"},
                 "channel": "ctp",
+                "channel_options": {},
             }
         ),
     )
@@ -80,7 +81,7 @@ def test_duplicate_group_receipt_does_not_schedule_or_fire(monkeypatch):
         portfolio_id=1,
         cron_expr="*/15 * * * *",
         trade_channel="ctp",
-        gm_sessions=None,
+        channel_options={},
     )
     native = AsyncMock(return_value=None)
     fire = AsyncMock(side_effect=AssertionError("duplicate group must not fire"))

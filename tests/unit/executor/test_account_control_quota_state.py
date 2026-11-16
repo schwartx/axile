@@ -39,7 +39,7 @@ def guard(state, name, *, baseline=None, now=None, group_rule=None, account_limi
     current = AccountControlGuard(
         account_id=1,
         execution_id=name,
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         policy=policy,
         baseline=baseline or AccountControlCounterSnapshot(),
         clock=lambda: now[0] if now is not None else BASE,
@@ -249,7 +249,7 @@ def test_shared_quota_cannot_be_rebound_to_another_account_or_after_first_operat
     other = AccountControlGuard(
         account_id=2,
         execution_id="other",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         policy=resolve_account_control_policy("ctp"),
         baseline=AccountControlCounterSnapshot(),
     )

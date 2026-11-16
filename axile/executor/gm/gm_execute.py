@@ -88,8 +88,8 @@ def _is_gm_ashare_symbol(symbol: str) -> bool:
 
 
 def _gm_available_volume(position: dict[str, Any]) -> float:
-    """读取 GM 当前真实可平数量，并兼容不含 ``available_now`` 的旧 SDK."""
-    raw_available = position["available_now"] if "available_now" in position else position.get("available", 0)
+    """读取 GM 当前真实可平数量."""
+    raw_available = position["available_now"]
     return max(float(raw_available or 0), 0.0)
 
 
@@ -166,8 +166,8 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         # 订阅的行情标的列表
         self._subscribe_symbols: list[str] = []
 
-        super().__init__(TradeChannel.GM)
-        self._terminal_audit = OrderTerminalAudit(self.logger, TradeChannel.GM)
+        super().__init__(TradeChannel("gm"))
+        self._terminal_audit = OrderTerminalAudit(self.logger, TradeChannel("gm"))
         self.account_config = account_config
         self._gm_config = account_config
         self.account_id = account_config.account_id
@@ -606,7 +606,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
                 direction=direction,
                 avg_price=0.0,
                 extra={
-                    "channel_type": TradeChannel.GM,
+                    "channel_type": TradeChannel("gm"),
                     "position_attributes": native_position_attributes(
                         pos_dict,
                         {
@@ -654,7 +654,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             positions=unified_positions,
             currency="CNY",
             extra={
-                "channel_type": TradeChannel.GM,
+                "channel_type": TradeChannel("gm"),
                 "total_asset_source": "gm.cash.nav",
                 "gm_cash": cash_diagnostics,
             },
@@ -717,7 +717,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
                         "ask_volume": ask_volume,
                     }
 
-                    unified_price = from_gm_price(gm_tick, TradeChannel.GM)
+                    unified_price = from_gm_price(gm_tick, TradeChannel("gm"))
                     unified_price.extra.update(source="gm.current", time_basis="exchange")
                     market_data[unified_price.symbol] = unified_price
                     logger.success(f"{unified_price.symbol} 的快照数据获取成功")
@@ -1189,7 +1189,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             order_type=order_type.value,
             volume=float(volume),
             price=float(price),
-            channel_type=TradeChannel.GM,
+            channel_type=TradeChannel("gm"),
             status=OrderStatus.SUBMITTED,
             raw_order_data={"submit_result": result},
         )

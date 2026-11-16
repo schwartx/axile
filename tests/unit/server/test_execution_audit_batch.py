@@ -20,7 +20,7 @@ def _event(seq=1, **kwargs):
     return build_execution_event(
         execution_id="batch-execution",
         account_id=1,
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         algorithm="SINGLE-MAKER",
         event_type=ExecutionEventType.EXECUTION_STARTED,
         status=ExecutionEventStatus.INFO,

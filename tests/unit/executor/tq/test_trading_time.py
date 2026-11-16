@@ -284,7 +284,7 @@ def test_engine_blocks_symbol_sessions_without_market_io(monkeypatch: pytest.Mon
 
         output = instance.execute(
             UnifiedStandardInput(
-                channel_type=TradeChannel.TQ,
+                channel_type=TradeChannel("tq"),
                 account_config=TQAccountConfig(account_mode="kq", tq_username="user", tq_password="secret"),
                 curr_target={"rb2610": 0.1, "ag2612": 0.2},
                 algorithm={"method": "SINGLE-MAKER"},
@@ -363,7 +363,7 @@ def test_execute_missing_required_contract_fails_before_any_order(monkeypatch: p
         with pytest.raises(CatalogError):
             instance.execute(
                 UnifiedStandardInput(
-                    channel_type=TradeChannel.TQ,
+                    channel_type=TradeChannel("tq"),
                     account_config=TQAccountConfig(account_mode="kq", tq_username="user", tq_password="secret"),
                     curr_target={"rb2610": 0.1, "SHFE.missing2601": 0.1},
                     algorithm={"method": "SINGLE-MAKER"},
@@ -403,7 +403,7 @@ def test_engine_blocks_all_symbol_sessions_without_execution_io(monkeypatch: pyt
         monkeypatch.setattr(instance, "cancel_all_orders", cancel_all_orders)
         output = instance.execute(
             UnifiedStandardInput(
-                channel_type=TradeChannel.TQ,
+                channel_type=TradeChannel("tq"),
                 account_config=TQAccountConfig(account_mode="kq", tq_username="user", tq_password="secret"),
                 curr_target={"rb2610": 0.1, "ag2612": 0.2},
                 algorithm={"method": "SINGLE-MAKER"},
@@ -458,7 +458,7 @@ def test_engine_sizes_closed_symbols_from_cached_quotes(monkeypatch: pytest.Monk
         )
         output = instance.execute(
             UnifiedStandardInput(
-                channel_type=TradeChannel.TQ,
+                channel_type=TradeChannel("tq"),
                 account_config=TQAccountConfig(account_mode="kq", tq_username="user", tq_password="secret"),
                 curr_target={"rb2610": 0.1, "ag2612": 0.2},
                 algorithm={"method": "SINGLE-MAKER"},
@@ -497,7 +497,7 @@ def test_market_gap_blocks_before_symbol_planning(monkeypatch: pytest.MonkeyPatc
         )
         output = instance.execute(
             UnifiedStandardInput(
-                channel_type=TradeChannel.TQ,
+                channel_type=TradeChannel("tq"),
                 account_config=TQAccountConfig(account_mode="kq", tq_username="user", tq_password="secret"),
                 curr_target={"rb2610": 0.1},
                 algorithm={"method": "SINGLE-MAKER"},

@@ -179,18 +179,6 @@ fn business_request(stage: &str, request_json: &str) -> Result<Value, AnalysisEr
 }
 
 #[pyfunction]
-fn normalize_execution_result(py: Python<'_>, request_json: &str) -> PyResult<Py<PyAny>> {
-    let result = py
-        .detach(|| {
-            let request = crate::json_codec::parse(request_json)
-                .map_err(|error| AnalysisError::new("INVALID_REQUEST", error))?;
-            crate::business_facts_ops::result_head::normalize_legacy_result(&request)
-        })
-        .map_err(|error| PyTypeError::new_err(error.error))?;
-    json_to_py(py, &result)
-}
-
-#[pyfunction]
 fn execution_result_view(py: Python<'_>, request_json: &str) -> PyResult<Py<PyAny>> {
     let result = py
         .detach(|| {
@@ -442,7 +430,7 @@ macro_rules! detached_operations {
 }
 
 store_operations! { register_store_bytes, json_bytes, PyBytes;
-    /// 同步计算账户绩效;费率与权重设置由 Rust 从账户行读取(旧 ts 归一为 cs)。
+    /// 同步计算账户绩效;费率从账户行读取，资金权重使用固定的 cs 口径。
     #[pyo3(signature = (store, account_id, range=None, include_backtest=true, verify_source=false, expected_source_version=None))]
     account_performance(
         account_id: i64,
@@ -452,7 +440,7 @@ store_operations! { register_store_bytes, json_bytes, PyBytes;
         expected_source_version: Option<i64>,
     ) => |connection| {
         // 回测口径存于 account_settings.backtest JSON 列;无行/缺省回退 0.0,
-        // 权重类型一律按 cs 计算(Python 校验器同样把旧 ts 归一为 cs)。
+        // 账户资金权重固定使用 cs 口径。
         let fee: f64 = connection
             .query_row(
                 "SELECT COALESCE(json_extract(backtest,'$.backtest_fee_rate'),0.0) \
@@ -632,7 +620,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     register_bytes_operations(m)?;
     m.add_function(wrap_pyfunction!(collect_evidence, m)?)?;
     m.add_function(wrap_pyfunction!(execution_notification_context, m)?)?;
-    m.add_function(wrap_pyfunction!(normalize_execution_result, m)?)?;
     m.add_function(wrap_pyfunction!(execution_result_view, m)?)?;
     m.add("NativeError", m.py().get_type::<NativeError>())?;
     Ok(())

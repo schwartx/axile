@@ -124,7 +124,7 @@ def test_build_query_depth_market_data_uses_contract_identity() -> None:
 
 
 def test_target_weight_uses_contract_multiplier_and_integer_lots(config) -> None:
-    executor = CTPExecutor(TradeChannel.CTP)
+    executor = CTPExecutor(TradeChannel("ctp"))
     executor.account_config = config
     executor._instruments = {"rb2610": SimpleNamespace(VolumeMultiple=10, PriceTick=1)}
     executor._quotes = {"rb2610": fresh_quote("rb2610", "")}
@@ -183,7 +183,7 @@ def test_build_order_cancel_falls_back_to_exchange_key(config: CTPAccountConfig)
 
 
 def test_trader_login_uses_openctp_6711_signature(config: CTPAccountConfig) -> None:
-    executor = CTPExecutor(TradeChannel.CTP)
+    executor = CTPExecutor(TradeChannel("ctp"))
     executor.account_config = config
     executor._trader_api = Mock()
     executor._trader_api.ReqUserLogin.return_value = 0
@@ -200,7 +200,7 @@ def test_trader_login_uses_openctp_6711_signature(config: CTPAccountConfig) -> N
 
 
 def test_query_response_copies_reused_swig_frame() -> None:
-    executor = CTPExecutor(TradeChannel.CTP)
+    executor = CTPExecutor(TradeChannel("ctp"))
     pending = _PendingQuery([], threading.Event())
     executor._pending_queries = {7: pending}
     row = td.CThostFtdcInstrumentField()
@@ -279,7 +279,7 @@ def test_rejects_conflicting_czce_alias_values(config: CTPAccountConfig) -> None
 
 
 def test_market_subscription_encodes_instrument_ids() -> None:
-    executor = CTPExecutor(TradeChannel.CTP)
+    executor = CTPExecutor(TradeChannel("ctp"))
     executor._ready = executor._trader_connected = executor._market_connected = True
     executor._instruments = {"rb2610": object()}
     executor._ensure_instrument_symbols = Mock()
@@ -301,7 +301,7 @@ def test_query_settlement_confirm_populates_account_key(config: CTPAccountConfig
 
 
 def _settlement_executor(config: CTPAccountConfig) -> CTPExecutor:
-    executor = CTPExecutor(TradeChannel.CTP)
+    executor = CTPExecutor(TradeChannel("ctp"))
     executor.account_config = config
     executor._trading_day = "20260824"
     executor._trader_api = Mock()
@@ -375,13 +375,13 @@ class _CalendarStub:
 
 
 def _submit_point_executor(config: CTPAccountConfig) -> CTPExecutor:
-    executor = CTPExecutor(TradeChannel.CTP)
+    executor = CTPExecutor(TradeChannel("ctp"))
     executor._ensure_instrument_symbols = Mock()
     executor._ready = executor._trader_connected = executor._market_connected = True
     executor._quotes = {symbol: fresh_quote(symbol, "20260824") for symbol in ("ag2612", "bu2612")}
     executor._subscription_acks = {"ag2612", "bu2612"}
     executor.account_config = config
-    executor.channel_type = TradeChannel.CTP
+    executor.channel_type = TradeChannel("ctp")
     executor._trading_calendar = _CalendarStub()
     executor._channel_calendar_id = "china"
     executor._instruments = {
@@ -481,7 +481,7 @@ def test_public_place_order_controls_ctp_submit_once(
     guard = AccountControlGuard(
         account_id=1,
         execution_id="exec-ctp-order",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         policy=resolve_account_control_policy("ctp"),
         baseline=AccountControlCounterSnapshot(),
         clock=lambda: datetime(2026, 8, 24, 21, 29, tzinfo=_SHANGHAI),
@@ -524,7 +524,7 @@ def test_target_limit_uses_tick_published_during_pending_write(config, monkeypat
     guard = AccountControlGuard(
         account_id=1,
         execution_id="exec-ctp-order",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         policy=resolve_account_control_policy("ctp"),
         baseline=AccountControlCounterSnapshot(),
         wait_clock=clock,
@@ -605,7 +605,7 @@ def test_place_order_does_not_retry_rate_limit(config: CTPAccountConfig, monkeyp
     ],
 )
 def test_query_sync_rejection_is_not_retried(code: int, error_type: type[Exception], meaning: str) -> None:
-    executor = CTPExecutor(TradeChannel.CTP)
+    executor = CTPExecutor(TradeChannel("ctp"))
     executor._trader_api = Mock()
     executor._trader_api.ReqQryTradingAccount.return_value = code
     executor._lock = threading.RLock()
@@ -622,7 +622,7 @@ def test_query_sync_rejection_is_not_retried(code: int, error_type: type[Excepti
 
 
 def test_cancel_with_missing_key_propagates_single_query_queue_rejection(config: CTPAccountConfig) -> None:
-    executor = CTPExecutor(TradeChannel.CTP)
+    executor = CTPExecutor(TradeChannel("ctp"))
     executor.account_config = config
     executor._trader_api = Mock()
     executor._trader_api.ReqQryOrder.return_value = -2

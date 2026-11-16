@@ -472,8 +472,6 @@ class ChannelPlugin:
         用户显式触发的交易账户登录能力；为空表示不支持，健康检查不会调用。
     schedule_settings_model : type[BaseModel] | None
         渠道专属调度配置的校验模型；为空表示不接受专属配置。
-    legacy_schedule_field : str | None
-        需要兼容的旧调度字段名；结构仍由渠道模型解释。
     """
 
     descriptor: ChannelDescriptor
@@ -492,14 +490,11 @@ class ChannelPlugin:
     connect_account: Callable[[BaseAccountConfig], None] | None = None
     validate_connection: ConnectionValidator | None = None
     schedule_settings_model: type[BaseModel] | None = None
-    legacy_schedule_field: str | None = None
 
     def __post_init__(self) -> None:
         """校验插件运行时契约中的基本不变量."""
         if self.schedule_settings_model is not None and not issubclass(self.schedule_settings_model, BaseModel):
             raise TypeError("schedule_settings_model 必须继承 BaseModel")
-        if self.legacy_schedule_field is not None and self.schedule_settings_model is None:
-            raise ValueError("旧调度字段必须同时声明 schedule_settings_model")
         if self.execution_backend != "process":
             raise ValueError("执行后端仅支持 process")
         if (self.validate_connection is None) != (self.descriptor.connection_validation is None):

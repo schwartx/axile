@@ -80,16 +80,8 @@ pub(crate) fn symbol_from_row(
             fields.insert(name.into(), json!(value));
         }
     }
-    if let Some(memory) = row.get::<_, Option<String>>("memory").map_err(read_error)? {
-        fields.insert(
-            "memory".into(),
-            serde_json::from_str(&memory)
-                .map_err(|error| AnalysisError::new("EXECUTION_READ_ERROR", error.to_string()))?,
-        );
-    }
     let mut normalized = if row.get::<_, String>("node_kind").map_err(read_error)? == "object" {
-        crate::business_facts_ops::result_head::normalized_result(&fields)
-            .map_err(crate::business_facts_ops::facts_error)?
+        fields
     } else {
         Map::from_iter([("outcome".into(), Value::Null)])
     };
@@ -104,7 +96,7 @@ fn records(
 ) -> Result<Vec<Value>, String> {
     let mut symbol_statement = connection.prepare(&format!(
         "WITH page AS ({page_ids})
-         SELECT s.record_id,s.map_key AS symbol,s.node_kind,s.status,s.error,s.outcome,s.outcome_reason,s.reason_code,s.memory
+         SELECT s.record_id,s.map_key AS symbol,s.node_kind,s.status,s.error,s.outcome,s.outcome_reason,s.reason_code
          FROM execution_symbol_result s JOIN page p ON p.id=s.record_id
          ORDER BY s.record_id,s.map_key"
     )).map_err(database)?;
@@ -317,7 +309,7 @@ mod tests {
         let good = &result["data"][2];
         assert_eq!(
             good["symbol_results"],
-            json!({"SHFE.rb2610":{"error":"failed","outcome":null}})
+            json!({"SHFE.rb2610":{"error":"failed"}})
         );
         assert_eq!(good["success"], true);
         assert_eq!(good["termination_forced"], false);
@@ -350,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_symbols_match_python_display_without_backfilling_source_facts() {
+    fn compact_symbols_use_persisted_fields_without_backfilling_source_facts() {
         let connection = fixture();
         connection.execute_batch(
             "INSERT INTO executerecord(id,account_id,is_success) VALUES(1,1,1);
@@ -361,12 +353,12 @@ mod tests {
              (1,'/symbol_results/malformed','malformed',NULL,NULL,'value');"
         ).unwrap();
         let records = page(&connection, 1, 0, 1, None, None).unwrap();
-        // 冻结 Python normalize_legacy_result 后的五字段列表投影。
+        // 读路径直接返回已持久化的字段，不再从 memory 推导旧结果。
         assert_eq!(
             records["data"][0]["symbol_results"],
             json!({
-                "noop":{"status":"NOOP","outcome":"completed"},
-                "partial":{"status":"PARTIAL","outcome":"not_reached","error":"执行不到位","reason_code":"COMMON.SESSION.CLOSED"},
+                "noop":{"status":"NOOP"},
+                "partial":{"status":"PARTIAL"},
                 "malformed":{"outcome":null}
             })
         );

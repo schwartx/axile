@@ -130,7 +130,7 @@ class _FeishuAwareExecutor(AbstractExecutor):
 
 def test_empty_positions_does_not_send_second_card(monkeypatch) -> None:
     """清仓外层不重复发送结果卡片。"""
-    executor = _FeishuAwareExecutor(TradeChannel.CTP, None)
+    executor = _FeishuAwareExecutor(TradeChannel("ctp"), None)
 
     def _fake_execute(
         _standard_input: UnifiedStandardInput,
@@ -141,7 +141,7 @@ def test_empty_positions_does_not_send_second_card(monkeypatch) -> None:
         return UnifiedStandardOutput(
             account_assets=executor.get_account_assets(),
             status=ExecutionStatus.NOOP,
-            channel_type=TradeChannel.CTP,
+            channel_type=TradeChannel("ctp"),
             success=True,
         )
 
@@ -187,7 +187,7 @@ def test_custom_notification_context_is_redacted() -> None:
     """通知函数获得统一执行数据，但不能读到渠道凭据。"""
     standard_input = UnifiedStandardInput.from_dict(
         {
-            "channel_type": TradeChannel.CTP.value,
+            "channel_type": "ctp",
             "account_config": {
                 "broker_id": "b",
                 "investor_id": "i",
@@ -223,7 +223,7 @@ def _minimal_output() -> UnifiedStandardOutput:
             positions=[],
         ),
         status=ExecutionStatus.SUCCEEDED,
-        channel_type=TradeChannel.CTP,
+        channel_type=TradeChannel("ctp"),
         success=True,
     )
 
@@ -325,7 +325,7 @@ def test_notification_asset_selection_and_evidence_boundary() -> None:
                 available_cash=0, total_asset=0, market_value=0, source=degraded_source
             ),
             status=ExecutionStatus.BLOCKED,
-            channel_type=TradeChannel.CTP,
+            channel_type=TradeChannel("ctp"),
         )
         card = build_execute_results_feishu_card(source, output, notification_snapshot=snapshot)
         variables = card["data"]["template_variable"]
@@ -344,7 +344,7 @@ def test_notification_asset_selection_and_evidence_boundary() -> None:
     current = UnifiedStandardOutput(
         account_assets=UnifiedAccountAssets(available_cash=0, total_asset=0, market_value=0, positions=[]),
         status=ExecutionStatus.NOOP,
-        channel_type=TradeChannel.CTP,
+        channel_type=TradeChannel("ctp"),
     )
     variables = build_execute_results_feishu_card(source, current, notification_snapshot=snapshot)["data"][
         "template_variable"
@@ -372,6 +372,6 @@ def test_notification_success_callback_failure_does_not_escape(monkeypatch):
         account_assets=UnifiedAccountAssets(available_cash=0, total_asset=0, market_value=0, positions=[]),
         symbol_results={},
         status=ExecutionStatus.NOOP,
-        channel_type=TradeChannel.CTP,
+        channel_type=TradeChannel("ctp"),
     )
     notifications.dispatch_execution_notification(source, output, None, "def notify(context): pass", None)

@@ -31,8 +31,8 @@ class _BrokenCalendar:
 
 
 def test_calendar_uncovered_and_read_failure_are_distinct() -> None:
-    uncovered = evaluate_channel_calendar_day(TradeChannel.CTP, date(2027, 1, 1), calendar=_Calendar({}))
-    failed = evaluate_channel_calendar_day(TradeChannel.CTP, date(2026, 8, 27), calendar=_BrokenCalendar())
+    uncovered = evaluate_channel_calendar_day(TradeChannel("ctp"), date(2027, 1, 1), calendar=_Calendar({}))
+    failed = evaluate_channel_calendar_day(TradeChannel("ctp"), date(2026, 8, 27), calendar=_BrokenCalendar())
 
     assert uncovered.status is CalendarDecisionStatus.UNAVAILABLE
     assert uncovered.unavailable_reason is CalendarUnavailableReason.UNCOVERED
@@ -51,7 +51,7 @@ def test_friday_night_maps_to_monday_trading_day() -> None:
     )
 
     decision = evaluate_channel_calendar_moment(
-        TradeChannel.CTP,
+        TradeChannel("ctp"),
         datetime(2026, 8, 21, 21, 30, tzinfo=_SHANGHAI),
         calendar=calendar,
     )
@@ -65,7 +65,7 @@ def test_holiday_eve_has_no_corresponding_night_session() -> None:
     days.update({date(2026, 10, day): False for day in range(1, 8)})
 
     decision = evaluate_channel_calendar_moment(
-        TradeChannel.CTP,
+        TradeChannel("ctp"),
         datetime(2026, 9, 30, 21, 30, tzinfo=_SHANGHAI),
         calendar=_Calendar(days),
     )
@@ -77,7 +77,7 @@ def test_holiday_eve_has_no_corresponding_night_session() -> None:
 def test_weekday_session_gap_is_closed_before_day_calendar() -> None:
     """工作日 20:34 是市场缝，不能因为「今日开市」就放行。"""
     decision = evaluate_channel_calendar_moment(
-        TradeChannel.CTP,
+        TradeChannel("ctp"),
         datetime(2026, 8, 26, 20, 34, tzinfo=_SHANGHAI),
         calendar=_Calendar({date(2026, 8, 26): True}),
     )
@@ -87,7 +87,7 @@ def test_weekday_session_gap_is_closed_before_day_calendar() -> None:
 
 def test_night_open_is_not_session_gap() -> None:
     decision = evaluate_channel_calendar_moment(
-        TradeChannel.CTP,
+        TradeChannel("ctp"),
         datetime(2026, 8, 26, 21, 15, tzinfo=_SHANGHAI),
         calendar=_Calendar({date(2026, 8, 26): True, date(2026, 8, 27): True}),
     )
@@ -98,10 +98,10 @@ def test_night_open_is_not_session_gap() -> None:
 @pytest.mark.parametrize(
     ("channel", "moment"),
     [
-        (TradeChannel.CTP, datetime(2026, 9, 18, 11, 30, tzinfo=_SHANGHAI)),
-        (TradeChannel.CTP, datetime(2026, 9, 18, 12, 0, tzinfo=_SHANGHAI)),
-        (TradeChannel.GM, datetime(2026, 9, 18, 11, 30, tzinfo=_SHANGHAI)),
-        (TradeChannel.GM, datetime(2026, 9, 18, 12, 0, tzinfo=_SHANGHAI)),
+        (TradeChannel("ctp"), datetime(2026, 9, 18, 11, 30, tzinfo=_SHANGHAI)),
+        (TradeChannel("ctp"), datetime(2026, 9, 18, 12, 0, tzinfo=_SHANGHAI)),
+        (TradeChannel("gm"), datetime(2026, 9, 18, 11, 30, tzinfo=_SHANGHAI)),
+        (TradeChannel("gm"), datetime(2026, 9, 18, 12, 0, tzinfo=_SHANGHAI)),
     ],
 )
 def test_lunch_is_session_closed_on_an_open_day(channel: TradeChannel, moment: datetime) -> None:

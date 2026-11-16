@@ -65,7 +65,7 @@ def _build_guard(
     return AccountControlGuard(
         account_id=99,
         execution_id="exec-base-wrapper",
-        channel=TradeChannel.GM,
+        channel=TradeChannel("gm"),
         policy=resolve_account_control_policy(
             "default",
             AccountControlOverride.model_validate(normalized_override),
@@ -83,7 +83,7 @@ def _get_guard(executor: AbstractExecutor) -> AccountControlGuard:
 
 class _WrapperExecutor(AbstractExecutor):
     def __init__(self, guard: AccountControlGuard) -> None:
-        super().__init__(TradeChannel.GM, None)
+        super().__init__(TradeChannel("gm"), None)
         self.logger = _LoggerStub()
         self.set_account_control_guard(guard)
         self.raw_calls: list[tuple[str, object]] = []

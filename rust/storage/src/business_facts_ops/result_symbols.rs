@@ -431,7 +431,7 @@ pub(crate) fn read_outcome_symbols(
     connection: &Connection,
     record_id: i64,
 ) -> Result<Value, AnalysisError> {
-    let mut statement = connection.prepare("SELECT path,map_key,node_kind,status,outcome FROM execution_symbol_result WHERE record_id=?1 ORDER BY ordinal").map_err(sql)?;
+    let mut statement = connection.prepare("SELECT path,map_key,node_kind,outcome FROM execution_symbol_result WHERE record_id=?1 ORDER BY ordinal").map_err(sql)?;
     let mut cursor = statement.query([record_id]).map_err(sql)?;
     let mut result = Vec::new();
     while let Some(row) = cursor.next().map_err(sql)? {
@@ -440,17 +440,8 @@ pub(crate) fn read_outcome_symbols(
         if row.get("node_kind").and_then(Value::as_str) != Some("object") {
             continue;
         }
-        let fields = ["status", "outcome"]
-            .iter()
-            .filter_map(|key| {
-                row.get(*key)
-                    .filter(|value| !value.is_null())
-                    .map(|value| (key.to_string(), value.clone()))
-            })
-            .collect::<Map<_, _>>();
-        let normalized = super::result_head::normalize_legacy_result(&Value::Object(fields))?;
         if matches!(
-            normalized.get("outcome").and_then(Value::as_str),
+            row.get("outcome").and_then(Value::as_str),
             Some("not_reached" | "blocked")
         ) {
             let key = row.get("map_key").and_then(Value::as_str).ok_or_else(|| {
@@ -600,7 +591,7 @@ mod tests {
                 .unwrap();
         }
         let payload = json!({"symbol_results":{
-            "Z/~":{"status":"PARTIAL","sizing":{"target_quantity":0,"value_conversion":{"rate":1.25}}},
+            "Z/~":{"status":"PARTIAL","outcome":"not_reached","sizing":{"target_quantity":0,"value_conversion":{"rate":1.25}}},
             "A":{"outcome":"blocked"},"malformed":null,
             "done":{"status":"NOOP"},"explicit":{"status":"PARTIAL","outcome":"completed"}
         }});

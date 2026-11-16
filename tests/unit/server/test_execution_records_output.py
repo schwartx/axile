@@ -25,7 +25,7 @@ def _output(*, status: ExecutionStatus, error: str | None, success: bool) -> Uni
         memory={},
         inputs=None,
         execution_time=0.1,
-        channel_type=TradeChannel.TQ,
+        channel_type=TradeChannel("tq"),
         symbol_results={},
         status=status,
         error=error,

@@ -24,7 +24,7 @@ def _guard(kind=AccountControlContextKind.EXECUTION, source=AccountControlSource
     return AccountControlGuard(
         account_id=1,
         execution_id="context-1",
-        channel=TradeChannel.CTP,
+        channel=TradeChannel("ctp"),
         context_kind=kind,
         source=source,
         baseline=AccountControlCounterSnapshot(),

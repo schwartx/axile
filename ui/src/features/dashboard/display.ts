@@ -86,11 +86,11 @@ export function accountAssetTerms(channel: TradeChannel | null | undefined): Acc
   }
 }
 
-/** 读取渠道声明的持仓金额称谓；兼容未携带新字段的旧服务。 */
+/** 读取渠道声明的持仓金额称谓；目录尚未就绪时显示未知。 */
 export function positionValueLabelOf(
   ui: Pick<ChannelCapability['ui'], 'position_value_label'> | null | undefined,
 ): string {
-  return ui?.position_value_label || '市值'
+  return ui ? ui.position_value_label : '未知'
 }
 
 /** 渠道 + 市场的完整描述（hero 胶囊用）。 */

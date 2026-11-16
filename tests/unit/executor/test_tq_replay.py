@@ -1,6 +1,5 @@
 """天勤真实执行器入口与隔离 SDK 夹具的回放契约，不连接账户。"""
 
-import json
 import threading
 from copy import deepcopy
 from types import SimpleNamespace
@@ -12,11 +11,8 @@ from axile.executor import replay as recording
 from axile.executor.models.unified_input import TQAccountConfig
 from axile.executor.models.unified_order import OrderDirection, OrderType
 from axile.executor.tq import TQExecutor, replay
-from axile.executor.tq.runtime import snapshot_entity
 from axile.executor.tq.tq_execute import TQTradingTimeCheck, TQTradingTimeStatus
 from axile.server.execution_replay.contracts import freeze_data
-from axile.server.execution_replay.recorder import ReplayRecorder
-from axile.server.execution_replay.service import replay_manifest, replay_window
 from tests.unit.executor.tq.test_executor import FakeApi
 
 
@@ -74,63 +70,6 @@ def test_actual_query_and_runtime_trade_have_same_stable_identity(executor):
     assert replay.trade(SimpleNamespace(), api.trade)["trade_key"] is None
 
 
-def test_exchange_trade_id_enrichment_does_not_double_count_native_checkpoint(tmp_path):
-    from tqsdk.diff import _merge_diff
-    from tqsdk.entity import Entity
-    from tqsdk.objs import Trade
-
-    root = Entity()
-    root._instance_entity([])
-    prototype = {"trades": {"@": Trade(None)}}
-    row = {
-        "trade_id": "sdk-trade-1",
-        "order_id": "o1",
-        "exchange_id": "SHFE",
-        "instrument_id": "rb2610",
-        "direction": "BUY",
-        "offset": "OPEN",
-        "price": 3200.0,
-        "volume": 1,
-        "trade_date_time": 1_700_000_000_000_000_000,
-    }
-    _merge_diff(root, {"trades": {"sdk-trade-1": row}}, prototype, persist=False)
-    first = snapshot_entity(root["trades"]["sdk-trade-1"])
-    _merge_diff(root, {"trades": {"sdk-trade-1": {"exchange_trade_id": "exchange-fill-1"}}}, prototype, persist=False)
-    second = snapshot_entity(root["trades"]["sdk-trade-1"])
-    context = get_channel("tq").descriptor.replay.model_dump(mode="json")
-    context["stream_defaults"] = context.pop("streams")
-    owner = SimpleNamespace(account_config=SimpleNamespace(account_mode="kq"))
-    now = [1_700_000_000_000_000]
-    recorder = ReplayRecorder(7, tmp_path, {"channel": "tq", **context}, now_us=lambda: now[0])
-    try:
-        recorder.attach(owner)
-        recorder.configure(True, 1)
-        _wait(lambda: recorder.status()["state"] in {"recording", "error"})
-        assert recorder.status()["state"] == "recording", recorder.status()
-        identity = recorder.status()["recording_id"]
-        recorder.begin_execution("E", ["rb2610"])
-        for snapshot in (first, second):
-            now[0] += 1
-            observation = replay.trade(owner, snapshot)
-            recording.observe(owner, "/trade", {**observation, "execution_id": "E", "origin": "execution"})
-        now[0] += 1
-        recorder.end_execution("E")
-        assert recorder.close()["state"] == "disabled", recorder.status()
-        result = replay_window(
-            tmp_path, 7, "E", {"recording_id": identity, "start_us": now[0] + 1, "end_us": now[0] + 2}
-        )
-        accounting = result["state_before_start"]["trade_accounting"]
-        assert accounting["own_seen_keys"] == ["tq:7:sdk-trade-1"]
-        assert len(accounting["own_records"]) == 1
-        assert accounting["execution_totals"]["E"]["by_symbol"]["rb2610"] == {
-            "quantity": 1.0,
-            "notional": 3200.0,
-            "complete": True,
-        }
-    finally:
-        recorder.close()
-
-
 def test_exchange_trade_id_without_sdk_identity_is_not_a_strong_fallback():
     owner = SimpleNamespace(_replay_account_id=7)
     data = replay.trade(owner, {"exchange_trade_id": "exchange-fill-1", "instrument_id": "rb2610"})
@@ -185,60 +124,6 @@ def _wait(predicate):
             return
         wake.wait(0.01)
     assert predicate()
-
-
-def test_real_recorder_native_mcap_includes_modes_queries_and_resynchronization(executor, tmp_path):
-    owner, api = executor
-    declaration = get_channel("tq").descriptor.replay.model_dump(mode="json")
-    assert declaration["supported"]
-    declaration["stream_defaults"] = declaration.pop("streams")
-    context = {"schema_version": 1, "channel": "tq", **declaration}
-    now = [1_793_404_800_000_000]
-    recorder = ReplayRecorder(7, tmp_path, context, now_us=lambda: now[0])
-    recorder.attach(owner)
-    recorder.configure(True, 1)
-    _wait(lambda: recorder.status()["state"] in {"recording", "error"})
-    assert recorder.status()["state"] == "recording", recorder.status()
-    identity = recorder.status()["recording_id"]
-    try:
-        recorder.begin_execution("TQ-E", ["rb2610"])
-        now[0] += 10
-        owner._require_runtime().call(lambda native: native.order.update(is_online=True))
-        owner.query_recent_orders()
-        owner.get_market_data(["rb2610"])
-        owner.query_recent_trades()
-        owner.get_account_assets()
-        runtime = owner._require_runtime()
-        generation = owner._replay_sync_generation
-        now[0] += 10
-
-        def notify(code):
-            def update(native):
-                native._data = {"notify": {str(code): {"code": code, "conn_id": "td"}}}
-                runtime._pump_changes(native)
-
-            runtime.call(update)
-
-        notify(2019112911)
-        assert not runtime.synchronized and owner._replay_sync_generation > generation
-        now[0] += 10
-        notify(2019112902)
-        assert runtime.synchronized
-        owner.query_recent_orders()
-        now[0] += 10
-        assert recorder.close()["state"] == "disabled", recorder.status()
-        assert list(tmp_path.rglob("*.mcap"))
-        manifest = replay_manifest(tmp_path, 7, "TQ-E")
-        assert "demo" in json.dumps(manifest)
-        result = replay_window(
-            tmp_path, 7, "TQ-E", {"recording_id": identity, "start_us": now[0] - 100, "end_us": now[0] + 1}
-        )
-        serialized = json.dumps(result)
-        assert "tq.order_set" in serialized and "tq.trade_query" in serialized
-        assert "kq" in serialized and "secret" not in serialized
-        assert recorder._session is None
-    finally:
-        recorder.close()
 
 
 @pytest.mark.parametrize("mode,environment", [("live", "live"), ("kq", "demo"), ("sim", "demo")])

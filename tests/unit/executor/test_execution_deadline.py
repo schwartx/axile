@@ -34,6 +34,10 @@ class _AdvancingClock:
         self.sleep_calls: list[float] = []
         self.event_waits: list[float] = []
 
+    def monotonic(self) -> float:
+        """返回仿真计时值。"""
+        return self.time()
+
     def time(self) -> float:
         return self._current_ts
 
@@ -298,7 +302,7 @@ def test_operator_termination_takes_precedence_over_deadline() -> None:
 def _standard_input(*, execution_timeout: int) -> UnifiedStandardInput:
     """构造一个仅用于校验 deadline 装载的最小标准输入。"""
     return UnifiedStandardInput(
-        channel_type=TradeChannel.CTP,
+        channel_type=TradeChannel("ctp"),
         account_config=CTPAccountConfig.model_validate(
             {
                 "broker_id": "b",

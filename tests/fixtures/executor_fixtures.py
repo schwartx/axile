@@ -73,7 +73,7 @@ def ctp_executor(mock_ctp_trader):
     from axile.executor.ctp.ctp_execute import CTPExecutor
 
     executor = CTPExecutor.__new__(CTPExecutor)
-    executor.channel_type = TradeChannel.CTP
+    executor.channel_type = TradeChannel("ctp")
     executor.logger = MagicMock()
     executor.trader = mock_ctp_trader
     executor.md_client = MagicMock()

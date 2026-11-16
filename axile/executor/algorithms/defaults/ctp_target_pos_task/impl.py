@@ -657,7 +657,7 @@ def _execute_position_adjustment(
 
 @register_algorithm(
     "TARGET-POS-TASK",
-    channels=[TradeChannel.CTP, TradeChannel.TQ],
+    channels=[TradeChannel("ctp"), TradeChannel("tq")],
     params_class=CTPTargetPosTaskParams,
     label="期货目标持仓",
     description="按目标净持仓安排开平仓，并按设置处理今仓、昨仓。适用于 CTP 和 TQ；报价支持合约规则覆盖；平仓顺序统一使用账户平仓规则。",

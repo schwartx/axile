@@ -234,8 +234,15 @@ def test_queue_failure_does_not_roll_back_control_counters(monkeypatch):
                 )
             await persistence.flush_account_control_records(executor(current))
             restored = await persistence.build_account_control_guard(account, "after-failure")
-            metrics = restored.monitor_snapshot()["metrics"]
-            assert next(row["value"] for row in metrics if row["operation"] == "place_order") == 4
+            metrics = restored.monitor_snapshot()["rules"]
+            assert (
+                next(
+                    row["value"]
+                    for row in metrics
+                    if row["scope"] == "account" and row["rule"] == "per_day" and row["operation"] == "place_order"
+                )
+                == 4
+            )
             assert await rows(path) == []
 
     asyncio.run(scenario())

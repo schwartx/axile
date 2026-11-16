@@ -19,7 +19,7 @@ from axile.executor.models.unified_price import UnifiedPriceData
 
 class _SplitExecutor:
     def __init__(self) -> None:
-        self.channel_type = TradeChannel.CTP
+        self.channel_type = TradeChannel("ctp")
         self.symbol = "rb2610"
         self.logger = MagicMock()
         self.orders: list[UnifiedOrder] = []
@@ -44,17 +44,12 @@ class _SplitExecutor:
             update_time="2026-09-09T09:00:00",
         )
 
-    def get_max_order_volume(self, order_type=OrderType.LIMIT, trade_rule=None):
-        _ = order_type
-        if trade_rule and trade_rule.get("max_single_order_size") is not None:
-            return int(trade_rule["max_single_order_size"])
-        return None
-
     def get_order_volume_bounds(self, order_type=OrderType.LIMIT, trade_rule=None):
-        return 1, self.get_max_order_volume(order_type, trade_rule)
+        limit = trade_rule.get("max_single_order_size") if trade_rule else None
+        return 1, int(limit) if limit is not None else None
 
     def place_order(self, direction, order_type, volume, price=0, **kwargs):
-        limit = self.get_max_order_volume(order_type, kwargs.get("trade_rule"))
+        limit = self.get_order_volume_bounds(order_type, kwargs.get("trade_rule"))[1]
         assert limit is None or volume <= limit
         order = UnifiedOrder(
             order_id=f"o-{len(self.orders) + 1}",

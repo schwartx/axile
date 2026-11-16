@@ -32,7 +32,7 @@ from axile.executor.models.unified_price import UnifiedPriceData
 
 def from_gm_price(
     tick: dict[str, Any],
-    channel_type: TradeChannel = TradeChannel.GM,
+    channel_type: TradeChannel = TradeChannel("gm"),
     include_raw_data: bool = True,  # noqa: FBT001, FBT002
 ) -> UnifiedPriceData:
     """转换 GM tick；竞价参考价使用买卖一一致的虚拟匹配价，原成交价保留在 extra。"""
@@ -161,7 +161,7 @@ def convert_gm_trade_to_trade_record(trade: dict[str, Any]) -> TradeRecord | Non
         trade_volume=trade_volume,
         trade_price=trade_price,
         extra={
-            "channel_type": TradeChannel.GM,
+            "channel_type": TradeChannel("gm"),
             "account_id": trade.get("account_id"),
             "symbol": trade.get("symbol", ""),
             "gm_symbol": gm_symbol,
@@ -193,7 +193,7 @@ def convert_gm_order_to_unified(order: dict[str, Any]) -> UnifiedOrder:
         order_type=convert_gm_order_type_to_type(order.get("order_type", 0)).value,
         volume=float(order.get("volume", 0)),
         price=float(order.get("price", 0)),
-        channel_type=TradeChannel.GM,
+        channel_type=TradeChannel("gm"),
         status=convert_gm_status_to_string(order.get("status", 0)),
         filled_volume=float(order.get("filled_volume") or 0),
         avg_price=float(order.get("filled_vwap") or 0),

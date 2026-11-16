@@ -348,7 +348,7 @@ async def _verify_cancel(account: AccountContext, state: _OrdersState, request_i
 
 async def cancel_account_order(account: AccountContext, payload: OrderCancelRequest) -> dict[str, Any]:
     """提交幂等单笔撤单，HTTP 请求重试不会重复报撤。"""
-    if account.trade_channel == TradeChannel.CTP:
+    if account.trade_channel == TradeChannel("ctp"):
         validate_cancel_id(payload.order_id)
     state = _state(account)
     task = _background(_cancel(account, state, payload))

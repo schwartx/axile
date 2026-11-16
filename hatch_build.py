@@ -38,7 +38,7 @@ required = (
     'persist_execution_state', 'freeze_execution_input', 'freeze_execution_after_assets',
     'queue_enqueue', 'queue_recover', 'queue_claim', 'queue_fail', 'queue_release',
     'migration_current', 'migration_check', 'migration_upgrade', 'migration_downgrade',
-    'execution_notification_context', 'normalize_execution_result', 'execution_result_view',
+    'execution_notification_context', 'execution_result_view',
     'list_execution_events_json', 'list_execution_artifacts_json',
     'account_public', 'cash_flow_operation', 'account_archive', 'connection_accounts', 'execution_read', 'supplement_has_execution_steps',
     'account_runtime_sync_json', 'notifications_get_system_json',

@@ -53,7 +53,7 @@ def test_late_last_callback_cannot_win_against_timeout():
 def test_record_progress_is_throttled_and_ready_executor_stops_reporting(monkeypatch):
     now = [10.0]
     monkeypatch.setattr("axile.executor.ctp.ctp_execute.time.monotonic", lambda: now[0])
-    executor = CTPExecutor(TradeChannel.CTP)
+    executor = CTPExecutor(TradeChannel("ctp"))
     phases = []
     executor.set_instrument_catalog_provider(SimpleNamespace(progress=phases.append))
     for _ in range(20):
@@ -67,7 +67,7 @@ def test_record_progress_is_throttled_and_ready_executor_stops_reporting(monkeyp
 
 
 def test_copy_exception_finishes_query_and_ignores_late_success(monkeypatch):
-    executor = CTPExecutor(TradeChannel.CTP)
+    executor = CTPExecutor(TradeChannel("ctp"))
     pending = _PendingQuery([], threading.Event(), idle=QueryIdleClock())
     executor._pending_queries[7] = pending
 

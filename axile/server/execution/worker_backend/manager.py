@@ -948,7 +948,7 @@ class WorkerBackendManager:
     def _requires_ctp_session_recovery(response: WorkerBackendResponse) -> bool:
         return response.requires_worker_restart or (
             response.kind == "error"
-            and response.channel_type == TradeChannel.CTP
+            and response.channel_type == TradeChannel("ctp")
             and response.error is not None
             and response.error.type == _CTP_SESSION_RECOVERY_ERROR_TYPE
         )
@@ -993,7 +993,7 @@ class WorkerBackendManager:
             error=message,
             outcome_reason=message,
             execution_time=0.0,
-            channel_type=channel_type or TradeChannel.GM,
+            channel_type=channel_type or TradeChannel("gm"),
             success=False,
             extra=extra,
         )

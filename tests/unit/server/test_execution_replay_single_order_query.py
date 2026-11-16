@@ -6,8 +6,6 @@ from types import SimpleNamespace
 import pytest
 
 from axile.server.execution_replay import recorder as module
-from tests.unit.server.test_execution_replay_native import TIME, finished, window
-from tests.unit.server.test_execution_replay_native import make_recording as make_recording
 from tests.unit.server.test_execution_replay_recorder import eventually
 from tests.unit.server.test_execution_replay_recorder import running as running
 
@@ -267,21 +265,3 @@ def test_scope_observation_fences_are_not_limited_by_recent_identity_cache(runni
         )
     assert recorder.status()["state"] == "recording"
     assert set(recorder._order_set_observation) == {"X", ""}
-
-
-def test_actual_mcap_single_order_proof_is_retained_without_a_complete_scope_claim(make_recording):
-    recorder, now, root, recording_id = make_recording()
-    recorder.begin_execution("E", [])
-    token = recorder.begin_query(["X"])
-    query_order(recorder, token)
-    recorder.finish_query(token)
-    assert recorder._session.queries == {}
-    assert recorder._session.completed_queries == {}
-    now[0] += 1
-    finished(recorder)
-    full = window(root, "E", recording_id, TIME, TIME + 2)
-    event = next(message for message in full["messages"] if message["topic"] == "/order")
-    assert event["data"]["query_basis"] == token["query_basis"]
-    assert "scope_complete" not in event["data"]
-    state = window(root, "E", recording_id, TIME + 1, TIME + 2)["state_before_start"]
-    assert state["last_set_revision"] == {}

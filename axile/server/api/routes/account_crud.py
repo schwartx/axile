@@ -256,8 +256,8 @@ async def create_account(
                 return await _account_response(existing, sync)
         ensure_account_control_preset_compatible(account.account_control_preset, account.trade_channel)
         account.futures_close_policy.validate_channel(account.trade_channel)
-        if account.gm_sessions is not None:
-            account.gm_sessions.validate_channel(account.trade_channel)
+        if "gm" in account.channel_options:
+            GMSessionSettings.model_validate(account.channel_options["gm"]).validate_channel(account.trade_channel)
         account_config = _validate_channel_account_config(account.trade_channel, account.account_config)
         _check_algorithm_channel_compat(account.algorithm, str(account.trade_channel), "下单算法")
         _check_algorithm_channel_compat(account.empty_positions_algorithm, str(account.trade_channel), "清仓算法")
@@ -661,7 +661,11 @@ async def account_next_run_time(
     job = sched.get_job(str(account_id))  # type: ignore[no-untyped-call]
     next_run_times = _next_job_run_times(job) if job is not None else []
     next_execution_times = (
-        _next_job_execution_times(job, account.trade_channel, gm_sessions=account.gm_sessions)
+        _next_job_execution_times(
+            job,
+            account.trade_channel,
+            gm_sessions=GMSessionSettings.from_channel_options(account.channel_options),
+        )
         if job is not None
         else []
     )
@@ -673,7 +677,7 @@ async def account_next_run_time(
                 trade_channel=account.trade_channel,
                 cron_expr=account.cron_expr,
                 supplement=account.supplement,
-                gm_sessions=account.gm_sessions,
+                channel_options=account.channel_options,
                 limit=30,
             )
         )
@@ -751,9 +755,11 @@ async def _update_account(
         # 算法与渠道按"更新后的目标状态"配对校验:PATCH 可能只改其一,必须取生效后的组合。
         next_close_policy = account.futures_close_policy or db_account.futures_close_policy
         next_close_policy.validate_channel(next_trade_channel)
-        next_gm_sessions = account.gm_sessions if "gm_sessions" in account.model_fields_set else db_account.gm_sessions
-        if next_gm_sessions is not None:
-            next_gm_sessions.validate_channel(next_trade_channel)
+        next_options = (
+            account.channel_options if "channel_options" in account.model_fields_set else db_account.channel_options
+        )
+        if "gm" in next_options:
+            GMSessionSettings.model_validate(next_options["gm"]).validate_channel(next_trade_channel)
         next_algorithm = account.algorithm if account.algorithm is not None else db_account.algorithm
         next_empty_algorithm = (
             account.empty_positions_algorithm

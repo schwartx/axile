@@ -146,7 +146,7 @@ def test_plugins_default_to_process_and_reject_removed_thread_backend() -> None:
 
 
 def test_external_plugin_owns_its_schedule_configuration() -> None:
-    from axile.channels.schedule_settings import normalize_schedule_options, validate_schedule_options
+    from axile.channels.schedule_settings import validate_schedule_options
     from axile.server.db.models.account import Account, AccountSnapshot
 
     class VendorSchedule(BaseModel):
@@ -156,8 +156,6 @@ def test_external_plugin_owns_its_schedule_configuration() -> None:
     list_channels()
     register_channel(replace(_plugin(), schedule_settings_model=VendorSchedule))
     options = validate_schedule_options({"vendor-demo": {"delay": 2}})
-    for patch in ({"gm_sessions": {}}, {"gm_sessions": None}):
-        options = normalize_schedule_options(patch, current=options)["channel_options"]
     assert options == {"vendor-demo": {"delay": 2}}
     account = Account(
         name="vendor",
@@ -171,14 +169,9 @@ def test_external_plugin_owns_its_schedule_configuration() -> None:
     assert snapshot.channel_options == {"vendor-demo": {"delay": 2}}
     snapshot.channel_options["vendor-demo"]["delay"] = 9
     assert account.channel_options["vendor-demo"]["delay"] == 2
-    from tests.unit.server._native_read_views import account_view
-
-    assert "channel_options" not in account_view(account.model_copy(update={"id": 1}))
     for invalid in ({"delay": 0}, {"delay": 2, "unknown": True}):
         with pytest.raises(ValidationError):
             validate_schedule_options({"vendor-demo": invalid})
-    with pytest.raises(ValueError):
-        replace(_plugin(), legacy_schedule_field="legacy")
 
 
 def test_entry_point_is_loaded_once_and_appended_after_builtins(monkeypatch: pytest.MonkeyPatch) -> None:

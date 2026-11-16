@@ -19,7 +19,7 @@ def _build_account() -> Account:
         id=1,
         name="ctp-testnet-sim",
         market="期货",
-        trade_channel=TradeChannel.CTP,
+        trade_channel=TradeChannel("ctp"),
         account_config={"api_key": "k", "secret_key": "s", "is_testnet": True},
         is_started=True,
         cron_expr="3,6,9 * * * *",

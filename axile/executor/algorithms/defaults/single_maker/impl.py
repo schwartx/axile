@@ -69,19 +69,18 @@ class SingleMakerParams(BaseAlgorithmParams, ChaseParamsMixin):
             "x-enum-labels": {"PASSIVE": "本方挂单", "ACTIVE": "对手价"},
         },
     )
-    on_missing_book: Literal["skip", "active", "market"] = Field(
+    on_missing_book: Literal["skip", "market"] = Field(
         default="skip",
         title="盘口缺失处理",
-        description="盘口无效时可跳过或请求市价单；active 仅兼容旧配置，行为与跳过相同。",
+        description="盘口无效时可跳过或请求市价单。",
         json_schema_extra={
             "x-order": 30,
             "x-control": "cards",
             "x-option-descriptions": {
                 "skip": "跳过本次下单。",
-                "active": "仅兼容旧配置：盘口无效时跳过，不会转市价。",
                 "market": "提交市价单，成交价格由市场决定。",
             },
-            "x-enum-labels": {"skip": "跳过", "active": "尝试主动报价", "market": "市价单"},
+            "x-enum-labels": {"skip": "跳过", "market": "市价单"},
         },
     )
 
