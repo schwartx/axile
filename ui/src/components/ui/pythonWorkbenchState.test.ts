@@ -1,5 +1,11 @@
 import { expect, test } from 'bun:test'
-import { createPythonOperationGate, pythonRunIsStale } from '@/components/ui/pythonWorkbenchState'
+import { assertPythonBaseline, createPythonOperationGate, pythonRunIsStale } from '@/components/ui/pythonWorkbenchState'
+
+test('恢复的函数在服务器版本变化后拒绝覆盖，空配置保持相同口径', () => {
+  expect(() => assertPythonBaseline('changed', 'old')).toThrow('服务器函数已更新')
+  expect(() => assertPythonBaseline('same', 'same')).not.toThrow()
+  expect(() => assertPythonBaseline(null, '')).not.toThrow()
+})
 
 test('连续操作只提交一次，完成后允许再次操作', async () => {
   const gate = createPythonOperationGate()

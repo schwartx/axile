@@ -6,7 +6,6 @@ import { linter, forceLinting, type Diagnostic } from '@codemirror/lint'
 import { LSPClient, LSPPlugin, serverCompletion, signatureHelp, jumpToDefinitionKeymap, findReferencesKeymap, type WorkspaceFile } from '@codemirror/lsp-client'
 import DOMPurify from 'dompurify'
 import { pythonHover } from '@/components/ui/pythonHover'
-import { apiGet } from '@/lib/api/client'
 import { checkPythonContract, type PythonEditorKind } from '@/components/ui/pythonEditorContract'
 import { pythonVisualFeatures, quickFix, renamePythonSymbol } from '@/components/ui/pythonLanguageFeatures'
 import type { Diagnostic as ProtocolDiagnostic, DocumentSymbol, SymbolInformation } from 'vscode-languageserver-protocol'
@@ -27,7 +26,7 @@ export function connectPython(
   onChecks?: (checks: PythonChecks) => void,
 ) {
   let disposed = false
-  let socket: WebSocket | null = null
+  let worker: Worker | null = null
   let client: LSPClient | null = null
   let timer: ReturnType<typeof setTimeout> | undefined
   let watchdog: ReturnType<typeof setTimeout> | undefined
@@ -69,7 +68,7 @@ export function connectPython(
       })
       const [tyResult, contractResult] = await Promise.allSettled([
         observe('lsp', tyRead, value => value.items ?? []),
-        observe('contract', checkPythonContract(doc.toString(), kind), value => value.diagnostics),
+        observe('contract', active ? checkPythonContract(doc.toString(), kind, active) : Promise.reject(connectionError), value => value.diagnostics),
       ])
       if (disposed || editor.state.doc !== doc || generation !== analysisGeneration) return []
       const tyItems = tyResult.status === 'fulfilled' ? tyResult.value.items ?? [] : []
@@ -127,19 +126,35 @@ export function connectPython(
   const connect = () => {
     if (disposed) return
     onStatus(failures ? 'reconnecting' : 'connecting')
-    const url = new URL('/api/v1/editor/lsp', window.location.href)
-    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
-    const ws = new WebSocket(url)
-    socket = ws
+    const currentWorker = new Worker(new URL('../../features/editor/python.worker.ts', import.meta.url), { type: 'module' })
+    worker = currentWorker
+    const message = { uri: 'file:///draft/portfolio.py', rootUri: 'file:///draft' }
     const handlers = new Set<(message: string) => void>()
-    watchdog = setTimeout(() => ws.close(), 15000)
-    ws.onmessage = (event) => {
-      if (disposed) return
-      const message = JSON.parse(String(event.data))
-      if (message.type !== 'session') {
-        handlers.forEach((handler) => handler(String(event.data)))
-        return
-      }
+    currentWorker.onmessage = (event: MessageEvent<string>) => {
+      if (disposed || worker !== currentWorker) return
+      const message = JSON.parse(event.data)
+      if (message.type === 'ready') attachClient()
+      else if (message.type === 'failed') failed(new Error(message.message))
+      else handlers.forEach(handler => handler(event.data))
+    }
+    const failed = (cause: unknown) => {
+      if (disposed || worker !== currentWorker) return
+      connectionError = cause instanceof Error ? cause : new Error('本地代码分析器启动失败')
+      clearTimeout(watchdog)
+      currentWorker.terminate()
+      worker = null
+      analysisGeneration += 1
+      client?.disconnect()
+      client = null
+      onClient?.(null)
+      view.dispatch({ effects: slot.reconfigure([watcher, analysis(null, '')]) })
+      forceLinting(view)
+      onStatus('reconnecting')
+      timer = setTimeout(connect, Math.min(1000 * 2 ** failures++, 15000))
+    }
+    currentWorker.onerror = event => { event.preventDefault(); failed(new Error(event.message || '本地代码分析器运行失败')) }
+    watchdog = setTimeout(() => failed(new Error('本地代码分析器加载超时')), 120000)
+    const attachClient = () => {
       const active = new LSPClient({
         rootUri: message.rootUri,
         timeout: 10000,
@@ -158,7 +173,7 @@ export function connectPython(
       workspace.requestFile = async (uri) => {
         const existing = workspace.getFile(uri) ?? sources.get(uri)
         if (existing) return existing
-        const { code } = await apiGet<{ code: string }>(`/editor/source?uri=${encodeURIComponent(uri)}`)
+        const { code } = await active.request<object, { code: string }>('axile/source', { textDocument: { uri } })
         const file: WorkspaceFile = { uri, languageId: 'python', version: 0, doc: Text.of(code.split('\n')), getView: () => null }
         sources.set(uri, file)
         return file
@@ -176,14 +191,14 @@ export function connectPython(
       }
       active.connect({
         send: (value) => {
-          if (ws.readyState !== WebSocket.OPEN) throw new Error('语言服务已断开')
-          ws.send(value)
+          if (worker !== currentWorker) throw connectionError
+          currentWorker.postMessage(value)
         },
         subscribe: (handler) => { handlers.add(handler) },
         unsubscribe: (handler) => { handlers.delete(handler) },
       })
       void active.initializing.then(() => {
-        if (disposed || socket !== ws || ws.readyState !== WebSocket.OPEN) return
+        if (disposed || worker !== currentWorker) return
         clearTimeout(watchdog)
         failures = 0
         view.dispatch({ effects: slot.reconfigure([
@@ -200,21 +215,7 @@ export function connectPython(
         forceLinting(view)
         onClient?.(active)
         onStatus('ready')
-      }).catch(() => ws.close())
-    }
-    ws.onerror = () => ws.close()
-    ws.onclose = (event) => {
-      connectionError = new Error(`代码分析器连接关闭：${event.code} ${event.reason}`)
-      clearTimeout(watchdog)
-      analysisGeneration += 1
-      client?.disconnect()
-      client = null
-      if (disposed) return
-      onClient?.(null)
-      view.dispatch({ effects: slot.reconfigure([watcher, analysis(null, '')]) })
-      forceLinting(view)
-      onStatus('reconnecting')
-      timer = setTimeout(connect, Math.min(1000 * 2 ** failures++, 15000))
+      }).catch(failed)
     }
   }
   connect()
@@ -225,7 +226,7 @@ export function connectPython(
     clearTimeout(timer)
     clearTimeout(watchdog)
     client?.disconnect()
-    socket?.close()
+    worker?.terminate()
   }
 }
 

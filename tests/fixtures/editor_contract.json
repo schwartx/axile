@@ -1,0 +1,611 @@
+[
+  {
+    "kind": "portfolio",
+    "code": "",
+    "report": {
+      "diagnostics": [
+        {
+          "range": {
+            "start": {
+              "line": 0,
+              "character": 0
+            },
+            "end": {
+              "line": 0,
+              "character": 0
+            }
+          },
+          "severity": 1,
+          "message": "必须定义 calculate_portfolio(context) 函数",
+          "source": "入口契约"
+        }
+      ],
+      "fixes": []
+    }
+  },
+  {
+    "kind": "portfolio",
+    "code": "def calculate_portfolio(context):\n    return {}\n",
+    "report": {
+      "diagnostics": [
+        {
+          "range": {
+            "start": {
+              "line": 0,
+              "character": 24
+            },
+            "end": {
+              "line": 0,
+              "character": 31
+            }
+          },
+          "severity": 3,
+          "message": "可为 context 标注 Context，以获得类型检查和补全",
+          "source": "入口契约"
+        }
+      ],
+      "fixes": [
+        {
+          "title": "为 context 添加 Context 类型标注",
+          "edits": [
+            {
+              "range": {
+                "start": {
+                  "line": 0,
+                  "character": 31
+                },
+                "end": {
+                  "line": 0,
+                  "character": 31
+                }
+              },
+              "newText": ": Context"
+            },
+            {
+              "range": {
+                "start": {
+                  "line": 0,
+                  "character": 0
+                },
+                "end": {
+                  "line": 0,
+                  "character": 0
+                }
+              },
+              "newText": "from axile.server.context import Context\n"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "kind": "portfolio",
+    "code": "async def calculate_portfolio(context):\n    return {}\n",
+    "report": {
+      "diagnostics": [
+        {
+          "range": {
+            "start": {
+              "line": 0,
+              "character": 0
+            },
+            "end": {
+              "line": 0,
+              "character": 9
+            }
+          },
+          "severity": 1,
+          "message": "calculate_portfolio 必须是同步函数",
+          "source": "入口契约"
+        },
+        {
+          "range": {
+            "start": {
+              "line": 0,
+              "character": 30
+            },
+            "end": {
+              "line": 0,
+              "character": 37
+            }
+          },
+          "severity": 3,
+          "message": "可为 context 标注 Context，以获得类型检查和补全",
+          "source": "入口契约"
+        }
+      ],
+      "fixes": [
+        {
+          "title": "为 context 添加 Context 类型标注",
+          "edits": [
+            {
+              "range": {
+                "start": {
+                  "line": 0,
+                  "character": 37
+                },
+                "end": {
+                  "line": 0,
+                  "character": 37
+                }
+              },
+              "newText": ": Context"
+            },
+            {
+              "range": {
+                "start": {
+                  "line": 0,
+                  "character": 0
+                },
+                "end": {
+                  "line": 0,
+                  "character": 0
+                }
+              },
+              "newText": "from axile.server.context import Context\n"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "kind": "account_notification",
+    "code": "def notify(*, context):\n    pass\n",
+    "report": {
+      "diagnostics": [
+        {
+          "range": {
+            "start": {
+              "line": 0,
+              "character": 0
+            },
+            "end": {
+              "line": 0,
+              "character": 6
+            }
+          },
+          "severity": 1,
+          "message": "notify 必须且只能接收一个位置参数 context",
+          "source": "入口契约"
+        }
+      ],
+      "fixes": []
+    }
+  },
+  {
+    "kind": "system_notification",
+    "code": "async def notify(context):\n    yield 1\n",
+    "report": {
+      "diagnostics": [
+        {
+          "range": {
+            "start": {
+              "line": 0,
+              "character": 0
+            },
+            "end": {
+              "line": 0,
+              "character": 6
+            }
+          },
+          "severity": 1,
+          "message": "notify 不支持生成器或异步生成器函数",
+          "source": "入口契约"
+        },
+        {
+          "range": {
+            "start": {
+              "line": 0,
+              "character": 17
+            },
+            "end": {
+              "line": 0,
+              "character": 24
+            }
+          },
+          "severity": 3,
+          "message": "可为 context 标注 SystemNotificationContext，以获得类型检查和补全",
+          "source": "入口契约"
+        }
+      ],
+      "fixes": [
+        {
+          "title": "为 context 添加 SystemNotificationContext 类型标注",
+          "edits": [
+            {
+              "range": {
+                "start": {
+                  "line": 0,
+                  "character": 24
+                },
+                "end": {
+                  "line": 0,
+                  "character": 24
+                }
+              },
+              "newText": ": SystemNotificationContext"
+            },
+            {
+              "range": {
+                "start": {
+                  "line": 0,
+                  "character": 0
+                },
+                "end": {
+                  "line": 0,
+                  "character": 0
+                }
+              },
+              "newText": "from axile.common.notification_context import SystemNotificationContext\n"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "kind": "account_notification",
+    "code": "def notify(context):\n    def inner():\n        yield 1\n    return inner\n",
+    "report": {
+      "diagnostics": [
+        {
+          "range": {
+            "start": {
+              "line": 0,
+              "character": 11
+            },
+            "end": {
+              "line": 0,
+              "character": 18
+            }
+          },
+          "severity": 3,
+          "message": "可为 context 标注 AccountNotificationContext，以获得类型检查和补全",
+          "source": "入口契约"
+        }
+      ],
+      "fixes": [
+        {
+          "title": "为 context 添加 AccountNotificationContext 类型标注",
+          "edits": [
+            {
+              "range": {
+                "start": {
+                  "line": 0,
+                  "character": 18
+                },
+                "end": {
+                  "line": 0,
+                  "character": 18
+                }
+              },
+              "newText": ": AccountNotificationContext"
+            },
+            {
+              "range": {
+                "start": {
+                  "line": 0,
+                  "character": 0
+                },
+                "end": {
+                  "line": 0,
+                  "character": 0
+                }
+              },
+              "newText": "from axile.common.notification_context import AccountNotificationContext\n"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "kind": "account_notification",
+    "code": "def notify(context):\n    f = lambda: (yield 1)\n    return f\n",
+    "report": {
+      "diagnostics": [
+        {
+          "range": {
+            "start": {
+              "line": 0,
+              "character": 11
+            },
+            "end": {
+              "line": 0,
+              "character": 18
+            }
+          },
+          "severity": 3,
+          "message": "可为 context 标注 AccountNotificationContext，以获得类型检查和补全",
+          "source": "入口契约"
+        }
+      ],
+      "fixes": [
+        {
+          "title": "为 context 添加 AccountNotificationContext 类型标注",
+          "edits": [
+            {
+              "range": {
+                "start": {
+                  "line": 0,
+                  "character": 18
+                },
+                "end": {
+                  "line": 0,
+                  "character": 18
+                }
+              },
+              "newText": ": AccountNotificationContext"
+            },
+            {
+              "range": {
+                "start": {
+                  "line": 0,
+                  "character": 0
+                },
+                "end": {
+                  "line": 0,
+                  "character": 0
+                }
+              },
+              "newText": "from axile.common.notification_context import AccountNotificationContext\n"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "kind": "portfolio",
+    "code": "\"\"\"中文😀\"\"\"\nfrom __future__ import annotations\ndef calculate_portfolio(上下文):\n    return {}\n",
+    "report": {
+      "diagnostics": [
+        {
+          "range": {
+            "start": {
+              "line": 2,
+              "character": 24
+            },
+            "end": {
+              "line": 2,
+              "character": 27
+            }
+          },
+          "severity": 3,
+          "message": "可为 上下文 标注 Context，以获得类型检查和补全",
+          "source": "入口契约"
+        }
+      ],
+      "fixes": [
+        {
+          "title": "为 上下文 添加 Context 类型标注",
+          "edits": [
+            {
+              "range": {
+                "start": {
+                  "line": 2,
+                  "character": 27
+                },
+                "end": {
+                  "line": 2,
+                  "character": 27
+                }
+              },
+              "newText": ": Context"
+            },
+            {
+              "range": {
+                "start": {
+                  "line": 2,
+                  "character": 0
+                },
+                "end": {
+                  "line": 2,
+                  "character": 0
+                }
+              },
+              "newText": "from axile.server.context import Context\n"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "kind": "portfolio",
+    "code": "from axile.server.context import Context\ndef calculate_portfolio(context):\n    return {}\n",
+    "report": {
+      "diagnostics": [
+        {
+          "range": {
+            "start": {
+              "line": 1,
+              "character": 24
+            },
+            "end": {
+              "line": 1,
+              "character": 31
+            }
+          },
+          "severity": 3,
+          "message": "可为 context 标注 Context，以获得类型检查和补全",
+          "source": "入口契约"
+        }
+      ],
+      "fixes": [
+        {
+          "title": "为 context 添加 Context 类型标注",
+          "edits": [
+            {
+              "range": {
+                "start": {
+                  "line": 1,
+                  "character": 31
+                },
+                "end": {
+                  "line": 1,
+                  "character": 31
+                }
+              },
+              "newText": ": Context"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "kind": "portfolio",
+    "code": "def calculate_portfolio(context: int):\n    return {}\n",
+    "report": {
+      "diagnostics": [],
+      "fixes": []
+    }
+  },
+  {
+    "kind": "portfolio",
+    "code": "def calculate_portfolio(context, /):\n    return {}\n",
+    "report": {
+      "diagnostics": [
+        {
+          "range": {
+            "start": {
+              "line": 0,
+              "character": 24
+            },
+            "end": {
+              "line": 0,
+              "character": 31
+            }
+          },
+          "severity": 3,
+          "message": "可为 context 标注 Context，以获得类型检查和补全",
+          "source": "入口契约"
+        }
+      ],
+      "fixes": [
+        {
+          "title": "为 context 添加 Context 类型标注",
+          "edits": [
+            {
+              "range": {
+                "start": {
+                  "line": 0,
+                  "character": 31
+                },
+                "end": {
+                  "line": 0,
+                  "character": 31
+                }
+              },
+              "newText": ": Context"
+            },
+            {
+              "range": {
+                "start": {
+                  "line": 0,
+                  "character": 0
+                },
+                "end": {
+                  "line": 0,
+                  "character": 0
+                }
+              },
+              "newText": "from axile.server.context import Context\n"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "kind": "portfolio",
+    "code": "def calculate_portfolio(context, *args):\n    return {}\n",
+    "report": {
+      "diagnostics": [
+        {
+          "range": {
+            "start": {
+              "line": 0,
+              "character": 0
+            },
+            "end": {
+              "line": 0,
+              "character": 19
+            }
+          },
+          "severity": 1,
+          "message": "calculate_portfolio 必须且只能接收一个位置参数 context",
+          "source": "入口契约"
+        }
+      ],
+      "fixes": []
+    }
+  },
+  {
+    "kind": "portfolio",
+    "code": "def calculate_portfolio(context, **kwargs):\n    return {}\n",
+    "report": {
+      "diagnostics": [
+        {
+          "range": {
+            "start": {
+              "line": 0,
+              "character": 0
+            },
+            "end": {
+              "line": 0,
+              "character": 19
+            }
+          },
+          "severity": 1,
+          "message": "calculate_portfolio 必须且只能接收一个位置参数 context",
+          "source": "入口契约"
+        }
+      ],
+      "fixes": []
+    }
+  },
+  {
+    "kind": "portfolio",
+    "code": "def calculate_portfolio(context, extra):\n    return {}\n",
+    "report": {
+      "diagnostics": [
+        {
+          "range": {
+            "start": {
+              "line": 0,
+              "character": 0
+            },
+            "end": {
+              "line": 0,
+              "character": 19
+            }
+          },
+          "severity": 1,
+          "message": "calculate_portfolio 必须且只能接收一个位置参数 context",
+          "source": "入口契约"
+        }
+      ],
+      "fixes": []
+    }
+  },
+  {
+    "kind": "portfolio",
+    "code": "def calculate_portfolio(context):\n    pass\ndef calculate_portfolio(other: int):\n    return {}\n",
+    "report": {
+      "diagnostics": [],
+      "fixes": []
+    }
+  },
+  {
+    "kind": "portfolio",
+    "code": "def calculate_portfolio(",
+    "report": {
+      "diagnostics": [],
+      "fixes": []
+    }
+  }
+]

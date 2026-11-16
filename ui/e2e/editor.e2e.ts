@@ -87,17 +87,19 @@ test('auto-import completion inserts an import and is undoable', async ({ page }
 })
 
 test('a delayed formatter cannot overwrite newer typing', async ({ page }) => {
-  let finish: () => void = () => {}
-  const waiting = new Promise<void>((resolve) => { finish = resolve })
-  await page.route('**/editor/format', async (route) => {
-    await waiting
-    await route.fulfill({ json: { code: 'value = 1\n' } })
+  await page.evaluate(() => {
+    const original = Worker.prototype.postMessage
+    Worker.prototype.postMessage = function (message: unknown) {
+      if (typeof message === 'string' && JSON.parse(message).method === 'axile/format') {
+        (window as unknown as { finishFormat: () => void }).finishFormat = () => original.call(this, message)
+      } else original.call(this, message)
+    }
   })
   await replace(page, 'value=1')
   await page.getByRole('button', { name: '格式化', exact: true }).click()
   await expect(page.getByRole('button', { name: '格式化中…' })).toBeDisabled()
   await replace(page, 'value=2')
-  finish()
+  await page.evaluate(() => (window as unknown as { finishFormat: () => void }).finishFormat())
   await expect(page.getByText('代码已变化，请重新格式化')).toBeVisible()
   await expect(page.getByTestId('code')).toHaveText('value=2')
 })
@@ -199,11 +201,10 @@ test('indentation, bracket pairing, comment and multi-selection shortcuts', asyn
   await expect(page.getByTestId('code')).toHaveText('price = 1\nother = price')
 })
 
-test('reconnect resynchronizes unsaved text without losing undo', async ({ page, request }) => {
+test('network loss leaves local analysis and undo available', async ({ page, context }) => {
+  await context.setOffline(true)
   await replace(page, 'draft: int = "keep me"\n')
-  await request.post('http://127.0.0.1:1439/test/disconnect')
-  await expect(page.getByRole('status', { name: '代码分析器' })).toHaveAttribute('data-state', 'reconnecting')
-  await expect(page.getByRole('status', { name: '代码分析器' })).toHaveAttribute('data-state', 'ready', { timeout: 20000 })
+  await expect(page.getByRole('status', { name: '代码分析器' })).toHaveAttribute('data-state', 'ready')
   await expect(page.getByTestId('code')).toHaveText('draft: int = "keep me"\n')
   await expect(page.getByTestId('problems')).toContainText('not assignable')
   await editorCommand(page, '撤销')

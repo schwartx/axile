@@ -14,7 +14,7 @@ Worker 调度只保留一个正在执行的请求和一个最新待处理视图�
 
 ```bash
 rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version 0.2.128 --locked
+cargo install wasm-bindgen-cli --version 0.2.130 --locked
 cd ui
 bun run build:heat
 bun test src/features/replay

@@ -21,7 +21,6 @@ import type { DocumentSymbol, SymbolInformation, Range } from 'vscode-languagese
 import { PythonSaveBar } from '@/components/ui/PythonSaveBar'
 import { usePythonSaveShortcut, type PythonSaveAction } from '@/components/ui/pythonSaveAction'
 import { editingExtensions, isMac } from '@/components/ui/pythonEditorExtensions'
-import { apiSend } from '@/lib/api/client'
 import { PythonSourcePreview, type SourceTab } from '@/components/ui/PythonSourcePreview'
 import { quickFix, renamePythonSymbol } from '@/components/ui/pythonLanguageFeatures'
 import { jumpToDefinition, findReferences } from '@codemirror/lsp-client'
@@ -30,6 +29,9 @@ import { pythonEditorZoomKeys, usePythonEditorFontSize } from '@/components/ui/p
 import { pythonStickyScroll } from '@/components/ui/pythonStickyScroll'
 import { centeredFoldGutter, foldedLineHighlight } from '@/components/ui/pythonEditorReading'
 import { PythonSymbolTree, symbolPath } from '@/components/ui/PythonSymbolTree'
+import { useLocalDraft } from '@/features/editor/useLocalDraft'
+import { downloadCode } from '@/features/editor/drafts'
+import { useOfflineEditor } from '@/features/editor/offline'
 
 export interface PythonProblem { line: number; message: string; source: string; severity: string }
 const runtimeChanged = StateEffect.define<null>()
@@ -114,6 +116,8 @@ export function PythonRunResultBody({
 export function PythonFunctionEditor({
   kind,
   code,
+  savedCode,
+  draftKey,
   onChange,
   running,
   runDisabled = false,
@@ -141,6 +145,8 @@ export function PythonFunctionEditor({
 }: {
   kind: PythonEditorKind
   code: string
+  savedCode?: string
+  draftKey?: string
   onChange: (code: string) => void
   running: boolean
   /** 保存等外部操作期间阻止试跑；按钮和 Ctrl/Cmd+Enter 使用同一条件。 */
@@ -172,6 +178,9 @@ export function PythonFunctionEditor({
   statusTarget?: HTMLElement | null
 }) {
   const cmRef = useRef<ReactCodeMirrorRef>(null)
+  const initialCode = useRef(code)
+  const localDraft = useLocalDraft(kind, code, savedCode ?? initialCode.current, onChange, draftKey)
+  const offlineStatus = useOfflineEditor()
   const fontSize = usePythonEditorFontSize()
   const hasCode = code.trim().length > 0
   const runAllowed = !running && !disabled && !runDisabled && hasCode
@@ -267,7 +276,9 @@ export function PythonFunctionEditor({
     setFormatting(true)
     setEditorMessage('')
     setFormatError(null)
-    void apiSend<{ code: string }>('POST', '/editor/format', { code: before.toString() })
+    void (languageClient?.connected
+      ? languageClient.request<object, { code: string }>('axile/format', { code: before.toString() })
+      : Promise.reject(new Error('本地代码分析器尚未就绪')))
       .then(({ code: formatted }) => {
         if (cmRef.current?.view !== editor || editor.state.readOnly) return
         if (editor.state.doc !== before) {
@@ -500,13 +511,22 @@ export function PythonFunctionEditor({
       pendingSourceViews.current.delete(tab.uri)
     }} />
   </div>)
-  const analyzerLabel = languageStatus === 'ready' ? '代码分析器' : languageStatus === 'connecting' ? '代码分析器连接中…' : '代码分析器重连中…'
-  const analyzerDescription = languageStatus === 'ready' ? '代码分析器已连接' : languageStatus === 'connecting' ? '代码分析器连接中' : '暂时无法分析代码，可继续编辑'
+  const analyzerLabel = languageStatus === 'ready' ? '本地代码分析器' : languageStatus === 'connecting' ? '代码分析器加载中…' : '代码分析器恢复中…'
+  const analyzerDescription = languageStatus === 'ready' ? '代码分析在浏览器本地运行' : languageStatus === 'connecting' ? '本地代码分析器加载中' : '暂时无法分析代码，可继续编辑'
+  const draftIndicator = <a href={`/editor?draft=${encodeURIComponent(localDraft.key)}`} className="text-ink-3 hover:text-ink-1" title={`${offlineStatus} · 打开本地草稿工作台`} aria-label="本地草稿" aria-description={offlineStatus}>{localDraft.error ? '本地保存失败' : localDraft.status}</a>
+  const draftNotice = (localDraft.error || localDraft.recovery) && <div role="alert" className="flex flex-wrap items-center gap-3 border-b border-line bg-surface px-3 py-2 text-[12px] text-warn">
+    <span>{localDraft.error?.message ?? '本地草稿与当前服务器代码不同，请选择要保留的内容。'}</span>
+    {localDraft.recovery && <>
+      <button type="button" className="text-accent" onClick={localDraft.restore}>恢复本地代码</button>
+      <button type="button" className="text-ink-2" onClick={localDraft.keepCurrent}>放弃旧草稿，保留当前代码</button>
+    </>}
+    <button type="button" className="text-accent" onClick={() => downloadCode(localDraft.recovery?.code ?? code)}>下载代码</button>
+  </div>
   const statusBar = (
     <div className="flex flex-none items-center gap-3 border-t border-line bg-surface px-3 py-1 text-[11px] text-ink-3">
       {sourceTab ? <><button type="button" onClick={() => editor && gotoLine(editor)}>行 {(sourcePosition?.line ?? 0) + 1}，列 {(sourcePosition?.character ?? 0) + 1}</button><span>只读</span><span>Python</span></> : <>
       <button type="button" onClick={() => view && gotoLine(view)}>行 {position.line}，列 {position.column}</button>
-      <span>4 空格</span><span>Python</span>
+      <span>4 空格</span><span>Python</span>{draftIndicator}
       <span role="status" aria-label="代码分析器" aria-description={analyzerDescription} title={analyzerDescription} data-state={languageStatus} className={`ml-auto ${languageStatus === 'reconnecting' ? 'text-warn' : ''}`}>
         <InkRewrite text={analyzerLabel} tone="label" />
       </span>
@@ -567,8 +587,9 @@ export function PythonFunctionEditor({
         {editorMessage && <p role="status" className="px-3 text-[12px] text-warn">{editorMessage}</p>}
         <ErrorNotice intent="mutation" title="代码格式化失败" error={formatError} variant="compact" onRetry={() => formatRef.current?.()} />
         {fileTabs}
+        {draftNotice}
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{codeBlock}{sourceDocuments}</div>
-        {statusTarget && createPortal(sourceTab ? <div className="flex items-center gap-2 text-[11px] text-ink-3"><button type="button" title="跳转到行" onClick={() => editor && gotoLine(editor)}>{(sourcePosition?.line ?? 0) + 1}:{(sourcePosition?.character ?? 0) + 1}</button><span>只读 · Python</span></div> : <div className="flex items-center gap-2 whitespace-nowrap text-[11px] text-ink-3"><button type="button" title="跳转到行" onClick={() => view && gotoLine(view)}><span className="max-[480px]:hidden">行 {position.line}，列 {position.column}</span><span className="hidden max-[480px]:inline">{position.line}:{position.column}</span></button><span role="status" aria-label="代码分析器" aria-description={analyzerDescription} title={analyzerDescription} data-state={languageStatus} className={languageStatus === 'reconnecting' ? 'text-warn' : ''}><InkRewrite text={analyzerLabel} tone="label" /></span></div>, statusTarget)}
+        {statusTarget && createPortal(sourceTab ? <div className="flex items-center gap-2 text-[11px] text-ink-3"><button type="button" title="跳转到行" onClick={() => editor && gotoLine(editor)}>{(sourcePosition?.line ?? 0) + 1}:{(sourcePosition?.character ?? 0) + 1}</button><span>只读 · Python</span></div> : <div className="flex items-center gap-2 whitespace-nowrap text-[11px] text-ink-3">{draftIndicator}<button type="button" title="跳转到行" onClick={() => view && gotoLine(view)}><span className="max-[480px]:hidden">行 {position.line}，列 {position.column}</span><span className="hidden max-[480px]:inline">{position.line}:{position.column}</span></button><span role="status" aria-label="代码分析器" aria-description={analyzerDescription} title={analyzerDescription} data-state={languageStatus} className={languageStatus === 'reconnecting' ? 'text-warn' : ''}><InkRewrite text={analyzerLabel} tone="label" /></span></div>, statusTarget)}
         {saveBar}
       </div>
     )
@@ -583,6 +604,7 @@ export function PythonFunctionEditor({
           fill ? 'flex min-h-0 flex-1 flex-col' : ''
         }`}
       >
+        {draftNotice}
         <PythonCheckStatus checks={currentChecks} onRetry={() => { if (view) forceLinting(view) }} onQuickFixRetry={() => { if (view) quickFix(view, kind) }} />
         {/* 工具条：状态句同槽换字；图标槽恒占 14px，出现/消失不推字。 */}
         <div className={`flex flex-none flex-wrap items-center gap-x-3.5 gap-y-2 border-b px-3.5 py-2.5 ${style.band}`}>

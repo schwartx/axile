@@ -9,7 +9,7 @@ export function PythonSaveBar({ action, status }: { action: PythonSaveAction; st
     ? '保存失败'
     : action.saving
       ? '保存中…'
-      : action.blockedReason ?? (action.dirty ? '未保存' : '已保存')
+      : action.blockedReason ?? (action.dirty ? '未保存到服务器' : '已保存到服务器')
 
   return (
     <footer className="flex h-7 flex-none items-center border-t border-line bg-surface px-2 text-[12px]">

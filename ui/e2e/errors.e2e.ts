@@ -51,22 +51,35 @@ async function setLiveExecution(page: Page, status: string, kind = 'rebalance') 
   }, { status, kind })
 }
 
-/** 合成 LSP 只让快速修复失败，诊断仍成功返回。 */
-async function quickFixLsp(page: Page, diagnostic: boolean, fail: () => boolean) {
-  await page.routeWebSocket('**/api/v1/editor/lsp', socket => {
-    socket.onMessage(data => {
-      const request = JSON.parse(String(data))
-      if (request.id == null) return
-      if (request.method === 'textDocument/codeAction' && fail()) {
-        socket.send(JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32603, message: raw('快速修复') } }))
-        return
+type PythonRequest = { id: number; method: string; params: { code?: string } }
+type PythonResponse = Record<string, unknown> | null
+
+/** Inject protocol replies at the Worker boundary while keeping the actual local runtime. */
+async function pythonReplies(page: Page, methods: string[], reply: (request: PythonRequest) => PythonResponse | Promise<PythonResponse>) {
+  await page.exposeFunction('pythonFixtureReply', reply)
+  await page.addInitScript(methods => {
+    const Original = window.Worker
+    window.Worker = class extends Original {
+      postMessage(data: unknown) {
+        const request = typeof data === 'string' ? JSON.parse(data) : null
+        if (request?.id !== undefined && methods.includes(request.method)) {
+          const fixture = window as unknown as { pythonFixtureReply: (request: unknown) => Promise<Record<string, unknown> | null> }
+          void fixture.pythonFixtureReply(request).then(response => {
+            if (response) this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ jsonrpc: '2.0', id: request.id, ...response }) }))
+            else super.postMessage(data)
+          })
+        } else super.postMessage(data)
       }
-      const result = request.method === 'initialize' ? { capabilities: { textDocumentSync: 1, diagnosticProvider: { interFileDependencies: false, workspaceDiagnostics: false }, codeActionProvider: true } }
-        : request.method === 'textDocument/diagnostic' ? { kind: 'full', items: diagnostic ? [{ message: '仍然有效的 LSP 诊断', severity: 2, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } }] : [] }
-        : request.method === 'textDocument/codeAction' ? [] : null
-      socket.send(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }))
-    })
-    socket.send(JSON.stringify({ type: 'session', rootUri: 'file:///synthetic', uri: 'file:///synthetic/main.py' }))
+    }
+  }, methods)
+}
+
+async function quickFixWorker(page: Page, diagnostic: boolean, fail: () => boolean) {
+  await pythonReplies(page, ['textDocument/diagnostic', 'textDocument/codeAction', 'axile/contract'], request => {
+    if (request.method === 'axile/contract') return { result: { diagnostics: [], fixes: [] } }
+    if (request.method === 'textDocument/codeAction') return fail()
+      ? { error: { code: -32603, message: raw('快速修复') } } : { result: [] }
+    return { result: { kind: 'full', items: diagnostic ? [{ message: '仍然有效的 LSP 诊断', severity: 2, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } }] : [] } }
   })
 }
 
@@ -805,8 +818,7 @@ test('pending batch copies identify their incomplete scope and stay frozen after
 
 for (const background of [true, false]) test(`quick fix failure preserves diagnostics and supports complete details and actual retry, background=${background}`, async ({ page }) => {
   let failed = true
-  await quickFixLsp(page, background, () => failed)
-  await page.route('**/api/v1/editor/contract', route => route.fulfill({ json: { diagnostics: [], fixes: [] } }))
+  await quickFixWorker(page, background, () => failed)
   await page.goto('/e2e/errors.html?mode=python')
   const panel = page.getByRole('region', { name: '代码检查' })
   await expect(page.getByRole('status', { name: '代码分析器' })).toHaveAttribute('data-state', 'ready')
@@ -847,7 +859,7 @@ test('advanced configuration read failure remains on page with full error and re
 })
 
 test('static contract failure retains LSP diagnostics status and never claims no diagnostics', async ({ page }) => {
-  await page.route('**/api/v1/editor/contract', route => route.fulfill({ status: 500, json: { detail: raw('契约') } }))
+  await pythonReplies(page, ['axile/contract'], () => ({ error: { code: -32603, message: raw('契约') } }))
   await page.goto('/e2e/errors.html?mode=python')
   const panel = page.getByRole('region', { name: '代码检查' })
   await expect(panel).toContainText('入口契约检查：检查失败')
@@ -861,10 +873,9 @@ test('late static failure from an older document cannot replace a successful cur
   let release!: () => void
   const old = new Promise<void>(resolve => { release = resolve })
   let oldRead = false
-  await page.route('**/api/v1/editor/contract', async route => {
-    const code = route.request().postDataJSON().code as string
-    if (code.includes('value = 1')) { oldRead = true; await old; return route.fulfill({ status: 500, json: { detail: '旧文档失败' } }) }
-    return route.fulfill({ json: { diagnostics: [], fixes: [] } })
+  await pythonReplies(page, ['axile/contract'], async request => {
+    if (request.params.code?.includes('value = 1')) { oldRead = true; await old; return { error: { code: -32603, message: '旧文档失败' } } }
+    return { result: { diagnostics: [], fixes: [] } }
   })
   await page.goto('/e2e/errors.html?mode=python')
   await expect.poll(() => oldRead).toBe(true)
@@ -880,8 +891,9 @@ test('late static failure from an older document cannot replace a successful cur
 })
 
 test('LSP failure leaves valid contract diagnostics visible with an explicit failed source', async ({ page }) => {
-  await page.routeWebSocket('**/api/v1/editor/lsp', socket => socket.close({ code: 1011, reason: 'synthetic LSP failure' }))
-  await page.route('**/api/v1/editor/contract', route => route.fulfill({ json: { diagnostics: [{ message: '有效契约诊断', source: '入口契约', severity: 2, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } }], fixes: [] } }))
+  await pythonReplies(page, ['textDocument/diagnostic', 'axile/contract'], request => request.method === 'textDocument/diagnostic'
+    ? { error: { code: -32603, message: 'synthetic LSP failure' } }
+    : { result: { diagnostics: [{ message: '有效契约诊断', source: '入口契约', severity: 2, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } }], fixes: [] } })
   await page.goto('/e2e/errors.html?mode=python')
   const panel = page.getByRole('region', { name: '代码检查' })
   await expect(panel).toContainText('LSP 诊断：检查失败')
