@@ -18,17 +18,24 @@ def test_notification_uses_utf8_pipes(monkeypatch, fails) -> None:
         return original_run(*args, **kwargs)
 
     monkeypatch.setattr(notification_function.subprocess, "run", run_with_legacy_default)
+    raw = (
+        "通知失败 🚀 "
+        + "long synthetic error " * 150
+        + "\npassword=synthetic token=synthetic api_key=synthetic\n尾部根因"
+    )
     code = """def notify(context):
     assert context["name"] == "中文账户 🚀"
     print("通知日志 🚀")
     if context["fails"]:
-        raise RuntimeError("通知失败 🚀")
+        raise RuntimeError(context["error"])
 """
-    result = run_notification_function(code, {"name": "中文账户 🚀", "fails": fails})
+    result = run_notification_function(code, {"name": "中文账户 🚀", "fails": fails, "error": raw})
     assert result.ok is (not fails)
     if fails:
-        assert result.error == "RuntimeError: 通知失败 🚀"
+        assert result.error == f"RuntimeError: {raw}"
         assert result.error_line == 5
+        assert 'File "<notification>", line 5' in result.traceback
+        assert raw in result.traceback
 
 
 @pytest.mark.parametrize(
@@ -60,13 +67,3 @@ def test_system_and_account_keys_are_isolated(monkeypatch):
     code = "import os\ndef notify(context):\n    assert os.environ['AXILE_SYSTEM_FEISHU_KEY'] == context['system']\n    assert os.environ['AXILE_ACCOUNT_FEISHU_KEY'] == context['account']"
     assert run_notification_function(code, {"system": "system", "account": ""}, system_feishu_key="system").ok
     assert run_notification_function(code, {"system": "", "account": "account"}, feishu_key="account").ok
-
-
-def test_notification_error_preserves_long_original_and_child_traceback():
-    raw = "long synthetic error " * 150 + "\npassword=synthetic token=synthetic api_key=synthetic\n尾部根因"
-    result = run_notification_function(f"def notify(context):\n    raise RuntimeError({raw!r})\n", {})
-    assert result.ok is False
-    assert result.error == f"RuntimeError: {raw}"
-    assert result.error_line == 2
-    assert 'File "<notification>", line 2' in result.traceback
-    assert raw in result.traceback

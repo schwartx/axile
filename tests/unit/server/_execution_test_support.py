@@ -4,6 +4,8 @@ import asyncio
 from datetime import datetime
 from types import SimpleNamespace, TracebackType
 
+import pytest
+
 from axile.common.trade_channel import TradeChannel
 from axile.executor.models.execution_result import AlgorithmResult
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
@@ -338,3 +340,36 @@ class WorkerCommandHarness:
             },
         )
         return output
+
+
+@pytest.fixture(autouse=True)
+def _worker_commands(monkeypatch):
+    """在 worker 命令边界测试编排，IPC 传输由 manager 用例覆盖。"""
+    from axile.server.execution import backend as execution_backend
+    from axile.server.execution.worker_backend import worker_audit, worker_state
+
+    manager = WorkerCommandHarness()
+    monkeypatch.setattr(execution_backend, "get_worker_backend_manager", lambda: manager)
+    monkeypatch.setattr(worker_state, "create_executor_instance", lambda *args, **kwargs: FakeExecutor())
+    monkeypatch.setattr(worker_state, "build_account_control_guard", noop_account_control_guard)
+
+    async def flush(executor):
+        pass
+
+    monkeypatch.setattr(worker_state, "flush_account_control_records", flush)
+    monkeypatch.setattr(worker_audit, "append_execution_event_sync", lambda **kwargs: True)
+    monkeypatch.setattr(worker_audit, "append_execution_artifact_sync", lambda **kwargs: True)
+
+
+@pytest.fixture(autouse=True)
+def _stub_intent_promotion(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int]]:
+    """执行票状态机由 test_execution_intents.py 专门守护；分发层测试只记录 promote 调用。"""
+    from axile.server.execution import intents as execution_intents
+
+    calls: list[tuple[str, int]] = []
+
+    async def fake_promote(execution_id: str, account_id: int) -> None:
+        calls.append((execution_id, account_id))
+
+    monkeypatch.setattr(execution_intents, "promote_intent_to_running", fake_promote)
+    return calls
