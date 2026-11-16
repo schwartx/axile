@@ -6,6 +6,7 @@ from copy import deepcopy
 from threading import RLock
 from typing import Any
 
+from axile.common.serialization import from_payload
 from axile.executor.algorithms.utils.clock import clock_monotonic
 from axile.server.connection_events import ConnectionEventHub
 from axile.server.connection_state import ConnectionBinding, connection_config_key
@@ -83,7 +84,7 @@ async def orders_frames(account_ids: set[int] | None = None) -> list[dict[str, A
     return [
         {
             "account_id": value["id"],
-            "snapshot": await query_account_orders(AccountSnapshot.model_validate(value)),
+            "snapshot": await query_account_orders(from_payload(AccountSnapshot, value)),
         }
         for value in accounts
     ]

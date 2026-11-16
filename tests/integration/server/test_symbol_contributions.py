@@ -2,6 +2,7 @@
 
 import pytest
 
+from axile.common.serialization import to_payload
 from tests.conftest import initialize_native_database, native_store_call, require_native_store
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server._native_read_views import persist_record_fixture
@@ -21,7 +22,7 @@ def seed_account(
     initialize_native_database(path)
     account = build_account(trade_channel="tq", portfolio_id=None, is_started=False, backtest_fee_rate=0.0)
     native_store_call(
-        path, "account_create", {"account": account.model_dump(mode="json"), "now": "2026-01-01T09:00:00"}
+        path, "account_create", {"account": to_payload(account, mode="json"), "now": "2026-01-01T09:00:00"}
     )
     for day, quantity, value, equity in [(1, 2, 2000, 1000), (2, 1, 1200, 1299), (3, 0, 0, 1349)]:
         time = "2026-01-02T12:00:00" if intraday and day == 3 else f"2026-01-0{day}T09:00:00"

@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from axile.common.serialization import copy_data
 from axile.executor.order_submissions import OrderSubmissionFact
 from axile.server import order_submissions as submissions
 from axile.server.execution import account_runtime_sync as runtime
@@ -35,6 +36,7 @@ with closing(sqlite3.connect(sys.argv[1], timeout=0.5)) as connection:
 """
 _WRITE_SUBMISSIONS = """
 import sys
+from axile.common.serialization import copy_data
 from axile.executor.order_submissions import OrderSubmissionFact
 from axile.server.order_submissions import _save_fact
 print('ready', flush=True)
@@ -46,7 +48,7 @@ for index in range(8):
     )
     _save_fact(sys.argv[1], fact)
 for revision in (0, 6, 2, 8):
-    _save_fact(sys.argv[1], fact.model_copy(update={
+    _save_fact(sys.argv[1], copy_data(fact, update={
         'submission_uid': 'shared', 'order_id': 'shared', 'request_id': 999,
         'revision': revision,
     }))
@@ -120,14 +122,15 @@ def test_worker_and_sdk_callbacks_keep_all_commits_and_latest_revision(tmp_path:
                 for revision in (1, 7, 3, 10):
                     submissions._save_fact(
                         str(database),
-                        fact.model_copy(
+                        copy_data(
+                            fact,
                             update={
                                 "submission_uid": "shared",
                                 "order_id": "shared",
                                 "request_id": 999,
                                 "revision": revision,
                                 "broker_status": "rejected" if revision == 10 else "unknown",
-                            }
+                            },
                         ),
                     )
 

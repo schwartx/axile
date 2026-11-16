@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from axile.common.serialization import to_payload
 from axile.executor import replay as recording
 from axile.executor.gm import replay
 from axile.server.execution_replay.contracts import freeze_data
@@ -14,7 +15,7 @@ from axile.server.execution_replay.contracts import freeze_data
 def _context():
     from axile.channels import get_channel
 
-    return get_channel("gm").descriptor.replay.model_dump(mode="json")
+    return to_payload(get_channel("gm").descriptor.replay, mode="json")
 
 
 @pytest.mark.parametrize("factory", [dict, SimpleNamespace])

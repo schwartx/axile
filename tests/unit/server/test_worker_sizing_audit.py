@@ -6,6 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from axile.common.serialization import to_payload
 from axile.domain.execution import ExecutionArtifactType
 from axile.executor.models.execution_result import TargetSizingDecision
 from axile.executor.models.unified_input import UnifiedStandardInput
@@ -51,7 +52,7 @@ def test_worker_target_reference_and_derived_detail_keep_sizing(
         target_quantity=0.5,
         quantity_step=0.1,
     )
-    result = cast("dict[str, object]", output.model_dump(mode="json"))
+    result = cast("dict[str, object]", to_payload(output, mode="json"))
     artifacts: list[dict[str, object]] = []
 
     def capture_artifact(**kwargs: object) -> bool:
@@ -124,4 +125,4 @@ def test_worker_target_reference_and_derived_detail_keep_sizing(
     )
     reconciliation = execution_result_view(detail["result"])["reconciliation"]
     symbols = cast("list[dict[str, object]]", reconciliation["symbols"])
-    assert symbols[0]["sizing"] == symbol_result.sizing.model_dump(mode="json")
+    assert symbols[0]["sizing"] == to_payload(symbol_result.sizing, mode="json")

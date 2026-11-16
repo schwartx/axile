@@ -1,5 +1,7 @@
 """离线业务回归，执行与联机相同的场景算法及结果核对。"""
 
+from axile.common.serialization import copy_data, to_payload
+
 import copy
 import json
 
@@ -47,9 +49,9 @@ def test_unrelated_positions_are_preserved_as_same_lots_targets(tmp_path):
     assert api.extra_positions[0].volume == 16
     assert runner.preserved_targets == {"TL2612": 16}
     assert "'TL2612': 16" in api.portfolio["custom_calc_py_code"]
-    api.extra_positions = [position.model_copy(update={"volume": 15})]
+    api.extra_positions = [copy_data(position, update={'volume': 15})]
     with pytest.raises(Exception, match="无关持仓数量发生变化"):
-        runner.check_preserved(api.assets().model_dump(mode="json"))
+        runner.check_preserved(to_payload(api.assets(), mode='json'))
 
 
 @pytest.mark.parametrize("invalid_case", ["price", "volume", "unknown"])

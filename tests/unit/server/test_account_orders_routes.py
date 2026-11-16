@@ -6,6 +6,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from axile.common.serialization import to_payload
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
 from axile.server.api.routes import account_orders as routes
 from axile.server.db.models.execution import ExecutionEvent
@@ -67,7 +68,7 @@ def test_cancel_returns_acceptance_separately_from_terminal_status(client, monke
             "message": "等待实际回报",
             "requested_at": "2026-10-15T10:00:00",
             "order": None,
-            **payload.model_dump(),
+            **to_payload(payload),
         }
 
     monkeypatch.setattr(routes, "cancel_account_order", cancel)
@@ -179,7 +180,7 @@ def test_current_orders_link_history_by_symbol_and_order_id(monkeypatch, tmp_pat
             symbol=symbol,
             order_id="same-id",
         )
-        assert native_store_call(database, "append_execution_event", event.model_dump(mode="json")) is True
+        assert native_store_call(database, "append_execution_event", to_payload(event, mode="json")) is True
 
     async def query(_account, **_kwargs):
         return {

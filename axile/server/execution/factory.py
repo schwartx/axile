@@ -1,6 +1,7 @@
 """按运行时注册的交易渠道创建执行器实例."""
 
 from axile.channels import get_channel
+from axile.common.serialization import parse_input
 from axile.executor.abstract_executor.base import AbstractExecutor
 from axile.executor.trading_calendar import ShinnyTradingCalendar
 from axile.server.connection_state import report_connection_for_account
@@ -35,7 +36,7 @@ def create_executor_instance(account: AccountContext, *, initialize: bool = True
         raise ValueError(f"未注册交易渠道: {account.trade_channel}") from exc
     config_data = dict(account.account_config)
     config_data["channel_type"] = account.trade_channel
-    config = plugin.account_config_model.model_validate(config_data)
+    config = parse_input(plugin.account_config_model, config_data)
     with report_connection_for_account(account):
         executor = plugin.create_executor(config)
     try:

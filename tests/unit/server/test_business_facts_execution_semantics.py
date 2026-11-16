@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from axile.common.serialization import from_payload
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
 from axile.executor.models.execution_result import ExecutionStatus
@@ -60,7 +61,7 @@ def _persisted(path, record_id):
         )
     duration = row.pop("execution_time_us")
     row["execution_time"] = duration / 1_000_000 if duration is not None else None
-    return ExecuteRecord.model_validate(row)
+    return from_payload(ExecuteRecord, row)
 
 
 def _input(target: object) -> dict[str, object]:

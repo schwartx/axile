@@ -1,7 +1,10 @@
 """终态摘要保留原字段证据，并单独提供历史展示语义。"""
 
+from dataclasses import fields
+
 import pytest
 
+from axile.common.serialization import to_payload
 from scripts.business_facts_contract import business_evidence
 from tests.fixtures.rust_store.execution_rows import ExecuteRecord
 from tests.unit.server._business_facts_test_support import persist_result, read_result, rows
@@ -55,9 +58,9 @@ def test_invalid_known_field_is_evidence_without_sql_coercion(native_database):
 def test_terminal_model_does_not_store_or_rebuild_full_documents(native_database):
     row = persist_result(native_database, {})
     assert {"raw_input", "raw_result"}.isdisjoint(rows(native_database, "executerecord")[0])
-    assert {"raw_input", "raw_result"}.isdisjoint(ExecuteRecord.model_fields)
+    assert {"raw_input", "raw_result"}.isdisjoint({item.name for item in fields(ExecuteRecord)})
     assert row["facts_complete"] is True
     record = ExecuteRecord(account_id=1, execution_id=None, is_success=0)
     assert not hasattr(record, "raw_input")
     assert not hasattr(record, "raw_result")
-    assert not {"field_metadata", "termination_metadata"}.intersection(record.model_dump())
+    assert not {"field_metadata", "termination_metadata"}.intersection(to_payload(record))

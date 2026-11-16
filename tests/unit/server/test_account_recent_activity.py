@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from axile.common.serialization import copy_data
 from axile.executor.account_orders import AccountOrderBook
 from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
 from axile.server.account_activity_runtime import run_activity_command
@@ -89,7 +90,7 @@ def test_account_wide_plugin_history_discovers_closed_positions_on_a_fresh_conne
     queried = []
     instance.query_recent_orders = lambda value: (
         queried.append(("orders", value))
-        or [order("SHFE.ag2612").model_copy(update={"status": "已成交", "filled_volume": 2})]
+        or [copy_data(order("SHFE.ag2612"), update={"status": "已成交", "filled_volume": 2})]
     )
     instance.query_recent_trades = lambda value: (
         queried.append(("trades", value))
@@ -137,8 +138,8 @@ def test_history_orders_are_sorted_by_native_tq_time_and_public_payload_is_white
 
 def test_terminal_list_is_paginated_independently_of_newer_active_orders():
     instance = executor()
-    older = order().model_copy(update={"status": "已拒绝", "create_time": "2026-10-15T10:00:00"})
-    newer = order("ag2612").model_copy(update={"create_time": "2026-10-16T10:00:00"})
+    older = copy_data(order(), update={"status": "已拒绝", "create_time": "2026-10-15T10:00:00"})
+    newer = copy_data(order("ag2612"), update={"create_time": "2026-10-16T10:00:00"})
     instance.account_orders.activity.observe_order(older)
     instance.account_orders.activity.observe_order(newer)
     result = run_activity_command(instance, {"limit": 1})
@@ -274,8 +275,9 @@ def test_order_average_and_channel_fields_are_whitelisted_and_paginated_after_ag
     instance = executor("ctp")
     book = instance.account_orders
     book.apply(
-        order(filled_volume=3, extra={"hedge_flag": "3", "time_condition": "3", "password": "secret"}).model_copy(
-            update={"volume": 3}
+        copy_data(
+            order(filled_volume=3, extra={"hedge_flag": "3", "time_condition": "3", "password": "secret"}),
+            update={"volume": 3},
         )
     )
     for identity, quantity, price in (("one", 1, 100), ("two", 2, 106)):
@@ -356,7 +358,7 @@ def test_order_attributes_keep_false_zero_and_hide_invalid_values_and_raw_payloa
 )
 def test_trade_details_use_only_native_record_fields_and_hide_raw_payload(channel, extra, expected):
     instance = executor(channel)
-    instance.account_orders.apply(order().model_copy(update={"status": "已成交"}))
+    instance.account_orders.apply(copy_data(order(), update={"status": "已成交"}))
     instance.account_orders.activity.observe_trade(
         TradeRecord.create(
             trade_id="fill",

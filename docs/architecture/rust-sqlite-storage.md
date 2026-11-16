@@ -1,6 +1,6 @@
 # Rust SQLite 存储边界
 
-第一方生产代码的 SQLite 查询、业务写入、初始化和迁移由 Rust 负责。Python 保留 HTTP 鉴权与参数校验、普通 Pydantic 数据模型、策略、渠道 SDK、Clock 和调度编排。`db/models/` 中的模型保留业务字段、默认值和验证规则，不持有 ORM 会话。
+第一方生产代码的 SQLite 查询、业务写入、初始化和迁移由 Rust 负责。Python 保留 HTTP 鉴权与参数校验、普通 dataclass 数据对象、策略、渠道 SDK、Clock 和调度编排。`db/models/` 中的模型保留业务字段、默认值和验证规则，不持有 ORM 会话。
 
 ## 调用与事务
 
@@ -16,7 +16,7 @@ PyO3 入口在持有 GIL 时取得请求和路径，等待数据库、查询、�
 
 委托与撤单回执由账户服务使用普通字典管理，HTTP 与 SSE 共用同一份公开快照；任务身份、版本、终态和核对落库规则不变。算法目录直接消费原生扫描结果，算法参数 JSON Schema 继续由参数模型生成。
 
-Pydantic 保留在请求校验、算法参数、渠道描述、连接任务及其他实际内部对象处。连接任务与表格在现有记录器中校验，公开出口只导出已验证的状态；不得再建立一套仅用于响应的模型。路由结构检查见 `tests/contract/test_frontend_response_boundary.py`。
+第一方内部对象使用 dataclass，输入校验集中在配置编辑和执行入口，不在数据库读取、worker 转发或普通对象复制时重复运行。算法参数与表单 Schema 共享类型声明；见[内部数据对象与输入校验](internal-data.md)。不得再建立一套仅用于响应的模型。路由结构检查见 `tests/contract/test_frontend_response_boundary.py`。
 
 ## 账户控制配置
 

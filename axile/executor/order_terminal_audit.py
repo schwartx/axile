@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from queue import Queue
 from typing import TYPE_CHECKING
 
+from axile.common.serialization import copy_data
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
 from axile.executor.abstract_executor.support import _coerce_int
 
@@ -95,7 +96,7 @@ class OrderTerminalAudit:
                 )
                 self._worker.start()
             self._pending.add(order.order_id)
-            self._queue.put(order.model_copy(deep=True))
+            self._queue.put(copy_data(order, deep=True))
         return True
 
     def flush(self, timeout: float = 5) -> bool:

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import Response
 
+from axile.common.serialization import to_payload
 from axile.server.api.routes import account_crud
 from axile.server.db.models.account import Account, AccountUpdate
 from axile.server.db.models.account_runtime_sync import AccountRuntimeSyncState
@@ -16,7 +17,7 @@ from axile.server.db.models.account_runtime_sync import AccountRuntimeSyncState
 def test_recording_patch_keeps_acknowledgement_separate_from_trading_sync(monkeypatch, acknowledged, recording_only):
     account = Account(id=7, name="test", market="future", trade_channel="ctp", brokerage="test")
     account.runtime_sync = AccountRuntimeSyncState(status="synchronized", revision=1, attempts=1)
-    stored = account.model_dump(exclude={"replay_config_version"}) | {
+    stored = to_payload(account, exclude={"replay_config_version"}) | {
         "replay_recording_enabled": True,
         "runtime_sync": {"status": "pending", "revision": 2, "attempts": 1},
     }

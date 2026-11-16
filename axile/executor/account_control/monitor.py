@@ -6,6 +6,7 @@ import hashlib
 import json
 from typing import TYPE_CHECKING, Any
 
+from axile.common.serialization import to_payload
 from axile.executor.account_control.models import AccountControlBucketType, AccountControlScopePolicy
 
 if TYPE_CHECKING:
@@ -78,7 +79,7 @@ def _scope_rows(
 def render_guard_snapshot(guard: AccountControlGuard) -> dict[str, Any]:
     """从冻结的 guard 输入生成规则、队列和本地放行计数。"""
     context = guard._current_context() if guard.policy is not None else None
-    policy = None if guard.policy is None else guard.policy.model_dump(mode="json")
+    policy = None if guard.policy is None else to_payload(guard.policy, mode="json")
     rows: list[dict[str, Any]] = []
     if guard.policy is not None:
         assert context is not None
@@ -141,6 +142,6 @@ def render_guard_snapshot(guard: AccountControlGuard) -> dict[str, Any]:
         "rules": rows,
         "waiting": queue,
         "waiting_total": len(guard._wait_queue),
-        "records": [event.model_dump(mode="json") for event in reversed(guard._events)],
-        "quota_warnings": [warning.model_dump(mode="json") for warning in guard._quota_warnings.values()],
+        "records": [to_payload(event, mode="json") for event in reversed(guard._events)],
+        "quota_warnings": [to_payload(warning, mode="json") for warning in guard._quota_warnings.values()],
     }

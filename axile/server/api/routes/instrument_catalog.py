@@ -1,11 +1,14 @@
 """服务级内存合约目录管理接口，沿用顶层 API 鉴权。"""
 
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
+from fastapi import APIRouter, Depends, HTTPException
+from msgspec import Meta
 
+from axile.common.serialization import provided_fields
 from axile.executor.instrument_catalog import CatalogError
+from axile.server.api.inputs import json_body
 from axile.server.execution.resident_connection import AccountConnectionUnavailable
 from axile.server.execution.worker_backend.manager import get_worker_backend_manager
 from axile.server.repositories import get_account_snapshot
@@ -13,17 +16,16 @@ from axile.server.repositories import get_account_snapshot
 router = APIRouter(prefix="/instrument-catalog", tags=["instrument-catalog"])
 
 
-class InstrumentQuery(BaseModel):
+@dataclass(kw_only=True)
+class InstrumentQuery:
     """已连接账户的有界精确查询，不隐式登录或全量刷新。"""
 
-    model_config = ConfigDict(extra="forbid")
-    account_id: int = Field(ge=1)
-    symbols: list[StrictStr] = Field(min_length=1, max_length=50)
-    timeout_seconds: float = Field(default=5, gt=0, le=15)
+    account_id: Annotated[int, Meta(ge=1)]
+    symbols: Annotated[list[str], Meta(min_length=1, max_length=50)]
+    timeout_seconds: Annotated[float, Meta(gt=0, le=15)] = field(default=5)
     require_specs: bool = False
     use_cache: bool = True
 
-    @field_validator("symbols")
     @classmethod
     def validate_symbols(cls, values: list[str]) -> list[str]:
         """只接受明确单个代码，拒绝空白、重复或过长输入。"""
@@ -33,9 +35,16 @@ class InstrumentQuery(BaseModel):
             raise ValueError("symbols 须为不重复的非空合约代码，每项最多 96 字符")
         return values
 
+    __forbid_unknown__ = True
+
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        if "symbols" in provided_fields(self):
+            object.__setattr__(self, "symbols", self.validate_symbols(self.symbols))
+
 
 @router.post("/query", response_model=None)
-async def query_instruments(query: InstrumentQuery) -> dict[str, Any]:
+async def query_instruments(query: Annotated[InstrumentQuery, Depends(json_body(InstrumentQuery))]) -> dict[str, Any]:
     """通过已连接账户精确查询静态资料，负查询不回收健康交易会话。"""
     account = await get_account_snapshot(query.account_id)
     if account is None:

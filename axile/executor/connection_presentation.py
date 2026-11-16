@@ -1,44 +1,45 @@
 """渠道无关的连接问题展示契约；内容不参与连接或执行判断。"""
 
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 
-from pydantic import BaseModel, ConfigDict, Field
+from axile.common.serialization import from_payload, to_payload
 
 
-class ConnectionFact(BaseModel):
+@dataclass(kw_only=True)
+class ConnectionFact:
     """本次观察已确认的键值事实。"""
 
-    model_config = ConfigDict(strict=True)
     label: str
     value: str
 
 
-class ConnectionSection(BaseModel):
+@dataclass(kw_only=True)
+class ConnectionSection:
     """有序信息块，可组合说明、事实与检查步骤。"""
 
-    model_config = ConfigDict(strict=True)
     title: str | None = None
     text: str | None = None
-    fields: list[ConnectionFact] = Field(default_factory=list)
-    steps: list[str] = Field(default_factory=list)
+    fields: list[ConnectionFact] = field(default_factory=list)
+    steps: list[str] = field(default_factory=list)
 
 
-class ConnectionAction(BaseModel):
+@dataclass(kw_only=True)
+class ConnectionAction:
     """通用 UI 操作意图，不包含路径、脚本或接口请求。"""
 
-    model_config = ConfigDict(strict=True)
     label: str
     intent: str
 
 
-class ConnectionPresentation(BaseModel):
+@dataclass(kw_only=True)
+class ConnectionPresentation:
     """渠道提供的动态故障内容，仅在详情接口返回。"""
 
-    model_config = ConfigDict(strict=True)
     title: str | None = None
     summary: str | None = None
-    sections: list[ConnectionSection] = Field(default_factory=list)
-    actions: list[ConnectionAction] = Field(default_factory=list)
+    sections: list[ConnectionSection] = field(default_factory=list)
+    actions: list[ConnectionAction] = field(default_factory=list)
 
 
 PresentationInput = ConnectionPresentation | Mapping[str, object] | Callable[[], object] | None
@@ -50,7 +51,7 @@ def presentation_snapshot(value: object) -> dict[str, object] | None:
         content = value() if callable(value) else value
         if content is None:
             return None
-        model = ConnectionPresentation.model_validate(content)
+        model = from_payload(ConnectionPresentation, content)
         if not (
             (model.title and model.title.strip())
             or (model.summary and model.summary.strip())
@@ -58,7 +59,7 @@ def presentation_snapshot(value: object) -> dict[str, object] | None:
             or any(action.label.strip() and action.intent.strip() for action in model.actions)
         ):
             return None
-        return model.model_dump(mode="json", exclude_none=True)
+        return to_payload(model, mode="json", exclude_none=True)
     except Exception:
         return None
 

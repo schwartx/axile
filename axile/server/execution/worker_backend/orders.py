@@ -7,6 +7,7 @@ from threading import Lock
 from typing import Any
 from uuid import uuid4
 
+from axile.common.serialization import from_payload
 from axile.executor.connection_state import connection_observer_scope
 from axile.server.account_control import providers
 from axile.server.account_orders_runtime import order_control_scope, run_order_command
@@ -63,7 +64,7 @@ def _command(state: Any, payload: dict[str, Any]) -> dict[str, Any]:
     from axile.server.connection_state import ConnectionBinding, ConnectionCollector
     from axile.server.execution.worker_backend import worker_state
 
-    account = AccountSnapshot.model_validate(payload["account"])
+    account = from_payload(AccountSnapshot, payload["account"])
     assert account.id is not None
     # 同一资源锁只保护连接准备、人工操作与收尾，不覆盖算法执行。
     with state.resource_lock:

@@ -2,6 +2,7 @@
 
 import pytest
 
+from axile.common.serialization import copy_data
 from axile.executor.account_activity import AccountActivityBook
 from axile.executor.account_orders import AccountOrderBook
 from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
@@ -85,8 +86,10 @@ def test_trade_query_and_callback_merge_without_losing_event_details(callback_fi
         is_maker=False,
         raw_trade_data={"commission": 0, "reference": "native"},
     )
-    query = callback.model_copy(
-        update={"extra": {"client_order_id": "", "commission": None, "raw_trade_data": {"commission": None}}}, deep=True
+    query = copy_data(
+        callback,
+        update={"extra": {"client_order_id": "", "commission": None, "raw_trade_data": {"commission": None}}},
+        deep=True,
     )
     for value in [callback, query] if callback_first else [query, callback]:
         book.observe_trade(value)
@@ -118,7 +121,7 @@ def test_trade_merge_keeps_zero_and_false_updates_and_original_order_link():
     )
     book.observe_trade(first)
     book.observe_trade(
-        first.model_copy(update={"order_id": "", "trade_time": "", "extra": {"commission": 0, "is_maker": False}})
+        copy_data(first, update={"order_id": "", "trade_time": "", "extra": {"commission": 0, "is_maker": False}})
     )
     result = book.snapshot()["trades"][0]
     assert result.order_id == "order-1"

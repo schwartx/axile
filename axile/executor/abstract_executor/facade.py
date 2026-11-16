@@ -8,9 +8,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
+from axile.common.serialization import parse_input
 from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor.support import _coerce_object_dict, _coerce_trade_rules
 from axile.executor.account_control.decorators import controlled_operation
+from axile.executor.futures_close_policy import FuturesClosePolicy
 from axile.executor.market_data_validation import MarketDataUnavailableError
 from axile.executor.models.execution_result import ExecutionOutcome, ExecutionStatus
 from axile.executor.models.unified_account_assets import Position, UnifiedAccountAssets
@@ -612,11 +614,13 @@ class AbstractExecutorFacadeMixin:
         feishu_key_raw = kwargs.get("feishu_key")
         notification_code_raw = kwargs.get("execution_notification_code")
         timeout_raw = kwargs.get("execution_timeout")
-        return UnifiedStandardInput(
+        result = UnifiedStandardInput(
             curr_target=curr_target,
             last_target=executor._calculate_last_target_unified(positions),
             trade_rules={**default_rules, **user_rules},
-            futures_close_policy=_coerce_object_dict(kwargs.get("futures_close_policy", {})),
+            futures_close_policy=parse_input(
+                FuturesClosePolicy, _coerce_object_dict(kwargs.get("futures_close_policy", {}))
+            ),
             algorithm=_coerce_object_dict(kwargs.get("algorithm", executor._get_default_algorithm())),
             forbidden_symbols=forbidden_symbols,
             feishu_key=feishu_key_raw if isinstance(feishu_key_raw, str) else None,
@@ -628,6 +632,8 @@ class AbstractExecutorFacadeMixin:
             account_config=account_config,
             risk_symbols=[],
         )
+        result.validate_consistency()
+        return result
 
     def _build_empty_positions_curr_target(self, positions: list[Position]) -> dict[str, float]:
         """

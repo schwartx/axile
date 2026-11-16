@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from axile.common.serialization import copy_data
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.order_tracker import OrderTracker
 from axile.executor.constants.order_status import OrderStatus
@@ -79,11 +80,8 @@ def test_F09_async_insert_rejection_reaches_tracker() -> None:
     tracker.add_order(pending)
     assert tracker.get_pending_count() == 1
 
-    rejected = pending.model_copy(
-        update={
-            "status": OrderStatus.REJECTED,
-            "extra": {"error_id": 31, "error_msg": "synthetic reject"},
-        }
+    rejected = copy_data(
+        pending, update={"status": OrderStatus.REJECTED, "extra": {"error_id": 31, "error_msg": "synthetic reject"}}
     )
     tracker.on_order_update(rejected)
     assert tracker.get_pending_count() == 0

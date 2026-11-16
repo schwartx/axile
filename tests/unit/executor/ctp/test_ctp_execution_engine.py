@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from axile.common.serialization import to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionReasonFamily
 from axile.executor.abstract_executor.base import AbstractExecutor
@@ -238,13 +239,13 @@ def test_mixed_session_output_preserves_open_results_and_closed_targets(monkeypa
     if open_status == ExecutionStatus.FAILED:
         assert output.status == ExecutionStatus.FAILED
         assert output.reason_code is None
-        assert session_closed_scope(output.model_dump(mode="json")) is None
+        assert session_closed_scope(to_payload(output, mode="json")) is None
     else:
         assert output.status == open_status
         assert output.reason_code == COMMON_SESSION_CLOSED
         assert output.error is None
         assert output.success
-        assert session_closed_scope(output.model_dump(mode="json")) == "partial"
+        assert session_closed_scope(to_payload(output, mode="json")) == "partial"
 
 
 def test_final_snapshot_failure_is_not_labeled_partial_session(monkeypatch):
@@ -272,7 +273,7 @@ def test_final_snapshot_failure_is_not_labeled_partial_session(monkeypatch):
     assert output.status == ExecutionStatus.PARTIAL
     assert output.error == "最终持仓查询失败"
     assert output.reason_code is None
-    assert session_closed_scope(output.model_dump(mode="json")) is None
+    assert session_closed_scope(to_payload(output, mode="json")) is None
 
 
 def test_ctp_engine_sizes_closed_symbol_from_cached_quote_without_blocking_io(

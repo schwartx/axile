@@ -1,14 +1,16 @@
 """自定义函数投资组合路由。"""
 
 import asyncio
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from loguru import logger
 
 from axile.channels import get_channel
+from axile.common.serialization import from_payload, to_payload
 from axile.executor.models.portfolio_target import PortfolioTarget
 from axile.server._native import _core
+from axile.server.api.inputs import json_body
 from axile.server.db.models import Portfolio, PortfolioCreate, PortfolioUpdate, ValidateCustomCalcRequest
 from axile.server.db.models.account import AccountContext, AccountSnapshot
 from axile.server.db.models.base import now_str
@@ -48,11 +50,11 @@ async def _portfolio_native(name: str, request: object) -> Any:
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED, response_model=None)
-async def create_portfolio(portfolio: PortfolioCreate) -> Response:
+async def create_portfolio(portfolio: Annotated[PortfolioCreate, Depends(json_body(PortfolioCreate))]) -> Response:
     """创建一个由自定义函数计算目标权重的组合。"""
     try:
         value = await _portfolio_native(
-            "portfolio_operation_json", {"op": "create", "portfolio": Portfolio.model_validate(portfolio).model_dump()}
+            "portfolio_operation_json", {"op": "create", "portfolio": to_payload(from_payload(Portfolio, portfolio))}
         )
     except HTTPException:
         raise
@@ -122,7 +124,9 @@ async def delete_portfolio(portfolio_id: int) -> Response:
 
 
 @router.patch("/{portfolio_id:int}", response_model=None)
-async def update_portfolio(portfolio_id: int, portfolio: PortfolioUpdate) -> Response:
+async def update_portfolio(
+    portfolio_id: int, portfolio: Annotated[PortfolioUpdate, Depends(json_body(PortfolioUpdate))]
+) -> Response:
     """局部更新组合；自定义函数不可清空。"""
     try:
         value = await _portfolio_native(
@@ -130,7 +134,7 @@ async def update_portfolio(portfolio_id: int, portfolio: PortfolioUpdate) -> Res
             {
                 "op": "update",
                 "portfolio_id": portfolio_id,
-                "changes": portfolio.model_dump(exclude_unset=True),
+                "changes": to_payload(portfolio, exclude_unset=True),
                 "updated_at": now_str(),
             },
         )
@@ -172,16 +176,16 @@ async def portfolio_target_snapshot(portfolio_id: int) -> Response:
 async def refresh_portfolio_target_snapshot(portfolio_id: int) -> dict[str, Any]:
     """执行一次组合函数并持久化当前目标。"""
     context = await _portfolio_native("portfolio_operation", {"op": "context", "portfolio_id": portfolio_id})
-    portfolio = Portfolio.model_validate(context["portfolio"])
+    portfolio = from_payload(Portfolio, context["portfolio"])
     account_id = context["account_id"]
-    account = AccountSnapshot.model_validate(context["account"]) if context["account"] is not None else None
+    account = from_payload(AccountSnapshot, context["account"]) if context["account"] is not None else None
     if not try_register_target_refresh(portfolio_id, account_id):
         raise HTTPException(status_code=409, detail="组合或上下文账户正在执行或刷新，请稍后再试")
     try:
         # 取得刷新槽后重读，避免等待期间组合已经归档。
         context = await _portfolio_native("portfolio_operation", {"op": "context", "portfolio_id": portfolio_id})
-        portfolio = Portfolio.model_validate(context["portfolio"])
-        account = AccountSnapshot.model_validate(context["account"]) if context["account"] is not None else None
+        portfolio = from_payload(Portfolio, context["portfolio"])
+        account = from_payload(AccountSnapshot, context["account"]) if context["account"] is not None else None
         raw_target = await resolve_portfolio_target(portfolio, account)
         raw_target = PortfolioTarget.from_result(raw_target)
         normalized_target = (
@@ -250,15 +254,17 @@ async def _run_custom_calc_validation(
 
 
 @router.post("/validate_custom_calc", response_model=None)
-async def validate_custom_calc(payload: ValidateCustomCalcRequest) -> dict[str, Any]:
+async def validate_custom_calc(
+    payload: Annotated[ValidateCustomCalcRequest, Depends(json_body(ValidateCustomCalcRequest))],
+) -> dict[str, Any]:
     """使用无账户或真实账户上下文试跑自定义组合函数。"""
     account = None
-    overrides = payload.leverage_overrides.model_dump(exclude_none=True) if payload.leverage_overrides else {}
+    overrides = to_payload(payload.leverage_overrides, exclude_none=True) if payload.leverage_overrides else {}
     if payload.account_id is not None:
         value = await _portfolio_native(
             "portfolio_operation", {"op": "validation_context", "account_id": payload.account_id}
         )
-        account = AccountSnapshot.model_validate(value)
+        account = from_payload(AccountSnapshot, value)
         limits = get_channel(account.trade_channel).descriptor.leverage
         for name, leverage in overrides.items():
             steps = (leverage - limits.min) / limits.step
@@ -281,7 +287,9 @@ async def validate_custom_calc(payload: ValidateCustomCalcRequest) -> dict[str, 
 
 
 @router.post("/{portfolio_id:int}/run_and_save", response_model=None)
-async def run_and_save_portfolio(portfolio_id: int, payload: RunAndSavePortfolioRequest) -> dict[str, Any]:
+async def run_and_save_portfolio(
+    portfolio_id: int, payload: Annotated[RunAndSavePortfolioRequest, Depends(json_body(RunAndSavePortfolioRequest))]
+) -> dict[str, Any]:
     """只执行一次草稿；通过后由 Rust 原子保存组合与原始快照。"""
     update = PortfolioUpdate(name=payload.name, custom_calc_py_code=payload.custom_calc_py_code)
     if not try_register_target_refresh(portfolio_id, payload.account_id):
@@ -290,7 +298,7 @@ async def run_and_save_portfolio(portfolio_id: int, payload: RunAndSavePortfolio
         context = await _portfolio_native(
             "portfolio_operation", {"op": "context", "portfolio_id": portfolio_id, "account_id": payload.account_id}
         )
-        account = AccountSnapshot.model_validate(context["account"]) if context["account"] is not None else None
+        account = from_payload(AccountSnapshot, context["account"]) if context["account"] is not None else None
         result = await _run_custom_calc_validation(account, payload.custom_calc_py_code)
         if result["valid"]:
             now = now_str()
@@ -299,7 +307,7 @@ async def run_and_save_portfolio(portfolio_id: int, payload: RunAndSavePortfolio
                 {
                     "op": "save_trial",
                     "portfolio_id": portfolio_id,
-                    "changes": update.model_dump(exclude_unset=True),
+                    "changes": to_payload(update, exclude_unset=True),
                     "updated_at": now,
                     "account_id": payload.account_id,
                     "raw_weights": result["target"],

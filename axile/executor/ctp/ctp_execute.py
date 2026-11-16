@@ -19,6 +19,7 @@ from openctp_ctp import thostmduserapi as md
 from openctp_ctp import thosttraderapi as td
 
 from axile.channels.cn_futures import canonicalize_cn_futures_symbol, czce_is_option_instrument
+from axile.common.serialization import copy_data, parse_input
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
 from axile.executor.abstract_executor.base import AbstractExecutor
@@ -99,7 +100,12 @@ from axile.executor.market_data_validation import (
     QUOTE_FUTURE_TOLERANCE_SECONDS,
     MarketDataUnavailableError,
 )
-from axile.executor.models.execution_result import AlgorithmResult, ExecutionStatus, TargetSizingDecision
+from axile.executor.models.execution_result import (
+    AlgorithmResult,
+    ExecutionStatus,
+    TargetSizingDecision,
+    TargetSizingStatus,
+)
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_callback import (
     UnifiedCallbackClient,
@@ -1477,7 +1483,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             lambda: replay_capture.trade(self, row, source="ctp.trade_mapping", order_id=order.order_id),
             receipt=receipt,
         )
-        return trade.model_copy(update={"order_id": order.order_id})
+        return copy_data(trade, update={"order_id": order.order_id})
 
     @override
     def _check_trading_time(self) -> bool:
@@ -1516,7 +1522,8 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
     @override
     def _normalize_connected_standard_input(self, standard_input: UnifiedStandardInput) -> UnifiedStandardInput:
         """使用 CTP 合约目录规范化郑商所四位年份期货/期权代码。"""
-        return standard_input.model_copy(
+        return copy_data(
+            standard_input,
             update={
                 "curr_target": self._normalize_symbol_mapping("curr_target", standard_input.curr_target),
                 "last_target": self._normalize_symbol_mapping("last_target", standard_input.last_target),
@@ -1526,7 +1533,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 "trade_rules": self._normalize_symbol_mapping("trade_rules", standard_input.trade_rules),
                 "forbidden_symbols": self._normalize_symbol_list(standard_input.forbidden_symbols),
                 "risk_symbols": self._normalize_symbol_list(standard_input.risk_symbols),
-            }
+            },
         )
 
     def _normalize_symbol_mapping(self, field: str, values: Mapping[str, _ValueT]) -> dict[str, _ValueT]:
@@ -1593,12 +1600,15 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         if len(selected) != 1:
             raise ValueError("账户手续费率缺失或不唯一")
         row = selected[0]
-        return CommissionRates(
-            yesterday_money=row.CloseRatioByMoney,
-            yesterday_volume=row.CloseRatioByVolume,
-            today_money=row.CloseTodayRatioByMoney,
-            today_volume=row.CloseTodayRatioByVolume,
-            queried_at=clock_now_iso(),
+        return parse_input(
+            CommissionRates,
+            {
+                "yesterday_money": row.CloseRatioByMoney,
+                "yesterday_volume": row.CloseRatioByVolume,
+                "today_money": row.CloseTodayRatioByMoney,
+                "today_volume": row.CloseTodayRatioByVolume,
+                "queried_at": clock_now_iso(),
+            },
         )
 
     @override
@@ -1679,7 +1689,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 errors[symbol] = error
                 continue
             assert quote is not None
-            selected = quote.model_copy(deep=True)
+            selected = copy_data(quote, deep=True)
             selected.extra["valuation_reference"] = (
                 symbol not in open_symbols or self._fresh_valuation_quote_error(selected) is not None
             )
@@ -2278,7 +2288,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         if invalid_quote or not 0 < price < 1.7976931348623157e308:
             return TargetSizingDecision(
                 symbol=symbol or "",
-                status="UNAVAILABLE",
+                status=TargetSizingStatus.UNAVAILABLE,
                 reason_code="COMMON.SIZING.INVALID_PRICE",
                 account_weight=weight,
                 equity=account_assets.total_asset,
@@ -2288,7 +2298,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         if multiplier <= 0:
             return TargetSizingDecision(
                 symbol=symbol or "",
-                status="UNAVAILABLE",
+                status=TargetSizingStatus.UNAVAILABLE,
                 reason_code="COMMON.SIZING.MISSING_UNIT_MULTIPLIER",
                 account_weight=weight,
                 equity=account_assets.total_asset,

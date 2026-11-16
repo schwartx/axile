@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import queue
 import threading
 
+from axile.common.serialization import from_payload, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor import feishu_notifications as feishu_module
 from axile.executor.abstract_executor.base import AbstractExecutor
@@ -165,7 +167,8 @@ def test_empty_positions_does_not_send_second_card(monkeypatch) -> None:
             ],
         ),
     )
-    executor.account_config = CTPAccountConfig.model_validate(
+    executor.account_config = from_payload(
+        CTPAccountConfig,
         {
             "broker_id": "b",
             "investor_id": "i",
@@ -174,7 +177,7 @@ def test_empty_positions_does_not_send_second_card(monkeypatch) -> None:
             "md_front": "tcp://md:2",
             "app_id": "app",
             "auth_code": "auth",
-        }
+        },
     )
 
     result = executor.empty_positions(feishu_key="hook-empty")
@@ -318,7 +321,7 @@ def test_notification_asset_selection_and_evidence_boundary() -> None:
             Position(symbol="rb2610", volume=2, available_volume=2, market_value=300, direction=PositionDirection.LONG)
         ],
     )
-    snapshot = {"id": 42, "created_at": "2026-09-23 11:19:00", "assets": old.model_dump(mode="json")}
+    snapshot = {"id": 42, "created_at": "2026-09-23 11:19:00", "assets": to_payload(old, mode="json")}
     for degraded_source in ("unavailable", "assumed", "error"):
         output = UnifiedStandardOutput(
             account_assets=UnifiedAccountAssets(
@@ -336,7 +339,7 @@ def test_notification_asset_selection_and_evidence_boundary() -> None:
         )
         assert variables["positions"][0]["symbol"] == "rb2610"
         assert output.account_assets.source == degraded_source
-        assert "notification_snapshot" not in output.model_dump_json()
+        assert "notification_snapshot" not in json.dumps(to_payload(output, mode="json"))
         missing = build_execute_results_feishu_card(source, output)["data"]["template_variable"]
         assert missing["total_assets"] == "未获取"
         assert missing["positions"][0]["symbol"] == "未获取"

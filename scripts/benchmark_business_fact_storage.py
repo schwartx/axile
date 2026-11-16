@@ -17,6 +17,8 @@ python scripts/benchmark_business_fact_storage.py run fixture.jsonl new.sqlite n
 
 from __future__ import annotations
 
+from axile.common.serialization import to_payload
+
 # The driver and isolated arms share this source-only evidence oracle.
 try:
     from business_facts_contract import business_evidence
@@ -404,7 +406,7 @@ def prepare_database(path: Path, checkout: Path) -> None:
             updated_at="2025-01-01T09:00:00",
         )
         native_operation_sync(
-            "portfolio_operation", {"op": "create", "portfolio": portfolio.model_dump(mode="json")}, database=str(path)
+            "portfolio_operation", {"op": "create", "portfolio": to_payload(portfolio, mode="json")}, database=str(path)
         )
         account = Account(
             name="synthetic",
@@ -419,7 +421,7 @@ def prepare_database(path: Path, checkout: Path) -> None:
         )
         native_operation_sync(
             "account_create",
-            {"account": account.model_dump(mode="json"), "now": "2025-01-01T09:00:00"},
+            {"account": to_payload(account, mode="json"), "now": "2025-01-01T09:00:00"},
             database=str(path),
         )
         return
@@ -494,7 +496,7 @@ def write_lifecycle_audit(item: dict, *, before: bool) -> None:
     executor = SyntheticExecutor()
     raw_input = item["raw_input"]
     standard_input = SimpleNamespace(**raw_input)
-    standard_input.futures_close_policy = SimpleNamespace(model_dump=lambda: raw_input["futures_close_policy"])
+    standard_input.futures_close_policy = raw_input["futures_close_policy"]
     environment = {
         "captured_at": item["created_at"],
         "channel": "ctp",
@@ -626,7 +628,7 @@ def artifact_business_evidence(artifact: object, content: dict) -> dict:
 
 def event_business_evidence(event: object, details: object) -> dict:
     """Keep exact hydrated event fields while dropping the reference marker."""
-    evidence = event.model_dump(mode="json")
+    evidence = to_payload(event, mode="json")
     if isinstance(details, dict) and isinstance(details.get("decision"), dict):
         details = {
             **details,
@@ -656,9 +658,7 @@ async def _lifecycle_hashes(sessions, layout: str) -> dict:
                     if operation == "list_execution_artifacts_json":
                         evidence = artifact_business_evidence(SimpleNamespace(**row), row["content"])
                     else:
-                        evidence = event_business_evidence(
-                            SimpleNamespace(model_dump=lambda **_kwargs: row), row["details"]
-                        )
+                        evidence = event_business_evidence(row, row["details"])
                     digest.update(semantic_hash(evidence).encode())
         return {"artifacts": artifact_digest.hexdigest(), "events": event_digest.hexdigest()}
 

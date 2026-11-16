@@ -1,5 +1,6 @@
 """账户、组合绑定与执行记录的原生读取入口。"""
 
+from axile.common.serialization import from_payload
 from axile.server.db.models import Account, AccountSnapshot
 from axile.server.db.models.base import now_str
 from axile.server.native_store import native_operation
@@ -8,13 +9,13 @@ from axile.server.native_store import native_operation
 async def get_account(account_id: int) -> Account | None:
     """一次读取账户配置与持久化运行摘要，不携带数据库会话。"""
     value = await native_operation("account_get", {"account_id": account_id})
-    return Account.model_validate(value) if value is not None else None
+    return from_payload(Account, value) if value is not None else None
 
 
 async def get_account_snapshot(account_id: int) -> AccountSnapshot | None:
     """为执行编排读取普通账户快照。"""
     value = await native_operation("account_get", {"account_id": account_id})
-    return AccountSnapshot.model_validate(value) if value is not None else None
+    return from_payload(AccountSnapshot, value) if value is not None else None
 
 
 async def stop_account_for_clear_positions(account_id: int) -> AccountSnapshot:
@@ -25,7 +26,7 @@ async def stop_account_for_clear_positions(account_id: int) -> AccountSnapshot:
 
     await reap_cancelled_queue(account_id)
     wake_notifications(account_id)
-    return AccountSnapshot.model_validate(value)
+    return from_payload(AccountSnapshot, value)
 
 
 async def get_latest_portfolio_id_by_account_id(account_id: int) -> int | None:

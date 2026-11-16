@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from fastapi import HTTPException
 
+from axile.common.serialization import from_payload, to_payload
 from axile.server import account_assets as assets_service
 from axile.server.api.deps import HistoryPagination
 from axile.server.api.routes import account_assets, account_execution
@@ -37,7 +38,7 @@ def test_worker_error_survives_protocol_output_and_remote_exception():
     assert "Traceback" in error.traceback
     assert RAW in error.traceback
     response = WorkerBackendResponse(request_id="test", kind="error", error=error)
-    output = WorkerBackendManager._handle_response(response).model_dump(mode="json")
+    output = to_payload(WorkerBackendManager._handle_response(response), mode="json")
     assert output["extra"]["worker_error"]["technical_detail"] == RAW
     assert output["extra"]["worker_error"]["traceback"] == error.traceback
 
@@ -53,7 +54,7 @@ def test_enqueue_error_returns_original_with_actual_traceback(route, monkeypatch
         monkeypatch.setattr(
             account_execution,
             "stop_account_for_clear_positions",
-            AsyncMock(return_value=AccountSnapshot.model_validate(build_account().model_dump())),
+            AsyncMock(return_value=from_payload(AccountSnapshot, to_payload(build_account()))),
         )
         monkeypatch.setattr(account_execution, "delete_job", Mock())
         monkeypatch.setattr(account_execution, "reconcile_china_channel_account", AsyncMock())

@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 import math
 import re
+from dataclasses import dataclass, field
 from importlib.resources import files
-from typing import Literal
+from math import isfinite
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from msgspec import Meta
 
+from axile.common.serialization import copy_data, provided_fields
 from axile.common.trade_channel import TradeChannel
 
 type ClosePriority = Literal["yesterday_first", "today_first"]
@@ -25,15 +28,14 @@ def futures_product(symbol: str) -> str | None:
     return match[1].upper() if match else None
 
 
-class FuturesClosePolicy(BaseModel):
+@dataclass(kw_only=True, frozen=True)
+class FuturesClosePolicy:
     """账户只保存模式、兜底及人工覆盖；预设由程序维护。"""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
     mode: CloseMode = "rules"
     fallback: ClosePriority = "yesterday_first"
-    overrides: dict[str, ClosePriority] = Field(default_factory=dict, max_length=200)
+    overrides: Annotated[dict[str, ClosePriority], Meta(max_length=200)] = field(default_factory=dict)
 
-    @field_validator("overrides", mode="before")
     @classmethod
     def normalize_products(cls, value: object) -> object:
         """拒绝月份合约键，并拒绝大小写别名产生的冲突。"""
@@ -54,17 +56,26 @@ class FuturesClosePolicy(BaseModel):
         if self.mode == "fee" and channel != TradeChannel("ctp"):
             raise ValueError("当前渠道不支持低手续费优先")
 
+    __forbid_unknown__ = True
 
-class FuturesClosePreset(BaseModel):
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        if "overrides" in provided_fields(self):
+            object.__setattr__(self, "overrides", self.normalize_products(self.overrides))
+
+
+@dataclass(kw_only=True, frozen=True)
+class FuturesClosePreset:
     """预设手续费为展示说明，空值不代表免手续费。"""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
     product: str
     exchange: str
     priority: ClosePriority = "yesterday_first"
     yesterday_fee: str | None = None
     today_fee: str | None = None
     can_choose: bool
+
+    __forbid_unknown__ = True
 
 
 _PRESETS = {
@@ -73,7 +84,8 @@ _PRESETS = {
 }
 
 
-class FuturesCloseCapability(BaseModel):
+@dataclass(kw_only=True)
+class FuturesCloseCapability:
     """供公共前端渲染模式与预设，不要求前端判断渠道名称。"""
 
     modes: list[CloseMode]
@@ -86,7 +98,7 @@ def close_capability(*, automatic: bool) -> FuturesCloseCapability:
     """生成渠道独立的预设展示副本。"""
     return FuturesCloseCapability(
         modes=["rules", "fee"] if automatic else ["rules"],
-        presets=[preset.model_copy(deep=True) for preset in _PRESETS.values()],
+        presets=[copy_data(preset, deep=True) for preset in _PRESETS.values()],
     )
 
 
@@ -99,13 +111,14 @@ def rule_priority(policy: FuturesClosePolicy, product: str | None) -> tuple[Clos
     return policy.fallback, "default"
 
 
-class CommissionRates(BaseModel):
+@dataclass(kw_only=True)
+class CommissionRates:
     """实际账户合约费率；缺失字段和非有限值不能默认为零。"""
 
-    yesterday_money: float = Field(ge=0, allow_inf_nan=False)
-    yesterday_volume: float = Field(ge=0, allow_inf_nan=False)
-    today_money: float = Field(ge=0, allow_inf_nan=False)
-    today_volume: float = Field(ge=0, allow_inf_nan=False)
+    yesterday_money: Annotated[float, Meta(ge=0)]
+    yesterday_volume: Annotated[float, Meta(ge=0)]
+    today_money: Annotated[float, Meta(ge=0)]
+    today_volume: Annotated[float, Meta(ge=0)]
     queried_at: str
 
     def compare_priority(self) -> ClosePriority | Literal["equal"] | None:
@@ -132,3 +145,26 @@ class CommissionRates(BaseModel):
         if not all(math.isfinite(v) for v in (yesterday, today)):
             raise ValueError("手续费估算溢出")
         return yesterday, today
+
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        if (
+            "yesterday_money" in provided_fields(self)
+            and self.yesterday_money is not None
+            and not isfinite(self.yesterday_money)
+        ):
+            raise ValueError("yesterday_money 必须是有限数值")
+        if (
+            "yesterday_volume" in provided_fields(self)
+            and self.yesterday_volume is not None
+            and not isfinite(self.yesterday_volume)
+        ):
+            raise ValueError("yesterday_volume 必须是有限数值")
+        if "today_money" in provided_fields(self) and self.today_money is not None and not isfinite(self.today_money):
+            raise ValueError("today_money 必须是有限数值")
+        if (
+            "today_volume" in provided_fields(self)
+            and self.today_volume is not None
+            and not isfinite(self.today_volume)
+        ):
+            raise ValueError("today_volume 必须是有限数值")

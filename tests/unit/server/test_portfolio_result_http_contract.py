@@ -6,6 +6,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from axile.common.serialization import to_payload
 from axile.server.api.routes import portfolio as routes
 from axile.server.db.models import Portfolio
 from axile.server.execution.worker_backend import manager as worker_manager
@@ -25,12 +26,12 @@ def _client(monkeypatch, *, code=BAD, account=None):
         assert name == "portfolio_operation"
         if request["op"] == "validation_context":
             assert account is not None
-            return account.model_dump(mode="json")
+            return to_payload(account, mode="json")
         assert request["op"] == "context"
         return {
-            "portfolio": portfolio.model_dump(mode="json"),
+            "portfolio": to_payload(portfolio, mode="json"),
             "account_id": account.id if account is not None else None,
-            "account": account.model_dump(mode="json") if account is not None else None,
+            "account": to_payload(account, mode="json") if account is not None else None,
         }
 
     monkeypatch.setattr(routes, "_portfolio_native", native)

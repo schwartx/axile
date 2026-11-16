@@ -9,13 +9,14 @@ from axile.channels import (
     list_channels,
 )
 from axile.channels.algorithm_scopes import normalize_algorithm_scopes
+from axile.common.serialization import to_payload
 from axile.executor.connection_progress import connection_plan
 from axile.server.channel_capabilities import install_extra, missing_packages
 
 router = APIRouter(prefix="/capabilities", tags=["capabilities"])
 
 
-@router.get("/channels/{channel}/algorithm-scope")
+@router.get("/channels/{channel}/algorithm-scope", response_model=None)
 def validate_algorithm_scope(channel: str, code: Annotated[str, Query(min_length=1, max_length=80)]) -> dict[str, str]:
     """使用与账户保存相同的渠道规则校验并规范化品种代码。"""
     try:
@@ -47,7 +48,8 @@ def list_channel_capabilities() -> list[dict[str, Any]]:
     result = []
     for plugin in list_channels():
         descriptor = plugin.descriptor
-        public = descriptor.model_dump(
+        public = to_payload(
+            descriptor,
             mode="json",
             include={
                 "futures_close",
@@ -73,7 +75,7 @@ def list_channel_capabilities() -> list[dict[str, Any]]:
         )
         if descriptor.connection_validation is not None:
             public["connection_validation"]["steps"] = [
-                step.model_dump(mode="json") for step in connection_plan(descriptor.channel, "validation")
+                to_payload(step, mode="json") for step in connection_plan(descriptor.channel, "validation")
             ]
         missing = missing_packages(descriptor.channel)
         public.update(available=not missing, missing_packages=missing, install_extra=install_extra(descriptor.channel))

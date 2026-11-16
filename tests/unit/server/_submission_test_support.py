@@ -1,5 +1,6 @@
 """报撤测试使用真实迁移和账户创建入口，不依赖 ORM 建表。"""
 
+from axile.common.serialization import to_payload
 from tests.unit.server._execution_test_support import build_account
 
 
@@ -13,7 +14,7 @@ def initialize_submission_database(database, monkeypatch):
             database,
             "account_create",
             {
-                "account": build_account(id=account_id, portfolio_id=None).model_dump(mode="json"),
+                "account": to_payload(build_account(id=account_id, portfolio_id=None), mode="json"),
                 "now": "2026-10-19T08:00:00",
                 "idempotency_key": None,
             },

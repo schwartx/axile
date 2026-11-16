@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from axile.common.serialization import from_payload, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
 from axile.server.api.routes import account as account_routes
@@ -44,7 +45,7 @@ def _build_app(account: Account | None, monkeypatch) -> FastAPI:
     async def load(account_id: int):
         if account is None or account.id != account_id:
             raise HTTPException(status_code=404, detail="账户不存在")
-        return AccountSnapshot.model_validate(account.model_dump())
+        return from_payload(AccountSnapshot, to_payload(account))
 
     async def cancel(_account_id: int, _reason: str):
         return False

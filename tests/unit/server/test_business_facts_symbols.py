@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from axile.common.serialization import from_payload, to_payload
 from axile.server._native import _core
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import native_store_call
@@ -246,12 +247,12 @@ def test_twenty_level_tick_roundtrip_keeps_arrays_and_price_reference(native_dat
         timestamp=1,
         update_time="1970-01-01T00:00:00.001",
     )
-    tick = price.model_dump(mode="json")
+    tick = to_payload(price, mode="json")
     payload = {"symbol_results": {"A": {"first_tick": tick}}} if nested else {"first_ticks": {"A": tick}}
     result = _roundtrip(native_database, payload)
     actual = result["symbol_results"]["A"]["first_tick"] if nested else result["first_ticks"]["A"]
     assert actual["bids"] == tick["bids"] and actual["asks"] == tick["asks"]
-    restored = UnifiedPriceData.model_validate(actual)
+    restored = from_payload(UnifiedPriceData, actual)
     assert restored.bids == price.bids and restored.asks == price.asks
     stored = rows(native_database, "execution_symbol_tick")[0]
     assert stored["bids"] == tick["bids"] and stored["asks"] == tick["asks"]

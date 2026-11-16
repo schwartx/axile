@@ -5,13 +5,15 @@
 ``extra`` 仅保留渠道特有数据。
 """
 
+from dataclasses import dataclass, field
 from datetime import datetime as dt
 from math import isfinite
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, computed_field
+from msgspec import Meta
 from typing_extensions import override
 
+from axile.common.serialization import copy_data, to_payload
 from axile.executor.quote_quality import valid_book
 
 # ExtraData用于存储渠道特有的数据，使用Any是合理的
@@ -20,7 +22,8 @@ from axile.executor.quote_quality import valid_book
 ExtraData = dict[str, Any]
 
 
-class UnifiedPriceData(BaseModel):
+@dataclass(kw_only=True)
+class UnifiedPriceData:
     """
     统一价格快照模型.
 
@@ -42,34 +45,28 @@ class UnifiedPriceData(BaseModel):
         渠道特有扩展字段。
     """
 
-    model_config = ConfigDict(
-        use_enum_values=True,
-        validate_default=False,
-        validate_assignment=False,
-        extra="ignore",
-    )
-
     # 核心字段（所有渠道都有）
-    symbol: str = Field(..., description="品种代码（统一格式）")
-    last_price: float = Field(..., description="最新价")
+    symbol: Annotated[str, Meta(description="品种代码（统一格式）")]
+    last_price: Annotated[float, Meta(description="最新价")]
 
-    bids: list[tuple[FiniteFloat, FiniteFloat]] = Field(..., description="买盘 [价格, 数量] 数组，买一在前")
-    asks: list[tuple[FiniteFloat, FiniteFloat]] = Field(..., description="卖盘 [价格, 数量] 数组，卖一在前")
+    bids: Annotated[list[tuple[float, float]], Meta(description="买盘 [价格, 数量] 数组，买一在前")]
+    asks: Annotated[list[tuple[float, float]], Meta(description="卖盘 [价格, 数量] 数组，卖一在前")]
 
     # 其他核心字段
-    volume: float = Field(..., description="成交量")
-    turnover: float = Field(default=0.0, description="成交额")
-    timestamp: int = Field(..., description="时间戳（毫秒）")
-    update_time: str = Field(..., description="更新时间（ISO格式）")
+    volume: Annotated[float, Meta(description="成交量")]
+    turnover: Annotated[float, Meta(description="成交额")] = field(default=0.0)
+    timestamp: Annotated[int, Meta(description="时间戳（毫秒）")]
+    update_time: Annotated[str, Meta(description="更新时间（ISO格式）")]
 
-    @computed_field
     @property
     def book_valid(self) -> bool:
         """盘口结构事实，不含时钟、新鲜度或连接状态。"""
         return valid_book(self.bids, self.asks)
 
     # 渠道特有数据
-    extra: ExtraData = Field(default={}, description="渠道特有数据，包含原始数据和渠道特定字段")
+    extra: Annotated[ExtraData, Meta(description="渠道特有数据，包含原始数据和渠道特定字段")] = field(
+        default_factory=lambda: {}
+    )
 
     @override
     def __str__(self) -> str:
@@ -112,7 +109,6 @@ class UnifiedPriceData(BaseModel):
         """
         return self.book_valid and isfinite(self.last_price) and self.last_price > 0 and self.timestamp > 0
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
     def timestamp_datetime(self) -> dt:
         """
@@ -134,7 +130,14 @@ class UnifiedPriceData(BaseModel):
         dict[str, Any]
             适合序列化或调试输出的字典结果。
         """
-        return self.model_dump()
+        return to_payload(self)
+
+    __json_properties__ = ("book_valid", "timestamp_datetime")
+
+    def validate(self) -> None:
+        """外部载荷解析时拒绝非有限盘口数值。"""
+        if any(not isfinite(number) for side in (self.bids, self.asks) for level in side for number in level):
+            raise ValueError("盘口价格和数量必须是有限数值")
 
 
 def clone_price_data(price_data: UnifiedPriceData | None) -> UnifiedPriceData | None:
@@ -153,4 +156,4 @@ def clone_price_data(price_data: UnifiedPriceData | None) -> UnifiedPriceData | 
     """
     if price_data is None:
         return None
-    return price_data.model_copy(deep=True)
+    return copy_data(price_data, deep=True)

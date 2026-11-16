@@ -4,12 +4,15 @@
 定义订单状态快照与独立成交记录，供执行器、结果聚合层和查询逻辑共享。
 """
 
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import cast
+from typing import Annotated, cast
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from msgspec import Meta
 from typing_extensions import override
+
+from axile.common.serialization import to_payload
 
 
 # 辅助函数（替代 lambda）
@@ -64,7 +67,8 @@ class OrderType(str, Enum):
     LIMIT = "LIMIT"  # 限价单
 
 
-class TradeRecord(BaseModel):
+@dataclass(kw_only=True)
+class TradeRecord:
     """
     统一成交记录数据模型.
 
@@ -84,26 +88,20 @@ class TradeRecord(BaseModel):
         成交价格。
     """
 
-    model_config = ConfigDict(
-        use_enum_values=True,
-        validate_default=False,
-        validate_assignment=False,
-        extra="ignore",
+    trade_id: Annotated[str, Meta(description="成交ID")]
+    symbol: Annotated[str, Meta(description="成交对应的品种代码")] = field(default="")
+    order_id: Annotated[str, Meta(description="成交对应的订单ID")] = field(default="")
+    trade_time: Annotated[str, Meta(description="成交时间（ISO格式）")]
+    trade_volume: Annotated[float, Meta(description="成交数量")]
+    trade_price: Annotated[float, Meta(description="成交价格")]
+    trade_value: Annotated[float, Meta(description="成交金额")]
+    value_conversion: Annotated[PriceValueConversion | None, Meta(description="原生成交金额的审计换算依据")] = field(
+        default=None
     )
 
-    trade_id: str = Field(..., description="成交ID")
-    symbol: str = Field(default="", description="成交对应的品种代码")
-    order_id: str = Field(default="", description="成交对应的订单ID")
-    trade_time: str = Field(..., description="成交时间（ISO格式）")
-    trade_volume: float = Field(..., description="成交数量")
-    trade_price: float = Field(..., description="成交价格")
-    trade_value: float = Field(..., description="成交金额")
-    value_conversion: PriceValueConversion | None = Field(default=None, description="原生成交金额的审计换算依据")
-
     # 渠道特有数据
-    extra: ExtraData = Field(
-        default={},
-        description="渠道特有数据，包含原始成交数据和渠道特定字段",
+    extra: Annotated[ExtraData, Meta(description="渠道特有数据，包含原始成交数据和渠道特定字段")] = field(
+        default_factory=lambda: {}
     )
 
     @override
@@ -189,7 +187,8 @@ class TradeRecord(BaseModel):
         )
 
 
-class UnifiedOrder(BaseModel):
+@dataclass(kw_only=True)
+class UnifiedOrder:
     """
     统一订单状态快照模型.
 
@@ -211,45 +210,34 @@ class UnifiedOrder(BaseModel):
         当前订单状态。
     """
 
-    model_config = ConfigDict(
-        use_enum_values=True,
-        validate_default=False,
-        validate_assignment=False,
-        extra="ignore",
-    )
-
     # === 核心字段（所有渠道都有） ===
-    order_id: str = Field(..., description="订单ID")
-    symbol: str = Field(..., description="品种代码（统一格式）")
-    direction: OrderDirection = Field(..., description="买卖方向")
-    order_type: OrderType = Field(..., description="订单类型")
-    volume: float = Field(..., description="委托数量")
-    price: float = Field(..., description="委托价格（市价单时可能为0）")
-    status: str = Field(..., description="订单状态")
+    order_id: Annotated[str, Meta(description="订单ID")]
+    symbol: Annotated[str, Meta(description="品种代码（统一格式）")]
+    direction: Annotated[OrderDirection, Meta(description="买卖方向")]
+    order_type: Annotated[OrderType, Meta(description="订单类型")]
+    volume: Annotated[float, Meta(description="委托数量")]
+    price: Annotated[float, Meta(description="委托价格（市价单时可能为0）")]
+    status: Annotated[str, Meta(description="订单状态")]
 
     # === 成交相关信息 ===
-    filled_volume: float = Field(default=0.0, description="成交数量")
-    avg_price: float = Field(default=0.0, description="成交均价")
-    value_conversion: PriceValueConversion | None = Field(default=None, description="原生成交金额的审计换算依据")
+    filled_volume: Annotated[float, Meta(description="成交数量")] = field(default=0.0)
+    avg_price: Annotated[float, Meta(description="成交均价")] = field(default=0.0)
+    value_conversion: Annotated[PriceValueConversion | None, Meta(description="原生成交金额的审计换算依据")] = field(
+        default=None
+    )
 
     # === 时间信息 ===
-    create_time: str = Field(
-        default_factory=_get_now_iso,
-        description="创建时间（ISO格式）",
-    )
+    create_time: Annotated[str, Meta(description="创建时间（ISO格式）")] = field(default_factory=_get_now_iso)
 
     # === 渠道特有数据 ===
-    extra: ExtraData = Field(
-        default={},
-        description="渠道特有数据，包含原始订单数据和渠道特定字段",
+    extra: Annotated[ExtraData, Meta(description="渠道特有数据，包含原始订单数据和渠道特定字段")] = field(
+        default_factory=lambda: {}
     )
-    update_time: str = Field(
-        default_factory=_get_now_iso,
-        description="更新时间（ISO格式，跨进程序列化时保留原值）",
+    update_time: Annotated[str, Meta(description="更新时间（ISO格式，跨进程序列化时保留原值）")] = field(
+        default_factory=_get_now_iso
     )
 
     # === 计算字段（缓存计算结果） ===
-    @computed_field
     @property
     def remaining_volume(self) -> float:
         """
@@ -262,7 +250,6 @@ class UnifiedOrder(BaseModel):
         """
         return max(0.0, self.volume - self.filled_volume)
 
-    @computed_field
     @property
     def filled_ratio(self) -> float:
         """
@@ -397,4 +384,6 @@ class UnifiedOrder(BaseModel):
         dict[str, object]
             适合序列化或日志输出的字典结果。
         """
-        return self.model_dump()
+        return to_payload(self)
+
+    __json_properties__ = ("remaining_volume", "filled_ratio")

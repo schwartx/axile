@@ -112,7 +112,7 @@ def summarize_outcome(
     else:
         status = ExecutionStatus.PARTIAL if progress else ExecutionStatus.FAILED
         if error is None:
-            error = explicit_blocked_error or f"目标未完成: 当前持仓={execution_final}，目标持仓={target}"
+            error = explicit_blocked_error or f"目标未完成: 当前持仓={float(execution_final)}，目标持仓={target}"
             if explicit_blocked_error:
                 reason_code, reason_family = blocked_reason_code, blocked_reason_family
             else:

@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
+from axile.common.serialization import parse_input
 from axile.server import data_transfer as service
 from axile.server.native_store import native_call
 
@@ -24,7 +25,7 @@ def _package(batch: str) -> Path:
     return path
 
 
-@router.post("/packages")
+@router.post("/packages", response_model=None)
 async def prepare_download(plan: dict):
     """Prepare once, then let the browser download without a JavaScript-sized package buffer."""
     try:
@@ -35,13 +36,13 @@ async def prepare_download(plan: dict):
     return {"batch": manifest["batch"], "size": package.stat().st_size}
 
 
-@router.get("/packages/{batch}")
+@router.get("/packages/{batch}", response_model=None)
 async def download_package(batch: str):
     """Stream a prepared package through the browser download manager."""
     return FileResponse(_package(batch), filename="data.axile", media_type="application/octet-stream")
 
 
-@router.delete("/packages/{batch}")
+@router.delete("/packages/{batch}", response_model=None)
 async def cancel_package(batch: str):
     """Remove the pending copy while retaining original recordings."""
     _package(batch)
@@ -50,21 +51,20 @@ async def cancel_package(batch: str):
 
 
 def _plan(value: dict) -> service.TransferPlan:
-    from pydantic import ValidationError
 
     try:
-        return service.TransferPlan.model_validate(value)
-    except ValidationError as exc:
+        return parse_input(service.TransferPlan, value)
+    except ValueError as exc:
         raise HTTPException(
             422,
             {
                 "message": "请检查时间范围、来源端、定时间隔",
-                "errors": exc.errors(include_input=False, include_context=False),
+                "errors": [{"type": "value_error", "msg": str(exc)}],
             },
         ) from exc
 
 
-@router.get("/settings")
+@router.get("/settings", response_model=None)
 def get_settings():
     """返回规则与最近调度结果。"""
     value = service.settings()
@@ -72,7 +72,7 @@ def get_settings():
     return {**value, "last_run": json.loads(last.read_text()) if last.exists() else None}
 
 
-@router.put("/settings")
+@router.put("/settings", response_model=None)
 def save_settings(plan: dict):
     """保存规则并更新定时任务。"""
     service.save_plan(_plan(plan))
@@ -80,7 +80,7 @@ def save_settings(plan: dict):
     return {"saved": True}
 
 
-@router.post("/export")
+@router.post("/export", response_model=None)
 async def export(plan: dict, requester: str = ""):
     """响应远端拉取或导出离线包。"""
     try:
@@ -118,20 +118,20 @@ async def receive_file(file: UploadFile) -> dict:
                 await file.close()
 
 
-@router.post("/import")
+@router.post("/import", response_model=None)
 async def import_file(file: UploadFile = File(...)):
     """通过本机页面导入离线包。"""
     return await receive_file(file)
 
 
-@router.get("/identity")
+@router.get("/identity", response_model=None)
 def identity():
     """返回实例身份，供拉取端拒绝请求本机。"""
     value = service.settings()
     return {"source_id": value["source_id"]}
 
 
-@router.post("/check-source")
+@router.post("/check-source", response_model=None)
 async def check_source(plan: dict):
     """检测来源端连接和身份，不拉取数据。"""
     value = _plan(plan)
@@ -141,7 +141,7 @@ async def check_source(plan: dict):
         raise HTTPException(409, str(exc)) from exc
 
 
-@router.post("/pull")
+@router.post("/pull", response_model=None)
 async def pull(plan: dict):
     """主动从来源端拉取数据并交回接收确认。"""
     try:
@@ -150,7 +150,7 @@ async def pull(plan: dict):
         raise HTTPException(409, "拉取未完成，请检查来源端；源数据仅在确认后清理") from exc
 
 
-@router.post("/acknowledge")
+@router.post("/acknowledge", response_model=None)
 async def acknowledge(receipt: dict, plan: dict):
     """验证确认并按保留规则清理已传送数据。"""
     try:

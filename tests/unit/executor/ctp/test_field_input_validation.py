@@ -1,10 +1,12 @@
 """CTP 非法字段在查询或发送前拒绝，合法请求保持原样。"""
 
+from dataclasses import fields
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
+from axile.common.serialization import copy_data, from_payload, parse_input, to_payload
 from axile.executor.ctp.ctp_execute import CTPExecutor
 from axile.executor.ctp.requests import build_authenticate, build_query_account, build_query_depth_market_data
 from axile.executor.ctp_input_validation import CTPInputValidationError, validate_cancel_id, validate_instrument
@@ -87,20 +89,20 @@ def test_query_rejected_before_any_send(entry):
 
 
 def test_removed_quote_max_age_is_rejected(config):
-    legacy_data = {**config.model_dump(), "quote_max_age_seconds": 30.0}
+    legacy_data = {**to_payload(config), "quote_max_age_seconds": 30.0}
 
     with pytest.raises(ValueError):
-        CTPAccountConfig.model_validate(legacy_data)
-    assert "quote_max_age_seconds" not in CTPAccountConfig.model_json_schema()["properties"]
+        parse_input(CTPAccountConfig, legacy_data)
+    assert "quote_max_age_seconds" not in {item.name for item in fields(CTPAccountConfig)}
 
 
 @pytest.mark.parametrize("field", ["broker_id", "investor_id", "app_id", "auth_code"])
 @pytest.mark.parametrize("value", BAD)
 def test_config_and_bypassed_config_rejected(config, field, value):
-    data = config.model_dump()
+    data = to_payload(config)
     with pytest.raises(ValueError):
-        CTPAccountConfig.model_validate({**data, field: value})
-    bypassed = config.model_copy(update={field: value})
+        parse_input(CTPAccountConfig, {**data, field: value})
+    bypassed = copy_data(config, update={field: value})
     for build in (build_authenticate, build_query_account):
         with pytest.raises(ValueError):
             build(bypassed)
@@ -117,7 +119,7 @@ def test_valid_instruments_preserved(symbol):
 def test_all_query_and_legal_delimiters_preserved(config):
     assert validate_instrument("", allow_all=True) == ""
     assert validate_cancel_id("20261018:1:2:123") == "20261018:1:2:123"
-    assert CTPAccountConfig.model_validate({**config.model_dump(), "app_id": "test_app-1.0"}).app_id == "test_app-1.0"
+    assert from_payload(CTPAccountConfig, {**to_payload(config), "app_id": "test_app-1.0"}).app_id == "test_app-1.0"
     assert build_authenticate(config).UserID == config.investor_id
 
 

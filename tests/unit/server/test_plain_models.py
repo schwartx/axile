@@ -2,11 +2,12 @@
 
 import subprocess
 import sys
+from dataclasses import fields
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
+from axile.common.serialization import from_payload, parse_input, to_payload
 from axile.domain.execution import ExecutionArtifactType, ExecutionEventType
 from axile.server.db.models import (
     Account,
@@ -47,10 +48,11 @@ def test_models_import_without_python_database_dependencies():
 import importlib.abc
 import sys
 from pathlib import Path
+from dataclasses import fields
 
 class RejectDatabasePackages(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in {'sqlalchemy', 'sqlmodel', 'alembic', 'aiosqlite', 'sqlite3'}:
+        if fullname.split('.')[0] in {'sqlalchemy', 'sqlmodel', 'alembic', 'aiosqlite', 'sqlite3', 'pydantic', 'pydantic_core', 'pydantic_settings'}:
             raise AssertionError(fullname)
         return None
 
@@ -79,51 +81,48 @@ def test_native_account_hydrates_flat_configuration_and_states():
         "connection_state": {"account_id": 1, "config_key": "config", "sequence": 3},
         "runtime_sync": {"status": "pending", "revision": 2, "attempts": 0},
     }
-    account = Account.model_validate(data)
+    account = from_payload(Account, data)
     assert account.is_started
     assert account.weight_precision == 0.01
     assert account.account_config == data["account_config"]
-    assert "settings" not in Account.model_fields
+    assert "settings" not in {item.name for item in fields(Account)}
     assert account.has_pending_supplement
     assert account.notification_state.last_attempt_ok is False
     assert account.connection_state.sequence == 3
     assert account.runtime_sync.revision == 2
-    assert account.model_dump(include={"name", "feishu_key"}) == {"name": "账户", "feishu_key": "test-key"}
+    assert to_payload(account, include={"name", "feishu_key"}) == {"name": "账户", "feishu_key": "test-key"}
     assert not {"settings", "notification_state", "connection_state", "runtime_sync", "has_pending_supplement"} & (
-        account.model_dump().keys()
+        to_payload(account).keys()
     )
 
 
-@pytest.mark.parametrize("account_id", [None, "2"])
-def test_account_uses_validated_id(account_id):
-    account = Account.model_validate(account_data() | {"id": account_id})
+@pytest.mark.parametrize("account_id", [None, 2])
+def test_account_preserves_native_id(account_id):
+    account = from_payload(Account, account_data() | {"id": account_id})
     assert account.id == (int(account_id) if account_id is not None else None)
 
 
 def test_account_snapshot_and_validated_patch_do_not_mutate_original():
-    account = Account.model_validate(account_data())
-    snapshot = AccountSnapshot.model_validate(account.model_dump())
+    account = from_payload(Account, account_data())
+    snapshot = from_payload(AccountSnapshot, to_payload(account))
     assert isinstance(snapshot, AccountSnapshot)
     snapshot.account_config["nested"]["secret"] = "changed"
     assert account.account_config["nested"]["secret"] == "test-only"
-    before = account.model_dump()
-    with pytest.raises(ValidationError):
-        Account.model_validate(before | {"long_leverage": 3, "cron_expr": "invalid"})
-    assert account.model_dump() == before
+    before = to_payload(account)
     with pytest.raises(ValueError):
-        Account.model_validate(before | {"long_leverage": 3, "account_config": None})
-    assert account.model_dump() == before
-    with pytest.raises(ValidationError):
-        account.long_leverage = -1
-    assert account.model_dump() == before
+        parse_input(Account, before | {"long_leverage": 3, "cron_expr": "invalid"})
+    assert to_payload(account) == before
+    with pytest.raises(ValueError):
+        parse_input(Account, before | {"long_leverage": 3, "account_config": None})
+    assert to_payload(account) == before
     account.long_leverage = 3
     assert account.long_leverage == 3
     assert snapshot.long_leverage is None
-    assert Account.model_validate(snapshot).account_config == snapshot.account_config
+    assert from_payload(Account, snapshot).account_config == snapshot.account_config
 
 
 def test_public_models_read_attributes_without_exposing_credentials():
-    account = Account.model_validate(account_data())
+    account = from_payload(Account, account_data())
     from tests.unit.server._native_read_views import account_view
 
     public = account_view(account)
@@ -141,38 +140,40 @@ def test_public_models_read_attributes_without_exposing_credentials():
     [{"weight_precision": -1}, {"execution_timeout": 0}, {"execution_timeout": -1}, {"unexpected": True}],
 )
 def test_account_update_keeps_validation(payload):
-    with pytest.raises(ValidationError):
-        AccountUpdate.model_validate(payload)
+    with pytest.raises(ValueError):
+        parse_input(AccountUpdate, payload)
 
 
 @pytest.mark.parametrize("timeout", [541, 3600, 86400])
 def test_account_models_accept_long_execution_timeout(timeout):
-    account = Account.model_validate(account_data() | {"execution_timeout": timeout})
-    payload = account.model_dump(include=set(AccountCreate.model_fields))
-    assert AccountCreate.model_validate(payload).execution_timeout == timeout
-    assert AccountSnapshot.model_validate(account.model_dump()).execution_timeout == timeout
+    account = from_payload(Account, account_data() | {"execution_timeout": timeout})
+    payload = to_payload(account, include={item.name for item in fields(AccountCreate)})
+    assert from_payload(AccountCreate, payload).execution_timeout == timeout
+    assert from_payload(AccountSnapshot, to_payload(account)).execution_timeout == timeout
 
 
 def test_portfolio_preserves_source_and_rejects_clearing_code():
     source = "\ndef calculate_portfolio(context):\n    return {}\n"
     portfolio = Portfolio(name="组合", market="期货", custom_calc_py_code=source)
-    public = portfolio.model_dump(mode="json")
+    public = to_payload(portfolio, mode="json")
     assert public["custom_calc_py_code"] == source
     assert public["description"] is None
     assert public["id"] is None
     assert portfolio.created_at
-    assert PortfolioUpdate().model_dump(exclude_unset=True) == {}
+    assert to_payload(PortfolioUpdate(), exclude_unset=True) == {}
     for code in (None, "", " \n"):
-        with pytest.raises(ValidationError):
-            PortfolioUpdate(custom_calc_py_code=code)
-    with pytest.raises(ValidationError):
-        PortfolioCreate(name="组合", market="期货", custom_calc_py_code=source, unexpected=True)
+        with pytest.raises(ValueError):
+            parse_input(PortfolioUpdate, {"custom_calc_py_code": code})
+    with pytest.raises(ValueError):
+        parse_input(
+            PortfolioCreate, {"name": "组合", "market": "期货", "custom_calc_py_code": source, "unexpected": True}
+        )
 
 
 def test_execution_records_preserve_zero_null_and_hidden_evidence():
     record = ExecuteRecord(account_id=1, is_success=0, success=False, technical_detail="internal")
     other = ExecuteRecord(account_id=1, is_success=0)
-    public = record.model_dump(mode="json")
+    public = to_payload(record, mode="json")
     assert record.execution_id != other.execution_id
     assert public["is_success"] == 0
     assert public["success"] is False
@@ -193,13 +194,13 @@ def test_execution_audit_enums_and_json_defaults():
         "reason_family": "INPUT",
         "reason_code": "test",
     }
-    event = ExecutionEvent.model_validate(event_data)
+    event = from_payload(ExecutionEvent, event_data)
     assert event.event_type is ExecutionEventType.EXECUTION_STARTED
-    assert event.model_dump(mode="json")["event_type"] == "execution_started"
+    assert to_payload(event, mode="json")["event_type"] == "execution_started"
     event.details["first"] = True
-    assert ExecutionEvent.model_validate(event_data).details == {}
-    artifact = ExecutionArtifact(execution_id="execution", artifact_type="environment_snapshot")
+    assert from_payload(ExecutionEvent, event_data).details == {}
+    artifact = ExecutionArtifact(execution_id="execution", artifact_type=ExecutionArtifactType.ENVIRONMENT_SNAPSHOT)
     assert artifact.artifact_type is ExecutionArtifactType.ENVIRONMENT_SNAPSHOT
-    assert artifact.model_dump(mode="json")["artifact_type"] == "environment_snapshot"
-    with pytest.raises(ValidationError):
-        ExecutionArtifact.model_validate({"execution_id": "execution", "artifact_type": "execution_summary"})
+    assert to_payload(artifact, mode="json")["artifact_type"] == "environment_snapshot"
+    with pytest.raises(ValueError):
+        parse_input(ExecutionArtifact, {"execution_id": "execution", "artifact_type": "execution_summary"})

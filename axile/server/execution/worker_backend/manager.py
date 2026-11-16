@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from loguru import logger
 
+from axile.common.serialization import from_payload, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.clock import clock_monotonic
 from axile.executor.instrument_catalog import InstrumentCatalog
@@ -736,7 +737,7 @@ class WorkerBackendManager:
             return
         from axile.server.execution.resident_connection import AccountConnectionUnavailable
 
-        account = AccountSnapshot.model_validate(request.account_payload)
+        account = from_payload(AccountSnapshot, request.account_payload)
         if self._is_manually_disconnected(account) and not (
             request.command == "prepare" and request.payload.get("force_reconnect")
         ):
@@ -775,7 +776,7 @@ class WorkerBackendManager:
         from axile.server.connection_state import begin_connection_instance, connection_config_key
         from axile.server.db.models.account import AccountSnapshot
 
-        account = AccountSnapshot.model_validate(request.account_payload)
+        account = from_payload(AccountSnapshot, request.account_payload)
         from axile.server.execution.worker_backend.replay import current_replay_config
 
         request.replay_config = current_replay_config(account)
@@ -812,7 +813,7 @@ class WorkerBackendManager:
         if self._requires_ctp_session_recovery(response):
             self._force_drop_worker(account_id, handle)
         elif request.command == "disconnect" and response.kind == "result":
-            account = AccountSnapshot.model_validate(request.account_payload)
+            account = from_payload(AccountSnapshot, request.account_payload)
             if not self._is_manually_disconnected(account):
                 raise WorkerBackendExecutionError("主动断开状态未保存，账户进程暂未回收，请重试断开")
             with self._lock:
@@ -957,7 +958,7 @@ class WorkerBackendManager:
     def _build_output(response: WorkerBackendResponse) -> UnifiedStandardOutput:
         if response.output_payload is None:
             raise WorkerBackendExecutionError("worker backend 未返回执行结果")
-        return UnifiedStandardOutput.model_validate(response.output_payload)
+        return from_payload(UnifiedStandardOutput, response.output_payload)
 
     @staticmethod
     def _build_failed_output(
@@ -1042,7 +1043,7 @@ class WorkerBackendManager:
         request = WorkerBackendRequest(
             request_id=uuid4().hex,
             command="prepare",
-            account_payload=account.model_dump(mode="json"),
+            account_payload=to_payload(account, mode="json"),
             execution_id=execution_id,
             payload={"expected_trading_day": expected_trading_day or "", "force_reconnect": force_reconnect},
         )
@@ -1093,7 +1094,7 @@ class WorkerBackendManager:
         request = WorkerBackendRequest(
             request_id=uuid4().hex,
             command="disconnect",
-            account_payload=account.model_dump(mode="json"),
+            account_payload=to_payload(account, mode="json"),
             execution_id=None,
             payload={},
         )
@@ -1114,7 +1115,7 @@ class WorkerBackendManager:
         request = WorkerBackendRequest(
             request_id=uuid4().hex,
             command="prepare",
-            account_payload=account.model_dump(mode="json"),
+            account_payload=to_payload(account, mode="json"),
             execution_id=None,
             payload={},
         )
@@ -1181,7 +1182,7 @@ class WorkerBackendManager:
         request = WorkerBackendRequest(
             request_id=uuid4().hex,
             command="get_account_assets",
-            account_payload=account.model_dump(mode="json"),
+            account_payload=to_payload(account, mode="json"),
             execution_id=None,
             payload={},
         )
@@ -1193,7 +1194,7 @@ class WorkerBackendManager:
         )
         if response.kind != "result" or response.output_payload is None:
             raise WorkerBackendExecutionError.from_payload(response.error, "账户资产查询失败")
-        return UnifiedAccountAssets.model_validate(response.output_payload)
+        return from_payload(UnifiedAccountAssets, response.output_payload)
 
     async def get_account_cash_flows(self, account: AccountContext) -> list[dict]:
         """通过已有就绪会话读取渠道流水，不创建交易执行。"""
@@ -1204,7 +1205,7 @@ class WorkerBackendManager:
         request = WorkerBackendRequest(
             request_id=uuid4().hex,
             command="get_account_cash_flows",
-            account_payload=account.model_dump(mode="json"),
+            account_payload=to_payload(account, mode="json"),
             execution_id=None,
             payload={},
         )
@@ -1216,7 +1217,7 @@ class WorkerBackendManager:
         rows = response.output_payload.get("rows")
         if not isinstance(rows, list) or len(rows) > 10000:
             raise ValueError("渠道流水响应无效")
-        return [ChannelCashFlow.model_validate(row).model_dump(mode="json") for row in rows]
+        return [to_payload(from_payload(ChannelCashFlow, row), mode="json") for row in rows]
 
     async def query_instruments(
         self,
@@ -1260,7 +1261,7 @@ class WorkerBackendManager:
         request = WorkerBackendRequest(
             request_id=uuid4().hex,
             command="calculate_portfolio",
-            account_payload=account.model_dump(mode="json"),
+            account_payload=to_payload(account, mode="json"),
             execution_id=execution_id,
             payload={"code": code, **({"leverage_overrides": leverage_overrides} if leverage_overrides else {})},
         )
@@ -1324,7 +1325,7 @@ class WorkerBackendManager:
         request = WorkerBackendRequest(
             request_id=uuid4().hex,
             command="execute_trade",
-            account_payload=account.model_dump(mode="json"),
+            account_payload=to_payload(account, mode="json"),
             execution_id=execution_id,
             payload={
                 "standard_input": standard_input_dict,
@@ -1382,7 +1383,7 @@ class WorkerBackendManager:
         request = WorkerBackendRequest(
             request_id=uuid4().hex,
             command="empty_positions",
-            account_payload=account.model_dump(mode="json"),
+            account_payload=to_payload(account, mode="json"),
             execution_id=execution_id,
             payload={
                 "empty_kwargs": empty_kwargs,

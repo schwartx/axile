@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from axile.channels.gm_sessions import SHANGHAI
+from axile.common.serialization import to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils import clock as clock_module
 from axile.executor.instrument_catalog_records import Instrument
@@ -331,7 +332,7 @@ def test_empty_positions_keeps_paused_gm_session(monkeypatch: pytest.MonkeyPatch
                 "success": True,
                 "status": "SUCCEEDED",
                 "channel_type": "gm",
-                "account_assets": UnifiedAccountAssets.unavailable().model_dump(mode="json"),
+                "account_assets": to_payload(UnifiedAccountAssets.unavailable(), mode="json"),
                 "symbol_results": {},
             },
         )
@@ -602,7 +603,7 @@ def test_calculate_portfolio_keeps_replacement_after_ctp_session_recovery(monkey
         del func
         request = args[1]
         assert isinstance(request, WorkerBackendRequest)
-        assert request.account_payload == account.model_dump(mode="json")
+        assert request.account_payload == to_payload(account, mode="json")
         assert request.payload == {"code": "code", **({"leverage_overrides": overrides} if overrides else {})}
         return WorkerBackendResponse(
             request_id=request.request_id,
@@ -956,7 +957,7 @@ def test_query_waiting_on_disconnected_worker_cannot_use_or_recreate_it(monkeypa
 
     def query():
         request = WorkerBackendRequest(
-            "late", "get_account_assets", build_account(id=2).model_dump(mode="json"), None, {}
+            "late", "get_account_assets", to_payload(build_account(id=2), mode="json"), None, {}
         )
         try:
             manager._request_blocking(2, request, 1)
@@ -1019,8 +1020,8 @@ def test_calculate_worker_keeps_script_and_prepare_error_channels(monkeypatch, m
         request_id="portfolio",
         command="calculate_portfolio",
         execution_id=None,
-        account_payload=build_account(id=2, long_leverage=2.0, short_leverage=0.5, weight_precision=0.001).model_dump(
-            mode="json"
+        account_payload=to_payload(
+            build_account(id=2, long_leverage=2.0, short_leverage=0.5, weight_precision=0.001), mode="json"
         ),
         payload={"code": code, **({"leverage_overrides": overrides} if overrides else {})},
     )

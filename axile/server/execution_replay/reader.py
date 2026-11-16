@@ -80,6 +80,7 @@ class ReadSession:
 
 
 @dataclass
+@dataclass(kw_only=True)
 class Account:
     """跨会话保留的有界速率桶和累计标量。"""
 

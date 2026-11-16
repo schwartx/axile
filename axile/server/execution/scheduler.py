@@ -8,6 +8,7 @@ from apscheduler.job import Job  # type: ignore[import-not-found]
 from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-not-found]
 
 from axile.channels.gm_sessions import GMSessionSettings, gm_phase, gm_session_context
+from axile.common.serialization import copy_data, to_payload
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.server.core.log_config import execution_log_context
 from axile.server.core.scheduler import Scheduler
@@ -67,8 +68,9 @@ async def execute_scheduled_rebalance(account_id: int, scheduled_at: str | None 
     ):
         now = clock_now(tz=SCHEDULER_TIMEZONE)
         if now.date() != triggered_at.date() or gm_phase(now) != gm_phase(triggered_at):
-            decision = decision.model_copy(
-                update={"status": CalendarDecisionStatus.AVAILABLE_CLOSED, "reason_code": "CALENDAR.SESSION_CLOSED"}
+            decision = copy_data(
+                decision,
+                update={"status": CalendarDecisionStatus.AVAILABLE_CLOSED, "reason_code": "CALENDAR.SESSION_CLOSED"},
             )
 
     context = {
@@ -107,7 +109,7 @@ async def execute_scheduled_rebalance(account_id: int, scheduled_at: str | None 
         account_id,
         ExecutionKind.REBALANCE,
         "scheduler",
-        payload={"gm_session": gm_session_context((sessions or GMSessionSettings()).model_dump(), triggered_at)}
+        payload={"gm_session": gm_session_context(to_payload(sessions or GMSessionSettings()), triggered_at)}
         if str(channel) == "gm"
         else None,
         on_conflict="skip",

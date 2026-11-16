@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from axile.common.serialization import from_payload, to_payload
 from axile.server._native import _core
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.sqlite_oracle import sqlite_oracle, to_us
@@ -158,7 +159,7 @@ def _connection_fixture(path, account, state):
     from tests.unit.server._execution_test_support import insert_account
 
     with closing(oracle_connect(path)) as connection, connection:
-        insert_account(connection, Account.model_validate(account))
+        insert_account(connection, from_payload(Account, account))
         if state is not None:
             state = dict(state)
             for name in ("observed_at", "last_success_at"):
@@ -187,8 +188,8 @@ def connection_view(account, *, detail=False) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="axile-connection-view-") as temporary:
         path = str(Path(temporary) / "fixture.db")
         _core.migration_upgrade(path, "{}")
-        state = account.connection_state.model_dump(mode="json") if account.connection_state else None
-        _connection_fixture(path, account.model_dump(mode="json"), state)
+        state = to_payload(account.connection_state, mode="json") if account.connection_state else None
+        _connection_fixture(path, to_payload(account, mode="json"), state)
         try:
             value = _core.account_connection_json(
                 path,
@@ -265,7 +266,7 @@ def status_view(record, *, outcome_symbols=(), intent=None):
     with tempfile.TemporaryDirectory(prefix="axile-status-view-") as temporary:
         path = str(Path(temporary) / "fixture.db")
         _core.migration_upgrade(path, "{}")
-        _status_fixture(path, record.model_dump(mode="json"), outcome_symbols, intent)
+        _status_fixture(path, to_payload(record, mode="json"), outcome_symbols, intent)
         try:
             return _core.execution_read(path, json.dumps({"op": "status", "execution_id": record.execution_id}))
         finally:
@@ -275,10 +276,10 @@ def status_view(record, *, outcome_symbols=(), intent=None):
 def account_view(account) -> dict[str, Any]:
     from axile.server.api.routes.account_crud import _account_read_request
 
-    values = account.model_dump(mode="json")
+    values = to_payload(account, mode="json")
     for name in ("has_pending_supplement", "notification_state", "connection_state"):
         value = getattr(account, name)
-        values[name] = value.model_dump(mode="json") if hasattr(value, "model_dump") else value
+        values[name] = to_payload(value, mode="json")
     return _core.account_public(
         "", json.dumps({"account": values, "runtime_sync": None, **_account_read_request()}, ensure_ascii=False)
     )

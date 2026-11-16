@@ -15,12 +15,11 @@ Notes
 """
 
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, is_dataclass
 from typing import Any, cast
 
-from pydantic import BaseModel
-
 from axile.common.logging import LogComponent, bind_log_context
+from axile.common.serialization import copy_data
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.algorithms.core.base import ExecutorProtocol
@@ -118,14 +117,14 @@ class ChaseConfig:
     cancel_confirm_timeout: float = 3.0
 
     @classmethod
-    def from_params(cls, params: BaseModel) -> "ChaseConfig | None":
+    def from_params(cls, params: object) -> "ChaseConfig | None":
         """
         从算法参数模型提取追单配置。
 
         Parameters
         ----------
-        params : BaseModel
-            算法参数的 Pydantic 模型实例。
+        params : BaseAlgorithmParams
+            算法参数的 dataclass 模型实例。
 
         Returns
         -------
@@ -135,10 +134,10 @@ class ChaseConfig:
         Raises
         ------
         TypeError
-            传入对象不是 Pydantic 模型实例时抛出。
+            传入对象不是 dataclass 模型实例时抛出。
         """
-        if not isinstance(params, BaseModel):
-            raise TypeError("ChaseConfig.from_params 只接受 Pydantic 参数模型")
+        if not is_dataclass(params):
+            raise TypeError("ChaseConfig.from_params 只接受 dataclass 参数模型")
 
         chase_enabled = getattr(params, "chase_enabled", False)
         if not chase_enabled:
@@ -444,7 +443,7 @@ class OrderTracker:
                 return
 
             tracked_trades = self.order_trades.setdefault(tracked_order_id, [])
-            tracked_trades.append(trade.model_copy(deep=True))
+            tracked_trades.append(copy_data(trade, deep=True))
 
     def on_price_update(self, price_data: UnifiedPriceData) -> None:
         """接收最新盘口快照，供追单和市价兜底保护使用。"""
@@ -1508,7 +1507,7 @@ class OrderTracker:
         incoming_order: UnifiedOrder,
     ) -> UnifiedOrder:
         """合并已有成交进度，避免订单状态回调回退成交数量."""
-        merged_order = incoming_order.model_copy(deep=True)
+        merged_order = copy_data(incoming_order, deep=True)
         merged_order.extra = {**tracked_order.extra, **merged_order.extra}
         # 后续状态回报的事务时间不能覆盖已跟踪订单的创建时间。
         merged_order.create_time = tracked_order.create_time
@@ -1670,7 +1669,7 @@ class OrderTracker:
         if not candidate_ids:
             return
 
-        buffered_order = order.model_copy(deep=True)
+        buffered_order = copy_data(order, deep=True)
         for candidate_id in candidate_ids:
             self._early_order_updates.setdefault(candidate_id, []).append(buffered_order)
 
@@ -1690,7 +1689,7 @@ class OrderTracker:
         if not candidate_ids:
             return
 
-        buffered_trade = trade.model_copy(deep=True)
+        buffered_trade = copy_data(trade, deep=True)
         for candidate_id in candidate_ids:
             self._early_trade_records.setdefault(candidate_id, []).append(buffered_trade)
 
@@ -1945,12 +1944,12 @@ class OrderTracker:
     def get_order_trades(self, order_id: str) -> list[TradeRecord]:
         """获取指定订单已跟踪的成交明细."""
         with self.lock:
-            return [trade.model_copy(deep=True) for trade in self.order_trades.get(order_id, [])]
+            return [copy_data(trade, deep=True) for trade in self.order_trades.get(order_id, [])]
 
     def get_all_trades(self) -> list[TradeRecord]:
         """获取当前跟踪器内所有已收集的成交明细."""
         with self.lock:
             trades: list[TradeRecord] = []
             for trade_list in self.order_trades.values():
-                trades.extend(trade.model_copy(deep=True) for trade in trade_list)
+                trades.extend(copy_data(trade, deep=True) for trade in trade_list)
             return trades

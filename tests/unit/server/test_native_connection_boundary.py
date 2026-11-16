@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from axile.common.serialization import to_payload
 from axile.executor.connection_state import ConnectionObservation
 from axile.server import connection_events, connection_runtime, connection_state, orders_live
 from axile.server.db.models.account import Account
@@ -177,8 +178,8 @@ def test_connection_and_orders_streams_use_native_account_scan_and_filter_creden
     value = account()
     scan = AsyncMock(
         side_effect=[
-            [value.model_dump(mode="json") | {"connection": connection_view(value)}],
-            [value.model_dump(mode="json")],
+            [to_payload(value, mode="json") | {"connection": connection_view(value)}],
+            [to_payload(value, mode="json")],
             [],
         ]
     )

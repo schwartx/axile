@@ -10,6 +10,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from axile.common.serialization import to_payload
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.server.api.routes import account_evidence
 from axile.server.db.models import Account
@@ -51,7 +52,7 @@ def evidence_db(native_database, monkeypatch):
         receipt = native_store_call(
             native_database,
             "account_create",
-            {"account": account(identifier).model_dump(mode="json"), "now": "2026-10-15T09:00:00+08:00"},
+            {"account": to_payload(account(identifier), mode="json"), "now": "2026-10-15T09:00:00+08:00"},
         )
         assert receipt["account"]["id"] == identifier
     monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
@@ -208,7 +209,7 @@ def test_worker_persists_operation_type_without_losing_execution_association(
     request = WorkerBackendRequest(
         request_id="assets-request",
         command=command,
-        account_payload=account(1).model_dump(mode="json"),
+        account_payload=to_payload(account(1), mode="json"),
         execution_id=execution_id,
         payload={},
     )

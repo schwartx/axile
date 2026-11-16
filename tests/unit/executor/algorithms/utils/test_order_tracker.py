@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from axile.common.serialization import copy_data
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionReasonFamily
 from axile.executor.account_control.exceptions import AccountControlBlockedError
@@ -72,7 +73,7 @@ def test_order_error_metadata_is_cleared_with_its_message(clear_by):
     tracker.record_exception(MarketDataUnavailableError(order.symbol, "已过期"), order_id=order.order_id)
     tracker.record_exception(RuntimeError("other failed"), order_id="other")
     if clear_by == "terminal":
-        tracker.on_order_update(order.model_copy(update={"status": OrderStatus.FILLED}))
+        tracker.on_order_update(copy_data(order, update={"status": OrderStatus.FILLED}))
     elif clear_by == "cancellation":
         tracker.record_cancellation_result(
             CancellationResult(
@@ -225,7 +226,7 @@ class _ChaseExecutor(_FakeExecutor):
         if self.tracker is not None:
             tracked = self.tracker.pending_orders.get(order_id)
             if tracked is not None:
-                cancelled = tracked.model_copy(deep=True)
+                cancelled = copy_data(tracked, deep=True)
                 cancelled.status = OrderStatus.CANCELED
                 self.tracker.on_order_update(cancelled)
         return True
@@ -459,8 +460,8 @@ def test_timeout_cancel_reconciles_terminal_before_result(cancel_ok: bool, termi
     order = _build_pending_order("cancel-without-ws")
     executor = _TimeoutCancelExecutor(order, cancel_ok=cancel_ok)
     filled = order.volume if terminal_status == OrderStatus.FILLED else 25.0
-    executor.terminal_to_return = order.model_copy(
-        update={"status": terminal_status, "filled_volume": filled, "avg_price": order.price}
+    executor.terminal_to_return = copy_data(
+        order, update={"status": terminal_status, "filled_volume": filled, "avg_price": order.price}
     )
     tracker = OrderTracker(executor=executor, clock=ClockStub())
     tracker.add_order(order)
@@ -478,7 +479,7 @@ def test_timeout_cancel_reconciles_terminal_before_result(cancel_ok: bool, termi
 def test_timeout_cancel_does_not_extend_deadline_for_delayed_terminal() -> None:
     order = _build_pending_order("delayed-cancel")
     executor = _TimeoutCancelExecutor(order, confirm_after=2)
-    executor.terminal_to_return = order.model_copy(update={"status": OrderStatus.CANCELED})
+    executor.terminal_to_return = copy_data(order, update={"status": OrderStatus.CANCELED})
     clock = ClockStub()
     tracker = OrderTracker(executor=executor, clock=clock)
     tracker.add_order(order)
@@ -541,8 +542,8 @@ def test_reconcile_missing_pending_converges_on_ws_frame_loss() -> None:
     order = _build_pending_order("gm-lost-1")
     tracker.add_order(order, direction=OrderDirection.BUY)
     # 交易所已不再挂（get_pending_orders 返回 []）、WS 未送终态 → 订单卡 pending；对账查到 FILLED。
-    executor.terminal_to_return = order.model_copy(
-        update={"status": OrderStatus.FILLED, "filled_volume": order.volume, "avg_price": order.price}
+    executor.terminal_to_return = copy_data(
+        order, update={"status": OrderStatus.FILLED, "filled_volume": order.volume, "avg_price": order.price}
     )
 
     tracker._query_pending_orders()
@@ -633,15 +634,15 @@ def test_completed_order_repeat_update_not_buffered() -> None:
     order = _build_pending_order("done-1")
     tracker.add_order(order, direction=OrderDirection.BUY)
 
-    terminal = order.model_copy(
-        update={"status": OrderStatus.FILLED, "filled_volume": order.volume, "avg_price": order.price}
+    terminal = copy_data(
+        order, update={"status": OrderStatus.FILLED, "filled_volume": order.volume, "avg_price": order.price}
     )
     tracker.on_order_update(terminal)
     assert "done-1" in tracker.completed_orders
 
     # 模拟 REST 对账在订单终态后又反复查到该单
-    tracker.on_order_update(terminal.model_copy())
-    tracker.on_order_update(terminal.model_copy())
+    tracker.on_order_update(copy_data(terminal))
+    tracker.on_order_update(copy_data(terminal))
 
     assert tracker._early_order_updates == {}
 
@@ -1073,7 +1074,7 @@ def test_chase_uses_post_cancel_fill_for_remaining_volume() -> None:
     def cancel_with_partial_fill(order_id: str) -> bool:
         tracked = tracker.pending_orders.get(order_id)
         if tracked is not None:
-            cancelled = tracked.model_copy(deep=True)
+            cancelled = copy_data(tracked, deep=True)
             # 撤单确认时，旧单又成交了 40 手
             cancelled.filled_volume = 40.0
             cancelled.status = OrderStatus.CANCELED
@@ -1141,7 +1142,7 @@ def test_cancel_restriction_keeps_old_order_then_fill_clears_error(monkeypatch, 
     assert not tracker._chase_info[order.order_id].get("market_order_fallback_failed")
     with pytest.raises(RuntimeError):
         tracker.assert_ready_for_submission()
-    tracker.on_order_update(order.model_copy(update={"status": OrderStatus.FILLED, "filled_volume": order.volume}))
+    tracker.on_order_update(copy_data(order, update={"status": OrderStatus.FILLED, "filled_volume": order.volume}))
     assert tracker.explicit_error is None
     assert tracker.wait_for_completion(timeout=0) is True
     assert executor._placed == 0
@@ -1162,7 +1163,7 @@ def test_timeout_preserves_cancel_restriction_until_real_terminal(monkeypatch):
     assert tracker.explicit_error is None
     assert tracker.waiting_on_restriction()
     assert order.order_id in tracker.pending_orders
-    tracker.on_order_update(order.model_copy(update={"status": OrderStatus.FILLED, "filled_volume": order.volume}))
+    tracker.on_order_update(copy_data(order, update={"status": OrderStatus.FILLED, "filled_volume": order.volume}))
     assert tracker.explicit_error is None
 
 
@@ -1176,8 +1177,8 @@ def test_terminal_alias_clears_cancellation_reason_without_touching_other_orders
     cancellation = CancellationResult(
         orders={(order.symbol, "exchange-id"): OrderCancellation(CancelRequestStatus.RESTRICTED, "当前不可撤单")}
     )
-    terminal = order.model_copy(
-        update={"order_id": "exchange-id", "status": OrderStatus.FILLED, "filled_volume": order.volume}
+    terminal = copy_data(
+        order, update={"order_id": "exchange-id", "status": OrderStatus.FILLED, "filled_volume": order.volume}
     )
 
     if fill_before_cleanup_result:

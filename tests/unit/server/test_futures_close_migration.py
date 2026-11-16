@@ -2,6 +2,7 @@
 
 import pytest
 
+from axile.common.serialization import from_payload, parse_input, to_payload
 from axile.executor.futures_close_policy import FuturesClosePolicy
 from axile.server.db.models import Account, AccountCreate
 from axile.server.db.models.account import AccountSnapshot
@@ -32,22 +33,22 @@ def _account_data():
 
 
 def test_account_policy_survives_json_settings_public_and_worker_snapshot(native_database):
-    policy = FuturesClosePolicy(overrides={"ag": "today_first"})
+    policy = parse_input(FuturesClosePolicy, {"overrides": {"ag": "today_first"}})
     data = _account_data() | {"futures_close_policy": policy}
     data.pop("id")
     created = native_store_call(
         native_database,
         "account_create",
         {
-            "account": AccountCreate(**data).model_dump(mode="json"),
+            "account": to_payload(parse_input(AccountCreate, data), mode="json"),
             "now": "2026-01-01T09:00:00",
         },
     )
     stored = native_store_call(native_database, "account_get", {"account_id": created["account"]["id"]})
-    account = Account.model_validate(stored)
+    account = from_payload(Account, stored)
     assert account.futures_close_policy.overrides == {"AG": "today_first"}
-    assert AccountSnapshot.model_validate(account.model_dump()).futures_close_policy == policy
-    assert account_view(account)["futures_close_policy"] == policy.model_dump(mode="json")
+    assert from_payload(AccountSnapshot, to_payload(account)).futures_close_policy == policy
+    assert account_view(account)["futures_close_policy"] == to_payload(policy, mode="json")
 
 
 def test_public_capability_keeps_modes_and_supplied_fee_columns():
@@ -92,7 +93,9 @@ def test_real_account_patch_rejects_tq_automatic_before_any_commit(monkeypatch):
     monkeypatch.setattr(account_crud, "_account_operation", persist)
     with pytest.raises(HTTPException) as raised:
         asyncio.run(
-            account_crud._update_account(None, 1, AccountUpdate(futures_close_policy={"mode": "fee"}), Response())
+            account_crud._update_account(
+                None, 1, parse_input(AccountUpdate, {"futures_close_policy": {"mode": "fee"}}), Response()
+            )
         )
     assert raised.value.status_code == 422
     assert "不支持低手续费优先" in str(raised.value.detail)

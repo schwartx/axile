@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from axile.common.serialization import to_payload
 from axile.server.execution.worker_backend.manager import WorkerBackendManager
 from axile.server.execution.worker_backend.orders import OrdersChannel
 from tests.unit.server._execution_test_support import build_account
@@ -179,5 +180,5 @@ def test_late_order_command_cannot_rebind_current_worker_to_previous_session():
     current = ConnectionBinding(account.id, "same-config", "current")
     state = _WorkerBackendState(connection_collector=ConnectionCollector(current))
     with pytest.raises(AccountConnectionUnavailable, match="会话已变化"):
-        _command(state, {"command": "query", "account": account.model_dump(), "connection_binding": asdict(old)})
+        _command(state, {"command": "query", "account": to_payload(account), "connection_binding": asdict(old)})
     assert state.connection_collector.binding == current

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from axile.channels import get_channel
+from axile.common.serialization import copy_data, from_payload, to_payload
 from axile.server.db.models.account import Account, AccountContext
 from axile.server.execution.worker_backend.protocol import WorkerReplayConfig
 
@@ -27,10 +28,10 @@ def replay_config(account: AccountContext) -> WorkerReplayConfig:
         descriptor = get_channel(str(account.trade_channel)).descriptor
         declaration = getattr(descriptor, "replay", None)
         if declaration is not None:
-            context.update(declaration.model_dump(mode="json"))
+            context.update(to_payload(declaration, mode="json"))
             context["stream_defaults"] = context.pop("streams", {})
             supported = declaration.supported
-        context["units"] = descriptor.units.model_dump(mode="json")
+        context["units"] = to_payload(descriptor.units, mode="json")
         context["currency"] = descriptor.currency
     except (KeyError, RuntimeError):
         # 历史读取及开关状态不要求当前安装对应渠道插件。
@@ -52,14 +53,15 @@ def current_replay_config(account: AccountContext) -> WorkerReplayConfig | None:
         value = native_operation_sync("account_get", {"account_id": account.id})
         if value is None:
             return None
-        current = Account.model_validate(value)
+        current = from_payload(Account, value)
         if current.id != account.id:
             return None
-        snapshot = account.model_copy(
+        snapshot = copy_data(
+            account,
             update={
                 "replay_recording_enabled": current.replay_recording_enabled,
                 "replay_config_version": current.replay_config_version,
-            }
+            },
         )
         return replay_config(snapshot)
     except Exception:  # noqa: BLE001 - 读取失败时不把历史开启意愿交给新 worker，也不影响交易

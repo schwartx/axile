@@ -3,8 +3,8 @@
 from types import SimpleNamespace
 
 import pytest
-from pydantic import ValidationError
 
+from axile.common.serialization import copy_data, to_payload
 from axile.executor.models.unified_order import UnifiedOrder
 from axile.server.execution.worker_backend import worker
 from axile.server.execution.worker_backend.manager import WorkerBackendManager
@@ -37,7 +37,7 @@ def test_worker_result_roundtrip_preserves_order_observation_time():
 @pytest.mark.parametrize("invalid_account", [False, True])
 def test_worker_request_validation_precedes_runtime(monkeypatch, command, invalid_account):
     """坏账户或必需审计字段缺失时，不激活终止控制器或进入执行器准备。"""
-    account = build_account().model_dump(mode="json")
+    account = to_payload(build_account(), mode="json")
     payload = (
         {"standard_input": {"account_config": account["account_config"], "curr_target": {}}, "trigger_source": "manual"}
         if command == "execute_trade"
@@ -55,7 +55,7 @@ def test_worker_request_validation_precedes_runtime(monkeypatch, command, invali
         pytest.fail("请求校验失败前不应激活运行态")
 
     monkeypatch.setattr(worker, "_activate_worker_termination", unexpected_activation)
-    with pytest.raises(ValidationError if invalid_account else KeyError):
+    with pytest.raises((ValueError, TypeError) if invalid_account else KeyError):
         worker._handle_worker_request(request, worker._WorkerBackendState())
 
 
@@ -63,7 +63,7 @@ def test_worker_request_validation_precedes_runtime(monkeypatch, command, invali
 @pytest.mark.parametrize("snapshot", [None, {}, {"currency": "CNY"}])
 def test_worker_request_forwards_only_truthy_notification_snapshot(monkeypatch, command, snapshot):
     """缺省和空快照不传给执行器，非空快照保留原对象。"""
-    account = build_account().model_dump(mode="json")
+    account = to_payload(build_account(), mode="json")
     payload = (
         {
             "standard_input": {"account_config": account["account_config"], "curr_target": {}},
@@ -112,7 +112,7 @@ def test_session_closed_worker_does_not_report_settling(monkeypatch, command):
     from axile.executor.models.execution_result import ExecutionStatus
     from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 
-    account = build_account().model_dump(mode="json")
+    account = to_payload(build_account(), mode="json")
     payload = (
         {
             "standard_input": {"account_config": account["account_config"], "curr_target": {}},
@@ -122,17 +122,14 @@ def test_session_closed_worker_does_not_report_settling(monkeypatch, command):
         if command == "execute_trade"
         else {"empty_kwargs": {"algorithm": {}, "extra": {"audit": {}}}, "audit_input": {}}
     )
-    output = (
-        FakeExecutor()
-        .execute(None)
-        .model_copy(
-            update={
-                "status": ExecutionStatus.NOOP,
-                "reason_code": "COMMON.SESSION.CLOSED",
-                "symbol_results": {},
-                "account_assets": UnifiedAccountAssets.unavailable(),
-            }
-        )
+    output = copy_data(
+        FakeExecutor().execute(None),
+        update={
+            "status": ExecutionStatus.NOOP,
+            "reason_code": "COMMON.SESSION.CLOSED",
+            "symbol_results": {},
+            "account_assets": UnifiedAccountAssets.unavailable(),
+        },
     )
     executor = SimpleNamespace(execute=lambda *args, **kwargs: output, empty_positions=lambda *args, **kwargs: output)
     monkeypatch.setattr(worker, "_resolve_prepared_executor", lambda **kwargs: executor)

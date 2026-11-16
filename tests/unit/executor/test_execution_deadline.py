@@ -14,6 +14,7 @@ from threading import Event
 
 import pytest
 
+from axile.common.serialization import from_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.clock import get_default_clock, set_default_clock
 from axile.executor.execution_runtime import ExecutionRuntime, ExecutionRuntimeBindings
@@ -303,7 +304,8 @@ def _standard_input(*, execution_timeout: int) -> UnifiedStandardInput:
     """构造一个仅用于校验 deadline 装载的最小标准输入。"""
     return UnifiedStandardInput(
         channel_type=TradeChannel("ctp"),
-        account_config=CTPAccountConfig.model_validate(
+        account_config=from_payload(
+            CTPAccountConfig,
             {
                 "broker_id": "b",
                 "investor_id": "i",
@@ -312,7 +314,7 @@ def _standard_input(*, execution_timeout: int) -> UnifiedStandardInput:
                 "md_front": "tcp://md:2",
                 "app_id": "app",
                 "auth_code": "auth",
-            }
+            },
         ),
         curr_target={},
         last_target={},

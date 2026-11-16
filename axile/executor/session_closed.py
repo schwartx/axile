@@ -61,10 +61,10 @@ def _session_result_kind(result: object) -> str | None:
 
 def normal_session_skip(result: object) -> bool:
     """新结果只有明确休市且没有订单、成交的 NOOP 才是正常跳过。"""
+    read = result.get if isinstance(result, dict) else lambda name: getattr(result, name, None)
     return (
-        isinstance(result, dict)
-        and result.get("status") == "NOOP"
-        and result.get("reason_code") == COMMON_SESSION_CLOSED
-        and not result.get("orders")
-        and not result.get("trades")
+        read("status") == "NOOP"
+        and read("reason_code") == COMMON_SESSION_CLOSED
+        and not read("orders")
+        and not read("trades")
     )

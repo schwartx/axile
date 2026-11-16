@@ -8,6 +8,7 @@ from copy import deepcopy
 
 import pytest
 
+from axile.common.serialization import from_payload, to_payload
 from axile.domain.execution import ExecutionArtifactType, ExecutionKind, ExecutionTerminateMode
 from axile.server.business_facts.artifacts import make_artifact_reference
 from axile.server.db.models import ExecutionArtifact
@@ -72,7 +73,7 @@ def _frozen_after(tmp_path, monkeypatch):
         schema_version=3,
         content=make_artifact_reference(view="assets_after", input_id=input_id, asset_id=asset_id),
     )
-    assert native_store_call(path, "append_execution_artifact", artifact.model_dump(mode="json"))
+    assert native_store_call(path, "append_execution_artifact", to_payload(artifact, mode="json"))
     yield path, input_id, asset_id
 
 
@@ -126,7 +127,7 @@ def test_missing_worker_response_persists_failure_without_inventing_result_asset
             stored_row = _rows(path, "executerecord")[0]
             for field in ("audit_evidence", "termination_evidence"):
                 stored_row[field] = json.loads(stored_row[field])
-            stored = ExecuteRecord.model_validate(stored_row)
+            stored = from_payload(ExecuteRecord, stored_row)
             assert stored.facts_complete
             assert stored.is_success == 0
             assert stored.task_status == ("TERMINATED" if terminal == "terminated" else "FAILED")

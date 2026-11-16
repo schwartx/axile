@@ -3,6 +3,7 @@
 import asyncio
 from multiprocessing import get_context
 
+from axile.common.serialization import to_payload
 from axile.server.account_control.ipc import RemoteMonitor
 from axile.server.connection_state import ConnectionBinding
 from axile.server.execution import live
@@ -72,7 +73,7 @@ def test_spawn_worker_progress_arrives_before_business_response(monkeypatch):
             request_id="request",
             command="execute_trade",
             execution_id="live",
-            account_payload=build_account().model_dump(mode="json"),
+            account_payload=to_payload(build_account(), mode="json"),
             payload={
                 "standard_input": {"curr_target": {}, "account_config": build_account().account_config},
                 "audit_input": {},

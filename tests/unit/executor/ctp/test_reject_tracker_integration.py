@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 from openctp_ctp import thosttraderapi as td
 
+from axile.common.serialization import copy_data
 from axile.executor.algorithms.utils.order_tracker import OrderTracker
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.ctp.converters import stable_order_id
@@ -44,7 +45,7 @@ def test_native_reject_replays_only_into_matching_session(monkeypatch, callback,
         broker.trader.ReqOrderInsert.side_effect = reject
         current = session.place_order(OrderDirection.BUY, OrderType.LIMIT, 1, 9000, offset_flag="open")
         old_id = stable_order_id(broker.day, 7, old_session, captured[0].OrderRef)
-        old = current.model_copy(update={"order_id": old_id})
+        old = copy_data(current, update={"order_id": old_id})
         tracker.add_order(old)
         executor._order_keys[old_id] = {"order_ref": captured[0].OrderRef, "front_id": 7, "session_id": old_session}
         tracker.add_order(current)

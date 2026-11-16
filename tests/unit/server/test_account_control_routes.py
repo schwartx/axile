@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from contextlib import closing
+from dataclasses import fields
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -11,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
+from axile.common.serialization import from_payload, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.exceptions import AccountControlConfigError
 from axile.executor.account_control.models import AccountControlOverride
@@ -82,11 +84,11 @@ def _build_account(
         "account_control_preset": preset,
         "account_control_override": override,
     }
-    return Account.model_validate(data | changes)
+    return from_payload(Account, data | changes)
 
 
 def _account_payload() -> dict[str, object]:
-    return _build_account().model_dump(mode="json", include=set(AccountCreate.model_fields))
+    return to_payload(_build_account(), mode="json", include={item.name for item in fields(AccountCreate)})
 
 
 def _build_app() -> FastAPI:
@@ -107,13 +109,13 @@ def _seed_account(database, **changes: object) -> Account:
     saved = native_store_call(
         database,
         "account_create",
-        {"account": _build_account(**changes).model_dump(mode="json"), "now": "2026-10-23T09:00:00"},
+        {"account": to_payload(_build_account(**changes), mode="json"), "now": "2026-10-23T09:00:00"},
     )
-    return Account.model_validate(saved["account"])
+    return from_payload(Account, saved["account"])
 
 
 def _load_account(database, account_id: int = 1) -> Account:
-    return Account.model_validate(native_store_call(database, "account_get", {"account_id": account_id}))
+    return from_payload(Account, native_store_call(database, "account_get", {"account_id": account_id}))
 
 
 @pytest.mark.parametrize("custom", [True, False])
@@ -260,8 +262,8 @@ def test_native_public_queries_match_existing_public_contract(account_client) ->
 )
 def test_override_has_one_public_shape_across_account_routes(account_client, override) -> None:
     client, database = account_client
-    model = None if override is None else AccountControlOverride.model_validate(override)
-    expected = None if model is None else model.model_dump(mode="json")
+    model = None if override is None else from_payload(AccountControlOverride, override)
+    expected = None if model is None else to_payload(model, mode="json")
     created = client.post(
         "/account/",
         json=_account_payload()
@@ -285,8 +287,8 @@ def test_override_has_one_public_shape_across_account_routes(account_client, ove
     assert detail.json()["account_control_override"] == expected
     assert listing.json()["data"][0]["account_control_override"] == expected
     assert policy.json()["override"] == expected
-    assert policy.json()["effective_policy"] == resolve_account_control_policy("ctp", model).model_dump(
-        mode="json", exclude={"preset_key", "operation_groups"}
+    assert policy.json()["effective_policy"] == to_payload(
+        resolve_account_control_policy("ctp", model), mode="json", exclude={"preset_key", "operation_groups"}
     )
     assert native_store_call(database, "account_get", {"account_id": account_id}) == saved
 
@@ -333,11 +335,11 @@ def test_native_override_shape_matches_model_defaults_and_plugin_keys(target, sc
         if target == "group"
         else {"operations": {"plugin_operation": {target: scope}}}
     )
-    account = _build_account().model_dump(mode="json") | {"account_control_override": override}
+    account = to_payload(_build_account(), mode="json") | {"account_control_override": override}
     result = native_store_call(
         "", "account_public", {"account": account, **account_crud_routes._account_read_request()}
     )
-    assert result["account_control_override"] == AccountControlOverride.model_validate(override).model_dump(mode="json")
+    assert result["account_control_override"] == to_payload(from_payload(AccountControlOverride, override), mode="json")
 
 
 @pytest.mark.parametrize(
@@ -363,7 +365,7 @@ def test_corrupt_override_structure_is_a_server_error(account_client, override) 
             (json.dumps(override),),
         )
     with pytest.raises(AccountControlConfigError) as caught:
-        AccountControlOverride.model_validate(override)
+        from_payload(AccountControlOverride, override)
     for path in ("/account/1", "/account/", "/account/1/control/policy"):
         response = client.get(path)
         assert response.status_code == 500, response.text
@@ -533,7 +535,7 @@ def test_update_rejects_corrupt_saved_override_before_write_and_allows_repair(ac
         )
     before = native_store_call(database, "account_get", {"account_id": 1})
     with pytest.raises(AccountControlConfigError) as caught:
-        AccountControlOverride.model_validate(corrupt_override)
+        from_payload(AccountControlOverride, corrupt_override)
 
     rejected = client.patch("/account/1", json={"name": "changed"})
     assert rejected.status_code == 500, rejected.text
@@ -564,7 +566,7 @@ def test_invalid_override_keeps_structured_error_and_database(account_client, cr
         _seed_account(database)
     before = client.get("/account/").json()
     with pytest.raises(AccountControlConfigError) as caught:
-        AccountControlOverride.model_validate(override)
+        from_payload(AccountControlOverride, override)
     patch = {"account_control_override": override}
     response = client.request(
         "POST" if creating else "PATCH",

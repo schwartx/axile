@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from axile.common.serialization import to_payload
 from tests.conftest import native_store_call, require_native_store
 from tests.integration.server.test_incremental_analysis import append, update
 from tests.unit.server._execution_test_support import build_account
@@ -19,7 +20,7 @@ def account(native_database):
         native_database,
         "account_create",
         {
-            "account": build_account(trade_channel="tq", is_started=False, portfolio_id=None).model_dump(mode="json"),
+            "account": to_payload(build_account(trade_channel="tq", is_started=False, portfolio_id=None), mode="json"),
             "now": NOW,
         },
     )
@@ -90,7 +91,7 @@ def test_account_isolation_and_input_validation(account):
         account,
         "account_create",
         {
-            "account": build_account(trade_channel="tq", is_started=False, portfolio_id=None).model_dump(mode="json"),
+            "account": to_payload(build_account(trade_channel="tq", is_started=False, portfolio_id=None), mode="json"),
             "now": NOW,
         },
     )

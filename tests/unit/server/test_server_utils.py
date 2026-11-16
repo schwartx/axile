@@ -6,8 +6,8 @@ from contextlib import closing
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
+from axile.common.serialization import parse_input
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
 from axile.server import channel_capabilities
@@ -66,8 +66,8 @@ def record_database(native_database: Path, monkeypatch: pytest.MonkeyPatch) -> P
 @pytest.mark.parametrize("timeout", [0, -1, -180])
 def test_account_update_rejects_non_positive_execution_timeout(timeout: int) -> None:
     """0 / 负数应被拒绝：不允许按账户关掉「执行无限挂起」这道兜底。"""
-    with pytest.raises(ValidationError):
-        AccountUpdate(execution_timeout=timeout)
+    with pytest.raises(ValueError):
+        parse_input(AccountUpdate, {"execution_timeout": timeout})
 
 
 @pytest.mark.parametrize("timeout", [541, 600, 3600, 86400])

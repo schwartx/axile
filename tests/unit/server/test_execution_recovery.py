@@ -7,6 +7,7 @@ from dataclasses import replace
 
 import pytest
 
+from axile.common.serialization import from_payload, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
 from axile.server.db.models.account import AccountSnapshot
@@ -53,7 +54,7 @@ def test_recover_interrupts_running_and_restores_queued(monkeypatch, interrupted
     queued = _intent("queue-1", ExecutionTaskStatus.QUEUED)
     saved: dict[str, IntentSnapshot] = {item.execution_id: item for item in (interrupted, queued)}
     calls: list[tuple[str, object]] = []
-    account = AccountSnapshot.model_validate(build_account(id=3).model_dump())
+    account = from_payload(AccountSnapshot, to_payload(build_account(id=3)))
 
     async def list_intents(*statuses: ExecutionTaskStatus):
         return [item for item in saved.values() if item.status in statuses]

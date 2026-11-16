@@ -4,6 +4,7 @@ import sys
 
 import pytest
 
+from axile.common.serialization import copy_data
 from axile.executor.ctp.converters import quote_to_unified
 from axile.executor.ctp.quote_validation import fresh_valuation_quote_error, quote_error, valuation_quote_error
 
@@ -132,7 +133,7 @@ def test_cache_read_and_duplicate_callback_do_not_renew_receive_time(monkeypatch
         original = quote.extra["received_at"]
         stamp = quote.timestamp
         assert executor.get_market_data(["ag2612"])["ag2612"] is quote
-        monkeypatch.setattr("axile.executor.ctp.ctp_execute.quote_to_unified", lambda row: quote.model_copy(deep=True))
+        monkeypatch.setattr("axile.executor.ctp.ctp_execute.quote_to_unified", lambda row: copy_data(quote, deep=True))
         executor._on_quote(object())
         assert executor._quotes["ag2612"].extra["received_at"] == original
         assert executor._quotes["ag2612"].timestamp == stamp

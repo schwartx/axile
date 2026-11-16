@@ -2,38 +2,41 @@
 
 import math
 import threading
-from typing import Literal
+from dataclasses import dataclass
+from typing import Annotated, Literal
 
 from axile import AlgorithmInput, AlgorithmResult, ExecutorProtocol, TradeChannel, register_algorithm
+from axile.common.serialization import copy_data, from_payload, to_payload
 from axile.executor.algorithms.utils.clock import clock_now_iso, get_default_clock
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.models.unified_order import OrderDirection, OrderType
 from axile.executor.termination import ExecutionTerminated
-from pydantic import BaseModel, Field
+from msgspec import Meta
 
 
-class ScenarioParams(BaseModel):
+@dataclass(kw_only=True)
+class ScenarioParams:
     """只有脚本明确指定的合约允许产生委托。"""
 
     symbol: str
     action: Literal["open", "close", "cancel", "invalid", "reject", "hold"]
     batch: str
     step: str
-    lots: int = Field(default=1, ge=1)
-    max_order_lots: int = Field(default=1, ge=1)
-    max_exposure_lots: int = Field(default=1, ge=1)
+    lots: Annotated[int, Meta(ge=1)] = 1
+    max_order_lots: Annotated[int, Meta(ge=1)] = 1
+    max_exposure_lots: Annotated[int, Meta(ge=1)] = 1
     side: Literal["long", "short"] = "long"
     close_offset: Literal["auto", "today", "yesterday"] = "auto"
-    timeout_seconds: float = Field(default=45, gt=0, le=3600)
-    passive_ticks: int = Field(default=10, ge=1)
+    timeout_seconds: Annotated[float, Meta(gt=0, le=3600)] = 45
+    passive_ticks: Annotated[int, Meta(ge=1)] = 10
     invalid_case: Literal["price", "volume", "unknown"] = "price"
     reject_case: Literal["insufficient_funds", "no_position", "market_state"] = "insufficient_funds"
-    reject_volume: int = Field(default=1, ge=1)
+    reject_volume: Annotated[int, Meta(ge=1)] = 1
     broker_condition: str = ""
-    hold_seconds: float = Field(default=0, ge=0, le=3600)
-    before_send_hold_seconds: float = Field(default=0, ge=0, le=3600)
-    after_send_hold_seconds: float = Field(default=0, ge=0, le=3600)
+    hold_seconds: Annotated[float, Meta(ge=0, le=3600)] = 0
+    before_send_hold_seconds: Annotated[float, Meta(ge=0, le=3600)] = 0
+    after_send_hold_seconds: Annotated[float, Meta(ge=0, le=3600)] = 0
 
 
 def exception_details(error):
@@ -67,12 +70,12 @@ class Capture:
                     previous.is_completed() and not order.is_completed() or previous.filled_volume > order.filled_volume
                 ):
                     return
-                self.orders[order.order_id] = order.model_copy(deep=True)
+                self.orders[order.order_id] = copy_data(order, deep=True)
 
     def on_trade(self, trade):
         if trade.symbol == self.symbol:
             with self.lock:
-                self.trades[(trade.order_id, trade.trade_id)] = trade.model_copy(deep=True)
+                self.trades[(trade.order_id, trade.trade_id)] = copy_data(trade, deep=True)
 
     def add(self, order):
         with self.lock:
@@ -82,11 +85,11 @@ class Capture:
 
     def snapshots(self):
         with self.lock:
-            return [o.model_copy(deep=True) for key, o in self.orders.items() if key in self.owned]
+            return [copy_data(o, deep=True) for key, o in self.orders.items() if key in self.owned]
 
     def fills(self):
         with self.lock:
-            return [t.model_copy(deep=True) for (order_id, _), t in self.trades.items() if order_id in self.owned]
+            return [copy_data(t, deep=True) for (order_id, _), t in self.trades.items() if order_id in self.owned]
 
 
 def checkpoint(executor, name, params, order_id=None):
@@ -218,7 +221,7 @@ def cancel_owned(executor, capture, memory):
 def submit_plan(executor, input_data, params, capture, memory, assets, current):
     direction, plan = order_plan(executor, params, assets, current, float(input_data.target_volume))
     price, quote = choose_price(executor, params, direction, passive=params.action in {"cancel", "hold"})
-    memory["quote"] = quote.model_dump(mode="json")
+    memory["quote"] = to_payload(quote, mode="json")
     for volume, extra in plan:
         executor.handle_termination_checkpoint()
         if params.action == "invalid":
@@ -279,9 +282,9 @@ def collect_final_state(executor, capture, memory, params):
             memory.setdefault("query_errors", []).append(exception_details(exc))
     try:
         final, final_volume = guard_assets(executor, params)
-        memory["after"] = final.model_dump(mode="json")
+        memory["after"] = to_payload(final, mode="json")
         memory["final_volume"] = final_volume
-        memory["remaining_orders"] = [o.model_dump(mode="json") for o in executor.get_pending_orders()]
+        memory["remaining_orders"] = [to_payload(o, mode="json") for o in executor.get_pending_orders()]
     except ExecutionTerminated:
         raise
     except Exception as exc:
@@ -292,7 +295,7 @@ def collect_final_state(executor, capture, memory, params):
 @register_algorithm("FT-CTP-SCENARIO", channels=[TradeChannel.CTP], params_class=ScenarioParams)
 def scenario_algorithm(executor: ExecutorProtocol, algorithm_input: AlgorithmInput) -> AlgorithmResult:
     """有界运行，回报和未完成状态全部进入现有 execution summary。"""
-    params = ScenarioParams.model_validate(algorithm_input.params)
+    params = from_payload(ScenarioParams, algorithm_input.params)
     if algorithm_input.symbol != params.symbol:
         return AlgorithmResult(
             symbol=algorithm_input.symbol,
@@ -314,7 +317,7 @@ def scenario_algorithm(executor: ExecutorProtocol, algorithm_input: AlgorithmInp
     executor.register_trade_callback(capture.on_trade)
     try:
         assets, current = guard_assets(executor, params)
-        memory["before"] = assets.model_dump(mode="json")
+        memory["before"] = to_payload(assets, mode="json")
         if executor.get_pending_orders():
             raise ValueError("测试合约有存量挂单，拒绝覆盖或撤销")
         checkpoint(executor, "ready", params)

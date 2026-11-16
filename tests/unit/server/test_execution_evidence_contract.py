@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from axile.common.serialization import from_payload, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionArtifactType, ExecutionEventType
 from axile.executor.algorithms.utils.final_position import read_final_position
@@ -167,7 +168,7 @@ async def _persist_contract_result(output, worker_raw, before_assets, monkeypatc
         assert record["input_id"] == input_id
         result = await read_execution_result(record)
         assert business_evidence(result) == business_evidence(worker_raw)
-        stored_artifacts = [ExecutionArtifact.model_validate(row) for row in rows(path, "execution_artifact")]
+        stored_artifacts = [from_payload(ExecutionArtifact, row) for row in rows(path, "execution_artifact")]
         after = next(item for item in stored_artifacts if item.artifact_type == ExecutionArtifactType.ACCOUNT_SNAPSHOT)
         assert after.schema_version == 3
         assert parse_artifact_reference(after.content) == {
@@ -178,7 +179,7 @@ async def _persist_contract_result(output, worker_raw, before_assets, monkeypatc
         }
         assert "account_assets" not in after.content
         resolved = read_view(
-            path, "resolve_execution_artifact", {"artifact": after.model_dump(mode="json"), "account_id": 1}
+            path, "resolve_execution_artifact", {"artifact": to_payload(after, mode="json"), "account_id": 1}
         )
         expected_assets = {
             **worker_raw["account_assets"],
@@ -209,12 +210,12 @@ def build_contract_wire(case, monkeypatch):
         _standard_input(),
         [_algorithm_result(case)],
     )
-    raw = output.model_dump(mode="json")
+    raw = to_payload(output, mode="json")
     worker_raw = _dump_output_payload(output)
     assert {k: v for k, v in raw.items() if k != "inputs"} == worker_raw
     json.dumps(worker_raw, allow_nan=False)
     record, summary = asyncio.run(
-        _persist_contract_result(output, worker_raw, _assets(inputs["before"]).model_dump(mode="json"), monkeypatch)
+        _persist_contract_result(output, worker_raw, to_payload(_assets(inputs["before"]), mode="json"), monkeypatch)
     )
     listed = {
         key: record.listed[key]
@@ -267,7 +268,7 @@ def test_pre_execute_audit_references_committed_input_and_preserves_missing_asse
     events = []
     standard_input = _standard_input()
     audit_input = {"strategy_target": {"rb2610": 0.05}, "execution_kind": execution_kind}
-    before = _assets({"source": "real", "volume": 0}).model_dump(mode="json") if has_before_assets else None
+    before = to_payload(_assets({"source": "real", "volume": 0}), mode="json") if has_before_assets else None
 
     def persist_input(**values):
         trace.append("input_committed")

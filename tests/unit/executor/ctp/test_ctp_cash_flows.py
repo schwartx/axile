@@ -1,8 +1,11 @@
 """银期流水转换只保留已确认的方向、金额、时间和流水身份。"""
 
+import json
 from types import SimpleNamespace
 
 import pytest
+
+from axile.common.serialization import to_payload
 
 pytest.importorskip("openctp_ctp")
 
@@ -36,7 +39,7 @@ def test_transfer_direction_time_identity_and_private_fields(row):
     assert flow.amount == 500
     assert flow.occurred_at.isoformat() == "2026-11-12T09:30:00+08:00"
     assert flow.external_id == "ctp:20261112:12"
-    assert "must-not-leak" not in flow.model_dump_json()
+    assert "must-not-leak" not in json.dumps(to_payload(flow, mode="json"))
     row.TradeCode = "102001"
     assert transfer_to_cash_flow(row).direction == "deposit"
     for code in ("102002", "202002"):

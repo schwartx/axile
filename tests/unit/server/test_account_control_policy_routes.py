@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
+from axile.common.serialization import from_payload, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.models import AccountControlOverride
 from axile.server.api.routes import account_control_policy_routes
@@ -16,8 +17,9 @@ def _account(*, channel: TradeChannel = TradeChannel("ctp")) -> SimpleNamespace:
         id=1,
         trade_channel=channel,
         account_control_preset="default",
-        account_control_override=AccountControlOverride.model_validate(
-            {"operations": {"place_order": {"account": {"per_day": {"limit": 12, "on_trigger": "block"}}}}}
+        account_control_override=from_payload(
+            AccountControlOverride,
+            {"operations": {"place_order": {"account": {"per_day": {"limit": 12, "on_trigger": "block"}}}}},
         ),
     )
 
@@ -64,7 +66,7 @@ def test_policy_route_previews_ctp_without_mutating_account(monkeypatch: pytest.
 
 def test_policy_route_roundtrips_daily_warning_without_losing_existing_quota(monkeypatch):
     account = _account()
-    account.account_control_override = account.account_control_override.model_dump(mode="json")
+    account.account_control_override = to_payload(account.account_control_override, mode="json")
     account.account_control_override["operations"]["place_order"]["daily_warning_percent"] = 80
 
     async def get_account(_account_id):

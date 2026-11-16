@@ -13,12 +13,12 @@ dependencies = [
     "loguru>=0.7.3",
     "numpy==2.3.2",
     "pandas>=2.2.3",
-    "pydantic-settings>=2.8.1",
     "python-dotenv>=1.1.0",
     "shinny-calendar>=1.0.2026,<2",
     "typer>=0.20.1",
     "tomlkit>=0.15.0",
     "requests>=2.32.3",
+    "msgspec>=0.19,<1",
 ]
 
 

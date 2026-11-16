@@ -52,7 +52,7 @@ def from_gm_price(
     if include_raw_data:
         extra["raw_data"] = tick
 
-    return UnifiedPriceData.model_construct(
+    return UnifiedPriceData(
         symbol=GM_SYMBOL_RESOLVER.to_axile(gm_symbol),
         last_price=last_price,
         bids=[(float(price), float(quantity)) for price, quantity in zip(bid_prices, bid_volumes) if float(price) > 0],

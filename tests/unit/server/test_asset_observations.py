@@ -7,6 +7,7 @@ from copy import deepcopy
 
 import pytest
 
+from axile.common.serialization import to_payload
 from axile.server._native import _core
 from axile.server.asset_observations import is_asset_observation
 from tests.unit.server.test_native_asset_operations import _call, _save
@@ -161,4 +162,4 @@ def test_non_trading_producer_does_not_claim_zero_balance():
     assert result.error is None
     assert result.reason_code == "COMMON.SESSION.CLOSED"
     assert result.account_assets.source == "unavailable"
-    assert not is_asset_observation(result.account_assets.model_dump())
+    assert not is_asset_observation(to_payload(result.account_assets))

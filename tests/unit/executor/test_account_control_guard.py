@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from axile.common.serialization import from_payload, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.account_control.guard import (
@@ -95,7 +96,7 @@ def test_guard_uses_loaded_baseline_plus_in_memory_deltas() -> None:
         channel=TradeChannel("external"),
         policy=resolve_account_control_policy(
             "default",
-            AccountControlOverride.model_validate(_override_payload({"place_order": {"per_day": 1}})),
+            from_payload(AccountControlOverride, _override_payload({"place_order": {"per_day": 1}})),
         ),
         baseline=AccountControlCounterSnapshot(),
         clock=_clock,
@@ -122,11 +123,12 @@ def test_guard_uses_loaded_baseline_plus_in_memory_deltas() -> None:
 
 def test_guard_keeps_its_policy_when_configuration_changes() -> None:
     """新配置只影响后续 guard；放行、阻断及计数不修改现有规则。"""
-    override = AccountControlOverride.model_validate(
-        {"operations": {"query_account": {"symbol": {"per_day": {"limit": 1, "on_trigger": "block"}}}}}
+    override = from_payload(
+        AccountControlOverride,
+        {"operations": {"query_account": {"symbol": {"per_day": {"limit": 1, "on_trigger": "block"}}}}},
     )
     policy = resolve_account_control_policy("default", override)
-    before = policy.model_dump(mode="json")
+    before = to_payload(policy, mode="json")
     guard = AccountControlGuard(
         account_id=1,
         execution_id="old-config",
@@ -137,10 +139,10 @@ def test_guard_keeps_its_policy_when_configuration_changes() -> None:
     )
     guard.begin_operation("query_account", symbol="rb2610")
 
-    override = override.model_dump(mode="json")
+    override = to_payload(override, mode="json")
     override["operations"]["query_account"]["symbol"]["per_day"]["limit"] = 2
     next_policy = resolve_account_control_policy("default", override)
-    next_before = next_policy.model_dump(mode="json")
+    next_before = to_payload(next_policy, mode="json")
     next_guard = AccountControlGuard(
         account_id=1,
         execution_id="new-config",
@@ -156,8 +158,8 @@ def test_guard_keeps_its_policy_when_configuration_changes() -> None:
     with pytest.raises(AccountControlBlockedError):
         next_guard.begin_operation("query_account", symbol="rb2610")
 
-    assert policy.model_dump(mode="json") == before
-    assert next_policy.model_dump(mode="json") == next_before
+    assert to_payload(policy, mode="json") == before
+    assert to_payload(next_policy, mode="json") == next_before
 
 
 def test_guard_atomically_checks_and_reserves_concurrent_account_quota(
@@ -170,16 +172,9 @@ def test_guard_atomically_checks_and_reserves_concurrent_account_quota(
         channel=TradeChannel("external"),
         policy=resolve_account_control_policy(
             "default",
-            AccountControlOverride.model_validate(
-                _override_payload(
-                    {
-                        "query_account": {
-                            "account": {
-                                "per_day": {"limit": 1, "on_trigger": "block"},
-                            }
-                        }
-                    }
-                )
+            from_payload(
+                AccountControlOverride,
+                _override_payload({"query_account": {"account": {"per_day": {"limit": 1, "on_trigger": "block"}}}}),
             ),
         ),
         baseline=AccountControlCounterSnapshot(),
@@ -233,13 +228,9 @@ def test_guard_allows_high_priority_operation_ahead_of_queued_queries(
         channel=TradeChannel("ctp"),
         policy=resolve_account_control_policy(
             "default",
-            AccountControlOverride.model_validate(
-                {
-                    "operations": {
-                        "query_account": {"priority": 100},
-                        "cancel_order": {"priority": 0},
-                    }
-                }
+            from_payload(
+                AccountControlOverride,
+                {"operations": {"query_account": {"priority": 100}, "cancel_order": {"priority": 0}}},
             ),
         ),
         baseline=AccountControlCounterSnapshot(),
@@ -316,7 +307,7 @@ def test_guard_records_account_execution_channel_symbol_and_operation() -> None:
         channel=TradeChannel("external"),
         policy=resolve_account_control_policy(
             "default",
-            AccountControlOverride.model_validate(_override_payload({"query_order": {"per_day": 1}})),
+            from_payload(AccountControlOverride, _override_payload({"query_order": {"per_day": 1}})),
         ),
         baseline=baseline,
         clock=_clock,
@@ -370,8 +361,8 @@ def test_guard_waits_until_min_interval_ms_elapsed() -> None:
         channel=TradeChannel("external"),
         policy=resolve_account_control_policy(
             "default",
-            AccountControlOverride.model_validate(
-                _override_payload({"place_order": {"per_day": 5, "min_interval_ms": 500}})
+            from_payload(
+                AccountControlOverride, _override_payload({"place_order": {"per_day": 5, "min_interval_ms": 500}})
             ),
         ),
         baseline=AccountControlCounterSnapshot(),
@@ -423,8 +414,8 @@ def test_guard_uses_default_clock_for_waiting_when_no_sleep_or_clock_is_injected
             channel=TradeChannel("external"),
             policy=resolve_account_control_policy(
                 "default",
-                AccountControlOverride.model_validate(
-                    _override_payload({"place_order": {"per_day": 5, "min_interval_ms": 500}})
+                from_payload(
+                    AccountControlOverride, _override_payload({"place_order": {"per_day": 5, "min_interval_ms": 500}})
                 ),
             ),
             baseline=AccountControlCounterSnapshot(),
@@ -456,7 +447,7 @@ def test_guard_does_not_persist_symbol_counters_without_operation_symbol_policy(
         channel=TradeChannel("external"),
         policy=resolve_account_control_policy(
             "default",
-            AccountControlOverride.model_validate(_override_payload({"query_account": {"account": {"per_day": 10}}})),
+            from_payload(AccountControlOverride, _override_payload({"query_account": {"account": {"per_day": 10}}})),
         ),
         baseline=AccountControlCounterSnapshot(),
         clock=_clock,
@@ -490,7 +481,7 @@ def test_guard_waits_until_next_minute_when_per_minute_quota_is_exhausted() -> N
         channel=TradeChannel("external"),
         policy=resolve_account_control_policy(
             "default",
-            AccountControlOverride.model_validate(_override_payload({"query_order": {"per_minute": 1, "per_day": 5}})),
+            from_payload(AccountControlOverride, _override_payload({"query_order": {"per_minute": 1, "per_day": 5}})),
         ),
         baseline=baseline,
         clock=_clock_from(current, current, next_minute),
@@ -551,7 +542,8 @@ def test_default_place_order_does_not_use_ctp_shared_group() -> None:
         channel=TradeChannel("external"),
         policy=resolve_account_control_policy(
             "default",
-            AccountControlOverride.model_validate(
+            from_payload(
+                AccountControlOverride,
                 {
                     "operations": {
                         "place_order": {
@@ -559,12 +551,8 @@ def test_default_place_order_does_not_use_ctp_shared_group() -> None:
                             "symbol": {"min_interval_ms": {"limit": 1, "on_trigger": "wait"}},
                         }
                     },
-                    "groups": {
-                        "ctp_td_global": {
-                            "min_interval_ms": {"limit": 500, "on_trigger": "wait"},
-                        }
-                    },
-                }
+                    "groups": {"ctp_td_global": {"min_interval_ms": {"limit": 500, "on_trigger": "wait"}}},
+                },
             ),
         ),
         baseline=AccountControlCounterSnapshot(),
@@ -604,14 +592,9 @@ def test_guard_applies_group_per_minute_limit_across_baseline_operations() -> No
         channel=TradeChannel("ctp"),
         policy=resolve_account_control_policy(
             "ctp",
-            AccountControlOverride.model_validate(
-                {
-                    "groups": {
-                        "ctp_td_global": {
-                            "per_minute": {"limit": 1, "on_trigger": "block"},
-                        }
-                    }
-                }
+            from_payload(
+                AccountControlOverride,
+                {"groups": {"ctp_td_global": {"per_minute": {"limit": 1, "on_trigger": "block"}}}},
             ),
         ),
         baseline=baseline,
@@ -654,14 +637,9 @@ def test_guard_uses_recent_allowed_snapshot_for_shared_group_min_interval() -> N
         channel=TradeChannel("ctp"),
         policy=resolve_account_control_policy(
             "ctp",
-            AccountControlOverride.model_validate(
-                {
-                    "groups": {
-                        "ctp_td_global": {
-                            "min_interval_ms": {"limit": 500, "on_trigger": "wait"},
-                        }
-                    }
-                }
+            from_payload(
+                AccountControlOverride,
+                {"groups": {"ctp_td_global": {"min_interval_ms": {"limit": 500, "on_trigger": "wait"}}}},
             ),
         ),
         baseline=AccountControlCounterSnapshot(),
@@ -701,7 +679,7 @@ def test_guard_waits_across_control_date_boundary_for_min_interval() -> None:
         channel=TradeChannel("external"),
         policy=resolve_account_control_policy(
             "default",
-            AccountControlOverride.model_validate(_override_payload({"place_order": {"min_interval_ms": 300}})),
+            from_payload(AccountControlOverride, _override_payload({"place_order": {"min_interval_ms": 300}})),
         ),
         baseline=AccountControlCounterSnapshot(),
         recent_allowed_snapshot=recent_snapshot,

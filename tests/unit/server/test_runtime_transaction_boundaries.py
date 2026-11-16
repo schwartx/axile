@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi import HTTPException, Response
 
+from axile.common.serialization import from_payload, to_payload
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.server import account_assets as assets_service
 from axile.server.api.routes import account_assets, account_crud, account_execution, account_feishu, portfolio
@@ -78,7 +79,7 @@ def test_routes_release_transactions_before_worker(tmp_path, monkeypatch, entry,
                 await account_assets.refresh_account_assets(1)
             elif entry == "feishu":
                 account = await _get_account_or_404(1)
-                await account_feishu._build_test_card(AccountSnapshot.model_validate(account.model_dump()))
+                await account_feishu._build_test_card(from_payload(AccountSnapshot, to_payload(account)))
             elif entry == "account_target":
                 await account_execution.refresh_account_target_snapshot(1)
             elif entry == "portfolio_target":

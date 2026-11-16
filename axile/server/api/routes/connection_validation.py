@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from axile.channels import get_channel
+from axile.common.serialization import to_payload
 from axile.server.api.routes.account_support import _get_account_or_404
 from axile.server.connection_validation import ValidationJob, ValidationRejected, service
 from axile.server.error_details import exception_details
@@ -16,7 +17,8 @@ account_router = APIRouter(prefix="/account", tags=["channel-validations"])
 
 def _public_job(job: ValidationJob) -> dict[str, Any]:
     """仅导出任务状态，内部任务可继续承接记录器的状态更新。"""
-    return job.model_dump(
+    return to_payload(
+        job,
         mode="json",
         include={
             "validation_id",
@@ -104,8 +106,10 @@ async def get_validation_table(validation_id: str, step_id: str, response: Respo
     """按需读取验证时的表格快照，不发起新的柜台请求。"""
     response.headers["Cache-Control"] = "no-store"
     try:
-        return service.get_table(validation_id, step_id).model_dump(
-            mode="json", include={"kind", "title", "summary", "description", "columns", "row_count", "rows"}
+        return to_payload(
+            service.get_table(validation_id, step_id),
+            mode="json",
+            include={"kind", "title", "summary", "description", "columns", "row_count", "rows"},
         )
     except ValidationRejected as exc:
         raise HTTPException(exc.status, exception_details(exc)) from exc

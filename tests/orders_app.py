@@ -14,6 +14,8 @@ from types import SimpleNamespace
 from fastapi import FastAPI, Request
 from pydantic_core import MultiHostUrl
 
+from axile.common.serialization import from_payload, to_payload
+
 _runtime = tempfile.TemporaryDirectory(prefix="axile-orders-browser-")
 _path = Path(_runtime.name)
 (_path / "config.toml").write_text(
@@ -107,7 +109,7 @@ async def lifespan(_app):
     native_operation_sync("migration_upgrade", {})
     receipt = native_operation_sync(
         "account_create",
-        {"account": account.model_dump(mode="json"), "now": clock_now_iso(), "idempotency_key": "orders-browser"},
+        {"account": to_payload(account, mode="json"), "now": clock_now_iso(), "idempotency_key": "orders-browser"},
     )
     assert receipt["account"]["id"] == account.id
     previous_command = account_orders._command
@@ -115,13 +117,14 @@ async def lifespan(_app):
     account_orders._command = command
 
     async def query_assets(_account):
-        return UnifiedAccountAssets.model_validate(
+        return from_payload(
+            UnifiedAccountAssets,
             {
                 **position_snapshot(_account.id)["assets"],
                 "total_asset": 200000,
                 "available_cash": 95000,
                 "market_value": 105000,
-            }
+            },
         )
 
     account_assets.query_account_assets = query_assets

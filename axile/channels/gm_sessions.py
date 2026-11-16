@@ -1,11 +1,11 @@
 """股票（GM）阶段边界，供调度与 SDK 调用共用。"""
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, model_validator
-
+from axile.common.serialization import from_payload
 from axile.executor.order_cancellation import CancelNotAllowedError
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -19,26 +19,25 @@ GM_SPECIAL_WINDOWS = {
 AUCTION_PHASES = frozenset(GM_SPECIAL_WINDOWS) - {"after_hours"}
 
 
-class GMSessionTime(BaseModel):
+@dataclass(kw_only=True, frozen=True)
+class GMSessionTime:
     """一次独立阶段触发。"""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
 
     enabled: bool = False
     time: str
 
+    __forbid_unknown__ = True
 
-class GMSessionSettings(BaseModel):
+
+@dataclass(kw_only=True, frozen=True)
+class GMSessionSettings:
     """GM 自动调仓阶段；盘后专用委托尚未验证，禁止启用。"""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
 
     opening_cancelable: GMSessionTime = GMSessionTime(time="09:15")
     opening_locked: GMSessionTime = GMSessionTime(time="09:20")
     closing_auction: GMSessionTime = GMSessionTime(time="14:57")
     after_hours: GMSessionTime = GMSessionTime(time="15:05")
 
-    @model_validator(mode="after")
     def validate_times(self) -> "GMSessionSettings":
         """校验阶段内触发时间，拒绝尚未验证的盘后能力。"""
         for name, (start, _end, label) in GM_SPECIAL_WINDOWS.items():
@@ -56,12 +55,18 @@ class GMSessionSettings(BaseModel):
     @classmethod
     def from_channel_options(cls, options: dict[str, Any]) -> "GMSessionSettings | None":
         """从渠道配置读取 GM 排程；未配置时保留普通交易日历。"""
-        return cls.model_validate(options["gm"]) if "gm" in options else None
+        return from_payload(cls, options["gm"]) if "gm" in options else None
 
     def validate_channel(self, channel: str) -> None:
         """特殊阶段配置仅允许用于 GM。"""
         if str(channel) != "gm":
             raise ValueError("集合竞价和盘后定价交易配置仅适用于股票（GM）")
+
+    __forbid_unknown__ = True
+
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        self.validate_times()
 
 
 def gm_phase(now: datetime) -> str:

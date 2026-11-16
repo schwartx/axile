@@ -8,10 +8,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from math import isfinite
 from typing import TYPE_CHECKING
 
+from axile.common.serialization import copy_data, to_payload
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.algorithms.core.base import AlgorithmInput, resolve_algorithm
@@ -527,7 +528,7 @@ class ExecutionEngine:
             if conversion is not None:
                 # 前后阶段可使用不同规划快照，换算依据必须逐笔保留，不能在合并后补填。
                 for record in [*result.orders, *result.trades]:
-                    record.value_conversion = conversion.model_copy(deep=True)
+                    record.value_conversion = copy_data(conversion, deep=True)
             return result
         except ExecutionTerminated:
             # 协作式终止不是失败：必须穿透 symbol 级错误捕获，交给上层 lifecycle
@@ -942,10 +943,10 @@ class ExecutionEngine:
         reconciled = []
         for result in results:
             final = self._owner.get_current_volume(result.symbol, assets)
-            if not isfinite(final) or normal_session_skip(result.model_dump()):
+            if not isfinite(final) or normal_session_skip(result):
                 reconciled.append(result)
                 continue
-            values = {name: getattr(result, name) for name in AlgorithmResult.model_fields}
+            values = {name: getattr(result, name) for name in (item.name for item in fields(AlgorithmResult))}
             values.update(final_volume=final, account_assets=assets)
             if result.expected_volume is not None:
                 confirmed = self._is_same_volume(final, result.expected_volume)
@@ -1294,7 +1295,7 @@ class ExecutionEngine:
                 },
             }
             if result.sizing is not None:
-                details["sizing"] = result.sizing.model_dump(mode="json")
+                details["sizing"] = to_payload(result.sizing, mode="json")
             if result.error:
                 details["error"] = result.error
             self._runtime.emit_audit_event(
@@ -1379,7 +1380,7 @@ class ExecutionEngine:
         account_assets, explicit_error = (
             self._account_snapshot if self._account_snapshot is not None else self._read_result_assets()
         )
-        only_normal_skips = bool(results) and all(normal_session_skip(result.model_dump()) for result in results)
+        only_normal_skips = bool(results) and all(normal_session_skip(result) for result in results)
         if (
             explicit_error
             and not only_normal_skips
@@ -1419,9 +1420,7 @@ class ExecutionEngine:
         """部分休市仅在没有收尾查询错误时提升原因码，保留真实异常。"""
         if status == ExecutionStatus.PARTIAL and not explicit_error and _only_session_closed_failures(symbol_results):
             return COMMON_SESSION_CLOSED
-        if is_success_status(status) and any(
-            normal_session_skip(result.model_dump()) for result in symbol_results.values()
-        ):
+        if is_success_status(status) and any(normal_session_skip(result) for result in symbol_results.values()):
             return COMMON_SESSION_CLOSED
         return None
 

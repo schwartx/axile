@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from axile.common.config import settings
+from axile.common.serialization import to_payload
 from axile.executor.algorithms.utils.clock import clock_now_ms
 from axile.executor.order_submissions import OrderSubmissionFact, OrderSubmissionRecorder
 from axile.server.native_store import native_operation_sync
@@ -39,7 +40,7 @@ def submission_database() -> str:
 def _save_fact(database: str, fact: OrderSubmissionFact) -> None:
     """同步原生短事务可从 SDK 回调线程调用；提交返回后才允许发送。"""
     native_operation_sync(
-        "save_order_submission", {"fact": fact.model_dump(mode="json"), "now_ms": clock_now_ms()}, database=database
+        "save_order_submission", {"fact": to_payload(fact, mode="json"), "now_ms": clock_now_ms()}, database=database
     )
 
 

@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 
 from loguru import logger
 
+from axile.common.serialization import copy_data, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.context import controlled_source
 from axile.executor.account_control.diagnostics import AccountControlHit, operation_label
@@ -610,11 +611,9 @@ class AccountControlGuard:
             # 同步返回可能晚于异步拒绝，不能把已知拒绝覆盖成“已提交”。
             if event.outcome in {"broker_rejected", "broker_sync_rejected"}:
                 outcome = event.outcome
-            updated = event.model_copy(
-                update={
-                    "outcome": outcome,
-                    "metadata": _merge_metadata(event.metadata, _business_metadata(metadata)),
-                }
+            updated = copy_data(
+                event,
+                update={"outcome": outcome, "metadata": _merge_metadata(event.metadata, _business_metadata(metadata))},
             )
             self._events[event_index] = updated
         if self.monitor_outcome_sink is not None:
@@ -803,7 +802,7 @@ class AccountControlGuard:
             remaining=max(0, rule.limit - used),
         )
         self._quota_warnings[key] = warning
-        return _merge_metadata(metadata, {"quota_warning": warning.model_dump(mode="json")})
+        return _merge_metadata(metadata, {"quota_warning": to_payload(warning, mode="json")})
 
     def _should_track_symbol_scope(self, *, operation: str, symbol: str | None) -> bool:
         if symbol is None:

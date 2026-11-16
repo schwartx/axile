@@ -14,6 +14,7 @@ from typing import cast
 
 from loguru import logger
 
+from axile.common.serialization import from_payload, to_payload
 from axile.domain.execution import ExecutionKind
 from axile.executor.abstract_executor.base import AbstractExecutor
 from axile.executor.account_control.models import AccountControlContextKind, AccountControlSource
@@ -86,7 +87,7 @@ def _finalize_with_orders(executor: object | None, state: _WorkerBackendState) -
 
 def _handle_prepare(request: WorkerBackendRequest, state: _WorkerBackendState) -> WorkerBackendResponse:
     """创建或复用账户执行器，并返回通道准备结果。"""
-    account = AccountSnapshot.model_validate(request.account_payload)
+    account = from_payload(AccountSnapshot, request.account_payload)
     expected = str(request.payload.get("expected_trading_day", "") or "") or None
     executor = None
     termination_controller = _activate_worker_termination(state, request.execution_id)
@@ -161,7 +162,7 @@ def _capture_before_account_snapshot(executor: object) -> dict[str, object] | No
             raise
         logger.warning(f"执行前账户快照读取失败，将标记为 unavailable: {exc}")
         return None
-    return cast("dict[str, object]", assets.model_dump(mode="json"))
+    return cast("dict[str, object]", to_payload(assets, mode="json"))
 
 
 def _handle_get_account_assets(
@@ -169,7 +170,7 @@ def _handle_get_account_assets(
     state: _WorkerBackendState,
 ) -> WorkerBackendResponse:
     """查询并返回账户资产或出入金流水，不进入交易执行生命周期."""
-    account = AccountSnapshot.model_validate(request.account_payload)
+    account = from_payload(AccountSnapshot, request.account_payload)
     executor = None
     try:
         executor = _resolve_prepared_executor(
@@ -186,10 +187,10 @@ def _handle_get_account_assets(
         )
         if request.command == "get_account_cash_flows":
             flows = cast(AbstractExecutor, executor).get_account_cash_flows()
-            output = {"rows": [flow.model_dump(mode="json") for flow in flows]}
+            output = {"rows": [to_payload(flow, mode="json") for flow in flows]}
         else:
             assets = cast(AbstractExecutor, executor).get_account_assets()
-            output = assets.model_dump(mode="json")
+            output = to_payload(assets, mode="json")
         return WorkerBackendResponse(
             request_id=request.request_id,
             kind="result",
@@ -216,7 +217,7 @@ def _handle_calculate_portfolio(
     正常成功后保留完整 executor 及进程状态；失败结果由 manager 关闭并重建
     worker，超时则由 watchdog 直接终止当前进程。
     """
-    account = AccountSnapshot.model_validate(request.account_payload)
+    account = from_payload(AccountSnapshot, request.account_payload)
     executor = None
     calculation_finished = threading.Event()
     try:
@@ -257,7 +258,7 @@ def _handle_calculate_portfolio(
         return WorkerBackendResponse(
             request_id=request.request_id,
             kind="result",
-            output_payload={"portfolio_result": result.model_dump() if isinstance(result, PortfolioTarget) else result},
+            output_payload={"portfolio_result": to_payload(result) if isinstance(result, PortfolioTarget) else result},
             channel_type=account.trade_channel,
         )
     except Exception as exc:  # noqa: BLE001 - IPC 边界统一返回结构化错误
@@ -296,7 +297,7 @@ def _handle_execute_trade(
     WorkerBackendResponse
         对应的成功、终止或失败响应。
     """
-    account = AccountSnapshot.model_validate(request.account_payload)
+    account = from_payload(AccountSnapshot, request.account_payload)
     standard_input = UnifiedStandardInput.from_dict(
         cast(dict[str, object], request.payload["standard_input"]),
         channel_type=account.trade_channel,
@@ -412,7 +413,7 @@ def _handle_empty_positions(
     WorkerBackendResponse
         对应的成功、终止或失败响应。
     """
-    account = AccountSnapshot.model_validate(request.account_payload)
+    account = from_payload(AccountSnapshot, request.account_payload)
     empty_kwargs = cast(dict[str, object], request.payload["empty_kwargs"])
     resolved_algorithm = cast(dict[str, object], empty_kwargs["algorithm"])
     audit_context = cast(
@@ -570,7 +571,7 @@ def _handle_worker_request(
     if request.command == "empty_positions":
         return _handle_empty_positions(request, state)
     if request.command == "disconnect":
-        account = AccountSnapshot.model_validate(request.account_payload)
+        account = from_payload(AccountSnapshot, request.account_payload)
         with state.resource_lock:
             state.account_id, state.config_signature = account.id, executor_config_signature(account)
             state.connection_observer = state.connection_collector.observe_session
@@ -620,7 +621,7 @@ def _bind_worker_session(state, binding, request) -> None:
             return
         state.connection_collector = ConnectionCollector(binding)
         if binding and binding.manually_disconnected and not state.connection_attempted:
-            account = AccountSnapshot.model_validate(request.account_payload)
+            account = from_payload(AccountSnapshot, request.account_payload)
             state.account_id, state.config_signature = account.id, executor_config_signature(account)
             state.disconnected = state.connection_attempted = True
 

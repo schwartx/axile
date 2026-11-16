@@ -2,6 +2,7 @@
 
 import pytest
 
+from axile.common.serialization import copy_data, from_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.guard import AccountControlGuard
 from axile.executor.account_control.models import AccountControlOverride
@@ -25,7 +26,7 @@ def test_chase_reprices_with_post_cancel_quote_and_remaining_volume(monkeypatch,
     executor = _ChaseExecutor()
     tracker = OrderTracker(executor, clock=clock, chase_config=ChaseConfig(enabled=True, interval=0))
     executor.tracker = tracker
-    order = _build_pending_order("reprice").model_copy(update={"direction": direction})
+    order = copy_data(_build_pending_order("reprice"), update={"direction": direction})
     tracker.add_order(order, direction=direction)
     bid = 11 if direction == OrderDirection.BUY else 8
     tracker.on_price_update(_price(order.symbol, bid, bid + 0.1, 1_000_000))
@@ -35,7 +36,7 @@ def test_chase_reprices_with_post_cancel_quote_and_remaining_volume(monkeypatch,
     def cancel(_order_id):
         clock.sleep(11)
         tracker.on_price_update(fresh)
-        tracker.on_order_update(order.model_copy(update={"status": OrderStatus.CANCELED, "filled_volume": 40}))
+        tracker.on_order_update(copy_data(order, update={"status": OrderStatus.CANCELED, "filled_volume": 40}))
         return True
 
     captured = []
@@ -110,7 +111,7 @@ def test_fallback_uses_one_frozen_snapshot_for_protection_and_each_child(monkeyp
     session.get_market_data()
     clock.sleep(11)
     tracker = OrderTracker(session, clock=clock, chase_config=ChaseConfig(enabled=True))
-    order = _build_pending_order("fallback", symbol).model_copy(update={"volume": 3, "status": OrderStatus.CANCELED})
+    order = copy_data(_build_pending_order("fallback", symbol), update={"volume": 3, "status": OrderStatus.CANCELED})
     snapshot = _price(symbol, 9.99, 10.01, 1_011_000)
     tracker.on_price_update(snapshot)
     tracker.add_order(order, direction=OrderDirection.BUY)
@@ -169,8 +170,8 @@ def test_fallback_order_validation_reaches_final_submission_boundary(monkeypatch
     owner = _TestExecutor()
     session = ExecutionSession(owner, "rb2612.SHFE")
     tracker = OrderTracker(session, clock=clock, chase_config=ChaseConfig(enabled=True))
-    order = _build_pending_order("fallback-boundary", session.symbol).model_copy(
-        update={"volume": 3, "status": OrderStatus.CANCELED}
+    order = copy_data(
+        _build_pending_order("fallback-boundary", session.symbol), update={"volume": 3, "status": OrderStatus.CANCELED}
     )
     tracker.add_order(order, direction=OrderDirection.BUY)
     info = dict(tracker._chase_info[order.order_id])
@@ -189,8 +190,9 @@ def test_fallback_order_validation_reaches_final_submission_boundary(monkeypatch
         channel=TradeChannel("ctp"),
         policy=resolve_account_control_policy(
             "default",
-            AccountControlOverride.model_validate(
-                {"operations": {"place_order": {"account": {"min_interval_ms": {"limit": 11000}}}}}
+            from_payload(
+                AccountControlOverride,
+                {"operations": {"place_order": {"account": {"min_interval_ms": {"limit": 11000}}}}},
             ),
         ),
         baseline=AccountControlCounterSnapshot(),
@@ -221,7 +223,7 @@ def test_fallback_final_validation_uses_order_purpose_and_frozen_quote(monkeypat
     owner = _TestExecutor()
     session = ExecutionSession(owner, "rb2612.SHFE")
     tracker = OrderTracker(session, clock=clock, chase_config=ChaseConfig(enabled=True))
-    order = _build_pending_order("fallback-purpose", session.symbol).model_copy(update={"status": OrderStatus.CANCELED})
+    order = copy_data(_build_pending_order("fallback-purpose", session.symbol), update={"status": OrderStatus.CANCELED})
     tracker.add_order(order, direction=OrderDirection.BUY)
     info = dict(tracker._chase_info[order.order_id])
     tracker.on_order_update(order)
@@ -246,8 +248,9 @@ def test_fallback_final_validation_uses_order_purpose_and_frozen_quote(monkeypat
         channel=TradeChannel("ctp"),
         policy=resolve_account_control_policy(
             "default",
-            AccountControlOverride.model_validate(
-                {"operations": {"place_order": {"account": {"min_interval_ms": {"limit": 1000}}}}}
+            from_payload(
+                AccountControlOverride,
+                {"operations": {"place_order": {"account": {"min_interval_ms": {"limit": 1000}}}}},
             ),
         ),
         baseline=AccountControlCounterSnapshot(),

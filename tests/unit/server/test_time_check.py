@@ -8,9 +8,9 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from pydantic import ValidationError
 
 from axile.common.config import settings
+from axile.common.serialization import copy_data, parse_input
 from axile.server.time_check import probes
 from axile.server.time_check import service as runtime
 from axile.server.time_check.models import TimeCheckSettings
@@ -81,8 +81,8 @@ def test_custom_source(host):
     ],
 )
 def test_invalid_config(patch):
-    with pytest.raises(ValidationError):
-        TimeCheckSettings(**patch)
+    with pytest.raises(ValueError):
+        parse_input(TimeCheckSettings, {**patch})
 
 
 def test_alerts_preserve_unverified_offset_and_recover_independently():
@@ -154,7 +154,7 @@ def test_stale_service_cannot_overwrite_database_settings(tmp_path, monkeypatch)
             await stale.start()
             await first.save(TimeCheckSettings(source="tencent"))
             with pytest.raises(ValueError, match="其他窗口"):
-                await stale.save(TimeCheckSettings(source="tuna"))
+                await stale.save(parse_input(TimeCheckSettings, {"source": "tuna"}))
             restored = runtime.TimeCheckService()
             await restored.start()
             assert restored.settings.source == "tencent"
@@ -185,14 +185,14 @@ def test_overlap_config_conflict_scheduler_and_snapshot(tmp_path, monkeypatch):
             await service.save(TimeCheckSettings(enabled=True, source="tencent"))
             sched.add_job.assert_called_once()
             with pytest.raises(ValueError, match="其他窗口"):
-                await service.save(TimeCheckSettings())
+                await service.save(parse_input(TimeCheckSettings, {}))
             release.set()
             await original
             assert service.state["result"]["host"] == "ntp.aliyun.com"
             assert service.state["result"]["settings"]["version"] == 0
             assert service.settings.version == 1
             assert service.snapshot()["status"] == "warning"
-            await service.save(service.settings.model_copy(update={"enabled": False}))
+            await service.save(copy_data(service.settings, update={"enabled": False}))
             assert service.snapshot()["status"] == "warning"
             assert (await anext(frames))["version"] > 0
             await frames.aclose()

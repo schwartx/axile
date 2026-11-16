@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from axile.common.serialization import copy_data
 from axile.executor.account_orders import AccountOrderBook
 from axile.executor.algorithms.utils.clock import clock_now_iso
 from axile.executor.connection_state import ConnectionObservation
@@ -239,7 +240,7 @@ def test_failed_new_configuration_disables_recovery_using_previous_account(monke
     from axile.server.execution.worker_backend import order_monitor, worker_state
 
     account, binding = session()
-    updated = account.model_copy(update={"account_config": {"investor_id": "different"}})
+    updated = copy_data(account, update={"account_config": {"investor_id": "different"}})
     state = _WorkerBackendState(
         orders_account=account,
         orders_binding=binding,
@@ -334,7 +335,7 @@ def test_command_terminal_outside_recent_window_survives_equal_version_mirror(co
         account_orders=book,
         get_pending_orders=lambda _: [],
         get_account_control_guard=lambda: None,
-        reconcile_terminal_order=lambda *_: terminal.model_copy(deep=True),
+        reconcile_terminal_order=lambda *_: copy_data(terminal, deep=True),
     )
     worker = _WorkerBackendState(
         executor=executor,
@@ -351,7 +352,7 @@ def test_command_terminal_outside_recent_window_survives_equal_version_mirror(co
         "state": "submitted",
         "message": "等待回报",
         "requested_at": "2026-10-15T10:04:00",
-        "order": public_order(terminal.model_copy(update={"status": "部分成交"})),
+        "order": public_order(copy_data(terminal, update={"status": "部分成交"})),
     }
     version = book.snapshot()["version"]
     result = run_order_command(executor, {"command": command, "tracked": [(terminal.symbol, "0")]})

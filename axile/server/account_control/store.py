@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from loguru import logger
 
+from axile.common.serialization import to_payload
 from axile.executor.account_control.models import (
     AccountControlBucketType,
     AccountControlCounterDeltaWrite,
@@ -69,8 +70,8 @@ class AccountControlStore:
         receipt = await native_operation(
             "control_flush_records",
             {
-                "counter_deltas": [row.model_dump(mode="json") for row in counter_deltas],
-                "events": [row.model_dump(mode="json") for row in events],
+                "counter_deltas": [to_payload(row, mode="json") for row in counter_deltas],
+                "events": [to_payload(row, mode="json") for row in events],
                 "close_session": close_session,
                 "warning_created_at": clock_now_iso(),
             },

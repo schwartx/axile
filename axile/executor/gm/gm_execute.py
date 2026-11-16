@@ -598,7 +598,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             pos_dict = cast("dict[str, Any]", pos)
             direction = PositionDirection.LONG if pos_dict.get("side", 1) == 1 else PositionDirection.SHORT
 
-            position = Position.model_construct(
+            position = Position(
                 symbol=GM_SYMBOL_RESOLVER.to_axile(str(pos_dict.get("symbol", ""))),
                 volume=float(pos_dict.get("volume", 0)),
                 available_volume=_gm_available_volume(pos_dict),
@@ -647,7 +647,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             f"available_cash={available_cash}, positions={len(unified_positions)}, market_value={market_value}"
         )
 
-        return UnifiedAccountAssets.model_construct(
+        return UnifiedAccountAssets(
             available_cash=available_cash,
             total_asset=total_asset,
             market_value=market_value,

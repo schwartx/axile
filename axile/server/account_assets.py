@@ -7,6 +7,7 @@ from typing import Any
 
 from loguru import logger
 
+from axile.common.serialization import to_payload
 from axile.executor.algorithms.utils.clock import clock_async_sleep
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.server.asset_observations import is_asset_observation
@@ -39,9 +40,9 @@ async def _refresh_and_save(account: AccountContext) -> dict[str, Any]:
     assert account.id is not None
     try:
         assets = await query_account_assets(account)
-        if not is_asset_observation(assets.model_dump()):
+        if not is_asset_observation(to_payload(assets)):
             raise ValueError("渠道未返回可信账户资产")
-        payload = assets.model_dump(mode="json")
+        payload = to_payload(assets, mode="json")
         snapshot = await save_manual_asset_snapshot(account.id, payload)
         from axile.channels import get_channel
         from axile.server.account_cash_flows import sync_cash_flows

@@ -10,22 +10,23 @@ Notes
 import asyncio
 import os
 import signal
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import parse_qsl, urlsplit
 from zoneinfo import ZoneInfo
 
 import aiohttp
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, status
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from msgspec import Meta
 
 from axile.common.config import (
     CONFIG_TOML_PATH,
-    SqliteDsn,
     is_configured,
     settings,
     update_config_toml_values,
+    validate_sqlite_dsn,
     write_config_toml,
 )
 from axile.common.default_system_notification import DEFAULT_SYSTEM_NOTIFICATION_CODE
@@ -33,31 +34,34 @@ from axile.common.notification_config import validate_notification_config
 from axile.common.notification_function import run_notification_function
 from axile.executor.algorithms.utils.clock import clock_now, get_default_clock
 from axile.server.algorithm_discovery import require_algorithm_directory
+from axile.server.api.inputs import json_body
 from axile.server.error_notifications import build_system_notification_context, build_test_card
 from axile.server.native_store import native_operation
 
 router = APIRouter(prefix="/init", tags=["init"])
 
-_DSN_ADAPTER: TypeAdapter[SqliteDsn] = TypeAdapter(SqliteDsn)
 _HTTP_TIMEOUT_SECONDS = 15
 _RESTART_DELAY_SECONDS = 0.5
 # 飞书自定义机器人 webhook 前缀；测试推送走与真实告警一致的地址契约。
 _FEISHU_HOOK_BASE = "https://open.feishu.cn/open-apis/bot/v2/hook/"
 
 
-class DbTestRequest(BaseModel):
+@dataclass(kw_only=True)
+class DbTestRequest:
     """数据库连通性测试载荷."""
 
     uri: str
 
 
-class FeishuTestRequest(BaseModel):
+@dataclass(kw_only=True)
+class FeishuTestRequest:
     """执行告警飞书机器人连通性测试载荷."""
 
     key: str | None = None
 
 
-class NotificationFunctionTestRequest(BaseModel):
+@dataclass(kw_only=True)
+class NotificationFunctionTestRequest:
     """系统通知函数试跑请求。"""
 
     code: str
@@ -65,28 +69,29 @@ class NotificationFunctionTestRequest(BaseModel):
     event_type: Literal["execution_error", "execution_timeout", "account_control.warning"] = "execution_error"
 
 
-class ExecutionAlertUpdateRequest(BaseModel):
+@dataclass(kw_only=True)
+class ExecutionAlertUpdateRequest:
     """系统级执行错误告警配置更新载荷."""
-
-    model_config = ConfigDict(extra="forbid")
 
     exe_err_feishu_key: str | None = None
     system_execution_notification_mode: Literal["default", "function"] = "default"
     system_execution_notification_code: str | None = None
 
+    __forbid_unknown__ = True
 
-class BrowserTitleUpdateRequest(BaseModel):
+
+@dataclass(kw_only=True)
+class BrowserTitleUpdateRequest:
     """浏览器标签标题；空串恢复按访问地址生成的默认标题。"""
 
-    model_config = ConfigDict(extra="forbid")
+    browser_title: Annotated[str, Meta(max_length=120)]
 
-    browser_title: str = Field(max_length=120)
+    __forbid_unknown__ = True
 
 
-class InitSaveRequest(BaseModel):
+@dataclass(kw_only=True)
+class InitSaveRequest:
     """初始化向导保存载荷；凭证省略或为 None 时保留现值，告警空串则清除。"""
-
-    model_config = ConfigDict(extra="forbid")
 
     sqlalchemy_database_uri: str | None = None
     exe_err_feishu_key: str | None = None
@@ -95,8 +100,10 @@ class InitSaveRequest(BaseModel):
     environment: Literal["local", "staging", "production"] = "local"
     app_log_dir: str = "./logs"
     axile_log_rotation: str = "1 day"
-    algorithm_modules: list[str] = []
-    algorithm_directories: list[str] = []
+    algorithm_modules: list[str] = field(default_factory=lambda: [])
+    algorithm_directories: list[str] = field(default_factory=lambda: [])
+
+    __forbid_unknown__ = True
 
 
 def _prefill_values() -> dict[str, Any]:
@@ -131,7 +138,7 @@ def init_status() -> dict[str, Any]:
 
 
 @router.post("/test-db", response_model=None)
-async def test_db(payload: DbTestRequest) -> dict[str, Any]:
+async def test_db(payload: Annotated[DbTestRequest, Depends(json_body(DbTestRequest))]) -> dict[str, Any]:
     """
     测试数据库连通性.
 
@@ -149,7 +156,9 @@ async def test_db(payload: DbTestRequest) -> dict[str, Any]:
 
 
 @router.patch("/browser-title", response_model=None)
-def update_browser_title(payload: BrowserTitleUpdateRequest) -> dict[str, Any]:
+def update_browser_title(
+    payload: Annotated[BrowserTitleUpdateRequest, Depends(json_body(BrowserTitleUpdateRequest))],
+) -> dict[str, Any]:
     """先持久化再更新当前标题，无需重启服务。"""
     if not is_configured():
         raise HTTPException(status_code=409, detail="系统尚未完成初始化，请先完成初始化配置")
@@ -172,7 +181,7 @@ def _sqlite_boolean(value: str) -> bool:
 
 def _database_probe_target(uri: str) -> tuple[str, dict[str, Any]]:
     """保留 SQLite 文件名及原生 URI 参数，不打开配置中的业务库。"""
-    _DSN_ADAPTER.validate_python(uri)
+    validate_sqlite_dsn(uri)
     parsed = urlsplit(uri, allow_fragments=False)
     if parsed.netloc or not uri.startswith("sqlite+aiosqlite://"):
         raise ValueError("SQLite 地址不能包含主机或认证信息")
@@ -201,7 +210,7 @@ def _database_probe_target(uri: str) -> tuple[str, dict[str, Any]]:
 
 
 @router.post("/test-feishu", response_model=None)
-async def test_feishu(payload: FeishuTestRequest) -> dict[str, Any]:
+async def test_feishu(payload: Annotated[FeishuTestRequest, Depends(json_body(FeishuTestRequest))]) -> dict[str, Any]:
     """
     测试执行告警飞书机器人是否连通.
 
@@ -237,7 +246,9 @@ async def test_feishu(payload: FeishuTestRequest) -> dict[str, Any]:
 
 
 @router.patch("/execution-alert", response_model=None)
-def update_execution_alert(payload: ExecutionAlertUpdateRequest) -> dict[str, Any]:
+def update_execution_alert(
+    payload: Annotated[ExecutionAlertUpdateRequest, Depends(json_body(ExecutionAlertUpdateRequest))],
+) -> dict[str, Any]:
     """
     保存系统级执行错误告警配置并立即生效.
 
@@ -314,7 +325,9 @@ async def system_notification_result() -> Response:
 
 
 @router.post("/execution-alert/function/test", response_model=None)
-async def test_system_notification_function(payload: NotificationFunctionTestRequest) -> dict[str, Any]:
+async def test_system_notification_function(
+    payload: Annotated[NotificationFunctionTestRequest, Depends(json_body(NotificationFunctionTestRequest))],
+) -> dict[str, Any]:
     """运行当前草稿，使用当前凭据选择；不会保存配置或覆盖真实告警摘要。"""
     error = RuntimeError("样例执行超时" if payload.event_type == "execution_timeout" else "样例执行异常")
     context = build_system_notification_context(error, None, event_type=payload.event_type, is_test=True)
@@ -351,7 +364,9 @@ def _restart_process() -> None:
 
 
 @router.post("/save", response_model=None)
-def init_save(payload: InitSaveRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
+def init_save(
+    payload: Annotated[InitSaveRequest, Depends(json_body(InitSaveRequest))], background_tasks: BackgroundTasks
+) -> dict[str, Any]:
     """
     校验并写入初始化配置，随后触发进程重启.
 
@@ -390,8 +405,8 @@ def init_save(payload: InitSaveRequest, background_tasks: BackgroundTasks) -> di
     )
     feishu_key = payload.exe_err_feishu_key if payload.exe_err_feishu_key is not None else settings.exe_err_feishu_key
     try:
-        _DSN_ADAPTER.validate_python(database_uri)
-    except ValidationError as exc:
+        validate_sqlite_dsn(database_uri)
+    except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"数据库地址不合法：{exc}",

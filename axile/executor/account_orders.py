@@ -7,6 +7,7 @@ from copy import deepcopy
 from threading import RLock
 from typing import Any
 
+from axile.common.serialization import copy_data
 from axile.executor.account_activity import AccountActivityBook
 from axile.executor.algorithms.utils.clock import clock_now_iso
 from axile.executor.models.unified_order import UnifiedOrder
@@ -80,7 +81,7 @@ class AccountOrderBook:
                 ):
                     incoming[key] = previous
                 elif key not in incoming and not drop_missing:
-                    incoming[key] = previous.model_copy(update={"status": "状态未知"}, deep=True)
+                    incoming[key] = copy_data(previous, update={"status": "状态未知"}, deep=True)
             self._orders = OrderedDict(
                 (key, merge_order(self._orders.get(key), value)) for key, value in incoming.items()
             )
@@ -126,7 +127,7 @@ class AccountOrderBook:
         """读取指定订单已观察到的终态。"""
         with self._lock:
             order = self._orders.get((symbol, order_id))
-            return order.model_copy(deep=True) if order is not None and order.is_completed() else None
+            return copy_data(order, deep=True) if order is not None and order.is_completed() else None
 
     def remember_metadata(self, order_id: str, metadata: dict[str, Any]) -> None:
         """保留订单的执行归属，执行结束后的回报仍可关联原 execution。"""

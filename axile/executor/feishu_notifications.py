@@ -11,6 +11,7 @@ import loguru
 
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.notification_function import NotificationFunctionResult, run_notification_function
+from axile.common.serialization import from_payload, to_payload
 from axile.executor.algorithms.utils import clock_now
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets, is_degraded_snapshot_source
 from axile.executor.models.unified_order import UnifiedOrder
@@ -51,7 +52,7 @@ def _select_notification_assets(
     if notification_snapshot is None:
         return None
     try:
-        assets = UnifiedAccountAssets.model_validate(notification_snapshot["assets"])
+        assets = from_payload(UnifiedAccountAssets, notification_snapshot["assets"])
     except Exception as exc:
         source.logger.error(f"飞书通知备用资产快照无效: {exc}")
         return None
@@ -93,7 +94,8 @@ def build_execution_notification_context(
     from axile.server._native import _core
 
     assets = _select_notification_assets(source, output, notification_snapshot)
-    result = output.model_dump(
+    result = to_payload(
+        output,
         mode="json",
         exclude={
             "memory": True,
@@ -110,8 +112,10 @@ def build_execution_notification_context(
             },
         },
     )
-    result["account_assets"] = (assets if assets is not None else output.account_assets).model_dump(
-        mode="json", exclude={"extra": True, "positions": {"__all__": {"extra"}}}
+    result["account_assets"] = to_payload(
+        assets if assets is not None else output.account_assets,
+        mode="json",
+        exclude={"extra": True, "positions": {"__all__": {"extra"}}},
     )
     if output.inputs is not None:
         audit = output.inputs.extra.get("audit")

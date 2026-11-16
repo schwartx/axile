@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from axile.common.serialization import to_payload
 from axile.executor.models.unified_account_assets import Position, UnifiedAccountAssets
 from axile.server import account_assets as assets
 from axile.server import account_orders as orders
@@ -57,7 +58,7 @@ def activity():
 def test_explicit_query_commits_position_before_return_and_reloading(monkeypatch, tmp_path, entry):
     async def scenario():
         async with runtime_database(tmp_path / "positions.db"):
-            previous = await save_manual_asset_snapshot(1, asset(1).model_dump(mode="json"))
+            previous = await save_manual_asset_snapshot(1, to_payload(asset(1), mode="json"))
             command = AsyncMock(return_value=activity() if entry == "activity" else dict(data=[], sampled_at="now"))
 
             async def after_records(_):
@@ -86,7 +87,7 @@ def test_explicit_query_commits_position_before_return_and_reloading(monkeypatch
 def test_partial_failure_keeps_records_and_previous_position(monkeypatch, tmp_path, busy):
     async def scenario():
         async with runtime_database(tmp_path / "positions.db"):
-            previous = await save_manual_asset_snapshot(1, asset(1).model_dump(mode="json"))
+            previous = await save_manual_asset_snapshot(1, to_payload(asset(1), mode="json"))
             monkeypatch.setattr(orders, "_command", AsyncMock(return_value=activity()))
             query = AsyncMock(side_effect=RuntimeError("password=secret"))
             monkeypatch.setattr(assets, "query_account_assets", query)
@@ -312,7 +313,7 @@ def test_status_read_reports_its_own_background_result_not_an_unrelated_snapshot
             assert identity and pending["status"] == "pending"
             await started.wait()
             # 任意更大的快照编号都不能完成这次仍在运行的任务。
-            await save_manual_asset_snapshot(1, asset(1).model_dump(mode="json"))
+            await save_manual_asset_snapshot(1, to_payload(asset(1), mode="json"))
             status = await orders.query_account_orders(account, reconciliation_id=identity)
             assert status["asset_refresh"]["status"] == "pending"
             release.set()

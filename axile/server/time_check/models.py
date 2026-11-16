@@ -2,9 +2,10 @@
 
 import ipaddress
 import re
-from typing import Literal
+from dataclasses import dataclass, field
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from msgspec import Meta
 
 from axile.server.cron import parse_cron_expr
 
@@ -15,19 +16,18 @@ SOURCES = {
 }
 
 
-class TimeCheckSettings(BaseModel):
+@dataclass(kw_only=True)
+class TimeCheckSettings:
     """检查配置；不接受 URL 或 shell 参数作为服务器地址。"""
 
-    model_config = ConfigDict(extra="forbid")
-    version: int = Field(default=0, ge=0)
+    version: Annotated[int, Meta(ge=0)] = field(default=0)
     source: Literal["aliyun", "tencent", "tuna", "custom"] = "aliyun"
     custom_host: str = ""
-    custom_port: int = Field(default=123, ge=1, le=65535)
-    threshold_ms: int = Field(default=500, ge=1, le=86400000)
+    custom_port: Annotated[int, Meta(ge=1, le=65535)] = field(default=123)
+    threshold_ms: Annotated[int, Meta(ge=1, le=86400000)] = field(default=500)
     enabled: bool = False
     cron_expr: str = "0 * * * *"
 
-    @model_validator(mode="after")
     def validate_settings(self) -> "TimeCheckSettings":
         """禁用时也校验排程，使下次开启行为确定。"""
         if not self.cron_expr.strip() or not parse_cron_expr(self.cron_expr):
@@ -56,3 +56,9 @@ class TimeCheckSettings(BaseModel):
     def port(self) -> int:
         """内置源固定使用标准 NTP 端口。"""
         return self.custom_port if self.source == "custom" else 123
+
+    __forbid_unknown__ = True
+
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        self.validate_settings()

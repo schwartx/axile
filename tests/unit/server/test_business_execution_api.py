@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
+from axile.common.serialization import to_payload
 from axile.domain.execution import ExecutionArtifactType
 from axile.server._native import _core
 from axile.server.api.routes import account_crud, account_execution, account_schedule
@@ -38,7 +39,7 @@ def database(native_database, monkeypatch):
         receipt = native_store_call(
             native_database,
             "account_create",
-            {"now": "2026-10-20", "account": build_account(id=account_id, portfolio_id=None).model_dump(mode="json")},
+            {"now": "2026-10-20", "account": to_payload(build_account(id=account_id, portfolio_id=None), mode="json")},
         )
         assert receipt["account"]["id"] == account_id
     return native_database

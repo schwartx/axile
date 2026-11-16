@@ -6,6 +6,7 @@ from threading import Event
 
 import pytest
 
+from axile.common.serialization import from_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor.base import AbstractExecutor
 from axile.executor.algorithms.utils.clock import get_default_clock, set_default_clock
@@ -40,7 +41,8 @@ class _TerminationTestExecutor(AbstractExecutor):
         self.cancel_attempts: list[tuple[str, str]] = []
         super().__init__(
             TradeChannel("ctp"),
-            CTPAccountConfig.model_validate(
+            from_payload(
+                CTPAccountConfig,
                 {
                     "broker_id": "b",
                     "investor_id": "i",
@@ -49,7 +51,7 @@ class _TerminationTestExecutor(AbstractExecutor):
                     "md_front": "tcp://md:2",
                     "app_id": "app",
                     "auth_code": "auth",
-                }
+                },
             ),
         )
 

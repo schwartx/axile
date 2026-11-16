@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from axile.common.serialization import copy_data, to_payload
 from axile.executor.algorithms.core.base import AlgorithmInput
 from axile.executor.algorithms.defaults.pov import impl as pov
 from axile.executor.algorithms.defaults.single_maker import impl as maker
@@ -153,15 +154,15 @@ def test_algorithm_outcome(monkeypatch, module, case, expected, termination_at=N
         return
     result = entry(executor, input_data)
     # 路由响应和 SQLite JSON 触发器都不接受 NaN，失败结果也必须能落库回放。
-    json.dumps(result.model_dump(mode="json"), allow_nan=False)
+    json.dumps(to_payload(result, mode="json"), allow_nan=False)
     if case not in {"noop", "reject", "risk_block"}:
         assert tracker.wait_for_completion.call_args.kwargs["timeout"] == pytest.approx(0.75)
     # 柔和版保留 outcome 键，但它必须恒等于 f(status)，不允许独立结论。
-    assert "diagnostics" not in result.model_dump()
+    assert "diagnostics" not in to_payload(result)
     assert result.outcome == outcome_from_status(result.status)
     assert result.outcome_reason == result.error
     assert result.status == expected
-    assert result.model_dump(mode="json")["status"] == expected.value
+    assert to_payload(result, mode="json")["status"] == expected.value
     _assert_result_evidence(result, expected, case, volume, orders)
 
 
@@ -188,7 +189,10 @@ def test_maker_initial_position_failure_does_not_enter_finalization(monkeypatch)
     monkeypatch.setattr(maker, "setup_order_tracker", setup)
     with pytest.raises(ValueError) as raised:
         maker.single_maker_callback(
-            executor, AlgorithmInput(symbol="A", target_volume=1, trade_rule={}, params=maker.SingleMakerParams())
+            executor,
+            AlgorithmInput(
+                **{"symbol": "A", "target_volume": 1, "trade_rule": {}, "params": maker.SingleMakerParams()}
+            ),
         )
     assert raised.value is error
     setup.assert_not_called()
@@ -363,14 +367,7 @@ def test_real_algorithm_crosses_zero_within_slice_budget(monkeypatch, module, mo
         [(abs(current[0]), PositionDirection.LONG if current[0] > 0 else PositionDirection.SHORT)] if current[0] else []
     )
     price = UnifiedPriceData(
-        symbol=executor.symbol,
-        last_price=100,
-        asks=[(101, 10)],
-        bids=[(99, 10)],
-        volume=0,
-        timestamp=0,
-        update_time="",
-        book_valid=True,
+        symbol=executor.symbol, last_price=100, asks=[(101, 10)], bids=[(99, 10)], volume=0, timestamp=0, update_time=""
     )
     executor.get_market_data.return_value = price
     executor.get_pending_orders.return_value = []
@@ -383,7 +380,7 @@ def test_real_algorithm_crosses_zero_within_slice_budget(monkeypatch, module, mo
     def emit_market_volume():
         seen_market_volume[0] += 3
         for callback in callbacks["price"]:
-            callback(price.model_copy(update={"volume": seen_market_volume[0]}))
+            callback(copy_data(price, update={"volume": seen_market_volume[0]}))
 
     def register_price(callback):
         callbacks["price"].append(callback)
@@ -412,7 +409,7 @@ def test_real_algorithm_crosses_zero_within_slice_budget(monkeypatch, module, mo
         current[0] += sign * volume
         submissions.append((clock.time(), volume))
         for callback in callbacks["order"]:
-            callback(order.model_copy(update={"status": OrderStatus.FILLED, "filled_volume": volume}))
+            callback(copy_data(order, update={"status": OrderStatus.FILLED, "filled_volume": volume}))
         return order
 
     executor.place_order.side_effect = fill
@@ -493,7 +490,7 @@ def test_real_tracker_handles_restriction_within_original_budget(monkeypatch, mo
         live.pop(order.order_id, None)
         current[0] += order.volume
         for callback in callbacks["order"]:
-            callback(order.model_copy(update={"status": OrderStatus.FILLED, "filled_volume": order.volume}))
+            callback(copy_data(order, update={"status": OrderStatus.FILLED, "filled_volume": order.volume}))
 
     def submit(*args, **kwargs):
         assert not live, "原单仍在场时不能补单"
@@ -521,7 +518,7 @@ def test_real_tracker_handles_restriction_within_original_budget(monkeypatch, mo
             for order in list(live.values()):
                 filled(order)
             for callback in callbacks["price"]:
-                callback(price.model_copy(update={"volume": 3}))
+                callback(copy_data(price, update={"volume": 3}))
 
     def wait(event, timeout):
         if not event.is_set():

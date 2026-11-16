@@ -1,5 +1,6 @@
 """UnifiedStandardOutput 当前主路径测试。"""
 
+from axile.common.serialization import from_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.models.execution_result import AlgorithmResult
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
@@ -9,27 +10,17 @@ from axile.executor.models.unified_output import ExecutionStatus, UnifiedStandar
 
 def _build_account_assets_payload() -> UnifiedAccountAssets:
     """构造一个最小可用的账户资产对象。"""
-    return UnifiedAccountAssets.model_validate(
-        {
-            "available_cash": 100.0,
-            "total_asset": 150.0,
-            "market_value": 50.0,
-            "currency": "CNY",
-            "positions": [],
-        }
+    return from_payload(
+        UnifiedAccountAssets,
+        {"available_cash": 100.0, "total_asset": 150.0, "market_value": 50.0, "currency": "CNY", "positions": []},
     )
 
 
 def test_memory_error_does_not_treat_output_as_failed() -> None:
     """memory.error 只作为诊断信息。"""
     output = UnifiedStandardOutput(
-        account_assets=UnifiedAccountAssets.model_validate(
-            {
-                "available_cash": 0.0,
-                "total_asset": 0.0,
-                "market_value": 0.0,
-                "positions": [],
-            }
+        account_assets=from_payload(
+            UnifiedAccountAssets, {"available_cash": 0.0, "total_asset": 0.0, "market_value": 0.0, "positions": []}
         ),
         inputs=None,
         memory={"error": "debug only"},

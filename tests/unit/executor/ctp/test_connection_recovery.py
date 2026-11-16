@@ -10,6 +10,7 @@ import pytest
 from openctp_ctp import thostmduserapi as md
 from openctp_ctp import thosttraderapi as td
 
+from axile.common.serialization import copy_data, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.ctp.ctp_execute import CTPExecutor, CtpRequestError, CtpSessionRecoveryRequired
 from axile.executor.instrument_catalog import InstrumentCatalog, LocalInstrumentCatalogProvider
@@ -603,7 +604,7 @@ def test_stage_error_contract_survives_invalidation_and_ipc(broker, monkeypatch,
     request = WorkerBackendRequest(
         request_id="prepare",
         command="prepare",
-        account_payload=build_account(id=1).model_dump(mode="json"),
+        account_payload=to_payload(build_account(id=1), mode="json"),
         execution_id=None,
         payload={},
     )
@@ -816,7 +817,7 @@ def test_missing_configuration_names_fields_without_values(broker):
 
     observations = []
     connection_monitor(broker.executor).bind(observations.append)
-    broker.executor.account_config = broker.executor.account_config.model_copy(update={"password": ""})
+    broker.executor.account_config = copy_data(broker.executor.account_config, update={"password": ""})
     with pytest.raises(ValueError):
         broker.start()
     assert observations[-1].label == "连接配置不完整"

@@ -4,8 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from pydantic import ValidationError
 
+from axile.common.serialization import parse_input, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.futures_close_policy import (
     CommissionRates,
@@ -39,12 +39,15 @@ def assets(*, today=3, yesterday=2, frozen=0):
 
 
 def rates(yesterday=10, today=1, money=0):
-    return CommissionRates(
-        yesterday_money=money,
-        yesterday_volume=yesterday,
-        today_money=money,
-        today_volume=today,
-        queried_at="2026-10-16T09:00:00",
+    return parse_input(
+        CommissionRates,
+        {
+            "yesterday_money": money,
+            "yesterday_volume": yesterday,
+            "today_money": money,
+            "today_volume": today,
+            "queried_at": "2026-10-16T09:00:00",
+        },
     )
 
 
@@ -85,15 +88,15 @@ def test_product_uses_letters_not_month(symbol, expected):
 
 
 def test_override_normalization_and_validation():
-    policy = FuturesClosePolicy(overrides={"ag": "today_first"})
+    policy = parse_input(FuturesClosePolicy, {"overrides": {"ag": "today_first"}})
     assert rule_priority(policy, futures_product("AG2611")) == ("today_first", "override")
     assert rule_priority(policy, futures_product("AG2612")) == ("today_first", "override")
     for overrides in ({"AG2611": "today_first"}, {"ag": "today_first", "AG": "yesterday_first"}):
-        with pytest.raises(ValidationError):
-            FuturesClosePolicy(overrides=overrides)
+        with pytest.raises(ValueError):
+            parse_input(FuturesClosePolicy, {"overrides": overrides})
     policy.validate_channel(TradeChannel("tq"))
     with pytest.raises(ValueError, match="不支持"):
-        FuturesClosePolicy(mode="fee").validate_channel(TradeChannel("tq"))
+        parse_input(FuturesClosePolicy, {"mode": "fee"}).validate_channel(TradeChannel("tq"))
     assert rule_priority(FuturesClosePolicy(fallback="today_first"), "UNKNOWN") == ("today_first", "default")
     assert rule_priority(FuturesClosePolicy(fallback="today_first"), "AG") == ("yesterday_first", "preset")
 
@@ -199,7 +202,7 @@ def test_money_and_volume_fees_are_compared_on_same_basis():
     assert rates(yesterday=0, today=1).costs(0, 0) == (0, 1)
     with pytest.raises(ValueError):
         rates(money=0.0001).costs(0, 15)
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValueError):
         rates(today=float("nan"))
 
 
@@ -231,7 +234,7 @@ def test_fee_comparison_never_requests_quotes(
     owner.get_market_data.assert_not_called()
     decision = owner.runtime.emit_audit_event.call_args.kwargs["details"]["futures_close_decision"]
     assert decision["priority"] == expected
-    assert decision["commission_rates"] == actual_rates.model_dump()
+    assert decision["commission_rates"] == to_payload(actual_rates)
     assert decision["reference_price"] is None
     if reason:
         assert reason in decision["fallback_reason"]

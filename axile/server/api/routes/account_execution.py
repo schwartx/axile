@@ -5,18 +5,20 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Annotated, Any, cast
 
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from loguru import logger
 
 from axile.channels import get_channel
+from axile.common.serialization import from_payload, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionArtifactType, ExecutionTaskStatus
 from axile.executor.models.portfolio_target import PortfolioTarget, TargetMode
 from axile.executor.models.value_conversion import PriceValueConversion
 from axile.server._native import _core
 from axile.server.api.deps import HistoryPaginationDep, SchedDep
+from axile.server.api.inputs import json_body
 from axile.server.api.routes.account_support import (
     _build_empty_positions_algorithm,
     _get_account_or_404,
@@ -242,7 +244,7 @@ def _sizing_rows_from_facts(
                 },
                 "value_conversion": None
                 if row.get("value_conversion") is None
-                else PriceValueConversion.model_validate(row["value_conversion"]).model_dump(mode="json"),
+                else to_payload(from_payload(PriceValueConversion, row["value_conversion"]), mode="json"),
             }
         except (TypeError, ValueError, OverflowError):
             # 不完整历史证据保持不可用；不得套用当前规则补填历史换算。
@@ -440,7 +442,7 @@ async def refresh_account_target_snapshot(account_id: int) -> dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="账户正在执行或刷新，请稍后再试")
 
     try:
-        raw_target = await resolve_portfolio_target(Portfolio.model_validate(portfolio), account)
+        raw_target = await resolve_portfolio_target(from_payload(Portfolio, portfolio), account)
         raw_target = PortfolioTarget.from_result(raw_target)
         normalized_target = _normalize_rebalance_target(account, raw_target.targets, target_mode=raw_target.mode)
         snapshot = await append_target_weight_snapshot(
@@ -493,7 +495,7 @@ async def execution_status(execution_id: str) -> dict[str, Any]:
 @router.post("/{account_id}/terminate", response_model=None)
 async def terminate_account_execution(
     account_id: int,
-    payload: ExecutionTerminateRequest,
+    payload: Annotated[ExecutionTerminateRequest, Depends(json_body(ExecutionTerminateRequest))],
     response: Response,
 ) -> dict[str, Any]:
     """终止账户当前正在运行的执行任务."""

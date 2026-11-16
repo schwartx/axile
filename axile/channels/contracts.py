@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Protocol
+from dataclasses import dataclass, field, is_dataclass
+from typing import TYPE_CHECKING, Annotated, Literal, Protocol
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from msgspec import Meta
 
 from axile.common.order_param_model import OrderParamModel
 from axile.executor.connection_progress import ConnectionStepDefinition as ConnectionStepDefinition
@@ -44,37 +44,34 @@ def _identity_symbol(symbol: str) -> str:
     return symbol
 
 
-class _FrozenDescriptorModel(BaseModel):
-    """为渠道描述模型提供不可变且禁止额外字段的共同配置."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class ReplayDisplayField(_FrozenDescriptorModel):
+@dataclass(kw_only=True, frozen=True)
+class ReplayDisplayField:
     """描述录制时冻结的只读字段，不承载脚本或组件。"""
 
-    key: str = Field(pattern=r"^[a-z][a-z0-9_]*$", max_length=80)
-    label: str = Field(min_length=1, max_length=120)
+    key: Annotated[str, Meta(pattern="^[a-z][a-z0-9_]*$", max_length=80)]
+    label: Annotated[str, Meta(min_length=1, max_length=120)]
     kind: Literal["text", "number", "bool", "enum"] = "text"
-    group: str | None = Field(default=None, max_length=80)
-    unit: str | None = Field(default=None, max_length=40)
-    decimals: int | None = Field(default=None, ge=0, le=18)
-    values: dict[str, str] = Field(default_factory=dict, max_length=128)
+    group: Annotated[str, Meta(max_length=80)] | None = field(default=None)
+    unit: Annotated[str, Meta(max_length=40)] | None = field(default=None)
+    decimals: Annotated[int, Meta(ge=0, le=18)] | None = field(default=None)
+    values: Annotated[dict[str, str], Meta(max_length=128)] = field(default_factory=dict)
 
 
-class ChannelReplayCapability(_FrozenDescriptorModel):
+@dataclass(kw_only=True, frozen=True)
+class ChannelReplayCapability:
     """声明渠道可交付的回放事实与允许字段；实际覆盖由录制确定。"""
 
-    supported: bool = Field(default=False, strict=True)
+    supported: bool = field(default=False)
     schema_version: Literal[1] = 1
-    adapter_version: str = Field(default="1", min_length=1, max_length=80)
-    streams: dict[str, dict[str, JsonValue]] = Field(default_factory=dict, max_length=8)
-    display: dict[str, list[ReplayDisplayField]] = Field(default_factory=dict, max_length=8)
-    attributes: dict[str, list[str]] = Field(default_factory=dict, max_length=16)
-    native_identity: dict[str, list[str]] = Field(default_factory=dict, max_length=16)
+    adapter_version: Annotated[str, Meta(min_length=1, max_length=80)] = field(default="1")
+    streams: Annotated[dict[str, dict[str, object]], Meta(max_length=8)] = field(default_factory=dict)
+    display: Annotated[dict[str, list[ReplayDisplayField]], Meta(max_length=8)] = field(default_factory=dict)
+    attributes: Annotated[dict[str, list[str]], Meta(max_length=16)] = field(default_factory=dict)
+    native_identity: Annotated[dict[str, list[str]], Meta(max_length=16)] = field(default_factory=dict)
 
 
-class AlgorithmReference(_FrozenDescriptorModel):
+@dataclass(kw_only=True, frozen=True)
+class AlgorithmReference:
     """
     描述渠道默认使用的算法及其参数.
 
@@ -86,11 +83,12 @@ class AlgorithmReference(_FrozenDescriptorModel):
         算法默认参数。
     """
 
-    method: str = Field(min_length=1)
-    params: dict[str, object] = Field(default_factory=dict)
+    method: Annotated[str, Meta(min_length=1)]
+    params: dict[str, object] = field(default_factory=dict)
 
 
-class ChannelDefaults(_FrozenDescriptorModel):
+@dataclass(kw_only=True, frozen=True)
+class ChannelDefaults:
     """
     描述新建账户时采用的渠道默认值.
 
@@ -110,15 +108,16 @@ class ChannelDefaults(_FrozenDescriptorModel):
         默认清仓算法；为空时沿用执行器默认行为。
     """
 
-    account_control_preset: str = Field(default="default", min_length=1)
-    long_leverage: float = Field(ge=0)
-    short_leverage: float = Field(ge=0)
-    execution_timeout: int = Field(ge=1)
+    account_control_preset: Annotated[str, Meta(min_length=1)] = field(default="default")
+    long_leverage: Annotated[float, Meta(ge=0)]
+    short_leverage: Annotated[float, Meta(ge=0)]
+    execution_timeout: Annotated[int, Meta(ge=1)]
     trade_algorithm: AlgorithmReference
     empty_positions_algorithm: AlgorithmReference | None = None
 
 
-class ChannelLeverage(_FrozenDescriptorModel):
+@dataclass(kw_only=True, frozen=True)
+class ChannelLeverage:
     """
     描述渠道可配置的杠杆范围.
 
@@ -132,12 +131,13 @@ class ChannelLeverage(_FrozenDescriptorModel):
         最小调整步长。
     """
 
-    min: float = Field(ge=0)
-    max: float = Field(gt=0)
-    step: float = Field(gt=0)
+    min: Annotated[float, Meta(ge=0)]
+    max: Annotated[float, Meta(gt=0)]
+    step: Annotated[float, Meta(gt=0)]
 
 
-class ChannelUnits(_FrozenDescriptorModel):
+@dataclass(kw_only=True, frozen=True)
+class ChannelUnits:
     """
     描述渠道在界面中使用的数量与价格单位.
 
@@ -157,12 +157,13 @@ class ChannelUnits(_FrozenDescriptorModel):
 
     quantity_kind: Literal["share", "contract", "base_asset", "custom"] = "custom"
     quantity_label: str = ""
-    quantity_max_decimals: int = Field(default=6, ge=0, le=12)
+    quantity_max_decimals: Annotated[int, Meta(ge=0, le=12)] = field(default=6)
     price_label: str = ""
     notional_label: str = ""
 
 
-class ChannelUi(_FrozenDescriptorModel):
+@dataclass(kw_only=True, frozen=True)
+class ChannelUi:
     """
     描述公共前端可消费的渠道界面差异.
 
@@ -193,7 +194,8 @@ class ChannelUi(_FrozenDescriptorModel):
     position_value_label: str = "市值"
 
 
-class ChannelAccountOption(_FrozenDescriptorModel):
+@dataclass(kw_only=True, frozen=True)
+class ChannelAccountOption:
     """描述账户表单选择字段中的一个选项."""
 
     value: str
@@ -201,21 +203,24 @@ class ChannelAccountOption(_FrozenDescriptorModel):
     description: str = ""
 
 
-class ChannelAccountFieldCondition(_FrozenDescriptorModel):
+@dataclass(kw_only=True, frozen=True)
+class ChannelAccountFieldCondition:
     """描述账户字段的声明式显示条件."""
 
-    field: str = Field(min_length=1)
+    field: Annotated[str, Meta(min_length=1)]
     equals: object
 
 
-class ChannelAccountFieldClipboard(_FrozenDescriptorModel):
+@dataclass(kw_only=True, frozen=True)
+class ChannelAccountFieldClipboard:
     """描述地址字段在智能剪贴板中的语义角色与批量匹配分组."""
 
     role: Literal["trading", "market-data", "rpc", "proxy"]
-    group: str | None = Field(default=None, min_length=1)
+    group: Annotated[str, Meta(min_length=1)] | None = field(default=None)
 
 
-class ChannelEndpointConstraints(_FrozenDescriptorModel):
+@dataclass(kw_only=True, frozen=True)
+class ChannelEndpointConstraints:
     """描述地址字段可由客户端确定的结构约束."""
 
     scheme: Literal["required", "optional", "forbidden"] = "optional"
@@ -223,7 +228,6 @@ class ChannelEndpointConstraints(_FrozenDescriptorModel):
     port: Literal["required", "optional"] = "required"
     allow_path: bool = False
 
-    @model_validator(mode="after")
     def validate_scheme_configuration(self) -> "ChannelEndpointConstraints":
         """拒绝互相矛盾的协议配置."""
         if self.scheme == "required" and not self.allowed_schemes:
@@ -232,29 +236,39 @@ class ChannelEndpointConstraints(_FrozenDescriptorModel):
             raise ValueError("scheme=forbidden 时不得声明 allowed_schemes")
         return self
 
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        self.validate_scheme_configuration()
 
-class ChannelNumberConstraints(_FrozenDescriptorModel):
+
+@dataclass(kw_only=True, frozen=True)
+class ChannelNumberConstraints:
     """描述金额字段的确定性数值下界."""
 
     gt: float | None = None
     gte: float | None = None
 
-    @model_validator(mode="after")
     def validate_bounds(self) -> "ChannelNumberConstraints":
         """同一字段只允许一种下界语义."""
         if self.gt is not None and self.gte is not None:
             raise ValueError("gt 与 gte 不能同时声明")
         return self
 
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        self.validate_bounds()
 
-class ChannelAccountFieldConstraints(_FrozenDescriptorModel):
+
+@dataclass(kw_only=True, frozen=True)
+class ChannelAccountFieldConstraints:
     """描述账户字段的可选结构化校验规则."""
 
     endpoint: ChannelEndpointConstraints | None = None
     number: ChannelNumberConstraints | None = None
 
 
-class ChannelAccountField(_FrozenDescriptorModel):
+@dataclass(kw_only=True, frozen=True)
+class ChannelAccountField:
     """
     描述渠道账户表单中的一个字段.
 
@@ -274,8 +288,8 @@ class ChannelAccountField(_FrozenDescriptorModel):
         输入项下方展示的渠道专属说明。
     """
 
-    name: str = Field(min_length=1)
-    label: str = Field(min_length=1)
+    name: Annotated[str, Meta(min_length=1)]
+    label: Annotated[str, Meta(min_length=1)]
     kind: Literal["text", "identifier", "secret", "endpoint", "directory", "money", "boolean", "select"]
     width: Literal["half", "full"]
     required: bool = True
@@ -288,7 +302,6 @@ class ChannelAccountField(_FrozenDescriptorModel):
     constraints: ChannelAccountFieldConstraints | None = None
     clipboard: ChannelAccountFieldClipboard | None = None
 
-    @model_validator(mode="after")
     def validate_constraints_match_kind(self) -> "ChannelAccountField":
         """确保约束类型与字段语义一致."""
         if self.presentation != "segmented" and self.kind != "select":
@@ -303,46 +316,56 @@ class ChannelAccountField(_FrozenDescriptorModel):
             raise ValueError("number 约束只能用于 money 字段")
         return self
 
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        self.validate_constraints_match_kind()
 
-class ChannelAccountNotice(_FrozenDescriptorModel):
+
+@dataclass(kw_only=True, frozen=True)
+class ChannelAccountNotice:
     """描述账户连接表单旁展示的一条提示."""
 
     tone: Literal["info", "warning"] = "info"
-    text: str = Field(min_length=1)
+    text: Annotated[str, Meta(min_length=1)]
 
 
-class ChannelAccountForm(_FrozenDescriptorModel):
+@dataclass(kw_only=True, frozen=True)
+class ChannelAccountForm:
     """描述渠道账户连接表单与提示信息."""
 
     fields: tuple[ChannelAccountField, ...] = ()
     notices: tuple[ChannelAccountNotice, ...] = ()
 
 
-class ChannelCalendar(_FrozenDescriptorModel):
+@dataclass(kw_only=True, frozen=True)
+class ChannelCalendar:
     """描述渠道使用的共享交易日历。"""
 
-    calendar_id: str = Field(pattern=r"^[a-z][a-z0-9_-]*$")
-    label: str = Field(min_length=1)
+    calendar_id: Annotated[str, Meta(pattern="^[a-z][a-z0-9_-]*$")]
+    label: Annotated[str, Meta(min_length=1)]
 
 
-class ChannelNightSchedule(_FrozenDescriptorModel):
+@dataclass(kw_only=True, frozen=True)
+class ChannelNightSchedule:
     """描述渠道快捷排程可合并的夜盘触发时点。"""
 
-    label: str = Field(min_length=1)
-    range_label: str = Field(min_length=1)
-    close: tuple[str, ...] = Field(min_length=1)
-    m15: tuple[str, ...] = Field(min_length=1)
-    m60: tuple[str, ...] = Field(min_length=1)
+    label: Annotated[str, Meta(min_length=1)]
+    range_label: Annotated[str, Meta(min_length=1)]
+    close: Annotated[tuple[str, ...], Meta(min_length=1)]
+    m15: Annotated[tuple[str, ...], Meta(min_length=1)]
+    m60: Annotated[tuple[str, ...], Meta(min_length=1)]
 
 
-class ChannelSessionWindow(_FrozenDescriptorModel):
+@dataclass(kw_only=True, frozen=True)
+class ChannelSessionWindow:
     """一条左闭右开的渠道可报单窗，时刻为 ``HH:MM``."""
 
-    start: str = Field(pattern=r"^\d{2}:\d{2}$")
-    end: str = Field(pattern=r"^\d{2}:\d{2}$")
+    start: Annotated[str, Meta(pattern="^\\d{2}:\\d{2}$")]
+    end: Annotated[str, Meta(pattern="^\\d{2}:\\d{2}$")]
 
 
-class ChannelSchedule(_FrozenDescriptorModel):
+@dataclass(kw_only=True, frozen=True)
+class ChannelSchedule:
     """描述渠道采用的公共定时规则类型与可报单窗.
 
     ``windows`` 是调度市场钟：空元组表示连续交易；隔夜窗 ``start >= end``。
@@ -354,21 +377,24 @@ class ChannelSchedule(_FrozenDescriptorModel):
     windows: tuple[ChannelSessionWindow, ...] = ()
 
 
-class ChannelPortfolioPreset(_FrozenDescriptorModel):
+@dataclass(kw_only=True, frozen=True)
+class ChannelPortfolioPreset:
     """描述组合向导中某市场的名称与示例标的."""
 
-    market_label: str = Field(min_length=1)
-    example_symbols: tuple[str, ...] = Field(min_length=1)
+    market_label: Annotated[str, Meta(min_length=1)]
+    example_symbols: Annotated[tuple[str, ...], Meta(min_length=1)]
 
 
-class ChannelConnectionValidation(_FrozenDescriptorModel):
+@dataclass(kw_only=True, frozen=True)
+class ChannelConnectionValidation:
     """渠道的连接验证能力，具体流程由渠道自己的验证器实现。"""
 
-    steps: tuple[ConnectionStepDefinition, ...] = Field(min_length=1)
-    notice: str = Field(min_length=1)
+    steps: Annotated[tuple[ConnectionStepDefinition, ...], Meta(min_length=1)]
+    notice: Annotated[str, Meta(min_length=1)]
 
 
-class ChannelAlgorithmScope(_FrozenDescriptorModel):
+@dataclass(kw_only=True, frozen=True)
+class ChannelAlgorithmScope:
     """声明账户品种算法的代码格式，不包含具体账户配置。"""
 
     pattern: str
@@ -376,7 +402,8 @@ class ChannelAlgorithmScope(_FrozenDescriptorModel):
     description: str
 
 
-class ChannelDescriptor(_FrozenDescriptorModel):
+@dataclass(kw_only=True, frozen=True)
+class ChannelDescriptor:
     """
     描述前端与 API 可见的渠道静态能力.
 
@@ -412,16 +439,16 @@ class ChannelDescriptor(_FrozenDescriptorModel):
         组合向导使用的市场名称与示例标的。
     """
 
-    channel: str = Field(pattern=r"^[a-z][a-z0-9_-]*$")
-    label: str = Field(min_length=1)
-    description: str = Field(min_length=1)
-    icon: str = Field(min_length=1)
-    market: str = Field(min_length=1)
-    currency: str = Field(min_length=1)
+    channel: Annotated[str, Meta(pattern="^[a-z][a-z0-9_-]*$")]
+    label: Annotated[str, Meta(min_length=1)]
+    description: Annotated[str, Meta(min_length=1)]
+    icon: Annotated[str, Meta(min_length=1)]
+    market: Annotated[str, Meta(min_length=1)]
+    currency: Annotated[str, Meta(min_length=1)]
     cash_flow_sync: bool = False
-    units: ChannelUnits = Field(default_factory=ChannelUnits)
-    ui: ChannelUi = Field(default_factory=ChannelUi)
-    replay: ChannelReplayCapability = Field(default_factory=ChannelReplayCapability)
+    units: ChannelUnits = field(default_factory=ChannelUnits)
+    ui: ChannelUi = field(default_factory=ChannelUi)
+    replay: ChannelReplayCapability = field(default_factory=ChannelReplayCapability)
     futures_close: FuturesCloseCapability | None = None
     algorithm_scope: ChannelAlgorithmScope | None = None
     defaults: ChannelDefaults
@@ -470,7 +497,7 @@ class ChannelPlugin:
         缺省表示该渠道尚未提供量化，在位性回退权重阈值。
     connect_account : Callable[[BaseAccountConfig], None] | None
         用户显式触发的交易账户登录能力；为空表示不支持，健康检查不会调用。
-    schedule_settings_model : type[BaseModel] | None
+    schedule_settings_model : type | None
         渠道专属调度配置的校验模型；为空表示不接受专属配置。
     """
 
@@ -489,12 +516,12 @@ class ChannelPlugin:
     requires_pre_connect_guard: bool = False
     connect_account: Callable[[BaseAccountConfig], None] | None = None
     validate_connection: ConnectionValidator | None = None
-    schedule_settings_model: type[BaseModel] | None = None
+    schedule_settings_model: type | None = None
 
     def __post_init__(self) -> None:
         """校验插件运行时契约中的基本不变量."""
-        if self.schedule_settings_model is not None and not issubclass(self.schedule_settings_model, BaseModel):
-            raise TypeError("schedule_settings_model 必须继承 BaseModel")
+        if self.schedule_settings_model is not None and not is_dataclass(self.schedule_settings_model):
+            raise TypeError("schedule_settings_model 必须是 dataclass")
         if self.execution_backend != "process":
             raise ValueError("执行后端仅支持 process")
         if (self.validate_connection is None) != (self.descriptor.connection_validation is None):

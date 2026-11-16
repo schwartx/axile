@@ -4,6 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from axile.common.serialization import copy_data
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.models.unified_order import OrderDirection, OrderType, UnifiedOrder
 from axile.executor.order_cancellation import CancelNotAllowedError, CancelRequestStatus, cancel_orders
@@ -26,7 +27,7 @@ def order(order_id="old"):
 @pytest.mark.parametrize("terminal", [False, True])
 def test_only_actual_terminal_resolves_cancellation(response, terminal):
     original = order()
-    final = original.model_copy(update={"status": OrderStatus.FILLED, "filled_volume": 10}) if terminal else None
+    final = copy_data(original, update={"status": OrderStatus.FILLED, "filled_volume": 10}) if terminal else None
     cancel = Mock(side_effect=response) if isinstance(response, Exception) else Mock(return_value=response)
     result = cancel_orders([original], cancel=cancel, reconcile=Mock(return_value=final))
     assert bool(result.unconfirmed) is (not terminal)
@@ -51,7 +52,7 @@ def test_only_actual_terminal_resolves_cancellation(response, terminal):
 def test_restricted_order_does_not_stop_other_cancellations_or_lose_reason():
     first, second = order("locked"), order("cancelable")
     cancel = Mock(side_effect=[CancelNotAllowedError("委托当前禁止撤销"), True])
-    final = second.model_copy(update={"status": OrderStatus.CANCELED})
+    final = copy_data(second, update={"status": OrderStatus.CANCELED})
     result = cancel_orders([first, second], cancel=cancel, reconcile=Mock(side_effect=[None, final]))
     assert cancel.call_count == 2
     assert result.details == {"rb2610:locked": "委托当前禁止撤销"}
@@ -69,7 +70,7 @@ def test_fatal_interruptions_are_not_swallowed(error, stage):
 
 
 def test_another_order_terminal_does_not_resolve_original():
-    unrelated = order("unrelated").model_copy(update={"status": OrderStatus.CANCELED})
+    unrelated = copy_data(order("unrelated"), update={"status": OrderStatus.CANCELED})
     result = cancel_orders([order()], cancel=Mock(return_value=True), reconcile=Mock(return_value=unrelated))
     assert result.unconfirmed
 

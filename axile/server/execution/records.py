@@ -11,6 +11,7 @@ from typing import Any, cast
 
 import loguru
 
+from axile.common.serialization import to_payload
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
 from axile.executor.models.execution_result import ExecutionStatus, outcome_from_status
 from axile.executor.models.unified_output import UnifiedStandardOutput
@@ -186,7 +187,7 @@ async def append_execute_record_from_output(
     dict[str, Any]
         持久化后的执行记录。
     """
-    result = output.model_dump(mode="json")
+    result = to_payload(output, mode="json")
     result["execution_kind"] = execution_kind.value
     if isinstance(result.get("inputs"), dict):
         result["inputs"] = sanitize_execution_input(result["inputs"])

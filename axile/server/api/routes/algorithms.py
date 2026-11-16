@@ -1,13 +1,14 @@
 """交易算法注册表查询路由."""
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException
 
 from axile.executor.algorithms.core.base import AlgorithmMetadata, list_algorithms_metadata
 from axile.server.algorithm_discovery import discover_directory
+from axile.server.api.inputs import json_body
 
 router = APIRouter(prefix="/algorithms", tags=["algorithms"])
 
@@ -75,7 +76,8 @@ def list_registered_algorithms() -> list[dict[str, Any]]:
     return algorithms
 
 
-class LoadAlgorithmFile(BaseModel):
+@dataclass(kw_only=True)
+class LoadAlgorithmFile:
     """用户明确选择加载的算法文件。"""
 
     directory: str
@@ -83,7 +85,9 @@ class LoadAlgorithmFile(BaseModel):
 
 
 @router.post("/load", response_model=None)
-def load_algorithm_file(request: LoadAlgorithmFile) -> list[dict[str, Any]]:
+def load_algorithm_file(
+    request: Annotated[LoadAlgorithmFile, Depends(json_body(LoadAlgorithmFile))],
+) -> list[dict[str, Any]]:
     """显式加载当前层声明文件，返回其实际注册结果。"""
     import sys
 

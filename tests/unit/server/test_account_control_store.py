@@ -8,6 +8,7 @@ from contextlib import closing
 
 import pytest
 
+from axile.common.serialization import from_payload
 from axile.executor.account_control.models import (
     AccountControlBucketType,
     AccountControlCounterDeltaWrite,
@@ -40,7 +41,8 @@ def control_database(monkeypatch, tmp_path):
 
 
 def _delta(uid="delta-1", **changes):
-    return AccountControlCounterDeltaWrite.model_validate(
+    return from_payload(
+        AccountControlCounterDeltaWrite,
         {
             "account_id": 1,
             "execution_id": "exec-1",
@@ -54,12 +56,13 @@ def _delta(uid="delta-1", **changes):
             "delta_count": 2,
             "delta_uid": uid,
             **changes,
-        }
+        },
     )
 
 
 def _event(uid="event-1", **changes):
-    return AccountControlEventWrite.model_validate(
+    return from_payload(
+        AccountControlEventWrite,
         {
             "account_id": 1,
             "execution_id": "exec-1",
@@ -78,7 +81,7 @@ def _event(uid="event-1", **changes):
             "created_at": "2026-03-22T10:00:00",
             "occurred_at_ms": 1000,
             **changes,
-        }
+        },
     )
 
 

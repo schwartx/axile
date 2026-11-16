@@ -3,25 +3,28 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass, fields
 from datetime import datetime, time, timedelta
 from hashlib import sha256
 from typing import Annotated, Any, cast
 
-from fastapi import APIRouter, Header, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from msgspec import UNSET, Meta
 from starlette.concurrency import run_in_threadpool
 
 from axile.channels import get_channel, list_channels
 from axile.channels.gm_sessions import GMSessionSettings
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.notification_function import validate_notification_function
+from axile.common.serialization import from_payload, parse_input, provided_fields, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.exceptions import AccountControlConfigError
 from axile.executor.account_control.presets import ensure_account_control_preset_compatible
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.server._native import _core
 from axile.server.api.deps import HistoryPaginationDep, SchedDep
+from axile.server.api.inputs import json_body
 from axile.server.api.routes.account_support import _get_account_or_404
 from axile.server.connection_runtime import public_session_views
 from axile.server.core.db import analysis_store
@@ -49,12 +52,13 @@ from axile.server.trading_calendar import CalendarDecisionStatus, evaluate_chann
 router = APIRouter()
 
 
-class AccountCopyRequest(BaseModel):
+@dataclass(kw_only=True)
+class AccountCopyRequest:
     """复制账户时仅接收新名称。"""
 
-    model_config = ConfigDict(extra="forbid")
+    name: Annotated[str, Meta(min_length=1)]
 
-    name: str = Field(min_length=1)
+    __forbid_unknown__ = True
 
 
 async def _account_response(account: dict[str, Any], sync: dict[str, Any]) -> dict[str, Any]:
@@ -80,16 +84,12 @@ def _validate_channel_account_config(channel: TradeChannel | str, config: dict[s
     """按渠道模型校验账户配置并返回可直接持久化的规范化结果。"""
     plugin = get_channel(str(channel))
     try:
-        validated = plugin.account_config_model.model_validate(config)
-    except ValidationError as exc:
-        errors = exc.errors(include_url=False, include_context=False)
-        first = errors[0] if errors else {"loc": (), "msg": "账户配置不合法"}
-        location = ".".join(str(part) for part in first.get("loc", ()))
-        prefix = f"account_config.{location}" if location else "account_config"
-        raise ValueError(f"{prefix}: {first.get('msg', '账户配置不合法')}") from exc
+        validated = parse_input(plugin.account_config_model, config)
+    except ValueError as exc:
+        raise ValueError(f"account_config: {exc}") from exc
     normalized = cast(
         "dict[str, object]",
-        validated.model_dump(mode="json", exclude_none=True, exclude={"channel_type"}),
+        to_payload(validated, mode="json", exclude_none=True, exclude={"channel_type"}),
     )
     for field in plugin.descriptor.account_form.fields:
         condition = field.visible_when
@@ -182,7 +182,7 @@ def _account_input_error_detail(
     """仅在编码失败时复用原生校验定位配置错误，正常请求不重复解析。"""
     if isinstance(error, UnicodeEncodeError) and override is not None:
         try:
-            _core.AccountControlOverride.model_validate(override)
+            from_payload(_core.AccountControlOverride, override)
         except AccountControlConfigError as config_error:
             return config_error.details
     return error.details if isinstance(error, AccountControlConfigError) else str(error)
@@ -207,9 +207,13 @@ def _resolve_next_account_control_binding(
     tuple[TradeChannel, str]
         更新后生效的交易渠道与账户控制 preset。
     """
-    next_trade_channel = db_account.trade_channel if account.trade_channel is None else account.trade_channel
+    next_trade_channel = (
+        db_account.trade_channel
+        if account.trade_channel is None or account.trade_channel is UNSET
+        else account.trade_channel
+    )
     next_preset = db_account.account_control_preset
-    if account.account_control_preset is not None:
+    if account.account_control_preset is not None and account.account_control_preset is not UNSET:
         next_preset = account.account_control_preset
     return next_trade_channel, next_preset
 
@@ -228,7 +232,7 @@ def _build_account_update_data(account: AccountUpdate) -> dict[str, object]:
     dict[str, object]
         已完成特殊字段规范化的更新载荷。
     """
-    data = account.model_dump(exclude_unset=True, mode="json")
+    data = to_payload(account, exclude_unset=True, mode="json")
     if data.get("portfolio_id") == -1:
         data["portfolio_id"] = None
     return data
@@ -241,7 +245,7 @@ def _build_account_update_data(account: AccountUpdate) -> dict[str, object]:
 )
 async def create_account(
     sched: SchedDep,
-    account: AccountCreate,
+    account: Annotated[AccountCreate, Depends(json_body(AccountCreate))],
     response: Response,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> dict[str, Any]:
@@ -257,7 +261,7 @@ async def create_account(
         ensure_account_control_preset_compatible(account.account_control_preset, account.trade_channel)
         account.futures_close_policy.validate_channel(account.trade_channel)
         if "gm" in account.channel_options:
-            GMSessionSettings.model_validate(account.channel_options["gm"]).validate_channel(account.trade_channel)
+            from_payload(GMSessionSettings, account.channel_options["gm"]).validate_channel(account.trade_channel)
         account_config = _validate_channel_account_config(account.trade_channel, account.account_config)
         _check_algorithm_channel_compat(account.algorithm, str(account.trade_channel), "下单算法")
         _check_algorithm_channel_compat(account.empty_positions_algorithm, str(account.trade_channel), "清仓算法")
@@ -267,12 +271,12 @@ async def create_account(
         code = account.execution_notification_code
         if code is not None and not code.strip():
             code = None
-        if code is None and account.feishu_key and "execution_notification_code" not in account.model_fields_set:
+        if code is None and account.feishu_key and "execution_notification_code" not in provided_fields(account):
             code = DEFAULT_ACCOUNT_NOTIFICATION_CODE
         saved = await _account_operation(
             "account_create",
             {
-                "account": account.model_dump(mode="json")
+                "account": to_payload(account, mode="json")
                 | {
                     "account_config": account_config,
                     "execution_notification_code": code,
@@ -322,7 +326,7 @@ async def create_account(
 async def copy_account(
     sched: SchedDep,
     account_id: int,
-    request: AccountCopyRequest,
+    request: Annotated[AccountCopyRequest, Depends(json_body(AccountCopyRequest))],
     response: Response,
 ) -> dict[str, Any]:
     """在来源账户完全暂停后复制配置与初始组合绑定。"""
@@ -338,9 +342,10 @@ async def copy_account(
             raise HTTPException(status_code=409, detail="来源账户仍有执行中或排队中的任务，请等待结束")
 
         try:
-            payload = AccountCreate.model_validate(
-                source.model_dump(include=set(AccountCreate.model_fields))
-                | {"name": request.name.strip(), "is_started": False, "replay_recording_enabled": False}
+            payload = parse_input(
+                AccountCreate,
+                to_payload(source, include={item.name for item in fields(AccountCreate)})
+                | {"name": request.name.strip(), "is_started": False, "replay_recording_enabled": False},
             )
             ensure_account_control_preset_compatible(payload.account_control_preset, payload.trade_channel)
             config = _validate_channel_account_config(payload.trade_channel, payload.account_config)
@@ -362,7 +367,7 @@ async def copy_account(
             connection_hub.changed(copied["id"])
         except AccountControlConfigError as exc:
             raise HTTPException(status_code=422, detail=exc.details) from exc
-        except (ValueError, ValidationError) as exc:
+        except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     sync = await _reconcile_committed_runtime(sched, copied["id"])
@@ -657,7 +662,7 @@ async def account_next_run_time(
     继续展开。
     """
     context = await _account_operation("account_next_run_context", {"account_id": account_id})
-    account = Account.model_validate(context["account"])
+    account = from_payload(Account, context["account"])
     job = sched.get_job(str(account_id))  # type: ignore[no-untyped-call]
     next_run_times = _next_job_run_times(job) if job is not None else []
     next_execution_times = (
@@ -709,7 +714,7 @@ async def account_next_run_time(
 async def update_account(
     sched: SchedDep,
     account_id: int,
-    account: AccountUpdate,
+    account: Annotated[AccountUpdate, Depends(json_body(AccountUpdate))],
     response: Response,
 ) -> dict[str, Any]:
     """更新账户."""
@@ -723,7 +728,7 @@ async def _configure_replay_response(account: dict[str, Any], response: Response
     """保存配置后交付录制意愿，未确认时返回待生效而不改交易同步状态。"""
     from axile.server.execution.worker_backend.manager import get_worker_backend_manager
 
-    replay_status = await get_worker_backend_manager().configure_replay(Account.model_validate(account))
+    replay_status = await get_worker_backend_manager().configure_replay(from_payload(Account, account))
     if replay_status["effective_version"] != replay_status["config_version"]:
         response.status_code = status.HTTP_202_ACCEPTED
 
@@ -746,24 +751,30 @@ async def _update_account(
         # 专属字段混入新模型校验。
         next_account_config = (
             db_account.account_config
-            if account.account_config is None
+            if account.account_config is None or account.account_config is UNSET
             else account.account_config
             if next_trade_channel != db_account.trade_channel
             else {**db_account.account_config, **account.account_config}
         )
         normalized_account_config = _validate_channel_account_config(next_trade_channel, next_account_config)
         # 算法与渠道按"更新后的目标状态"配对校验:PATCH 可能只改其一,必须取生效后的组合。
-        next_close_policy = account.futures_close_policy or db_account.futures_close_policy
-        next_close_policy.validate_channel(next_trade_channel)
-        next_options = (
-            account.channel_options if "channel_options" in account.model_fields_set else db_account.channel_options
+        next_close_policy = (
+            db_account.futures_close_policy
+            if account.futures_close_policy is UNSET or account.futures_close_policy is None
+            else account.futures_close_policy
         )
+        next_close_policy.validate_channel(next_trade_channel)
+        next_options = account.channel_options if account.channel_options is not UNSET else db_account.channel_options
         if "gm" in next_options:
-            GMSessionSettings.model_validate(next_options["gm"]).validate_channel(next_trade_channel)
-        next_algorithm = account.algorithm if account.algorithm is not None else db_account.algorithm
+            from_payload(GMSessionSettings, next_options["gm"]).validate_channel(next_trade_channel)
+        next_algorithm = (
+            account.algorithm
+            if account.algorithm is not None and account.algorithm is not UNSET
+            else db_account.algorithm
+        )
         next_empty_algorithm = (
             account.empty_positions_algorithm
-            if account.empty_positions_algorithm is not None
+            if account.empty_positions_algorithm is not None and account.empty_positions_algorithm is not UNSET
             else db_account.empty_positions_algorithm
         )
         _check_algorithm_channel_compat(next_algorithm, str(next_trade_channel), "下单算法")
@@ -793,12 +804,12 @@ async def _update_account(
             and str(next_notification_code).strip() != DEFAULT_ACCOUNT_NOTIFICATION_CODE.strip()
         ):
             data["feishu_key"] = None
-        if account.account_config is not None or account.trade_channel is not None:
+        if data.get("account_config") is not None or data.get("trade_channel") is not None:
             data["account_config"] = normalized_account_config
-        validated_account = Account.model_validate(db_account.model_dump() | data)
+        validated_account = parse_input(Account, to_payload(db_account) | data)
         if "product_algorithms" in data:
             data["product_algorithms"] = {
-                key: profile.model_dump(mode="json") for key, profile in validated_account.product_algorithms.items()
+                key: to_payload(profile, mode="json") for key, profile in validated_account.product_algorithms.items()
             }
         saved = await _account_operation(
             "account_update",
