@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from axile.common.serialization import copy_data, from_payload, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.exceptions import AccountControlConfigError
 from axile.executor.account_control.models import (
@@ -34,33 +35,18 @@ def _seed_account_control_registry() -> None:
 def test_account_control_override_rejects_legacy_top_level_operation_fields() -> None:
     """账户控制配置不再接受旧顶层 place/cancel/query 字段。"""
     with pytest.raises(AccountControlConfigError, match="unknown field"):
-        AccountControlOverride.model_validate(
-            {
-                "timezone": "Asia/Shanghai",
-                "place_order": {
-                    "per_day": {"limit": 1, "on_trigger": "block"},
-                },
-            }
+        from_payload(
+            AccountControlOverride,
+            {"timezone": "Asia/Shanghai", "place_order": {"per_day": {"limit": 1, "on_trigger": "block"}}},
         )
 
 
 def test_account_control_operation_models_accept_shorthand_scope_map() -> None:
     """操作级模型应使用显式 account/symbol 作用域映射。"""
-    override = AccountControlOperationOverride.model_validate(
-        {
-            "account": {
-                "per_minute": {"limit": 2},
-                "min_interval_ms": {"limit": 300},
-            }
-        }
+    override = from_payload(
+        AccountControlOperationOverride, {"account": {"per_minute": {"limit": 2}, "min_interval_ms": {"limit": 300}}}
     )
-    policy = AccountControlOperationPolicy.model_validate(
-        {
-            "account": {
-                "per_day": {"limit": 5, "on_trigger": "block"},
-            }
-        }
-    )
+    policy = from_payload(AccountControlOperationPolicy, {"account": {"per_day": {"limit": 5, "on_trigger": "block"}}})
 
     assert override.account is not None
     assert override.account.per_minute is not None
@@ -120,14 +106,9 @@ def test_ctp_option_operation_keeps_account_override() -> None:
     """CTP 期权操作仍允许账户覆盖业务限额。"""
     policy = resolve_account_control_policy(
         "ctp",
-        AccountControlOverride.model_validate(
-            {
-                "operations": {
-                    "option_self_close": {
-                        "account": {"per_day": {"limit": 10, "on_trigger": "block"}},
-                    }
-                }
-            }
+        from_payload(
+            AccountControlOverride,
+            {"operations": {"option_self_close": {"account": {"per_day": {"limit": 10, "on_trigger": "block"}}}}},
         ),
     )
 
@@ -139,14 +120,9 @@ def test_default_query_operation_keeps_account_override() -> None:
     """通用 preset 的查询操作不受 CTP 专属分组影响。"""
     policy = resolve_account_control_policy(
         "default",
-        AccountControlOverride.model_validate(
-            {
-                "operations": {
-                    "query_account": {
-                        "account": {"per_day": {"limit": 7, "on_trigger": "block"}},
-                    }
-                }
-            }
+        from_payload(
+            AccountControlOverride,
+            {"operations": {"query_account": {"account": {"per_day": {"limit": 7, "on_trigger": "block"}}}}},
         ),
     )
 
@@ -161,44 +137,34 @@ def test_account_control_override_rejects_invalid_values() -> None:
         get_account_control_preset("missing")
 
     with pytest.raises(AccountControlConfigError, match="timezone"):
-        AccountControlOverride.model_validate({"timezone": "Mars/Olympus"})
+        from_payload(AccountControlOverride, {"timezone": "Mars/Olympus"})
 
     with pytest.raises(AccountControlConfigError, match="未注册的 operation key"):
-        AccountControlOverride.model_validate({"operations": {"missing": {"account": {}}}})
+        from_payload(AccountControlOverride, {"operations": {"missing": {"account": {}}}})
 
     with pytest.raises(AccountControlConfigError, match="未注册的 group key"):
-        AccountControlOverride.model_validate({"groups": {"missing_group": {}}})
+        from_payload(AccountControlOverride, {"groups": {"missing_group": {}}})
 
     with pytest.raises(AccountControlConfigError, match="greater than or equal to 0"):
-        AccountControlOverride.model_validate(
-            {
-                "operations": {
-                    "place_order": {
-                        "account": {"per_minute": {"limit": -1, "on_trigger": "wait"}},
-                    }
-                }
-            }
+        from_payload(
+            AccountControlOverride,
+            {"operations": {"place_order": {"account": {"per_minute": {"limit": -1, "on_trigger": "wait"}}}}},
         )
 
     with pytest.raises(AccountControlConfigError, match="min_interval_ms"):
-        AccountControlOverride.model_validate(
-            {
-                "operations": {
-                    "place_order": {
-                        "account": {"min_interval_ms": {"limit": 0, "on_trigger": "wait"}},
-                    }
-                }
-            }
+        from_payload(
+            AccountControlOverride,
+            {"operations": {"place_order": {"account": {"min_interval_ms": {"limit": 0, "on_trigger": "wait"}}}}},
         )
 
     with pytest.raises(AccountControlConfigError, match="unknown field"):
-        AccountControlOverride.model_validate({"symbol_overrides": {}})
+        from_payload(AccountControlOverride, {"symbol_overrides": {}})
 
 
 def test_account_control_override_rejects_legacy_disable_switch() -> None:
     """账户控制不接受旧版 enabled 开关。"""
     with pytest.raises(AccountControlConfigError, match="unknown field"):
-        AccountControlOverride.model_validate({"enabled": False})
+        from_payload(AccountControlOverride, {"enabled": False})
 
 
 @pytest.mark.parametrize(
@@ -221,14 +187,14 @@ def test_account_control_override_rejects_legacy_disable_switch() -> None:
 def test_native_configuration_keeps_strict_json_types(value: object) -> None:
     """迁移到 Rust 后仍拒绝数组对象、隐式数值转换和非字符串键。"""
     with pytest.raises(AccountControlConfigError):
-        AccountControlOverride.model_validate(value)
+        from_payload(AccountControlOverride, value)
 
 
 def test_native_configuration_rejects_circular_input() -> None:
     value = {}
     value["operations"] = value
     with pytest.raises(AccountControlConfigError, match="循环引用"):
-        AccountControlOverride.model_validate(value)
+        from_payload(AccountControlOverride, value)
 
 
 @pytest.mark.parametrize(
@@ -281,7 +247,7 @@ def test_native_configuration_does_not_call_arbitrary_model_dump() -> None:
             raise AssertionError("不应调用用户方法")
 
     with pytest.raises(AccountControlConfigError) as caught:
-        AccountControlOverride.model_validate(Unsupported())
+        from_payload(AccountControlOverride, Unsupported())
     assert caught.value.code == "CONTROL_CONFIG_INVALID_TYPE"
 
 
@@ -290,34 +256,34 @@ def test_model_copy_validates_updates_without_mutating_source(effective: bool) -
     source = AccountControlOverride(timezone="Asia/Shanghai")
     if effective:
         source = resolve_account_control_policy("default", source)
-    before = source.model_dump(mode="json")
+    before = to_payload(source, mode="json")
     update = {
         "timezone": "UTC",
         "operations": {"place_order": {"account": {"per_day": {"limit": 7, "on_trigger": "block"}}}},
     }
-    copied = source.model_copy(update=update)
+    copied = copy_data(source, update=update)
     assert copied.timezone == "UTC"
     assert copied.operations["place_order"].account.per_day.limit == 7
 
     update["operations"]["place_order"]["account"]["per_day"]["limit"] = -1
     with pytest.raises(AccountControlConfigError) as caught:
-        source.model_copy(update=update)
+        copy_data(source, update=update)
     assert caught.value.code == "CONTROL_CONFIG_OUT_OF_RANGE"
     assert caught.value.path == ["operations", "place_order", "account", "per_day", "limit"]
     assert caught.value.message
-    assert source.model_dump(mode="json") == before
+    assert to_payload(source, mode="json") == before
     assert copied.operations["place_order"].account.per_day.limit == 7
 
 
 def test_native_public_override_has_explicit_defaults() -> None:
     """公开契约独立断言默认字段，避免以同一实现互相验证。"""
-    assert AccountControlOverride.model_validate({}).model_dump(mode="json") == {
+    assert to_payload(from_payload(AccountControlOverride, {}), mode="json") == {
         "timezone": None,
         "operations": {},
         "groups": {},
     }
-    operation = AccountControlOperationOverride.model_validate({"account": {"per_day": {"limit": 0}}})
-    assert operation.model_dump(mode="json") == {
+    operation = from_payload(AccountControlOperationOverride, {"account": {"per_day": {"limit": 0}}})
+    assert to_payload(operation, mode="json") == {
         "priority": None,
         "daily_warning_percent": None,
         "account": {
@@ -333,17 +299,13 @@ def test_account_control_rule_override_unlimited_resolves_to_no_rule() -> None:
     """额度类规则允许显式 unlimited，解析后不启用该规则。"""
     policy = resolve_account_control_policy(
         "default",
-        AccountControlOverride.model_validate(
+        from_payload(
+            AccountControlOverride,
             {
                 "operations": {
-                    "place_order": {
-                        "account": {
-                            "per_minute": {"unlimited": True},
-                            "per_day": {"unlimited": True},
-                        }
-                    }
+                    "place_order": {"account": {"per_minute": {"unlimited": True}, "per_day": {"unlimited": True}}}
                 }
-            }
+            },
         ),
     )
 
@@ -358,13 +320,15 @@ def test_account_control_rule_override_unlimited_resolves_to_no_rule() -> None:
 def test_account_control_rule_override_unlimited_rejects_mixed_and_interval() -> None:
     """unlimited 与 limit/on_trigger 互斥，且 min_interval_ms 不允许解除。"""
     with pytest.raises(AccountControlConfigError, match="互斥"):
-        AccountControlOverride.model_validate(
-            {"operations": {"place_order": {"account": {"per_minute": {"limit": 5, "unlimited": True}}}}}
+        from_payload(
+            AccountControlOverride,
+            {"operations": {"place_order": {"account": {"per_minute": {"limit": 5, "unlimited": True}}}}},
         )
 
     with pytest.raises(AccountControlConfigError, match="不允许设置为不限制"):
-        AccountControlOverride.model_validate(
-            {"operations": {"place_order": {"account": {"min_interval_ms": {"unlimited": True}}}}}
+        from_payload(
+            AccountControlOverride,
+            {"operations": {"place_order": {"account": {"min_interval_ms": {"unlimited": True}}}}},
         )
 
 
@@ -391,18 +355,18 @@ def test_policy_resolves_partial_rules_without_reviving_cleared_values(
         AccountControlPresetDefinition(
             preset_key="partial-rules",
             compatible_trade_channels=None,
-            policy=AccountControlOverride.model_validate(
-                {"operations": {"place_order": {"account": {"per_day": preset_rule}}}}
+            policy=from_payload(
+                AccountControlOverride, {"operations": {"place_order": {"account": {"per_day": preset_rule}}}}
             ),
         ),
     )
     policy = resolve_account_control_policy(
         "partial-rules",
-        AccountControlOverride.model_validate({"operations": {"place_order": {"account": {"per_day": override_rule}}}}),
+        from_payload(AccountControlOverride, {"operations": {"place_order": {"account": {"per_day": override_rule}}}}),
     )
 
     rule = policy.operations["place_order"].account.per_day
-    assert (None if rule is None else rule.model_dump(mode="json")) == expected
+    assert (None if rule is None else to_payload(rule, mode="json")) == expected
 
 
 @pytest.mark.parametrize("operation_override", [None, {}, {"priority": 0}, {"daily_warning_percent": 80}])
@@ -416,13 +380,14 @@ def test_policy_keeps_operation_presence_semantics_for_warning(
         AccountControlPresetDefinition(
             preset_key="warning",
             compatible_trade_channels=None,
-            policy=AccountControlOverride.model_validate(
-                {"operations": {"place_order": {"priority": 10, "daily_warning_percent": 70}}}
+            policy=from_payload(
+                AccountControlOverride, {"operations": {"place_order": {"priority": 10, "daily_warning_percent": 70}}}
             ),
         ),
     )
-    override = AccountControlOverride.model_validate(
-        {"operations": {} if operation_override is None else {"place_order": operation_override}}
+    override = from_payload(
+        AccountControlOverride,
+        {"operations": {} if operation_override is None else {"place_order": operation_override}},
     )
     operation = resolve_account_control_policy("warning", override).operations["place_order"]
 
@@ -446,7 +411,7 @@ def test_policy_snapshots_own_their_rules_and_operation_groups(monkeypatch: pyte
     }
     first = resolve_account_control_policy("ctp", override)
     second = resolve_account_control_policy("ctp", override)
-    expected = first.model_dump(mode="json")
+    expected = to_payload(first, mode="json")
     override["operations"]["place_order"]["account"]["per_day"]["limit"] = 9
     preset_groups["place_order"] = frozenset()
     exposed = first.operations
@@ -454,5 +419,5 @@ def test_policy_snapshots_own_their_rules_and_operation_groups(monkeypatch: pyte
     first.operation_groups.clear()
     with pytest.raises(AttributeError):
         first.operations["place_order"].account.per_day.limit = 99
-    assert first.model_dump(mode="json") == second.model_dump(mode="json") == expected
-    assert first.model_copy(deep=True).model_dump(mode="json") == expected
+    assert to_payload(first, mode="json") == to_payload(second, mode="json") == expected
+    assert to_payload(copy_data(first, deep=True), mode="json") == expected

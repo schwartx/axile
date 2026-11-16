@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from loguru import logger
 
+from axile.common.serialization import copy_data, from_payload, to_payload
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.server.core.scheduler import scheduler
 from axile.server.cron import SCHEDULER_TIMEZONE, combine_cron_triggers, parse_cron_expr
@@ -71,11 +72,11 @@ class TimeCheckService:
         restored = await native_operation(
             "time_check_start",
             {
-                "settings": self.settings.model_dump(exclude={"version"}),
+                "settings": to_payload(self.settings, exclude={"version"}),
                 "checked_at": clock_now(tz=SCHEDULER_TIMEZONE).isoformat(),
             },
         )
-        self.settings = TimeCheckSettings.model_validate(restored["settings"])
+        self.settings = from_payload(TimeCheckSettings, restored["settings"])
         self.state = restored["state"]
         self.ready = True
         self.schedule()
@@ -93,7 +94,7 @@ class TimeCheckService:
         return {
             "stream_id": self.stream_id,
             "version": self.version,
-            "settings": self.settings.model_dump(),
+            "settings": to_payload(self.settings),
             "state": self.state,
             "status": status,
             "next_run_at": next_run.isoformat() if next_run else None,
@@ -150,9 +151,9 @@ class TimeCheckService:
         async with self.lock:
             if config.version != self.settings.version:
                 raise ValueError("设置已被其他窗口更新，请重新读取")
-            updated = config.model_copy(update={"version": config.version + 1})
+            updated = copy_data(config, update={"version": config.version + 1})
             saved = await native_operation(
-                "time_check_save", {"version": config.version, "settings": config.model_dump(exclude={"version"})}
+                "time_check_save", {"version": config.version, "settings": to_payload(config, exclude={"version"})}
             )
             if not saved:
                 raise ValueError("设置已被其他窗口更新，请重新读取")
@@ -165,7 +166,7 @@ class TimeCheckService:
         """返回当前任务状态；关闭浏览器不取消后端任务。"""
         async with self.lock:
             if not self.task or self.task.done():
-                config = self.settings.model_copy(deep=True)
+                config = copy_data(self.settings, deep=True)
                 self.state = {
                     **self.state,
                     "running": True,
@@ -187,7 +188,7 @@ class TimeCheckService:
             result = {
                 "finished_at": finished,
                 "trigger": reason,
-                "settings": config.model_dump(),
+                "settings": to_payload(config),
                 "host": config.host,
                 "port": config.port,
                 "ntp": ntp,

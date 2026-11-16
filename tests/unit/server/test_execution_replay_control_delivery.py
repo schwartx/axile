@@ -1,13 +1,14 @@
 """真实控制管道超时后仍交付已保存配置，不触发交易连接。"""
 
 import threading
-from dataclasses import replace
+from dataclasses import fields, replace
 from multiprocessing import Pipe
 from time import perf_counter
 from types import SimpleNamespace
 
 import pytest
 
+from axile.common.serialization import copy_data, from_payload, to_payload
 from axile.server.core import db
 from axile.server.db.models.account import Account, AccountCreate
 from axile.server.execution.worker_backend import manager, replay, worker, worker_state
@@ -44,11 +45,11 @@ def runtime(native_database, monkeypatch):
         native_database,
         "account_create",
         {
-            "account": account.model_dump(mode="json", include=set(AccountCreate.model_fields)),
+            "account": to_payload(account, mode="json", include={item.name for item in fields(AccountCreate)}),
             "now": "2026-10-31T01:00:00Z",
         },
     )["account"]
-    account = Account.model_validate(saved)
+    account = from_payload(Account, saved)
     backend = manager.WorkerBackendManager()
     active = []
 
@@ -80,7 +81,7 @@ def runtime(native_database, monkeypatch):
             "account_update",
             {"account_id": account.id, "patch": {"replay_recording_enabled": enabled}, "now": "2026-10-31T01:00:01Z"},
         )["account"]
-        return Account.model_validate(value)
+        return from_payload(Account, value)
 
     first = spawn(True)
     yield SimpleNamespace(
@@ -140,16 +141,13 @@ def test_latest_saved_version_is_retained_even_before_a_worker_exists(runtime):
 
 def test_saved_channel_change_advances_version_and_replaces_cached_context(runtime):
     runtime.backend._replay_control_blocking(runtime.account, False)
-    changed = Account.model_validate(
+    changed = from_payload(
+        Account,
         native_store_call(
             runtime.path,
             "account_update",
-            {
-                "account_id": runtime.account.id,
-                "patch": {"trade_channel": "gm"},
-                "now": "2026-10-31T01:00:01Z",
-            },
-        )["account"]
+            {"account_id": runtime.account.id, "patch": {"trade_channel": "gm"}, "now": "2026-10-31T01:00:01Z"},
+        )["account"],
     )
     assert changed.replay_config_version > runtime.account.replay_config_version
     runtime.first.handle.retired = True
@@ -280,8 +278,8 @@ def test_backpressure_keeps_latest_off_and_termination_deadline_bounded(runtime,
                     blocked = True
                     break
         assert blocked, "real control Pipe never reached backpressure"
-        off = runtime.account.model_copy(
-            update={"replay_recording_enabled": False, "replay_config_version": version + 1}
+        off = copy_data(
+            runtime.account, update={"replay_recording_enabled": False, "replay_config_version": version + 1}
         )
         start = perf_counter()
         result = runtime.backend._replay_control_blocking(off, True)

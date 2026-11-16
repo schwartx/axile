@@ -2,6 +2,7 @@
 
 import pytest
 
+from axile.common.serialization import to_payload
 from axile.executor.connection_state import ConnectionObservation
 from axile.server import connection_runtime
 
@@ -30,7 +31,7 @@ def test_batch_reads_keep_transition_timestamp_and_detach_results(monkeypatch, s
 
     assert first["status"] == status
     assert first["observed_at"] == second["observed_at"] == "transition-at"
-    assert connection_runtime.current_session(1, "config").model_dump(mode="json") == first
+    assert to_payload(connection_runtime.current_session(1, "config"), mode="json") == first
     assert session.view_status == status and session.updated_at == "transition-at"
     assert session.observation.observed_at == "access-at" and session.sampled_at == "sampled-at"
     first["message"] = "caller changed"

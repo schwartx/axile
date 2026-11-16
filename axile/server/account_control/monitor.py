@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from loguru import logger
 
+from axile.common.serialization import from_payload, to_payload
 from axile.executor.account_control.guard import AccountControlGuard, resolve_control_window
 from axile.executor.account_control.models import (
     AccountControlContextKind,
@@ -155,7 +156,7 @@ class AccountControlMonitor:
                 ]
             },
         )
-        sessions = [AccountControlSession.model_validate(raw) for raw in contexts["sessions"]]
+        sessions = [from_payload(AccountControlSession, raw) for raw in contexts["sessions"]]
         await asyncio.gather(*(self._read_source(account["id"]) for account in accounts))
         requests = [
             self._persistence_request(account, policies[account["id"]], sessions, sampled_at) for account in accounts
@@ -172,7 +173,7 @@ class AccountControlMonitor:
                     if (request["account_id"], source["instance_id"]) not in accepted:
                         continue
                     for raw in source["warnings"]:
-                        key = AccountControlQuotaWarning.model_validate(raw).event_id, source["instance_id"]
+                        key = from_payload(AccountControlQuotaWarning, raw).event_id, source["instance_id"]
                         self._queued_warnings[key] = None
             while len(self._queued_warnings) > 2048:
                 self._queued_warnings.pop(next(iter(self._queued_warnings)))
@@ -189,7 +190,7 @@ class AccountControlMonitor:
         for account in accounts:
             policy = policies[account["id"]]
             state = states[account["id"]]
-            related = [AccountControlSession.model_validate(raw) for raw in state["sessions"]]
+            related = [from_payload(AccountControlSession, raw) for raw in state["sessions"]]
             frame = public_frame(await self._account_frame(account, policy, related, state, sampled_at))
             if self._content(self.frames.get(account["id"])) != self._content(frame):
                 changed.append(frame)
@@ -226,7 +227,7 @@ class AccountControlMonitor:
     def _history_signature(policy: Any, sessions: list[AccountControlSession], sampled_at: datetime) -> tuple:
         window = resolve_control_window(policy.timezone, now=sampled_at)
         return (
-            policy_fingerprint(policy.model_dump(mode="json")),
+            policy_fingerprint(to_payload(policy, mode="json")),
             window.minute_bucket_start,
             tuple((session.instance_id, session.status) for session in sessions),
         )
@@ -264,7 +265,7 @@ class AccountControlMonitor:
             warnings = [
                 raw
                 for raw in source.get("quota_warnings", [])
-                if (AccountControlQuotaWarning.model_validate(raw).event_id, source["instance_id"])
+                if (from_payload(AccountControlQuotaWarning, raw).event_id, source["instance_id"])
                 not in self._queued_warnings
             ]
             if warnings:
@@ -393,12 +394,12 @@ class AccountControlMonitor:
             ],
             incomplete_instances_total=len(gaps),
             counter_recovery="historical_gap_retained" if risk_unknown else None,
-            saved_policy=policy.model_dump(mode="json"),
-            saved_fingerprint=policy_fingerprint(policy.model_dump(mode="json")),
+            saved_policy=to_payload(policy, mode="json"),
+            saved_fingerprint=policy_fingerprint(to_payload(policy, mode="json")),
             incomplete=incomplete or frame.get("incomplete", False) or frame["status"] == "incomplete",
             stale=bool(frame["status"] == "incomplete" or (active and (not sampled or now - sampled > 5000))),
             pending_policy=active
-            and frame.get("actual_fingerprint") != policy_fingerprint(policy.model_dump(mode="json")),
+            and frame.get("actual_fingerprint") != policy_fingerprint(to_payload(policy, mode="json")),
         )
         if not active:
             frame["actual_policy"] = None

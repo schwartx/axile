@@ -8,6 +8,7 @@ from openctp_ctp import thosttraderapi as td
 from tests.unit.executor.ctp.test_replay_native_callbacks import recording as recording
 
 from axile.channels.builtins import _ctp_plugin
+from axile.common.serialization import to_payload
 from axile.executor.ctp import replay as replay_capture
 from axile.server.execution_replay.recorder import ReplayRecorder
 from tests.unit.executor.ctp.test_connection_recovery import ScriptedBroker
@@ -63,7 +64,7 @@ def starting_recording(monkeypatch, tmp_path):
     broker = ScriptedBroker(monkeypatch)
     broker.rows["ReqQryOrder"] = [working_order(SimpleNamespace(broker=broker))]
     broker.rows["ReqQryTrade"] = []
-    context = _ctp_plugin().descriptor.replay.model_dump(mode="json")
+    context = to_payload(_ctp_plugin().descriptor.replay, mode="json")
     context["stream_defaults"] = context.pop("streams")
     context["channel"] = "ctp"
     now = [1_793_404_800_000_000]

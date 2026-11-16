@@ -11,6 +11,7 @@ import loguru
 
 from axile.channels.gm_sessions import SHANGHAI, gm_session_context
 from axile.common.gm_symbols import normalize_gm_standard_input
+from axile.common.serialization import from_payload, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind
 from axile.executor.algorithms.exceptions import execution_error_message
@@ -95,7 +96,7 @@ async def _load_bound_portfolio(
         )
         raise error
 
-    return Portfolio.model_validate(portfolio)
+    return from_payload(Portfolio, portfolio)
 
 
 async def _execute_portfolio_function(
@@ -268,7 +269,7 @@ def _build_rebalance_standard_input(
             "algorithm": account.algorithm,
             "product_algorithms": {key: profile.algorithm for key, profile in account.product_algorithms.items()},
             "trade_rules": account.trade_rules,
-            "futures_close_policy": account.futures_close_policy.model_dump(),
+            "futures_close_policy": to_payload(account.futures_close_policy),
             "forbidden_symbols": account.forbidden_symbols,
             "risk_symbols": account.risk_symbols,
             "feishu_key": feishu_key,
@@ -305,7 +306,7 @@ def _build_rebalance_standard_input(
 
             sessions = GMSessionSettings.from_channel_options(account.channel_options) or GMSessionSettings()
             cast("dict[str, Any]", standard_input.extra["audit"])["gm_session"] = gm_session or gm_session_context(
-                sessions.model_dump(), clock_now(tz=SHANGHAI)
+                to_payload(sessions), clock_now(tz=SHANGHAI)
             )
         return normalize_gm_standard_input(standard_input)
     return standard_input

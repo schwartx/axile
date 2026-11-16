@@ -11,6 +11,7 @@ from threading import Barrier
 
 import pytest
 
+from axile.common.serialization import to_payload
 from tests.conftest import initialize_native_database, native_store_call, require_native_store
 from tests.sqlite_oracle import to_us
 from tests.unit.server._business_analysis_support import sized_record as record
@@ -47,7 +48,7 @@ def database(native_database: Path) -> Path:
     saved = native_store_call(
         native_database,
         "account_create",
-        {"account": account.model_dump(mode="json"), "now": _NOW},
+        {"account": to_payload(account, mode="json"), "now": _NOW},
     )
     assert saved["account"]["id"] == 1
     return native_database

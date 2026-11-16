@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TypeVar
 
 from axile.channels.cn_futures import canonicalize_cn_futures_symbol, czce_is_option_instrument
+from axile.common.serialization import copy_data
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.models.unified_input import UnifiedStandardInput
 
@@ -126,7 +127,8 @@ class TQSymbolResolver:
 
     def normalize_input(self, standard_input: UnifiedStandardInput) -> UnifiedStandardInput:
         """复制并规范化标准输入中的全部 symbol 字段."""
-        return standard_input.model_copy(
+        return copy_data(
+            standard_input,
             update={
                 "curr_target": self._normalize_mapping("curr_target", standard_input.curr_target),
                 "last_target": self._normalize_mapping("last_target", standard_input.last_target),
@@ -134,7 +136,7 @@ class TQSymbolResolver:
                 "trade_rules": self._normalize_mapping("trade_rules", standard_input.trade_rules),
                 "forbidden_symbols": self._normalize_list(standard_input.forbidden_symbols),
                 "risk_symbols": self._normalize_list(standard_input.risk_symbols),
-            }
+            },
         )
 
     def _normalize_mapping(self, field: str, values: Mapping[str, _ValueT]) -> dict[str, _ValueT]:

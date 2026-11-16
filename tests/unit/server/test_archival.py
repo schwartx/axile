@@ -10,6 +10,7 @@ import pytest
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.testclient import TestClient
 
+from axile.common.serialization import to_payload
 from axile.server._native import _core
 from axile.server.api.routes import account_connection, account_crud, account_execution, portfolio
 from axile.server.core import db
@@ -31,7 +32,7 @@ def create_portfolio(path):
         path,
         "portfolio_operation",
         op="create",
-        portfolio=Portfolio(name="组合", market="期货", custom_calc_py_code=CODE).model_dump(),
+        portfolio=to_payload(Portfolio(name="组合", market="期货", custom_calc_py_code=CODE)),
     )
 
 
@@ -39,7 +40,7 @@ def create_account(path, portfolio_id=None, *, started=False):
     return call(
         path,
         "account_create",
-        account=build_account(portfolio_id=portfolio_id, is_started=started).model_dump(mode="json"),
+        account=to_payload(build_account(portfolio_id=portfolio_id, is_started=started), mode="json"),
         now=NOW,
     )["account"]
 

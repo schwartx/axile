@@ -10,18 +10,16 @@ Notes
 """
 
 import os
+import tomllib
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
 import tomlkit
-from pydantic import Field, UrlConstraints
-from pydantic_core import MultiHostUrl
-from pydantic_settings import (
-    BaseSettings,
-    PydanticBaseSettingsSource,
-    SettingsConfigDict,
-    TomlConfigSettingsSource,
-)
+from msgspec import Meta
+
+from axile.common.serialization import parse_input
 
 # 应用级常量：不再作为可配置项，硬编码于此。
 PROJECT_NAME = "AXILE"
@@ -38,15 +36,11 @@ CONFIG_TOML_ENV = "AXILE_CONFIG_TOML"
 # 向导托管的配置文件路径（由初始化 / 系统配置向导生成、维护，用户不应手改）。
 CONFIG_TOML_PATH = Path(os.environ.get(CONFIG_TOML_ENV, "./config.toml"))
 
-SqliteDsn = Annotated[
-    MultiHostUrl,
-    UrlConstraints(
-        allowed_schemes=["sqlite+aiosqlite"],
-    ),
-]
+SqliteDsn = str
 
 
-class Settings(BaseSettings):
+@dataclass(kw_only=True)
+class Settings:
     """
     定义 Axile 主服务端使用的应用配置.
 
@@ -72,58 +66,47 @@ class Settings(BaseSettings):
 
     Notes
     -----
-    实例化时按 ``config.toml > 类默认值`` 的优先级读取配置，见
-    :meth:`settings_customise_sources`；**不读取任何进程环境变量作为配置值**。所有字段
+    加载时按 ``config.toml > 类默认值`` 的优先级读取配置，见
+    :func:`load_settings`；**不读取任何进程环境变量作为配置值**。所有字段
     均带默认值，因此在缺失 ``config.toml`` 时也能成功实例化，从而支持「未配置即进入初始化
     向导」的启动流程；是否完成初始化由 :func:`is_configured` 判定（以 ``config.toml`` 是否
         存在为准）。
     """
 
-    model_config = SettingsConfigDict(
-        # 主服务端配置改由向导托管的 config.toml 承载，不再读取 .env 或进程环境变量。
-        toml_file=str(CONFIG_TOML_PATH),
-        env_ignore_empty=True,
-        extra="ignore",
-    )
     environment: Literal["local", "staging", "production"] = "local"
-    browser_title: str = Field(default="", max_length=120)
+    browser_title: Annotated[str, Meta(max_length=120)] = ""
 
     time_check_first_run: bool = False
 
-    sqlalchemy_database_uri: SqliteDsn = MultiHostUrl("sqlite+aiosqlite:///./axile.db")
+    sqlalchemy_database_uri: SqliteDsn = "sqlite+aiosqlite:///./axile.db"
     exe_err_feishu_key: str = ""
     system_execution_notification_mode: Literal["default", "function"] = "default"
     system_execution_notification_code: str = ""
     app_log_dir: Path = Path("./logs")
     axile_log_rotation: str = "1 day"
-    algorithm_modules: list[str] = []
-    algorithm_directories: list[str] = []
-
-    @classmethod
-    def settings_customise_sources(
-        cls,
-        settings_cls: type[BaseSettings],
-        init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource,
-        dotenv_settings: PydanticBaseSettingsSource,
-        file_secret_settings: PydanticBaseSettingsSource,
-    ) -> tuple[PydanticBaseSettingsSource, ...]:
-        """
-        定制配置来源与优先级.
-
-        Returns
-        -------
-        tuple[PydanticBaseSettingsSource, ...]
-            返回的元组按优先级从高到低排列：显式初始化参数、``config.toml``。刻意
-            **不返回** ``env_settings`` 与 ``dotenv_settings``——主服务端不把任何进程
-            环境变量或 ``.env`` 作为配置值来源，使 ``config.toml`` 成为唯一可编辑真源，
-            向导写入的字段一定生效、不被 env var 静默覆盖。启动器若需另指配置文件，
-            经 ``AXILE_CONFIG_TOML`` 指定路径即可（那是「读哪个文件」的指针，不是配置值）。
-        """
-        return (init_settings, TomlConfigSettingsSource(settings_cls))
+    algorithm_modules: list[str] = field(default_factory=list)
+    algorithm_directories: list[str] = field(default_factory=list)
 
 
-settings = Settings()
+def validate_sqlite_dsn(value: str) -> str:
+    """验证应用使用的 SQLite URL 协议。"""
+    if not isinstance(value, str) or urlsplit(value).scheme != "sqlite+aiosqlite":
+        raise ValueError("数据库地址必须使用 sqlite+aiosqlite 协议")
+    return value
+
+
+def load_settings(**overrides) -> Settings:
+    """从唯一配置文件和显式覆盖加载设置，不读取环境配置值。"""
+    values = tomllib.loads(CONFIG_TOML_PATH.read_text()) if CONFIG_TOML_PATH.exists() else {}
+    values.update(overrides)
+    if "app_log_dir" in values:
+        values["app_log_dir"] = Path(values["app_log_dir"])
+    result = parse_input(Settings, values)
+    validate_sqlite_dsn(result.sqlalchemy_database_uri)
+    return result
+
+
+settings = load_settings()
 
 
 def is_configured() -> bool:
@@ -158,7 +141,7 @@ def write_config_toml(values: dict[str, Any]) -> None:
     -----
     使用 tomlkit 写出，文件顶部保留告警注释以提示该文件由初始化向导托管、
     不应手工编辑。写入的键名与 :class:`Settings` 字段名保持一致（小写），
-    以便 pydantic-settings 的 TOML 源在下次启动时正确匹配（键名大小写须与字段一致）。
+    以便 TOML 配置读取在下次启动时正确匹配（键名大小写须与字段一致）。
     """
     document = tomlkit.document()
     document.add(tomlkit.comment(" 本文件由 axile 初始化向导生成并维护，请勿手工编辑。"))

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from axile.common.serialization import from_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.guard import AccountControlGuard
 from axile.executor.account_control.presets import resolve_account_control_policy
@@ -20,7 +21,7 @@ pytestmark = [pytest.mark.live, pytest.mark.ctp]
 
 @pytest.mark.skipif(os.getenv("AXILE_CTP_CATALOG_LIVE") != "1", reason="未显式启用 CTP 仿真目录验收")
 def test_ctp_catalog_live_read_only(monkeypatch):
-    config = CTPAccountConfig.model_validate(json.loads(Path(os.environ["AXILE_CTP_CATALOG_CONFIG"]).read_text()))
+    config = from_payload(CTPAccountConfig, json.loads(Path(os.environ["AXILE_CTP_CATALOG_CONFIG"]).read_text()))
     catalog = InstrumentCatalog()
     provider = LocalInstrumentCatalogProvider(catalog)
     executor = CTPExecutor(TradeChannel("ctp"))

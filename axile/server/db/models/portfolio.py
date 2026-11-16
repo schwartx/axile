@@ -1,10 +1,13 @@
 """投资组合数据库模型."""
 
-from typing import Optional
+from dataclasses import dataclass, field
+from math import isfinite
+from typing import Annotated, Optional
 
-from pydantic import ConfigDict, Field, field_validator
+from msgspec import UNSET, Meta, UnsetType
 
-from axile.server.db.models.base import Model, now_str
+from axile.common.serialization import provided_fields
+from axile.server.db.models.base import now_str
 
 
 def _validate_custom_calc_py_code(value: str) -> str:
@@ -14,43 +17,59 @@ def _validate_custom_calc_py_code(value: str) -> str:
     return value
 
 
-class PortfolioBase(Model):
+@dataclass(kw_only=True)
+class PortfolioBase:
     """组合模型共用字段."""
 
-    name: str = Field(description="投资组合名称, 必填")
-    market: str = Field(description="交易市场标识, 例如: A股、期货等, 必填")
-    description: Optional[str] = Field(default=None, description="投资组合的描述信息, 用于介绍组合逻辑或目的, 非必填")
-    custom_calc_py_code: str = Field(
-        description="定义 calculate_portfolio(context) 的 Python 源码；context 提供统一账户、持仓、行情和订单查询"
+    name: Annotated[str, Meta(description="投资组合名称, 必填")]
+    market: Annotated[str, Meta(description="交易市场标识, 例如: A股、期货等, 必填")]
+    description: Annotated[Optional[str], Meta(description="投资组合的描述信息, 用于介绍组合逻辑或目的, 非必填")] = (
+        field(default=None)
     )
-    status: Optional[str] = Field(default=None, description="组合当前状态, 例如：启用、暂停、关闭, 非必填")
-    tag: Optional[str] = Field(default=None, description="组合标签, 用于分类标记, 便于筛选和检索, 非必填")
+    custom_calc_py_code: Annotated[
+        str,
+        Meta(
+            description="定义 calculate_portfolio(context) 的 Python 源码；context 提供统一账户、持仓、行情和订单查询"
+        ),
+    ]
+    status: Annotated[Optional[str], Meta(description="组合当前状态, 例如：启用、暂停、关闭, 非必填")] = field(
+        default=None
+    )
+    tag: Annotated[Optional[str], Meta(description="组合标签, 用于分类标记, 便于筛选和检索, 非必填")] = field(
+        default=None
+    )
 
-    _validate_code = field_validator("custom_calc_py_code")(_validate_custom_calc_py_code)
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        if "custom_calc_py_code" in provided_fields(self):
+            object.__setattr__(self, "custom_calc_py_code", _validate_custom_calc_py_code(self.custom_calc_py_code))
 
 
+@dataclass(kw_only=True)
 class Portfolio(PortfolioBase):
     """由自定义函数计算目标权重的投资组合."""
 
-    id: Optional[int] = Field(default=None)
+    id: Optional[int] = field(default=None)
     archived_at: str | None = None
-    updated_at: str = Field(default_factory=now_str)
-    created_at: str = Field(default_factory=now_str)
+    updated_at: str = field(default_factory=now_str)
+    created_at: str = field(default_factory=now_str)
+
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        super().validate()
 
 
-class PortfolioUpdate(Model):
+@dataclass(kw_only=True)
+class PortfolioUpdate:
     """组合的局部更新载荷."""
 
-    model_config = ConfigDict(extra="forbid")
+    name: Optional[str] | UnsetType = UNSET
+    market: Optional[str] | UnsetType = UNSET
+    description: Optional[str] | UnsetType = UNSET
+    custom_calc_py_code: Optional[str] | UnsetType = UNSET
+    status: Optional[str] | UnsetType = UNSET
+    tag: Optional[str] | UnsetType = UNSET
 
-    name: Optional[str] = None
-    market: Optional[str] = None
-    description: Optional[str] = None
-    custom_calc_py_code: Optional[str] = None
-    status: Optional[str] = None
-    tag: Optional[str] = None
-
-    @field_validator("name", "market")
     @classmethod
     def validate_required_text(cls, value: str | None) -> str:
         """更新名称和交易市场时拒绝空值；省略字段保持原值。"""
@@ -58,7 +77,6 @@ class PortfolioUpdate(Model):
             raise ValueError("组合名称和交易市场不可清空")
         return value
 
-    @field_validator("custom_calc_py_code")
     @classmethod
     def validate_custom_calc_py_code(cls, value: str | None) -> str | None:
         """更新函数时拒绝空值和空白源码."""
@@ -66,23 +84,60 @@ class PortfolioUpdate(Model):
             raise ValueError("自定义组合计算函数不可清空")
         return _validate_custom_calc_py_code(value)
 
+    __forbid_unknown__ = True
 
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        if "name" in provided_fields(self):
+            if self.name is None:
+                raise ValueError("组合名称和交易市场不可清空 - at `$.name`")
+            object.__setattr__(self, "name", self.validate_required_text(self.name))
+        if "market" in provided_fields(self):
+            if self.market is None:
+                raise ValueError("组合名称和交易市场不可清空 - at `$.market`")
+            object.__setattr__(self, "market", self.validate_required_text(self.market))
+        if "custom_calc_py_code" in provided_fields(self):
+            object.__setattr__(self, "custom_calc_py_code", self.validate_custom_calc_py_code(self.custom_calc_py_code))
+
+
+@dataclass(kw_only=True)
 class PortfolioCreate(PortfolioBase):
     """创建组合时使用的载荷."""
 
-    model_config = ConfigDict(extra="forbid")
+    __forbid_unknown__ = True
+
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        super().validate()
 
 
-class TrialLeverageOverrides(Model):
+@dataclass(kw_only=True)
+class TrialLeverageOverrides:
     """仅本次试跑使用的杠杆覆盖值，不写入账户。"""
 
-    model_config = ConfigDict(extra="forbid")
+    long_leverage: Annotated[float, Meta(ge=0)] | None = field(default=None)
+    short_leverage: Annotated[float, Meta(ge=0)] | None = field(default=None)
 
-    long_leverage: float | None = Field(default=None, ge=0, allow_inf_nan=False, strict=True)
-    short_leverage: float | None = Field(default=None, ge=0, allow_inf_nan=False, strict=True)
+    __forbid_unknown__ = True
+
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        if (
+            "long_leverage" in provided_fields(self)
+            and self.long_leverage is not None
+            and not isfinite(self.long_leverage)
+        ):
+            raise ValueError("long_leverage 必须是有限数值")
+        if (
+            "short_leverage" in provided_fields(self)
+            and self.short_leverage is not None
+            and not isfinite(self.short_leverage)
+        ):
+            raise ValueError("short_leverage 必须是有限数值")
 
 
-class ValidateCustomCalcRequest(Model):
+@dataclass(kw_only=True)
+class ValidateCustomCalcRequest:
     """校验自定义组合脚本的请求载荷."""
 
     custom_calc_py_code: str
@@ -90,9 +145,10 @@ class ValidateCustomCalcRequest(Model):
     leverage_overrides: TrialLeverageOverrides | None = None
 
 
-class RunAndSavePortfolioRequest(Model):
+@dataclass(kw_only=True)
+class RunAndSavePortfolioRequest:
     """试跑成功后保存代码和原始目标快照。"""
 
-    name: str = Field(min_length=1)
+    name: Annotated[str, Meta(min_length=1)]
     custom_calc_py_code: str
     account_id: Optional[int] = None

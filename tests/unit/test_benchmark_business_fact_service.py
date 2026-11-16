@@ -5,6 +5,7 @@ import asyncio
 import json
 import socket
 import sqlite3
+from dataclasses import MISSING, fields
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -43,7 +44,9 @@ def test_native_fixture_preserves_complete_account_defaults_without_create_dto(m
     storage.prepare_database(database, tmp_path)
     _, request, options = next(row for row in operations if row[0] == "account_create")
     payload = request["account"]
-    required = {name for name, field in AccountCreate.model_fields.items() if field.is_required()}
+    required = {
+        item.name for item in fields(AccountCreate) if item.default is MISSING and item.default_factory is MISSING
+    }
     assert required <= payload.keys()
     assert payload["backtest_weight_type"] == "cs"
     assert payload["backtest_fee_rate"] == 0.0002

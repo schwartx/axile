@@ -12,6 +12,7 @@ from axile.channels.gm_sessions import (
     gm_phase,
     gm_session_context,
 )
+from axile.common.serialization import parse_input, to_payload
 from axile.executor.order_cancellation import CancelNotAllowedError
 from axile.server.cron import effective_triggers
 
@@ -53,7 +54,7 @@ def test_phase_and_cancel_boundaries(clock, phase, cancelable):
 def test_auction_requires_frozen_permission_and_never_accepts_market_orders():
     now = moment("09:15")
     settings = GMSessionSettings(opening_cancelable={"enabled": True, "time": "09:15"})
-    context = gm_session_context(settings.model_dump(), now)
+    context = gm_session_context(to_payload(settings), now)
     check_gm_operation(now, context=context)
     with pytest.raises(ValueError, match="不允许本次下单"):
         check_gm_operation(now)
@@ -63,7 +64,7 @@ def test_auction_requires_frozen_permission_and_never_accepts_market_orders():
         with pytest.raises(ValueError, match="已结束"):
             check_gm_operation(later, context=context)
     with pytest.raises(ValueError):
-        gm_session_context(GMSessionSettings().model_dump(), now)
+        gm_session_context(to_payload(parse_input(GMSessionSettings, {})), now)
 
 
 @pytest.mark.parametrize(
@@ -72,8 +73,8 @@ def test_auction_requires_frozen_permission_and_never_accepts_market_orders():
 )
 def test_session_context_freezes_permissions_without_extending_algorithm_budget(clock, phase):
     settings = GMSessionSettings(**{phase: {"enabled": True, "time": clock}})
-    context = gm_session_context(settings.model_dump(), moment(clock))
-    assert context == {"phase": phase, "trading_day": "2026-09-01", "sessions": settings.model_dump()}
+    context = gm_session_context(to_payload(settings), moment(clock))
+    assert context == {"phase": phase, "trading_day": "2026-09-01", "sessions": to_payload(settings)}
 
 
 def test_effective_triggers_merge_once_without_turning_on_empty_cron():
@@ -105,14 +106,14 @@ def test_effective_triggers_merge_once_without_turning_on_empty_cron():
 )
 def test_settings_reject_nonfixed_times(phase, time):
     with pytest.raises(ValueError, match="触发时间"):
-        GMSessionSettings(**{phase: {"enabled": False, "time": time}})
+        parse_input(GMSessionSettings, {**{phase: {"enabled": False, "time": time}}})
 
 
 @pytest.mark.parametrize("enabled", [False, True])
 @pytest.mark.parametrize("minute", range(20, 25))
 def test_settings_accept_opening_locked_trigger_range(enabled, minute):
     clock = f"09:{minute}"
-    settings = GMSessionSettings(opening_locked={"enabled": enabled, "time": clock})
+    settings = parse_input(GMSessionSettings, {"opening_locked": {"enabled": enabled, "time": clock}})
     assert settings.opening_locked.enabled is enabled
     assert settings.opening_locked.time == clock
 
@@ -123,14 +124,14 @@ def test_settings_accept_opening_locked_trigger_range(enabled, minute):
 )
 def test_settings_forbid_extra_fields_and_mutation(model, values, field):
     with pytest.raises(ValueError, match="extra_forbidden"):
-        model(**values, unknown=True)
+        parse_input(model, {**values, "unknown": True})
     settings = model(**values)
-    with pytest.raises(ValueError, match="frozen_instance"):
+    with pytest.raises(AttributeError):
         setattr(settings, field, getattr(settings, field))
 
 
 def test_after_hours_is_unavailable_on_server_and_settings_are_gm_only():
     with pytest.raises(ValueError, match="暂不能启用"):
-        GMSessionSettings(after_hours={"enabled": True, "time": "15:05"})
+        parse_input(GMSessionSettings, {"after_hours": {"enabled": True, "time": "15:05"}})
     with pytest.raises(ValueError, match="仅适用于"):
-        GMSessionSettings().validate_channel("ctp")
+        parse_input(GMSessionSettings, {}).validate_channel("ctp")

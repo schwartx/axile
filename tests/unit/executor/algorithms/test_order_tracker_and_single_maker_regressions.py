@@ -5,8 +5,8 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
-from pydantic import ValidationError
 
+from axile.common.serialization import copy_data, parse_input, to_payload
 from axile.domain.execution import ExecutionEventStatus
 from axile.executor.algorithms.core.base import AlgorithmInput, ExecutorProtocol
 from axile.executor.algorithms.defaults.single_maker import impl as single_maker_impl
@@ -28,7 +28,7 @@ def test_gm_auction_keeps_algorithm_parameters_and_wait_budget(monkeypatch):
     executor.channel_type = "gm"
     executor.audit_context = {
         "gm_session": gm_session_context(
-            GMSessionSettings(opening_locked={"enabled": True, "time": "09:20"}).model_dump(),
+            to_payload(GMSessionSettings(opening_locked={"enabled": True, "time": "09:20"})),
             now,
         )
     }
@@ -88,7 +88,7 @@ class _SingleMakerExecutor:
 
     def get_pending_orders(self) -> list[UnifiedOrder]:
         self.pending_query_calls += 1
-        return [order.model_copy(deep=True) for order in self.pending_orders]
+        return [copy_data(order, deep=True) for order in self.pending_orders]
 
     def cancel_order(self, order_id: str) -> bool:
         self.cancel_order_calls.append(order_id)
@@ -209,7 +209,7 @@ def test_market_fallback_waits_for_cancel_confirmation_before_submitting_market_
     chase_info = getattr(tracker, "_chase_info")
     assert chase_info[order.order_id]["market_order_fallback_pending_cancel"] is True
 
-    canceled_order = order.model_copy(update={"status": "已撤销", "filled_volume": 0.4})
+    canceled_order = copy_data(order, update={"status": "已撤销", "filled_volume": 0.4})
     tracker.on_order_update(canceled_order)
 
     assert len(executor.place_calls) == 1
@@ -324,7 +324,7 @@ def test_market_fallback_uses_trade_records_to_compute_remaining_volume_without_
         )
     )
 
-    canceled_order = order.model_copy(update={"status": "已撤销", "filled_volume": 0.0, "avg_price": 0.0})
+    canceled_order = copy_data(order, update={"status": "已撤销", "filled_volume": 0.0, "avg_price": 0.0})
     tracker.on_order_update(canceled_order)
 
     assert len(executor.place_calls) == 1
@@ -439,7 +439,7 @@ def test_order_tracker_periodically_queries_order_status_during_wait() -> None:
         clock=_ClockStub(),
         order_refresh_interval=2.0,
     )
-    pending_order = executor_order.model_copy(update={"status": OrderStatus.PENDING, "filled_volume": 0.0})
+    pending_order = copy_data(executor_order, update={"status": OrderStatus.PENDING, "filled_volume": 0.0})
     tracker.add_order(pending_order)
 
     completed = tracker.wait_for_completion(timeout=5.0)
@@ -505,7 +505,7 @@ def test_order_tracker_queries_once_before_short_timeout() -> None:
         clock=_ClockStub(),
         order_refresh_interval=30.0,
     )
-    pending_order = executor_order.model_copy(update={"status": OrderStatus.PENDING, "filled_volume": 0.0})
+    pending_order = copy_data(executor_order, update={"status": OrderStatus.PENDING, "filled_volume": 0.0})
     tracker.add_order(pending_order)
 
     completed = tracker.wait_for_completion(timeout=15.0)
@@ -562,7 +562,7 @@ def test_market_fallback_marks_manual_intervention_when_market_order_submission_
     fallback = getattr(tracker, "_fallback_to_market_order")
 
     fallback()
-    tracker.on_order_update(order.model_copy(update={"status": "已撤销"}))
+    tracker.on_order_update(copy_data(order, update={"status": "已撤销"}))
 
     assert order.order_id in tracker.completed_orders
     assert tracker.completed_orders[order.order_id].extra["market_order_fallback_failed"] is True
@@ -674,7 +674,6 @@ def _invalid_book_tick(symbol: str = "rb2610") -> UnifiedPriceData:
         turnover=0.0,
         timestamp=1,
         update_time="2026-03-21T00:00:00",
-        book_valid=False,
     )
 
 
@@ -769,7 +768,7 @@ def test_single_maker_params_on_missing_book_validation() -> None:
     """on_missing_book 默认 skip，接受 skip/market，拒绝非法值。"""
     assert single_maker_impl.SingleMakerParams().on_missing_book == "skip"
     with pytest.raises(ValueError):
-        single_maker_impl.SingleMakerParams(on_missing_book="active")  # type: ignore[arg-type]
+        parse_input(single_maker_impl.SingleMakerParams, {"on_missing_book": "active"})  # type: ignore[arg-type]
     assert single_maker_impl.SingleMakerParams(on_missing_book="market").on_missing_book == "market"
-    with pytest.raises(ValidationError):
-        single_maker_impl.SingleMakerParams(on_missing_book="bogus")  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        parse_input(single_maker_impl.SingleMakerParams, {"on_missing_book": "bogus"})  # type: ignore[arg-type]

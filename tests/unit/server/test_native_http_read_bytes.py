@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from axile.common.serialization import to_payload
 from axile.domain.execution import (
     ExecutionArtifactType,
     ExecutionEventStatus,
@@ -64,18 +65,21 @@ def test_native_bytes_reach_http_unchanged(client, native_database, monkeypatch,
 
 
 def _event(path, details, **overrides):
-    values = ExecutionEvent(
-        execution_id="e1",
-        account_id=1,
-        channel="ctp",
-        algorithm="SINGLE-MAKER",
-        event_uid="event-1",
-        event_type="execution_started",
-        status="INFO",
-        reason_family="SYSTEM",
-        reason_code="TEST.READ",
-        details=details,
-    ).model_dump(mode="json")
+    values = to_payload(
+        ExecutionEvent(
+            execution_id="e1",
+            account_id=1,
+            channel="ctp",
+            algorithm="SINGLE-MAKER",
+            event_uid="event-1",
+            event_type="execution_started",
+            status="INFO",
+            reason_family="SYSTEM",
+            reason_code="TEST.READ",
+            details=details,
+        ),
+        mode="json",
+    )
     native_store_call(path, "append_execution_event", values | overrides)
 
 
@@ -195,11 +199,7 @@ def test_artifact_projection_preserves_supported_attachment_contents(client, nat
         native_store_call(
             native_database,
             "append_execution_artifact",
-            ExecutionArtifact(
-                execution_id="e1",
-                artifact_type=kind,
-                content=summary,
-            ).model_dump(mode="json"),
+            to_payload(ExecutionArtifact(execution_id="e1", artifact_type=kind, content=summary), mode="json"),
         )
     runtime_rows(native_database, "ALTER TABLE execution_artifact ADD COLUMN internal_only TEXT DEFAULT 'private'")
     before = _audit_rows(native_database, "execution_artifact")
@@ -244,10 +244,7 @@ def test_invalid_audit_rows_still_fail_validation(client, native_database, table
     native_store_call(
         native_database,
         "append_execution_artifact",
-        ExecutionArtifact(
-            execution_id="e1",
-            artifact_type="target_snapshot",
-        ).model_dump(mode="json"),
+        to_payload(ExecutionArtifact(execution_id="e1", artifact_type="target_snapshot"), mode="json"),
     )
     runtime_rows(native_database, f"UPDATE {table} SET {column}=?", (value,))
     suffix = "events" if table == "execution_event" else "artifacts"
@@ -260,7 +257,7 @@ def test_runtime_sync_keeps_only_public_fields_and_does_not_load_account(client,
         native_database,
         "account_create",
         {
-            "account": build_account(portfolio_id=None).model_dump(mode="json"),
+            "account": to_payload(build_account(portfolio_id=None), mode="json"),
             "now": "2026-10-24",
         },
     )
@@ -288,7 +285,7 @@ def test_runtime_sync_missing_account_and_initial_sync_keep_status_and_detail(cl
         native_database,
         "account_create",
         {
-            "account": build_account(portfolio_id=None).model_dump(mode="json"),
+            "account": to_payload(build_account(portfolio_id=None), mode="json"),
             "now": "2026-10-24",
         },
     )

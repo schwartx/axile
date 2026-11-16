@@ -6,6 +6,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from axile.common.serialization import to_payload
 from axile.server.api.deps import get_scheduler
 from axile.server.api.routes import account_crud
 from tests.unit.server.test_account_control_routes import _build_account
@@ -18,7 +19,7 @@ class _Scheduler:
 
 def _client(monkeypatch, assets, *, target=None):
     context = {
-        "accounts": [_build_account().model_dump(mode="json") | {"connection": {"status": "uninitialized"}}],
+        "accounts": [to_payload(_build_account(), mode="json") | {"connection": {"status": "uninitialized"}}],
         "inputs": {
             "1": {
                 "observation": {"assets": assets, "created_at": "2026-08-26T21:35:11"} if assets is not None else None,

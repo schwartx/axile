@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel
-
 from axile.channels import get_channel
 from axile.channels.gm_sessions import GM_REGULAR_WINDOWS, GM_SPECIAL_WINDOWS, GMSessionSettings
 from axile.channels.schedule_clock import ClockWindow, is_within_schedule_windows
+from axile.common.serialization import copy_data
 from axile.common.trade_channel import TradeChannel
 from axile.executor.china_futures_session import is_regular_night_session_transition
 from axile.executor.trading_calendar import ShinnyTradingCalendar, TradingCalendar
@@ -50,7 +50,8 @@ type CalendarSkipReason = Literal[
 ]
 
 
-class CalendarDayDecision(BaseModel):
+@dataclass(kw_only=True)
+class CalendarDayDecision:
     """一次渠道交易日历判断结果。"""
 
     channel: str
@@ -134,12 +135,13 @@ def evaluate_channel_calendar_moment(
         # 只把「今日开市」改写成市场缝；日历不可用 / 休市日保持原判定，避免盖掉 fail-open。
         decision = evaluate_channel_calendar_day(channel, current.date(), calendar=calendar)
         if decision.status is CalendarDecisionStatus.AVAILABLE_OPEN:
-            return decision.model_copy(
+            return copy_data(
+                decision,
                 update={
                     "status": CalendarDecisionStatus.AVAILABLE_CLOSED,
                     "effective_is_open": False,
                     "reason_code": "CALENDAR.SESSION_CLOSED",
-                }
+                },
             )
         return decision
     session_start = (
@@ -150,17 +152,17 @@ def evaluate_channel_calendar_moment(
     if session_start is None:
         decision = evaluate_channel_calendar_day(channel, current.date(), calendar=calendar)
         if decision.status is CalendarDecisionStatus.AVAILABLE_CLOSED:
-            return decision.model_copy(update={"reason_code": "CALENDAR.CLOSED"})
+            return copy_data(decision, update={"reason_code": "CALENDAR.CLOSED"})
         return decision
 
     nominal_day = session_start + timedelta(days=1)
     start_decision = evaluate_channel_calendar_day(channel, session_start, calendar=calendar)
     if start_decision.status is CalendarDecisionStatus.NOT_REQUIRED:
-        return start_decision.model_copy(update={"day": nominal_day})
+        return copy_data(start_decision, update={"day": nominal_day})
     if start_decision.status is CalendarDecisionStatus.UNAVAILABLE:
-        return start_decision.model_copy(update={"day": nominal_day})
+        return copy_data(start_decision, update={"day": nominal_day})
     if start_decision.status is CalendarDecisionStatus.AVAILABLE_CLOSED:
-        return start_decision.model_copy(update={"reason_code": "CALENDAR.NO_NIGHT_SESSION"})
+        return copy_data(start_decision, update={"reason_code": "CALENDAR.NO_NIGHT_SESSION"})
 
     for offset in range(1, 15):
         candidate_day = session_start + timedelta(days=offset)
@@ -171,21 +173,23 @@ def evaluate_channel_calendar_moment(
             continue
         if is_regular_night_session_transition(session_start, candidate_day):
             return candidate
-        return candidate.model_copy(
+        return copy_data(
+            candidate,
             update={
                 "status": CalendarDecisionStatus.AVAILABLE_CLOSED,
                 "effective_is_open": False,
                 "reason_code": "CALENDAR.NO_NIGHT_SESSION",
-            }
+            },
         )
 
-    return start_decision.model_copy(
+    return copy_data(
+        start_decision,
         update={
             "day": nominal_day,
             "status": CalendarDecisionStatus.AVAILABLE_CLOSED,
             "effective_is_open": False,
             "reason_code": "CALENDAR.NO_NIGHT_SESSION",
-        }
+        },
     )
 
 

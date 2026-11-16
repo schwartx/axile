@@ -6,6 +6,7 @@ from typing import Any
 
 from axile.channels import get_channel
 from axile.channels.schedule_clock import is_within_schedule_windows
+from axile.common.serialization import copy_data, to_payload
 from axile.domain.execution import ExecutionKind
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.server.cron import SCHEDULER_TIMEZONE
@@ -39,13 +40,14 @@ def select_rebalance_algorithm(account: AccountContext) -> tuple[AccountContext,
     product_selection = {}
     for key, profile in account.product_algorithms.items():
         selected, period = _select_algorithm(profile.algorithm, profile.algorithm_schedule, selected_at)
-        products[key] = profile.model_copy(
-            update={"algorithm": {**selected, "params": selected.get("params") or {}}, "algorithm_schedule": []}
+        products[key] = copy_data(
+            profile,
+            update={"algorithm": {**selected, "params": selected.get("params") or {}}, "algorithm_schedule": []},
         )
         product_selection[key] = period
     if products:
         selection["product_algorithms"] = product_selection
-    return account.model_copy(update={"algorithm": algorithm, "product_algorithms": products}), selection
+    return copy_data(account, update={"algorithm": algorithm, "product_algorithms": products}), selection
 
 
 def resolve_account_leverages(account: AccountContext) -> tuple[float, float]:
@@ -129,4 +131,4 @@ def resolve_empty_positions_algorithm(
     default = get_channel(account.trade_channel).descriptor.defaults.empty_positions_algorithm
     if default is None:
         return {"method": "SINGLE-MAKER", "params": {}}
-    return dict(default.model_dump(mode="python"))
+    return dict(to_payload(default, mode="python"))

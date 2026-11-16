@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+import json
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
+from typing import Annotated
 
 import pandas as pd
 import pytest
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from msgspec import Meta
 
 from axile.channels import (
     AlgorithmReference,
@@ -26,15 +28,17 @@ from axile.channels import (
     register_channel,
     registry,
 )
+from axile.common.serialization import from_payload, to_payload
 from axile.executor.models.unified_input_accounts import BaseAccountConfig
 from axile.server.api.routes.capabilities import list_channel_capabilities
 from axile.server.execution.factory import create_executor_instance
 
 
+@dataclass(kw_only=True)
 class DemoAccountConfig(BaseAccountConfig):
     """测试插件账户配置。"""
 
-    token: str = Field(min_length=1)
+    token: Annotated[str, Meta(min_length=1)]
 
 
 def _target_transform(config: dict[str, float], frame: pd.DataFrame) -> pd.DataFrame:
@@ -149,9 +153,10 @@ def test_external_plugin_owns_its_schedule_configuration() -> None:
     from axile.channels.schedule_settings import validate_schedule_options
     from axile.server.db.models.account import Account, AccountSnapshot
 
-    class VendorSchedule(BaseModel):
-        model_config = ConfigDict(extra="forbid", frozen=True)
-        delay: int = Field(ge=1)
+    @dataclass(kw_only=True)
+    class VendorSchedule:
+        __forbid_unknown__ = True
+        delay: Annotated[int, Meta(ge=1)]
 
     list_channels()
     register_channel(replace(_plugin(), schedule_settings_model=VendorSchedule))
@@ -165,12 +170,12 @@ def test_external_plugin_owns_its_schedule_configuration() -> None:
         channel_options=options,
         algorithm={"method": "SINGLE-MAKER", "params": {}},
     )
-    snapshot = AccountSnapshot.model_validate_json(account.model_dump_json())
+    snapshot = from_payload(AccountSnapshot, json.loads(json.dumps(to_payload(account, mode="json"))))
     assert snapshot.channel_options == {"vendor-demo": {"delay": 2}}
     snapshot.channel_options["vendor-demo"]["delay"] = 9
     assert account.channel_options["vendor-demo"]["delay"] == 2
     for invalid in ({"delay": 0}, {"delay": 2, "unknown": True}):
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValueError):
             validate_schedule_options({"vendor-demo": invalid})
 
 
@@ -206,7 +211,7 @@ def test_factory_validates_plugin_config_before_creating_executor() -> None:
     assert isinstance(executor.config, DemoAccountConfig)
     assert executor.config.channel_type == "vendor-demo"
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValueError):
         create_executor_instance(SimpleNamespace(trade_channel="vendor-demo", account_config={"token": ""}))
 
 

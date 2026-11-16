@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib
 
+from axile.common.serialization import from_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.ctp_operations import (
     CTP_TRADER_API_OPERATIONS,
@@ -94,7 +95,8 @@ ACCOUNT_CONTROL_PRESETS: dict[str, AccountControlPresetDefinition] = {
     "default": AccountControlPresetDefinition(
         preset_key="default",
         compatible_trade_channels=None,
-        policy=AccountControlOverride.model_validate(
+        policy=from_payload(
+            AccountControlOverride,
             {
                 "timezone": "Asia/Shanghai",
                 "operations": {
@@ -104,10 +106,7 @@ ACCOUNT_CONTROL_PRESETS: dict[str, AccountControlPresetDefinition] = {
                             "per_day": _rule(5000, "block"),
                             "min_interval_ms": _rule(300, "wait"),
                         },
-                        "symbol": {
-                            "per_minute": _rule(10, "wait"),
-                            "min_interval_ms": _rule(300, "wait"),
-                        },
+                        "symbol": {"per_minute": _rule(10, "wait"), "min_interval_ms": _rule(300, "wait")},
                     },
                     "cancel_order": {
                         "account": {
@@ -115,10 +114,7 @@ ACCOUNT_CONTROL_PRESETS: dict[str, AccountControlPresetDefinition] = {
                             "per_day": _rule(800, "block"),
                             "min_interval_ms": _rule(200, "wait"),
                         },
-                        "symbol": {
-                            "per_minute": _rule(10, "wait"),
-                            "min_interval_ms": _rule(200, "wait"),
-                        },
+                        "symbol": {"per_minute": _rule(10, "wait"), "min_interval_ms": _rule(200, "wait")},
                     },
                     "query_order": {
                         "account": {
@@ -126,13 +122,10 @@ ACCOUNT_CONTROL_PRESETS: dict[str, AccountControlPresetDefinition] = {
                             "per_day": _rule(5000, "block"),
                             "min_interval_ms": _rule(100, "wait"),
                         },
-                        "symbol": {
-                            "per_minute": _rule(10, "wait"),
-                            "min_interval_ms": _rule(300, "wait"),
-                        },
+                        "symbol": {"per_minute": _rule(10, "wait"), "min_interval_ms": _rule(300, "wait")},
                     },
                 },
-            }
+            },
         ),
     ),
     "ctp": AccountControlPresetDefinition(
@@ -142,7 +135,8 @@ ACCOUNT_CONTROL_PRESETS: dict[str, AccountControlPresetDefinition] = {
             operation: frozenset({CTP_TRADER_API_THROTTLE_GROUP})
             for operation in {"place_order", *CTP_TRADER_API_OPERATIONS}
         },
-        policy=AccountControlOverride.model_validate(
+        policy=from_payload(
+            AccountControlOverride,
             {
                 "timezone": "Asia/Shanghai",
                 "operations": {
@@ -150,10 +144,7 @@ ACCOUNT_CONTROL_PRESETS: dict[str, AccountControlPresetDefinition] = {
                     "trader_login": {"priority": 20},
                     "query_settlement_status": {
                         "priority": 20,
-                        "account": {
-                            "per_minute": _rule(20, "wait"),
-                            "per_day": _rule(200, "block"),
-                        },
+                        "account": {"per_minute": _rule(20, "wait"), "per_day": _rule(200, "block")},
                     },
                     "confirm_settlement": {"priority": 20},
                     "place_order": {
@@ -163,10 +154,7 @@ ACCOUNT_CONTROL_PRESETS: dict[str, AccountControlPresetDefinition] = {
                             "per_day": _rule(5000, "block"),
                             "min_interval_ms": _rule(500, "wait"),
                         },
-                        "symbol": {
-                            "per_minute": _rule(10, "wait"),
-                            "min_interval_ms": _rule(300, "wait"),
-                        },
+                        "symbol": {"per_minute": _rule(10, "wait"), "min_interval_ms": _rule(300, "wait")},
                     },
                     "cancel_order": {
                         "priority": 0,
@@ -175,10 +163,7 @@ ACCOUNT_CONTROL_PRESETS: dict[str, AccountControlPresetDefinition] = {
                             "per_day": _rule(400, "block"),
                             "min_interval_ms": _rule(200, "wait"),
                         },
-                        "symbol": {
-                            "per_minute": _rule(10, "wait"),
-                            "min_interval_ms": _rule(200, "wait"),
-                        },
+                        "symbol": {"per_minute": _rule(10, "wait"), "min_interval_ms": _rule(200, "wait")},
                     },
                     "query_order": {
                         "account": {
@@ -186,10 +171,7 @@ ACCOUNT_CONTROL_PRESETS: dict[str, AccountControlPresetDefinition] = {
                             "per_day": _rule(2000, "block"),
                             "min_interval_ms": _rule(1500, "wait"),
                         },
-                        "symbol": {
-                            "per_minute": _rule(10, "wait"),
-                            "min_interval_ms": _rule(300, "wait"),
-                        },
+                        "symbol": {"per_minute": _rule(10, "wait"), "min_interval_ms": _rule(300, "wait")},
                     },
                     "query_commission_rates": {
                         "priority": 100,
@@ -197,56 +179,32 @@ ACCOUNT_CONTROL_PRESETS: dict[str, AccountControlPresetDefinition] = {
                     },
                     "query_instruments": {
                         "priority": 100,
-                        "account": {
-                            "per_minute": _rule(60, "wait"),
-                            "per_day": _rule(2000, "block"),
-                        },
+                        "account": {"per_minute": _rule(60, "wait"), "per_day": _rule(2000, "block")},
                     },
                     "query_account": {
                         "priority": 100,
-                        "account": {
-                            "per_minute": _rule(60, "wait"),
-                            "per_day": _rule(2000, "block"),
-                        },
+                        "account": {"per_minute": _rule(60, "wait"), "per_day": _rule(2000, "block")},
                     },
                     "query_positions": {
                         "priority": 100,
-                        "account": {
-                            "per_minute": _rule(60, "wait"),
-                            "per_day": _rule(2000, "block"),
-                        },
+                        "account": {"per_minute": _rule(60, "wait"), "per_day": _rule(2000, "block")},
                     },
                     "query_depth_market_data": {
                         "priority": 100,
-                        "account": {
-                            "per_minute": _rule(60, "wait"),
-                            "per_day": _rule(2000, "block"),
-                        },
+                        "account": {"per_minute": _rule(60, "wait"), "per_day": _rule(2000, "block")},
                     },
                     "query_orders": {
                         "priority": 100,
-                        "account": {
-                            "per_minute": _rule(60, "wait"),
-                            "per_day": _rule(2000, "block"),
-                        },
+                        "account": {"per_minute": _rule(60, "wait"), "per_day": _rule(2000, "block")},
                     },
                     "ctp_query_trades": {
                         "priority": 100,
-                        "account": {
-                            "per_minute": _rule(60, "wait"),
-                            "per_day": _rule(2000, "block"),
-                        },
+                        "account": {"per_minute": _rule(60, "wait"), "per_day": _rule(2000, "block")},
                     },
                     "query_settlement_info": {
                         "priority": 100,
-                        "account": {
-                            "per_minute": _rule(20, "wait"),
-                            "per_day": _rule(200, "block"),
-                        },
+                        "account": {"per_minute": _rule(20, "wait"), "per_day": _rule(200, "block")},
                     },
-                    # 期权行权 / 放弃 / 自对冲操作（ReqExecOrderInsert / ReqOptionSelfCloseInsert）
-                    # 风险高于普通下单，按更严格的频次限额配置；典型场景：到期日临近的批量行权。
-                    # 共用基线模板 _option_action_limits()；self_close 走 OVERRIDES 进一步收紧。
                     "option_exercise": _option_action_limits(),
                     "option_abandon": _option_action_limits(),
                     "option_self_close": _option_action_limits(overrides=_OPTION_SELF_CLOSE_OVERRIDES),
@@ -255,12 +213,8 @@ ACCOUNT_CONTROL_PRESETS: dict[str, AccountControlPresetDefinition] = {
                     "cancel_option_abandon": {"priority": 0},
                     "cancel_option_self_close": {"priority": 0},
                 },
-                "groups": {
-                    "ctp_td_global": {
-                        "min_interval_ms": _rule(1500, "wait"),
-                    }
-                },
-            }
+                "groups": {"ctp_td_global": {"min_interval_ms": _rule(1500, "wait")}},
+            },
         ),
     ),
 }

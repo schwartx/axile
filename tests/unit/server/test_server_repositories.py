@@ -7,6 +7,7 @@ from contextlib import closing
 import pytest
 from fastapi import HTTPException
 
+from axile.common.serialization import to_payload
 from axile.server.api.routes.portfolio import delete_portfolio
 from axile.server.core import db
 from axile.server.db.models import AccountSnapshot
@@ -36,7 +37,7 @@ def test_latest_binding_respects_explicit_unbinding(native_database, monkeypatch
             native_database,
             "account_create",
             {
-                "account": _build_account(name=name, portfolio_id=None).model_dump(mode="json"),
+                "account": to_payload(_build_account(name=name, portfolio_id=None), mode="json"),
                 "now": "2026-10-23T09:00:00",
             },
         )
@@ -81,7 +82,7 @@ def test_account_read_hydrates_independent_snapshot_and_missing(native_database,
         native_database,
         "account_create",
         {
-            "account": _build_account(portfolio_id=None).model_dump(mode="json"),
+            "account": to_payload(_build_account(portfolio_id=None), mode="json"),
             "now": "2026-10-23T09:00:00",
         },
     )

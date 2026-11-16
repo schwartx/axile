@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from axile.common.serialization import from_payload, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.account_control.guard import AccountControlGuard, resolve_control_window
@@ -31,14 +32,15 @@ def make_guard(*, baseline_count=120, limit=500, clock=None, sleep=None):
     )
     policy = resolve_account_control_policy(
         "default",
-        AccountControlOverride.model_validate(
-            {"operations": {"place_order": {"account": {"per_day": {"limit": limit, "on_trigger": "block"}}}}}
+        from_payload(
+            AccountControlOverride,
+            {"operations": {"place_order": {"account": {"per_day": {"limit": limit, "on_trigger": "block"}}}}},
         ),
     )
-    data = policy.model_dump(mode="json")
+    data = to_payload(policy, mode="json")
     data["operations"]["place_order"]["account"]["min_interval_ms"] = None
     data["operations"]["place_order"]["symbol"]["min_interval_ms"] = None
-    policy = EffectiveAccountControlPolicy.model_validate(data)
+    policy = from_payload(EffectiveAccountControlPolicy, data)
     return AccountControlGuard(
         account_id=1,
         execution_id="exec-monitor",
@@ -144,9 +146,9 @@ def test_waiting_snapshot_has_identity_and_cleans_up_on_termination():
         raise RuntimeError("terminated")
 
     guard = make_guard(sleep=sleep)
-    data = guard.policy.model_dump(mode="json")
+    data = to_payload(guard.policy, mode="json")
     data["operations"]["place_order"]["account"]["per_day"] = {"limit": 120, "on_trigger": "wait"}
-    guard.policy = EffectiveAccountControlPolicy.model_validate(data)
+    guard.policy = from_payload(EffectiveAccountControlPolicy, data)
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(guard.begin_operation, "place_order", symbol="rb2610")
         try:

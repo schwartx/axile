@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from axile.channels import get_channel
+from axile.common.serialization import to_payload
 from axile.executor import replay as recording
 from axile.executor.models.unified_input import TQAccountConfig
 from axile.executor.models.unified_order import OrderDirection, OrderType
@@ -145,7 +146,7 @@ def test_terminal_order_never_retains_online_confirmation(status, left, error):
 
 def test_channel_whitelist_accepts_all_normalized_observation_types(executor):
     owner, api = executor
-    context = get_channel("tq").descriptor.replay.model_dump(mode="json")
+    context = to_payload(get_channel("tq").descriptor.replay, mode="json")
     for topic, data in (
         ("/order", replay.order(owner, api.order)),
         ("/trade", replay.trade(owner, api.trade)),

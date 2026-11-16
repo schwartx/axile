@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from axile.common.serialization import copy_data, to_payload
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
 from axile.server.cron import SCHEDULER_TIMEZONE
 from axile.server.db.models.account_settings import SupplementSettings
@@ -113,8 +114,8 @@ async def seed(path, *, count=2, base=BASE):
         "supplement_create_group",
         {
             "account_id": 1,
-            "group": group.model_dump(mode="json"),
-            "steps": [step.model_dump(mode="json") for step in steps],
+            "group": to_payload(group, mode="json"),
+            "steps": [to_payload(step, mode="json") for step in steps],
         },
     )
     assert saved is not None
@@ -341,12 +342,12 @@ def test_native_create_deduplicates_and_rejects_a_stale_configuration(database):
 
     async def run():
         planned, steps = await seed(path)
-        duplicate = planned.model_copy(update={"id": "duplicate"})
+        duplicate = copy_data(planned, update={"id": "duplicate"})
         request = {
             "account_id": 1,
-            "group": duplicate.model_dump(mode="json"),
+            "group": to_payload(duplicate, mode="json"),
             "steps": [
-                current.model_copy(update={"id": f"duplicate-{index}", "group_id": duplicate.id}).model_dump()
+                to_payload(copy_data(current, update={"id": f"duplicate-{index}", "group_id": duplicate.id}))
                 for index, current in enumerate(steps)
             ],
         }
@@ -676,7 +677,7 @@ def test_preview_paginates_supplements_from_same_base(monkeypatch):
         assert first["items"][0]["scheduled_at"] == BASE + timedelta(minutes=1)
         assert first["items"][0]["base_scheduled_at"] == BASE
         assert not first["items"][0]["is_last"]
-        second = await account_schedule.schedule_preview(payload.model_copy(update={"after": first["next_cursor"]}))
+        second = await account_schedule.schedule_preview(copy_data(payload, update={"after": first["next_cursor"]}))
         assert second["items"][0]["scheduled_at"] == BASE + timedelta(minutes=2)
         assert second["items"][0]["is_last"]
 

@@ -2,21 +2,24 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Annotated, Any
 
 from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-not-found]
-from fastapi import APIRouter, HTTPException, Query, Response, status
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from msgspec import Meta
 from starlette.concurrency import run_in_threadpool
 
 from axile.channels import get_channel
 from axile.channels.gm_sessions import GM_SPECIAL_WINDOWS, GMSessionSettings, gm_phase
 from axile.channels.schedule_settings import validate_schedule_options
+from axile.common.serialization import provided_fields
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.trading_calendar import SHINNY_COVERAGE_END, SHINNY_COVERAGE_START
 from axile.server._native import _core
+from axile.server.api.inputs import json_body
 from axile.server.core.db import analysis_store
 from axile.server.cron import SCHEDULER_TIMEZONE, effective_triggers, is_blank_cron_expr
 from axile.server.db.models.account_settings import SupplementSettings
@@ -30,20 +33,30 @@ from axile.server.trading_calendar import (
 router = APIRouter()
 
 
-class SchedulePreviewRequest(BaseModel):
+@dataclass(kw_only=True)
+class SchedulePreviewRequest:
     """未来原始 Cron 触发点的只读预览请求。"""
 
     trade_channel: TradeChannel
     cron_expr: str
-    model_config = ConfigDict(extra="forbid")
-    channel_options: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    _options = field_validator("channel_options")(validate_schedule_options)
+    channel_options: dict[str, dict[str, Any]] = field(default_factory=dict)
     supplement: SupplementSettings | None = None
-    scheduled_ats: list[AwareDatetime] | None = Field(
-        default=None, min_length=1, max_length=100, description="仅重算指定基础触发的补发摘要，不推进预览游标"
-    )
-    after: AwareDatetime | None = None
-    limit: int = Field(default=5, ge=1, le=100)
+    scheduled_ats: (
+        Annotated[
+            list[Annotated[datetime, Meta(tz=True)]],
+            Meta(min_length=1, max_length=100, description="仅重算指定基础触发的补发摘要，不推进预览游标"),
+        ]
+        | None
+    ) = field(default=None)
+    after: Annotated[datetime, Meta(tz=True)] | None = None
+    limit: Annotated[int, Meta(ge=1, le=100)] = field(default=5)
+
+    __forbid_unknown__ = True
+
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        if "channel_options" in provided_fields(self):
+            object.__setattr__(self, "channel_options", validate_schedule_options(self.channel_options))
 
 
 def _field_error(field: str, message: str) -> HTTPException:
@@ -150,7 +163,9 @@ def _selected_base_preview(payload: SchedulePreviewRequest, base: datetime) -> d
 
 
 @router.post("/schedule-preview", response_model=None)
-async def schedule_preview(payload: SchedulePreviewRequest) -> dict[str, Any]:
+async def schedule_preview(
+    payload: Annotated[SchedulePreviewRequest, Depends(json_body(SchedulePreviewRequest))],
+) -> dict[str, Any]:
     """按时间游标只读预览未来 Cron 触发点及其交易日历动作。"""
     try:
         get_channel(str(payload.trade_channel))

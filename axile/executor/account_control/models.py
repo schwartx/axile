@@ -11,10 +11,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, field_validator
+from msgspec import Meta
 
+from axile.common.serialization import provided_fields
 from axile.common.trade_channel import TradeChannel
 
 if TYPE_CHECKING:
@@ -74,18 +75,6 @@ def __getattr__(name: str) -> Any:
 
     ensure_default_account_control_registry_bootstrapped()._sync_native()
     return getattr(_core, name)
-
-
-class _AccountControlBaseModel(BaseModel):
-    """
-    约束账户控制模型通用行为的基础模型.
-
-    Notes
-    -----
-    所有派生模型默认禁止额外字段。
-    """
-
-    model_config = ConfigDict(extra="forbid")
 
 
 class AccountControlContextKind(str, Enum):
@@ -179,7 +168,8 @@ class AccountControlPresetDefinition:
     operation_groups: dict[str, frozenset[str]] = field(default_factory=dict)
 
 
-class AccountControlCounterDeltaWrite(_AccountControlBaseModel):
+@dataclass(kw_only=True)
+class AccountControlCounterDeltaWrite:
     """
     定义执行结束时待刷盘的计数器增量记录.
 
@@ -211,20 +201,19 @@ class AccountControlCounterDeltaWrite(_AccountControlBaseModel):
         保证幂等写入的唯一键。
     """
 
-    account_id: StrictInt = Field(ge=1)
-    execution_id: StrictStr
+    account_id: Annotated[int, Meta(ge=1)]
+    execution_id: str
     context_kind: AccountControlContextKind = AccountControlContextKind.UNKNOWN
     source: AccountControlSource = AccountControlSource.UNKNOWN
-    control_date: StrictStr
+    control_date: str
     bucket_type: AccountControlBucketType
-    bucket_start: StrictStr
+    bucket_start: str
     scope_type: AccountControlScopeType
-    symbol: StrictStr | None = None
-    operation: StrictStr
-    delta_count: StrictInt = Field(ge=1)
-    delta_uid: StrictStr
+    symbol: str | None = None
+    operation: str
+    delta_count: Annotated[int, Meta(ge=1)]
+    delta_uid: str
 
-    @field_validator("operation")
     @classmethod
     def validate_operation(cls, value: str) -> str:
         """校验计数增量记录中的操作键不为空."""
@@ -232,8 +221,14 @@ class AccountControlCounterDeltaWrite(_AccountControlBaseModel):
             raise ValueError("operation 不能为空")
         return value
 
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        if "operation" in provided_fields(self):
+            object.__setattr__(self, "operation", self.validate_operation(self.operation))
 
-class AccountControlEventWrite(_AccountControlBaseModel):
+
+@dataclass(kw_only=True)
+class AccountControlEventWrite:
     """
     定义执行结束时待刷盘的事件记录.
 
@@ -273,31 +268,33 @@ class AccountControlEventWrite(_AccountControlBaseModel):
         事件发生的毫秒时间戳。
     """
 
-    account_id: StrictInt = Field(ge=1)
-    control_date: StrictStr
-    execution_id: StrictStr
+    account_id: Annotated[int, Meta(ge=1)]
+    control_date: str
+    execution_id: str
     context_kind: AccountControlContextKind = AccountControlContextKind.UNKNOWN
     source: AccountControlSource = AccountControlSource.UNKNOWN
-    seq: StrictInt = Field(ge=0)
+    seq: Annotated[int, Meta(ge=0)]
     channel: TradeChannel
-    operation: StrictStr
-    symbol: StrictStr | None = None
-    metadata: dict[str, object] = Field(default_factory=dict)
+    operation: str
+    symbol: str | None = None
+    metadata: dict[str, object] = field(default_factory=dict)
     decision: AccountControlDecision
     counted: bool
-    outcome: StrictStr
-    event_uid: StrictStr
-    created_at: StrictStr = Field(default_factory=_now_str, description="事件创建时间，秒级可读时间戳")
-    occurred_at_ms: StrictInt = Field(
-        default_factory=_now_ms,
-        ge=0,
-        description="事件发生时间的毫秒时间戳，用于 min_interval_ms 判断与排障",
-    )
+    outcome: str
+    event_uid: str
+    created_at: Annotated[str, Meta(description="事件创建时间，秒级可读时间戳")] = field(default_factory=_now_str)
+    occurred_at_ms: Annotated[
+        int, Meta(ge=0, description="事件发生时间的毫秒时间戳，用于 min_interval_ms 判断与排障")
+    ] = field(default_factory=_now_ms)
 
-    @field_validator("operation")
     @classmethod
     def validate_operation(cls, value: str) -> str:
         """校验事件记录中的操作键不为空."""
         if not value.strip():
             raise ValueError("operation 不能为空")
         return value
+
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        if "operation" in provided_fields(self):
+            object.__setattr__(self, "operation", self.validate_operation(self.operation))

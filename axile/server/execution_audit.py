@@ -10,6 +10,7 @@ from typing import TypedDict, TypeVar, cast
 
 import loguru
 
+from axile.common.serialization import to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import (
     ExecutionArtifactType,
@@ -197,7 +198,7 @@ async def append_execution_event(
     )
 
     try:
-        inserted = await native_operation("append_execution_event", event.model_dump(mode="python"))
+        inserted = await native_operation("append_execution_event", to_payload(event, mode="python"))
     except Exception as exc:
         logger.error(f"写入执行事件失败: {exc}")
         if raise_on_error:
@@ -266,7 +267,7 @@ async def append_execution_artifact(
     )
 
     try:
-        return bool(await native_operation("append_execution_artifact", artifact.model_dump(mode="python")))
+        return bool(await native_operation("append_execution_artifact", to_payload(artifact, mode="python")))
     except Exception as exc:
         logger.error(f"写入执行附件失败: {exc}")
         if raise_on_error:

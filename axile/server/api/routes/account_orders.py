@@ -1,16 +1,17 @@
 """账户当前委托查询及逐笔撤单接口。"""
 
 from datetime import date, datetime
-from typing import Any
+from typing import Annotated, Any
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from loguru import logger
 from starlette.concurrency import run_in_threadpool
 
 from axile.executor.algorithms.utils.clock import clock_now_ms
 from axile.server._native import _core
 from axile.server.account_orders import cancel_account_order, query_account_activity, query_account_orders
+from axile.server.api.inputs import json_body
 from axile.server.api.routes.account_support import _get_account_or_404, _get_account_snapshot_or_404
 from axile.server.core.db import analysis_store
 from axile.server.db.models.account_order import OrderCancelRequest
@@ -43,7 +44,9 @@ async def submission_monitor(account_id: int) -> Response:
 
 
 @router.put("/{account_id}/orders/monitor", response_model=None)
-async def update_submission_monitor(account_id: int, payload: SubmissionMonitorUpdate) -> dict:
+async def update_submission_monitor(
+    account_id: int, payload: Annotated[SubmissionMonitorUpdate, Depends(json_body(SubmissionMonitorUpdate))]
+) -> dict:
     """立即保存并重评估监测阈值，不改变风控额度或触发交易。"""
     from axile.executor.account_control.presets import resolve_account_control_policy
 
@@ -123,7 +126,9 @@ async def current_orders(
 
 
 @router.post("/{account_id}/orders/cancel", response_model=None, status_code=202)
-async def cancel_order(account_id: int, payload: OrderCancelRequest) -> dict[str, Any]:
+async def cancel_order(
+    account_id: int, payload: Annotated[OrderCancelRequest, Depends(json_body(OrderCancelRequest))]
+) -> dict[str, Any]:
     """受理单笔撤单；202 及 submitted 均不表示柜台已完成撤单。"""
     account = await _get_account_snapshot_or_404(account_id)
     try:

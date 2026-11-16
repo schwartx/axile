@@ -10,6 +10,7 @@ import sqlalchemy as sa
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from axile.common.serialization import to_payload
 from axile.domain.execution import ExecutionArtifactType
 from axile.server._native import _core
 from axile.server.api.deps import get_scheduler
@@ -85,7 +86,7 @@ def _seed(path, name, count):
         ]
     else:
         values = [
-            (
+            to_payload(
                 ExecutionEvent(
                     id=identity,
                     execution_id="execution-1",
@@ -101,8 +102,9 @@ def _seed(path, name, count):
                 if name == "execution_event"
                 else ExecutionArtifact(
                     id=identity, execution_id="execution-1", artifact_type=list(ExecutionArtifactType)[identity - 1]
-                )
-            ).model_dump(mode="json")
+                ),
+                mode="json",
+            )
             for identity in range(1, count + 1)
         ]
         fields = ("ts_local_created", "ts_exchange", "ts_persisted") if name == "execution_event" else ("created_at",)

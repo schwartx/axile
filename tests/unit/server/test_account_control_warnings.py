@@ -11,6 +11,7 @@ import pytest
 from axile.common.config import settings
 from axile.common.notification_context import ACCOUNT_CONTROL_WARNING_EVENT
 from axile.common.notification_function import NotificationFunctionResult
+from axile.common.serialization import copy_data, from_payload, to_payload
 from axile.executor.account_control.models import AccountControlOverride
 from axile.executor.algorithms.utils.clock import clock_now_ms
 from axile.server import error_notifications
@@ -37,7 +38,8 @@ async def database(monkeypatch):
         )
         monkeypatch.setattr(settings, "system_execution_notification_mode", "default")
         monkeypatch.setattr(settings, "exe_err_feishu_key", "system-test-hook")
-        account.account_control_override = AccountControlOverride.model_validate(
+        account.account_control_override = from_payload(
+            AccountControlOverride,
             {
                 "operations": {
                     "place_order": {
@@ -48,8 +50,9 @@ async def database(monkeypatch):
                         },
                     }
                 }
-            }
+            },
         )
+        account.account_control_override = to_payload(account.account_control_override, mode="json")
         save_account(path, account)
         with closing(oracle_connect(path)) as connection, connection:
             connection.execute("DELETE FROM account_control_counter_delta")
@@ -186,7 +189,7 @@ def test_saved_policy_change_does_not_rewrite_a_running_warning(monkeypatch):
     async def scenario():
         async with database(monkeypatch) as (path, account, _, _, _):
             current = await persistence.build_account_control_guard(account, "frozen-policy")
-            changed = account.model_copy(deep=True)
+            changed = copy_data(account, deep=True)
             override = changed.account_control_override
             override["operations"]["place_order"]["daily_warning_percent"] = 99
             changed.account_control_override = override

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query, status
 
+from axile.common.serialization import from_payload, to_payload
 from axile.executor.account_control.exceptions import AccountControlConfigError
 from axile.executor.account_control.models import AccountControlOverride
 from axile.executor.account_control.presets import (
@@ -84,7 +85,7 @@ async def get_account_control_policy(
         raise HTTPException(status_code=code, detail=exc.details) from exc
 
     raw_override = account.account_control_override
-    override = None if raw_override is None else AccountControlOverride.model_validate(raw_override)
+    override = None if raw_override is None else from_payload(AccountControlOverride, raw_override)
     effective_policy = resolve_account_control_policy(selected_key, override)
 
     registry = ensure_default_account_control_registry_bootstrapped()
@@ -120,9 +121,9 @@ async def get_account_control_policy(
         timezone_display_name=(
             "中国标准时间（UTC+8）" if effective_policy.timezone == "Asia/Shanghai" else "账户配置时区"
         ),
-        override=None if override is None else override.model_dump(mode="json"),
-        preset_policy=preset_policy.model_dump(mode="json", exclude={"preset_key", "operation_groups"}),
-        effective_policy=effective_policy.model_dump(mode="json", exclude={"preset_key", "operation_groups"}),
+        override=None if override is None else to_payload(override, mode="json"),
+        preset_policy=to_payload(preset_policy, mode="json", exclude={"preset_key", "operation_groups"}),
+        effective_policy=to_payload(effective_policy, mode="json", exclude={"preset_key", "operation_groups"}),
         operations=operations,
         groups=groups,
     )

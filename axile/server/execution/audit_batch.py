@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from loguru import logger
 
+from axile.common.serialization import to_payload
 from axile.domain.execution import ExecutionArtifactType, ExecutionEventType
 from axile.server.db.models import ExecutionArtifact, ExecutionEvent, now_str
 from axile.server.execution_audit import (
@@ -103,7 +104,7 @@ def _batch_request(batch: ExecutionAuditBatch) -> dict[str, object]:
     entries = []
     for entry in batch:
         try:
-            row = entry.model_dump(mode="python")
+            row = to_payload(entry, mode="python")
             json.dumps(row, ensure_ascii=False, allow_nan=False)
             entries.append(
                 {

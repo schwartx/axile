@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from axile.channels.gm_sessions import SHANGHAI, GMSessionSettings, check_gm_operation, gm_phase, gm_session_context
+from axile.common.serialization import to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
 from axile.server.core import db
@@ -73,7 +74,7 @@ async def _intent_db(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
         monkeypatch.setattr(intents_module, "_wake", lambda _account_id: None)
         await native_operation("migration_upgrade", {"public": "head"})
         created = await native_operation(
-            "account_create", {"account": _account().model_dump(mode="json"), "now": "2026-10-23T10:00:00+08:00"}
+            "account_create", {"account": to_payload(_account(), mode="json"), "now": "2026-10-23T10:00:00+08:00"}
         )
         assert created["account"]["id"] == 1
         try:
@@ -129,7 +130,7 @@ def test_gm_intent_keeps_original_phase_and_settings(monkeypatch, cross_boundary
         opening_cancelable={"enabled": True, "time": "09:15"},
         opening_locked={"enabled": True, "time": "09:20"},
     )
-    context = gm_session_context(settings.model_dump(), planned)
+    context = gm_session_context(to_payload(settings), planned)
     now = planned.replace(minute=20) if cross_boundary else planned
     monkeypatch.setattr("axile.executor.algorithms.utils.clock.clock_now", lambda **_: now)
 
@@ -139,7 +140,7 @@ def test_gm_intent_keeps_original_phase_and_settings(monkeypatch, cross_boundary
                 "account_update",
                 {
                     "account_id": 1,
-                    "patch": {"trade_channel": "gm", "channel_options": {"gm": settings.model_dump()}},
+                    "patch": {"trade_channel": "gm", "channel_options": {"gm": to_payload(settings)}},
                     "now": now.isoformat(),
                 },
             )
@@ -153,7 +154,7 @@ def test_gm_intent_keeps_original_phase_and_settings(monkeypatch, cross_boundary
                 "account_update",
                 {
                     "account_id": 1,
-                    "patch": {"channel_options": {"gm": GMSessionSettings().model_dump()}},
+                    "patch": {"channel_options": {"gm": to_payload(GMSessionSettings())}},
                     "now": now.isoformat(),
                 },
             )
@@ -195,7 +196,7 @@ def test_manual_gm_intent_freezes_only_enabled_auction_permissions(monkeypatch, 
                     "account_id": 1,
                     "patch": {
                         "trade_channel": "gm",
-                        "channel_options": {"gm": settings.model_dump()},
+                        "channel_options": {"gm": to_payload(settings)},
                         "is_started": False,
                     },
                     "now": now.isoformat(),
@@ -208,7 +209,7 @@ def test_manual_gm_intent_freezes_only_enabled_auction_permissions(monkeypatch, 
                 assert context == {
                     "phase": gm_phase(now),
                     "trading_day": "2026-09-01",
-                    "sessions": settings.model_dump(),
+                    "sessions": to_payload(settings),
                 }
                 check_gm_operation(now, context=context)
             else:
@@ -225,7 +226,7 @@ def test_coalesced_manual_gm_request_does_not_renew_original_phase(monkeypatch):
         opening_cancelable={"enabled": True, "time": "09:15"},
         opening_locked={"enabled": True, "time": "09:20"},
     )
-    original = gm_session_context(settings.model_dump(), now)
+    original = gm_session_context(to_payload(settings), now)
     monkeypatch.setattr("axile.executor.algorithms.utils.clock.clock_now", lambda **_: now)
 
     async def run():
@@ -235,7 +236,7 @@ def test_coalesced_manual_gm_request_does_not_renew_original_phase(monkeypatch):
                 "account_update",
                 {
                     "account_id": 1,
-                    "patch": {"trade_channel": "gm", "channel_options": {"gm": settings.model_dump()}},
+                    "patch": {"trade_channel": "gm", "channel_options": {"gm": to_payload(settings)}},
                     "now": now.isoformat(),
                 },
             )

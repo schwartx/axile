@@ -8,6 +8,8 @@ from zoneinfo import ZoneInfo
 from apscheduler.triggers.combining import OrTrigger  # type: ignore[import-not-found]
 from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-not-found]
 
+from axile.common.serialization import to_payload
+
 SCHEDULER_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
@@ -133,7 +135,7 @@ def effective_triggers(cron_expr: str, channel: object, sessions=None) -> list[C
         return []
     triggers = parse_cron_expr(cron_expr)
     if str(channel) == "gm" and sessions is not None:
-        for value in sessions.model_dump().values():
+        for value in to_payload(sessions).values():
             if value["enabled"]:
                 hour, minute = value["time"].split(":")
                 triggers.extend(parse_cron_expr(f"{int(minute)} {int(hour)} * * *"))

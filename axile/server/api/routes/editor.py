@@ -7,15 +7,18 @@ import contextlib
 import json
 import sys
 import sysconfig
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Annotated
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
 import anyio
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from msgspec import Meta
 
+from axile.server.api.inputs import json_body
 from axile.server.editor_contract import EditorKind, check_editor_contract
 
 router = APIRouter(prefix="/editor", tags=["editor"])
@@ -53,21 +56,25 @@ def source_path(uri: str) -> Path:
     return path
 
 
-class FormatRequest(BaseModel):
+@dataclass(kw_only=True)
+class FormatRequest:
     """待格式化的完整文档，不执行代码."""
 
-    code: str = Field(max_length=MAX_MESSAGE)
+    code: Annotated[str, Meta(max_length=MAX_MESSAGE)]
 
 
-class ContractRequest(BaseModel):
+@dataclass(kw_only=True)
+class ContractRequest:
     """当前代码及页面要求的入口契约。"""
 
-    code: str = Field(max_length=MAX_MESSAGE)
+    code: Annotated[str, Meta(max_length=MAX_MESSAGE)]
     kind: EditorKind
 
 
 @router.post("/contract", response_model=None)
-async def editor_contract(payload: ContractRequest) -> dict[str, list[dict[str, object]]]:
+async def editor_contract(
+    payload: Annotated[ContractRequest, Depends(json_body(ContractRequest))],
+) -> dict[str, list[dict[str, object]]]:
     """为编辑器返回入口函数诊断与类型标注修复。"""
     return check_editor_contract(payload.code, payload.kind)
 
@@ -87,7 +94,7 @@ async def stop_process(process: asyncio.subprocess.Process) -> None:
 
 
 @router.post("/format", response_model=None)
-async def format_python(payload: FormatRequest) -> dict[str, str]:
+async def format_python(payload: Annotated[FormatRequest, Depends(json_body(FormatRequest))]) -> dict[str, str]:
     """用固定 Ruff 配置格式化源码，保留语法错误原文供编辑器展示."""
     process = await asyncio.create_subprocess_exec(
         sys.executable,

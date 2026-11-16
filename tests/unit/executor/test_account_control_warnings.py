@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from axile.common.serialization import from_payload, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.exceptions import AccountControlBlockedError, AccountControlConfigError
 from axile.executor.account_control.guard import AccountControlGuard, resolve_control_window
@@ -21,25 +22,26 @@ BASE = datetime(2026, 10, 15, 9, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
 def guard(*, limit=5, percent=80, baseline=None, now=None, operation="place_order"):
-    override = AccountControlOverride.model_validate(
+    override = from_payload(
+        AccountControlOverride,
         {
             "operations": {
                 operation: {
                     "daily_warning_percent": percent,
                     "account": {
-                        "per_day": {"unlimited": True} if limit is None else {"limit": limit, "on_trigger": "block"},
+                        "per_day": {"unlimited": True} if limit is None else {"limit": limit, "on_trigger": "block"}
                     },
                 }
             }
-        }
+        },
     )
     policy = resolve_account_control_policy("default", override)
-    data = policy.model_dump(mode="json")
+    data = to_payload(policy, mode="json")
     for item in data["operations"].values():
         item["account"]["min_interval_ms"] = None
         item["account"]["per_minute"] = None
         item["symbol"] = None
-    policy = EffectiveAccountControlPolicy.model_validate(data)
+    policy = from_payload(EffectiveAccountControlPolicy, data)
     return AccountControlGuard(
         account_id=1,
         execution_id="warning-test",

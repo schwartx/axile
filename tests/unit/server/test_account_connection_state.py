@@ -12,6 +12,7 @@ from multiprocessing import Pipe
 
 import pytest
 
+from axile.common.serialization import from_payload, to_payload
 from axile.executor.connection_state import ConnectionMonitor, ConnectionObservation, connection_observer_scope
 from axile.server import connection_state as service
 from axile.server.core import db
@@ -30,7 +31,7 @@ from tests.unit.server._native_read_views import connection_view
 
 def _account(path):
     value = native_store_call(path, "account_get", {"account_id": 1})
-    return Account.model_validate(value) if value is not None else None
+    return from_payload(Account, value) if value is not None else None
 
 
 def _states(path):
@@ -50,7 +51,7 @@ def _states(path):
         for field in ("error", "presentation", "last_failure"):
             if row[field] is not None:
                 row[field] = json.loads(row[field])
-    return [AccountConnectionState.model_validate(row) for row in rows]
+    return [from_payload(AccountConnectionState, row) for row in rows]
 
 
 def _state(path):
@@ -293,7 +294,7 @@ def test_account_deletion_cascades_latest_state_and_rejects_late_callback(databa
     )
     native_store_call(path, "account_delete", {"account_id": 1})
     replacement = native_store_call(
-        path, "account_create", {"account": account.model_dump(mode="json"), "now": "2026-10-14T14:48:00.000000Z"}
+        path, "account_create", {"account": to_payload(account, mode="json"), "now": "2026-10-14T14:48:00.000000Z"}
     )["account"]
     assert replacement["id"] > 1
     service.record_connection_observation(binding, 2, ConnectionObservation("ok", "2026-10-14T14:47:01.000000Z"))
@@ -592,7 +593,7 @@ def test_real_process_session_reuse_disconnect_and_reconnect_without_broker(data
     path, account = database
     monkeypatch.setattr(manager_module, "run_worker_backend_loop", _offline_session_worker)
     manager = WorkerBackendManager()
-    snapshot = AccountSnapshot.model_validate(account.model_dump())
+    snapshot = from_payload(AccountSnapshot, to_payload(account))
 
     def status():
         return connection_view(_account(path), detail=True)
@@ -699,7 +700,7 @@ def test_concurrent_first_requests_share_one_worker_observation_identity(databas
     barrier = threading.Barrier(2)
 
     def bind(index):
-        request = WorkerBackendRequest(str(index), "prepare", account.model_dump(mode="json"), None, {})
+        request = WorkerBackendRequest(str(index), "prepare", to_payload(account, mode="json"), None, {})
         barrier.wait(timeout=2)
         WorkerBackendManager._bind_connection_request(handle, request)
         return request.connection_binding

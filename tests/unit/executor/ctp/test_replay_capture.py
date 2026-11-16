@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 from openctp_ctp import thosttraderapi as td
 
+from axile.common.serialization import to_payload
 from axile.executor.ctp import replay
 from axile.executor.replay import set_replay_observer
 from tests.unit.executor.ctp.test_connection_recovery import ScriptedBroker
@@ -295,7 +296,7 @@ def test_ctp_connection_exits_invalidate_the_recorded_generation(broker, tmp_pat
     from tests.unit.server.test_execution_replay_recorder import FakeWriter
 
     writer = FakeWriter()
-    context = _ctp_plugin().descriptor.replay.model_dump(mode="json")
+    context = to_payload(_ctp_plugin().descriptor.replay, mode="json")
     recorder = ReplayRecorder(17, tmp_path, context, writer_factory=lambda *_: writer)
     executor = broker.executor
     recorder.attach(executor)

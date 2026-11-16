@@ -1,14 +1,15 @@
 """独立 SQL 夹具行；生产流程不再依赖这些搬运模型。"""
 
-from pydantic import Field
+from dataclasses import dataclass, field
 
-from axile.server.db.models.base import Model, new_execution_id
+from axile.server.db.models.base import new_execution_id
 
 
-class SupplementGroup(Model):
+@dataclass(kw_only=True)
+class SupplementGroup:
     """一次基础排程及其有效补发步骤。"""
 
-    id: str = Field(default_factory=new_execution_id)
+    id: str = field(default_factory=new_execution_id)
     account_id: int
     fingerprint: str
     base_scheduled_at: str
@@ -20,12 +21,13 @@ class SupplementGroup(Model):
     cancel_requested_at: str | None = None
 
 
-class SupplementStep(Model):
+@dataclass(kw_only=True)
+class SupplementStep:
     """触发与执行的多对一关联，合并 intent 时仍保留所有行。"""
 
-    id: str = Field(default_factory=new_execution_id)
+    id: str = field(default_factory=new_execution_id)
     group_id: str
     index: int
     scheduled_at: str
     status: str = "pending"
-    execution_id: str | None = Field(default=None)
+    execution_id: str | None = field(default=None)

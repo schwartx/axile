@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import pytest
 
+from axile.common.serialization import copy_data, from_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor.base import AbstractExecutor
 from axile.executor.account_control.exceptions import AccountControlBlockedError
@@ -70,7 +71,8 @@ class _TestExecutor(AbstractExecutor):
         self.shared_state.executor_ids.append(id(self))
         super().__init__(
             TradeChannel("ctp"),
-            CTPAccountConfig.model_validate(
+            from_payload(
+                CTPAccountConfig,
                 {
                     "broker_id": "b",
                     "investor_id": "i",
@@ -79,7 +81,7 @@ class _TestExecutor(AbstractExecutor):
                     "md_front": "tcp://md:2",
                     "app_id": "app",
                     "auth_code": "auth",
-                }
+                },
             ),
         )
 
@@ -96,7 +98,7 @@ class _TestExecutor(AbstractExecutor):
         self.account_assets_calls += 1
         if self._account_assets_snapshots:
             index = min(self.account_assets_calls - 1, len(self._account_assets_snapshots) - 1)
-            return self._account_assets_snapshots[index].model_copy(deep=True)
+            return copy_data(self._account_assets_snapshots[index], deep=True)
         return UnifiedAccountAssets(
             available_cash=1000.0,
             total_asset=1000.0,
@@ -184,7 +186,7 @@ class _ScopedOrderViewsExecutor(_TestExecutor):
 
     def _get_pending_orders_impl(self, symbol: str | None = None) -> list[UnifiedOrder]:
         assert symbol is not None
-        return [order.model_copy(deep=True) for order in self._pending_orders if order.symbol == symbol]
+        return [copy_data(order, deep=True) for order in self._pending_orders if order.symbol == symbol]
 
 
 def _price(symbol: str) -> UnifiedPriceData:
@@ -1074,7 +1076,7 @@ class _DeadlineParallelExecutor(_TestExecutor):
             return []
         # 与真实渠道一样只报活动单：不过滤的话，构造出非活动状态的挂单也会被"撤掉"，
         # 撤单断言就会在夹具状态写错时依然通过。
-        return [order.model_copy(deep=True) for order in self._pending_by_symbol.get(symbol, []) if order.is_active()]
+        return [copy_data(order, deep=True) for order in self._pending_by_symbol.get(symbol, []) if order.is_active()]
 
     def _cancel_order_impl(self, symbol: str, order_id: str) -> bool:
         with self._cancel_lock:

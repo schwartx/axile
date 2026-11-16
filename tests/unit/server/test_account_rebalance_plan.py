@@ -6,6 +6,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from axile.common.serialization import from_payload, to_payload
 from axile.server.api.routes import account_execution
 from axile.server.db.models.account import AccountSnapshot
 from tests.unit.server.test_account_control_routes import _build_account
@@ -26,7 +27,7 @@ def test_rebalance_plan_distinguishes_unknown_positions_from_flat(monkeypatch, t
     monkeypatch.setattr(
         account_execution,
         "_get_account_or_404",
-        AsyncMock(return_value=AccountSnapshot.model_validate(_build_account().model_dump())),
+        AsyncMock(return_value=from_payload(AccountSnapshot, to_payload(_build_account()))),
     )
     monkeypatch.setattr(account_execution, "get_latest_portfolio_id_by_account_id", AsyncMock(return_value=7))
     monkeypatch.setattr(

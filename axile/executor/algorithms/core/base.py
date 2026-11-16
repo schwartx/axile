@@ -6,11 +6,10 @@
 """
 
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, Protocol, Type, overload, runtime_checkable
-
-from pydantic import BaseModel
+from typing import Any, Callable, Literal, Protocol, overload, runtime_checkable
 
 from axile.common.order_param_model import OrderParamModel
+from axile.common.serialization import parameter_schema, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.market_data_validation import MarketDataPurpose
 from axile.executor.models.execution_result import AlgorithmResult
@@ -290,7 +289,7 @@ class AlgorithmMetadata:
         算法适配的订单参数模型集合；为 ``None`` 时表示全模型通用。
         与 ``channels`` 正交:channels 约束"能不能跑",本字段约束"跑的时候
         下单参数语义能不能被渠道满足",供配置期配对校验。
-    params_class : Type[BaseModel] | None
+    params_class : type | None
         参数模型类型；为 ``None`` 时表示算法自行处理原始参数对象。
     slots : frozenset[AlgorithmSlot] | None
         算法可用的槽位集合；为 ``None`` 时表示主交易与清仓两槽通用，
@@ -305,7 +304,7 @@ class AlgorithmMetadata:
     params_schema: dict[str, object]
     channels: frozenset[str] | None
     order_param_models: frozenset[str] | None = None
-    params_class: Type[BaseModel] | None = None
+    params_class: type | None = None
     slots: frozenset[AlgorithmSlot] | None = None
 
     def __str__(self) -> str:
@@ -336,7 +335,7 @@ def register_algorithm(
     *,
     channels: list[str] | None = None,
     order_param_models: list[OrderParamModel] | None = None,
-    params_class: Type[BaseModel] | None = None,
+    params_class: type | None = None,
     slots: list[AlgorithmSlot] | None = None,
     label: str | None = None,
     description: str | None = None,
@@ -354,7 +353,7 @@ def register_algorithm(
     order_param_models : list[OrderParamModel] | None, default=None
         算法适配的订单参数模型列表；为空时表示全模型通用。
         供账户配置期与渠道的 ``ChannelPlugin.order_param_model`` 配对校验。
-    params_class : Type[BaseModel] | None, default=None
+    params_class : type | None, default=None
         算法参数模型类型；为空时表示算法自行解释参数对象。
     slots : list[AlgorithmSlot] | None, default=None
         算法适用的槽位列表；``None`` 表示主交易与清仓两槽通用，
@@ -388,10 +387,10 @@ def register_algorithm(
         resolved_defaults = dict(default_params or {})
         params_schema: dict[str, object] = {}
         if params_class is not None:
-            params_schema = params_class.model_json_schema()
+            params_schema = parameter_schema(params_class)
             if default_params is None:
                 try:
-                    resolved_defaults = dict(params_class().model_dump(mode="json"))
+                    resolved_defaults = dict(to_payload(params_class(), mode="json"))
                 except Exception:
                     resolved_defaults = {}
 

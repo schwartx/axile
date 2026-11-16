@@ -8,6 +8,7 @@ from typing import cast
 
 import pytest
 
+from axile.common.serialization import from_payload, to_payload
 from axile.executor import feishu_notifications
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from tests.unit.executor.test_feishu_notifications import _NotificationSource
@@ -18,8 +19,8 @@ _FIXTURE = json.loads((Path(__file__).parents[2] / "fixtures/notification_contex
 @pytest.mark.parametrize("case", _FIXTURE["cases"], ids=lambda case: case["name"])
 def test_notification_projection_preserves_frozen_context(case, monkeypatch):
     monkeypatch.setattr(feishu_notifications, "clock_now", lambda: datetime.fromisoformat(_FIXTURE["now"]))
-    output = UnifiedStandardOutput.model_validate(case["result"])
-    before = output.model_dump(mode="json")
+    output = from_payload(UnifiedStandardOutput, case["result"])
+    before = to_payload(output, mode="json")
     context = feishu_notifications.build_execution_notification_context(
         cast("feishu_notifications.FeishuNotificationSource", _NotificationSource()),
         output,
@@ -27,13 +28,13 @@ def test_notification_projection_preserves_frozen_context(case, monkeypatch):
         is_test=case["is_test"],
     )
     assert context == case["expected"]
-    assert output.model_dump(mode="json") == before
+    assert to_payload(output, mode="json") == before
 
 
 def test_notification_projection_does_not_serialize_private_runtime_objects(monkeypatch):
     monkeypatch.setattr(feishu_notifications, "clock_now", lambda: datetime.fromisoformat(_FIXTURE["now"]))
     case = _FIXTURE["cases"][0]
-    output = UnifiedStandardOutput.model_validate(case["result"])
+    output = from_payload(UnifiedStandardOutput, case["result"])
     opaque = object()
     output.extra["runtime"] = opaque
     output.memory["runtime"] = opaque
@@ -58,7 +59,7 @@ def test_notification_projection_does_not_serialize_private_runtime_objects(monk
 
 @pytest.mark.parametrize("value,label", [(float("nan"), "nan"), (float("inf"), "inf"), (float("-inf"), "-inf")])
 def test_notification_projection_keeps_nonfinite_values(value, label):
-    output = UnifiedStandardOutput.model_validate(_FIXTURE["cases"][0]["result"])
+    output = from_payload(UnifiedStandardOutput, _FIXTURE["cases"][0]["result"])
     output.account_assets.total_asset = value
     output.account_assets.available_cash = value
     output.account_assets.market_value = value

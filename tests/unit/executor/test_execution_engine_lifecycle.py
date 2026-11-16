@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from axile.common.serialization import copy_data, from_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor.base import AbstractExecutor
 from axile.executor.algorithms.core.base import AlgorithmInput
@@ -40,7 +41,8 @@ class _LifecycleRecorderExecutor(AbstractExecutor):
         self.websocket_init_calls: list[list[str]] = []
         super().__init__(
             TradeChannel("ctp"),
-            CTPAccountConfig.model_validate(
+            from_payload(
+                CTPAccountConfig,
                 {
                     "broker_id": "b",
                     "investor_id": "i",
@@ -49,7 +51,7 @@ class _LifecycleRecorderExecutor(AbstractExecutor):
                     "md_front": "tcp://md:2",
                     "app_id": "app",
                     "auth_code": "auth",
-                }
+                },
             ),
         )
 
@@ -401,7 +403,7 @@ def test_final_account_observation_source_controls_output(monkeypatch, source, s
     from axile.executor.models.execution_result import AlgorithmResult
 
     executor = _LifecycleRecorderExecutor()
-    assets = UnifiedAccountAssets.unavailable().model_copy(update={"source": source})
+    assets = copy_data(UnifiedAccountAssets.unavailable(), update={"source": source})
     monkeypatch.setattr(executor, "get_account_assets", lambda: assets)
     result = AlgorithmResult(symbol="A", algorithm="test", status=status)
 

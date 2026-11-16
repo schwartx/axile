@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from axile.common.serialization import to_payload
 from axile.executor.models.portfolio_target import PortfolioTarget
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.server._native import _core
@@ -49,7 +50,7 @@ def test_quantity_envelope_cannot_silently_become_empty_weights(result):
 
 
 def test_legacy_dictionary_still_means_weight():
-    assert PortfolioTarget.from_result({"XAUUSD": 1}).model_dump() == {"mode": "weight", "targets": {"XAUUSD": 1.0}}
+    assert to_payload(PortfolioTarget.from_result({"XAUUSD": 1})) == {"mode": "weight", "targets": {"XAUUSD": 1.0}}
 
 
 def test_quantity_bypasses_leverage_and_survives_standard_input_roundtrip():

@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from openctp_ctp import thosttraderapi as td
 
+from axile.common.serialization import copy_data
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.constants.order_status import OrderStatus
@@ -151,22 +152,25 @@ def trade_to_unified(
     trade_day = str(_value(row, "TradeDate", "") or "")
     trade_clock = str(_value(row, "TradeTime", "") or "")
     trade_time = _time(trade_day, trade_clock)
-    return TradeRecord.create(
-        trade_id=str(_value(row, "TradeID", "") or ""),
-        symbol=str(_value(row, "InstrumentID", "") or ""),
-        order_id=resolved_order_id,
-        trade_time=trade_time,
-        trading_day=day,
-        **_time_evidence(trade_day, trade_clock, "TradeDate", trade_time),
-        trade_volume=volume,
-        trade_price=price,
-        order_ref=order_ref,
-        exchange_id=str(_value(row, "ExchangeID", "") or ""),
-        order_sys_id=str(_value(row, "OrderSysID", "") or "").strip(),
-        direction=str(_value(row, "Direction", "") or ""),
-        offset_flag=str(_value(row, "OffsetFlag", "") or ""),
-        hedge_flag=str(_value(row, "HedgeFlag", "") or ""),
-    ).model_copy(update={"order_id": resolved_order_id})
+    return copy_data(
+        TradeRecord.create(
+            trade_id=str(_value(row, "TradeID", "") or ""),
+            symbol=str(_value(row, "InstrumentID", "") or ""),
+            order_id=resolved_order_id,
+            trade_time=trade_time,
+            trading_day=day,
+            **_time_evidence(trade_day, trade_clock, "TradeDate", trade_time),
+            trade_volume=volume,
+            trade_price=price,
+            order_ref=order_ref,
+            exchange_id=str(_value(row, "ExchangeID", "") or ""),
+            order_sys_id=str(_value(row, "OrderSysID", "") or "").strip(),
+            direction=str(_value(row, "Direction", "") or ""),
+            offset_flag=str(_value(row, "OffsetFlag", "") or ""),
+            hedge_flag=str(_value(row, "HedgeFlag", "") or ""),
+        ),
+        update={"order_id": resolved_order_id},
+    )
 
 
 def quote_to_unified(row: object) -> UnifiedPriceData:

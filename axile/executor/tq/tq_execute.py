@@ -21,7 +21,12 @@ from axile.executor.execution_engine import ExecutionEngine
 from axile.executor.futures_order_intent import is_close_intent, single_close_offset
 from axile.executor.instrument_catalog import InstrumentCatalogProvider
 from axile.executor.instrument_catalog_records import normalize_catalog_symbol
-from axile.executor.models.execution_result import AlgorithmResult, ExecutionStatus, TargetSizingDecision
+from axile.executor.models.execution_result import (
+    AlgorithmResult,
+    ExecutionStatus,
+    TargetSizingDecision,
+    TargetSizingStatus,
+)
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_callback import OrderUpdateCallback, PriceDataCallback, TradeRecordCallback
 from axile.executor.models.unified_input import AccountConfig, TQAccountConfig, UnifiedStandardInput
@@ -724,7 +729,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
         if not symbol or price <= 0:
             return TargetSizingDecision(
                 symbol=symbol or "",
-                status="UNAVAILABLE",
+                status=TargetSizingStatus.UNAVAILABLE,
                 reason_code="COMMON.SIZING.INVALID_PRICE",
                 account_weight=weight,
                 equity=account_assets.total_asset,
@@ -739,7 +744,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
         if multiplier <= 0:
             return TargetSizingDecision(
                 symbol=symbol,
-                status="UNAVAILABLE",
+                status=TargetSizingStatus.UNAVAILABLE,
                 reason_code="COMMON.SIZING.MISSING_UNIT_MULTIPLIER",
                 account_weight=weight,
                 equity=account_assets.total_asset,

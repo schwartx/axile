@@ -241,10 +241,10 @@ def test_browser_title_persists_without_restart(
     path = tmp_path / "config.toml"
     path.write_text('exe_err_feishu_key = "keep-key"\n', encoding="utf-8")
     monkeypatch.setattr(cfg, "CONFIG_TOML_PATH", path)
-    monkeypatch.setitem(cfg.Settings.model_config, "toml_file", str(path))
+    monkeypatch.setattr(cfg, "CONFIG_TOML_PATH", path)
     restarted = []
     monkeypatch.setattr(init_module, "_restart_process", lambda: restarted.append(True))
-    assert cfg.Settings().browser_title == ""
+    assert cfg.load_settings().browser_title == ""
 
     response = client.patch("/api/v1/init/browser-title", json={"browser_title": title})
 
@@ -253,7 +253,7 @@ def test_browser_title_persists_without_restart(
     assert not restarted
     assert cfg.settings.browser_title == title.strip()
     assert client.get("/api/v1/init/status").json()["values"]["browser_title"] == title.strip()
-    reloaded = cfg.Settings()
+    reloaded = cfg.load_settings()
     assert reloaded.browser_title == title.strip()
     assert reloaded.exe_err_feishu_key == "keep-key"
 

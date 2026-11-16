@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from axile.common.serialization import to_payload
 from tests.conftest import initialize_native_database, native_store_call, require_native_store
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server._incremental_analysis_support import sql
@@ -23,7 +24,7 @@ TABLES = {
 def account(native_database):
     a = build_account(trade_channel="tq", portfolio_id=None, is_started=False, backtest_fee_rate=0.001)
     native_store_call(
-        native_database, "account_create", {"account": a.model_dump(mode="json"), "now": "2026-01-01T09:00:00"}
+        native_database, "account_create", {"account": to_payload(a, mode="json"), "now": "2026-01-01T09:00:00"}
     )
     return native_database
 

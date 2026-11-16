@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from axile.common.serialization import to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionArtifactType
 from axile.server.core.db import database_path
@@ -74,7 +75,7 @@ def test_empty_positions_uses_default_algorithm_when_not_provided(
         execution_kind: object = None,
     ) -> dict[str, object]:
         _ = account, raw_input, execution_id
-        result = cast("dict[str, object]", cast(object, output).model_dump(mode="json"))
+        result = cast("dict[str, object]", to_payload(cast(object, output), mode="json"))
         captured["result"] = result
         return {"record_id": 102, "is_success": 1}
 
@@ -172,7 +173,7 @@ def test_empty_positions_routes_gm_account_to_worker_manager(
         execution_kind: object = None,
     ) -> dict[str, object]:
         _ = account, raw_input, execution_id
-        result = cast("dict[str, object]", cast(object, output).model_dump(mode="json"))
+        result = cast("dict[str, object]", to_payload(cast(object, output), mode="json"))
         captured["result"] = result
         return {"record_id": 206, "is_success": 1}
 
@@ -224,7 +225,7 @@ def test_empty_positions_routes_ctp_account_to_worker_manager(
         execution_kind: object = None,
     ) -> dict[str, object]:
         _ = account, raw_input, execution_id
-        result = cast("dict[str, object]", cast(object, output).model_dump(mode="json"))
+        result = cast("dict[str, object]", to_payload(cast(object, output), mode="json"))
         captured["result"] = result
         return {"record_id": 306, "is_success": 1}
 

@@ -3,6 +3,8 @@
 import math
 from typing import Any, Dict, Optional
 
+from axile.common.serialization import parse_input
+
 # 账户级杠杆的通用粗粒度上限；更严格的渠道限制由渠道插件和执行器兜底。
 _MAX_LEVERAGE = 125.0
 
@@ -39,7 +41,7 @@ def _validate_leverage(value: Optional[float]) -> Optional[float]:
     Raises
     ------
     ValueError
-        杠杆为负或超过 ``_MAX_LEVERAGE`` 时抛出，经 Pydantic 包装为 422。
+        杠杆为负或超过 ``_MAX_LEVERAGE`` 时抛出，在 HTTP 输入入口返回 422。
     """
     if value is None:
         return value
@@ -67,7 +69,7 @@ def _validate_cron_expr(value: Optional[str]) -> Optional[str]:
     Raises
     ------
     ValueError
-        非空但无法解析为合法 crontab 时抛出，经 Pydantic 包装为 422，
+        非空但无法解析为合法 crontab 时抛出，在 HTTP 输入入口返回 422，
         避免非法表达式落库后在「启动」时把调度器打挂。
     """
     from axile.server.cron import is_blank_cron_expr, parse_cron_expr
@@ -101,7 +103,7 @@ def _validate_algorithm_config(config: Optional[Dict[str, Any]], field_label: st
     ------
     ValueError
         ``config`` 非对象、缺 ``method``，或 ``params`` 不满足算法参数模型约束（越界等）
-        时抛出，经 Pydantic 包装为 422。
+        时抛出，在 HTTP 输入入口返回 422。
     """
     if config is None:
         return config
@@ -112,8 +114,6 @@ def _validate_algorithm_config(config: Optional[Dict[str, Any]], field_label: st
         raise ValueError(f"{field_label}缺少 method")
     params = config.get("params") or {}
 
-    from pydantic import ValidationError
-
     from axile.executor.algorithms.core.base import get_algorithm_metadata
 
     try:
@@ -123,10 +123,9 @@ def _validate_algorithm_config(config: Optional[Dict[str, Any]], field_label: st
         return config
     if meta.params_class is not None:
         try:
-            meta.params_class.model_validate(params)
-        except ValidationError as exc:
-            errors = exc.errors()
-            detail = errors[0].get("msg", "") if errors else str(exc)
+            parse_input(meta.params_class, params)
+        except ValueError as exc:
+            detail = str(exc)
             raise ValueError(f"{field_label}参数不合法：{detail}") from exc
     return config
 

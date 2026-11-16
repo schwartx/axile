@@ -18,6 +18,7 @@ import sqlalchemy as sa
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from axile.common.serialization import to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import (
     ExecutionArtifactType,
@@ -249,7 +250,7 @@ def _seed_rows(path, *items):
                     values = {**defaults, **values}
                 else:
                     name = names[type(row).__name__]
-                    values = row.model_dump(mode="json")
+                    values = to_payload(row, mode="json")
                 target = table(name)
                 if "metadata_" in values:
                     values["metadata"] = values.pop("metadata_")

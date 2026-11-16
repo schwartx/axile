@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from axile.common.order_param_model import OrderParamModel
+from axile.common.serialization import copy_data
 from axile.executor.algorithms.utils.order_helper import (
     determine_close_intent,
     submit_and_track_split_orders,
@@ -119,7 +120,7 @@ def test_real_algorithm_split_keeps_pricing_evidence_during_refresh(monkeypatch,
             self.price_callbacks = []
 
         def get_market_data(self, symbols):
-            return {symbol: self.quote.model_copy(deep=True) for symbol in symbols}
+            return {symbol: copy_data(self.quote, deep=True) for symbol in symbols}
 
         def register_order_callback(self, callback):
             self.order_callbacks.append(callback)
@@ -135,7 +136,7 @@ def test_real_algorithm_split_keeps_pricing_evidence_during_refresh(monkeypatch,
 
         def register_price_callback(self, callback):
             self.price_callbacks.append(callback)
-            callback(self.quote.model_copy(deep=True))
+            callback(copy_data(self.quote, deep=True))
 
         def unregister_price_callback(self, callback):
             self.price_callbacks.remove(callback)
@@ -183,12 +184,12 @@ def test_real_algorithm_split_keeps_pricing_evidence_during_refresh(monkeypatch,
         ),
     )
     session = ExecutionEngine(owner)._create_symbol_session(SYMBOL, None)
-    original_quote = owner.quote.model_copy(deep=True)
+    original_quote = copy_data(owner.quote, deep=True)
     evidence = []
     place_order = session.place_order
 
     def observe_order(direction, order_type, volume, price=0, **kwargs):
-        evidence.append((price, kwargs.get("market_data").model_copy(deep=True)))
+        evidence.append((price, copy_data(kwargs.get("market_data"), deep=True)))
         return place_order(direction, order_type, volume, price, **kwargs)
 
     monkeypatch.setattr(session, "place_order", observe_order)
@@ -448,7 +449,7 @@ def test_timeout_stops_split_and_blocks_next_slice_until_terminal(monkeypatch, m
         _submit(executor, tracker, OrderDirection.SELL, 5, target=-3, current=2)
     assert executor.place_order.call_count == 1
 
-    tracker.on_order_update(orders[0].model_copy(update={"status": OrderStatus.CANCELED}))
+    tracker.on_order_update(copy_data(orders[0], update={"status": OrderStatus.CANCELED}))
     tracker.assert_ready_for_submission()
 
 
@@ -482,7 +483,7 @@ def test_submission_gate_reconciles_missing_cancel_callback() -> None:
     tracker = OrderTracker(executor=executor)
     order = _submit(executor, tracker, OrderDirection.BUY, 2, target=2, current=0)[0]
     executor.get_pending_orders.return_value = []
-    executor.reconcile_terminal_order.return_value = order.model_copy(update={"status": OrderStatus.CANCELED})
+    executor.reconcile_terminal_order.return_value = copy_data(order, update={"status": OrderStatus.CANCELED})
 
     tracker.assert_ready_for_submission()
 
@@ -514,8 +515,8 @@ def test_reconciled_fill_reduces_next_slice_quantity(filled) -> None:
     tracker = OrderTracker(executor=executor)
     order = _submit(executor, tracker, OrderDirection.BUY, 2, target=2, current=0)[0]
     executor.get_pending_orders.return_value = []
-    executor.reconcile_terminal_order.return_value = order.model_copy(
-        update={"status": OrderStatus.CANCELED, "filled_volume": filled}
+    executor.reconcile_terminal_order.return_value = copy_data(
+        order, update={"status": OrderStatus.CANCELED, "filled_volume": filled}
     )
     executor.get_account_assets.return_value = _ASSETS
     executor.get_current_volume.return_value = filled
@@ -560,7 +561,7 @@ def test_final_fill_before_gate_always_refreshes_slice(model, sign, arrival) -> 
     direction = OrderDirection.BUY if sign == 1 else OrderDirection.SELL
     old_order = executor.place_order(direction, OrderType.LIMIT, 2, 100)
     tracker.add_order(old_order)
-    terminal = old_order.model_copy(update={"status": OrderStatus.CANCELED, "filled_volume": 1.0})
+    terminal = copy_data(old_order, update={"status": OrderStatus.CANCELED, "filled_volume": 1.0})
     executor.get_pending_orders.return_value = []
     executor.reconcile_terminal_order.return_value = terminal
     if arrival == "callback":
@@ -574,7 +575,7 @@ def test_final_fill_before_gate_always_refreshes_slice(model, sign, arrival) -> 
     def fill_new_order(*args, **kwargs):
         order = place(*args, **kwargs)
         live_volume[0] += sign * order.volume
-        tracker.on_order_update(order.model_copy(update={"status": OrderStatus.FILLED, "filled_volume": order.volume}))
+        tracker.on_order_update(copy_data(order, update={"status": OrderStatus.FILLED, "filled_volume": order.volume}))
         return order
 
     executor.place_order.side_effect = fill_new_order

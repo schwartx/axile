@@ -1,5 +1,7 @@
 """证据完整性、输入保护及公共 CTP 原生发送边界回归。"""
 
+from axile.common.serialization import from_payload
+
 import json
 import sqlite3
 import threading
@@ -219,11 +221,11 @@ def test_live_payloads_validate_against_current_public_models(tmp_path):
 
     def validate(method, path, body=None, **kwargs):
         if method == "PATCH" and path == "/account/4":
-            AccountUpdate.model_validate(body)
+            from_payload(AccountUpdate, body)
         elif method == "POST" and path == "/portfolio/":
-            PortfolioCreate.model_validate(body)
+            from_payload(PortfolioCreate, body)
         elif method == "PATCH" and path == "/portfolio/99":
-            PortfolioUpdate.model_validate(body)
+            from_payload(PortfolioUpdate, body)
         return original(method, path, body, **kwargs)
 
     api.request = validate

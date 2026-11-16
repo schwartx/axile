@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from loguru import logger
 
+from axile.common.serialization import from_payload
 from axile.common.trade_channel import TradeChannel
 from axile.server._native import _core
 from axile.server.api.routes.account_support import _apply_account_job
@@ -54,7 +55,7 @@ async def _begin_attempt(
     if value is None:
         raise _ScheduledAccountSkipped
     return _RuntimeTarget(
-        account=AccountSnapshot.model_validate(value["account"]),
+        account=from_payload(AccountSnapshot, value["account"]),
         revision=value["revision"],
         reset_worker=value["reset_worker"],
         portfolio_id=value["portfolio_id"],

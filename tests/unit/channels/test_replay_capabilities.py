@@ -3,6 +3,7 @@
 import pytest
 
 from axile.channels import get_channel
+from axile.common.serialization import to_payload
 from axile.server.execution_replay.contracts import freeze_data
 
 
@@ -25,7 +26,7 @@ def test_adapter_capability_is_partial_and_does_not_invent_market_trades(channel
     ],
 )
 def test_replay_declaration_preserves_native_fields_and_rejects_undeclared_fields(channel, attributes, identity):
-    context = get_channel(channel).descriptor.replay.model_dump(mode="json")
+    context = to_payload(get_channel(channel).descriptor.replay, mode="json")
     data = {"symbol": "X", "order_id": "O", "attributes": attributes, "native_identity": identity}
     assert freeze_data("/order", data, context) == data
     with pytest.raises(ValueError, match="undeclared_extension"):

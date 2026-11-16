@@ -34,9 +34,10 @@ POV（Percentage of Volume，参与率）算法.
     )
 """
 
-from typing import Any, Literal
+from dataclasses import dataclass, field
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, model_validator
+from msgspec import Meta
 
 from axile.executor.algorithms.common.params import BaseAlgorithmParams
 from axile.executor.algorithms.core.base import (
@@ -70,6 +71,7 @@ from axile.executor.termination import ExecutionTerminated
 ALGORITHM_NAME = "POV"
 
 
+@dataclass(kw_only=True)
 class PovParams(BaseAlgorithmParams):
     """
     POV 算法参数.
@@ -89,62 +91,78 @@ class PovParams(BaseAlgorithmParams):
         到达时间上限且仍有欠量时，是否尝试按原报价方式补单。
     """
 
-    max_wait_seconds: int = Field(
-        default=60,
-        title="单笔最大等待",
-        description="实际取此值与下单间隔中的较小值。",
-        ge=1,
-        le=3600,
-        json_schema_extra={"x-order": 60, "x-unit": "秒", "x-control": "stepper"},
-    )
+    max_wait_seconds: Annotated[
+        int,
+        Meta(
+            ge=1,
+            le=3600,
+            title="单笔最大等待",
+            description="实际取此值与下单间隔中的较小值。",
+            extra_json_schema={"x-order": 60, "x-unit": "秒", "x-control": "stepper"},
+        ),
+    ] = field(default=60)
 
-    participation_rate: float = Field(
-        default=0.1,
-        title="参与率",
-        description="按收到的市场增量成交量计算目标参与量。",
-        gt=0.0,
-        le=1.0,
-        json_schema_extra={
-            "x-order": 10,
-            "x-unit": "%",
-            "x-control": "numberflow",
-            "x-display-scale": 100,
-            "x-display-step": 1,
-        },
-    )
-    interval_seconds: float = Field(
-        default=5.0,
-        title="下单间隔",
-        description="检查成交进度和下单的间隔。",
-        ge=0.1,
-        json_schema_extra={"x-order": 20, "x-unit": "秒", "x-control": "stepper"},
-    )
-    max_duration: int = Field(
-        default=600,
-        title="跟量时限",
-        description="跟量阶段的时间上限，结束处理和补单可能延长总耗时。",
-        ge=1,
-        le=86400,
-        json_schema_extra={"x-order": 30, "x-unit": "秒", "x-control": "presets", "x-presets": [60, 300, 600, 1800]},
-    )
-    price_strategy: Literal["ACTIVE", "PASSIVE"] = Field(
-        default="ACTIVE",
-        title="报价方式",
-        description="每笔使用本方价或对手价，主动报价也可能剩量。",
-        json_schema_extra={
-            "x-order": 40,
-            "x-control": "choice",
-            "x-enum-labels": {"PASSIVE": "本方挂单", "ACTIVE": "对手价"},
-        },
-    )
-    complete_on_timeout: bool = Field(
-        default=True,
-        title="到期补单",
-        description="按原报价方式尝试补下剩余量，不再受参与率约束，不保证成交。",
-        json_schema_extra={"x-order": 50},
-    )
+    participation_rate: Annotated[
+        float,
+        Meta(
+            gt=0.0,
+            le=1.0,
+            title="参与率",
+            description="按收到的市场增量成交量计算目标参与量。",
+            extra_json_schema={
+                "x-order": 10,
+                "x-unit": "%",
+                "x-control": "numberflow",
+                "x-display-scale": 100,
+                "x-display-step": 1,
+            },
+        ),
+    ] = field(default=0.1)
+    interval_seconds: Annotated[
+        float,
+        Meta(
+            ge=0.1,
+            title="下单间隔",
+            description="检查成交进度和下单的间隔。",
+            extra_json_schema={"x-order": 20, "x-unit": "秒", "x-control": "stepper"},
+        ),
+    ] = field(default=5.0)
+    max_duration: Annotated[
+        int,
+        Meta(
+            ge=1,
+            le=86400,
+            title="跟量时限",
+            description="跟量阶段的时间上限，结束处理和补单可能延长总耗时。",
+            extra_json_schema={
+                "x-order": 30,
+                "x-unit": "秒",
+                "x-control": "presets",
+                "x-presets": [60, 300, 600, 1800],
+            },
+        ),
+    ] = field(default=600)
+    price_strategy: Annotated[
+        Literal["ACTIVE", "PASSIVE"],
+        Meta(
+            title="报价方式",
+            description="每笔使用本方价或对手价，主动报价也可能剩量。",
+            extra_json_schema={
+                "x-order": 40,
+                "x-control": "choice",
+                "x-enum-labels": {"PASSIVE": "本方挂单", "ACTIVE": "对手价"},
+            },
+        ),
+    ] = field(default="ACTIVE")
+    complete_on_timeout: Annotated[
+        bool,
+        Meta(
+            title="到期补单",
+            description="按原报价方式尝试补下剩余量，不再受参与率约束，不保证成交。",
+            extra_json_schema={"x-order": 50},
+        ),
+    ] = field(default=True)
 
-    @model_validator(mode="after")
     def _validate_duration(self) -> "PovParams":
         """
         校验时间上限至少容纳一个轮询间隔.
@@ -176,6 +194,10 @@ class PovParams(BaseAlgorithmParams):
             f"price_strategy={self.price_strategy}, "
             f"complete_on_timeout={self.complete_on_timeout})"
         )
+
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        self._validate_duration()
 
 
 class _VolumeAccumulator:

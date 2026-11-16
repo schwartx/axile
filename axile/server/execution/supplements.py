@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any
 
 from axile.channels.gm_sessions import GMSessionSettings
+from axile.common.serialization import to_payload
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.server.core.scheduler import scheduler
@@ -33,7 +34,7 @@ def account_lock(account_id: int) -> asyncio.Lock:
 def fingerprint(account: AccountSnapshot) -> str:
     """仅调度身份、渠道和绑定参与组去重。"""
     assert account.supplement is not None
-    value = [account.cron_expr, account.supplement.model_dump(), str(account.trade_channel), account.portfolio_id]
+    value = [account.cron_expr, to_payload(account.supplement), str(account.trade_channel), account.portfolio_id]
     value.append(account.channel_options)
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 

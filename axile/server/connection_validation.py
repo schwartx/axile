@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 import multiprocessing
 import tempfile
+from dataclasses import dataclass
 from typing import Literal, cast
 from uuid import uuid4
 
 from loguru import logger
-from pydantic import ValidationError
 
 from axile.channels import get_channel
+from axile.common.serialization import parse_input, to_payload
 from axile.executor.algorithms.utils.clock import get_default_clock
 from axile.executor.connection_progress import (
     ConnectionProgressTracker,
@@ -34,6 +35,7 @@ class ValidationRejected(ValueError):
         self.status = status
 
 
+@dataclass(kw_only=True)
 class ValidationJob(ConnectionRun):
     """任务只保存诊断状态，不保存账户配置。"""
 
@@ -64,11 +66,11 @@ class ValidationService:
         if declaration is None or plugin.validate_connection is None:
             raise ValidationRejected(422, "渠道不支持连接验证")
         try:
-            validated = plugin.account_config_model.model_validate(config)
-        except (ValidationError, ValueError) as exc:
+            validated = parse_input(plugin.account_config_model, config)
+        except ValueError as exc:
             # 路由沿异常链保留原始校验项与异常原文。
             raise ValidationRejected(422, str(exc)) from exc
-        normalized = validated.model_dump(mode="json")
+        normalized = to_payload(validated, mode="json")
         self.prune()
         if any(job.status in {"queued", "running"} for job in self.jobs.values()) or any(
             not task.done() for task in self.tasks.values()

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from axile.common.order_param_model import OrderParamModel
+from axile.common.serialization import copy_data
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
 from axile.executor.algorithms.core.base import ExecutorProtocol
 from axile.executor.algorithms.exceptions import (
@@ -728,7 +729,7 @@ def submit_and_track_split_orders(
     """
     market_data = kwargs.get("market_data")
     if isinstance(market_data, UnifiedPriceData):
-        kwargs["market_data"] = market_data.model_copy(deep=True)
+        kwargs["market_data"] = copy_data(market_data, deep=True)
     if deadline is None:
         deadline = get_default_clock().time() + leg_timeout_seconds
     model = _resolve_order_param_model(executor)

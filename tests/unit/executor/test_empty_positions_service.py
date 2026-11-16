@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from axile.common.serialization import from_payload, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor import AbstractExecutor
 from axile.executor.abstract_executor.facade import DEFAULT_CLEAR_TIMEOUT
@@ -105,7 +106,8 @@ def test_empty_positions_returns_noop_result_when_no_positions() -> None:
             positions=[],
         )
     )
-    executor.account_config = CTPAccountConfig.model_validate(
+    executor.account_config = from_payload(
+        CTPAccountConfig,
         {
             "broker_id": "b",
             "investor_id": "i",
@@ -114,7 +116,7 @@ def test_empty_positions_returns_noop_result_when_no_positions() -> None:
             "md_front": "tcp://md:2",
             "app_id": "app",
             "auth_code": "auth",
-        }
+        },
     )
 
     result = executor.empty_positions()
@@ -215,5 +217,5 @@ def test_empty_positions_builds_final_input_without_losing_rules_or_notification
         "audit": {"execution_id": "e"},
         "channel_type": "ctp",
     }
-    assert "ignored" not in actual.model_dump()
+    assert "ignored" not in to_payload(actual)
     assert flags == {"cleanup": False, "retain_runtime": True, "notification_snapshot": notification}

@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from axile.common.serialization import to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.models import (
     AccountControlBucketType,
@@ -116,7 +117,7 @@ def test_account_control_tables_enforce_unique_delta_uid_and_event_uid(native_da
             account = _build_account()
             account_values = {
                 key: value
-                for key, value in account.model_dump(mode="json").items()
+                for key, value in to_payload(account, mode="json").items()
                 if key in table("account").c and key != "id"
             }
             account_values.update(created_at_us=to_us(account.created_at), updated_at_us=to_us(account.updated_at))

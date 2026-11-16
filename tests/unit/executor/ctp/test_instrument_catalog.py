@@ -7,6 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from axile.common.serialization import from_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.guard import AccountControlGuard
 from axile.executor.account_control.models import AccountControlOverride
@@ -168,8 +169,8 @@ def test_ctp_no_response_times_out_after_sending_and_releases_query_slot(monkeyp
 def test_catalog_native_query_uses_execution_group_usage_before_sending(monkeypatch):
     from axile.executor.account_control.exceptions import AccountControlBlockedError
 
-    override = AccountControlOverride.model_validate(
-        {"groups": {"ctp_td_global": {"per_day": {"limit": 1, "on_trigger": "block"}}}}
+    override = from_payload(
+        AccountControlOverride, {"groups": {"ctp_td_global": {"per_day": {"limit": 1, "on_trigger": "block"}}}}
     )
     executor, clock, guards, sent = _controlled_executor(monkeypatch, respond=True, override=override)
     execution = AccountControlGuard(
@@ -195,8 +196,8 @@ def test_public_order_is_blocked_by_catalog_usage_before_native_submission(monke
     from axile.executor.account_control.exceptions import AccountControlBlockedError
     from axile.executor.models.unified_order import OrderDirection, OrderType
 
-    override = AccountControlOverride.model_validate(
-        {"groups": {"ctp_td_global": {"per_day": {"limit": 1, "on_trigger": "block"}}}}
+    override = from_payload(
+        AccountControlOverride, {"groups": {"ctp_td_global": {"per_day": {"limit": 1, "on_trigger": "block"}}}}
     )
     executor, clock, _, sent = _controlled_executor(monkeypatch, respond=True, override=override)
     executor._query_catalog(["SHFE.rb2701"], None)

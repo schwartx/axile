@@ -25,9 +25,10 @@ target_volume 表示要行权 / 放弃 / 自对冲的张数（必须为非负整
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Annotated, Any, Protocol, cast
 
-from pydantic import Field
+from msgspec import Meta
 
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.common.params import BaseAlgorithmParams
@@ -66,40 +67,49 @@ class CtpOptionExecutorProtocol(ExecutorProtocol, Protocol):
         ...
 
 
+@dataclass(kw_only=True)
 class CTPOptionExerciseParams(BaseAlgorithmParams):
     """``CTP_OPTION_EXERCISE`` 参数."""
 
-    max_wait_seconds: int = Field(
-        default=60,
-        title="最大等待",
-        description="等待指令终态的上限；等待结束不等于指令完成。",
-        ge=1,
-        le=3600,
-        json_schema_extra={"x-order": 40, "x-unit": "秒", "x-control": "stepper"},
-    )
+    max_wait_seconds: Annotated[
+        int,
+        Meta(
+            ge=1,
+            le=3600,
+            title="最大等待",
+            description="等待指令终态的上限；等待结束不等于指令完成。",
+            extra_json_schema={"x-order": 40, "x-unit": "秒", "x-control": "stepper"},
+        ),
+    ] = field(default=60)
 
-    action: str = Field(
-        default="exercise",
-        title="指令类型",
-        description="行权、放弃或自对冲；按指定张数执行。",
-        json_schema_extra={
-            "x-order": 10,
-            "x-control": "choice",
-            "x-enum-labels": {"exercise": "行权", "abandon": "放弃", "self_close": "自对冲"},
-        },
-    )
-    require_value_check: bool = Field(
-        default=True,
-        title="检查内在价值",
-        description="仅行权时生效；关闭后跳过内在价值检查，不代表完整收益评估。",
-        json_schema_extra={"x-order": 20},
-    )
-    poll_interval_seconds: float = Field(
-        default=0.5,
-        title="查询间隔",
-        description="查询指令状态的间隔。",
-        json_schema_extra={"x-order": 30, "x-unit": "秒", "x-control": "stepper"},
-    )
+    action: Annotated[
+        str,
+        Meta(
+            title="指令类型",
+            description="行权、放弃或自对冲；按指定张数执行。",
+            extra_json_schema={
+                "x-order": 10,
+                "x-control": "choice",
+                "x-enum-labels": {"exercise": "行权", "abandon": "放弃", "self_close": "自对冲"},
+            },
+        ),
+    ] = field(default="exercise")
+    require_value_check: Annotated[
+        bool,
+        Meta(
+            title="检查内在价值",
+            description="仅行权时生效；关闭后跳过内在价值检查，不代表完整收益评估。",
+            extra_json_schema={"x-order": 20},
+        ),
+    ] = field(default=True)
+    poll_interval_seconds: Annotated[
+        float,
+        Meta(
+            title="查询间隔",
+            description="查询指令状态的间隔。",
+            extra_json_schema={"x-order": 30, "x-unit": "秒", "x-control": "stepper"},
+        ),
+    ] = field(default=0.5)
 
     def __str__(self) -> str:
         """日志友好的字符串。"""

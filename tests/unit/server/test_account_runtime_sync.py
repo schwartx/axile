@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from axile.common.serialization import to_payload
 from axile.server.db.models.account import AccountSnapshot
 from axile.server.execution import account_runtime_sync as runtime
 from axile.server.native_store import native_operation
@@ -155,7 +156,7 @@ def test_enqueue_is_atomic_and_preserves_reset_request(tmp_path):
             created = await native_operation(
                 "account_create",
                 {
-                    "account": build_account(portfolio_id=None).model_dump(mode="json"),
+                    "account": to_payload(build_account(portfolio_id=None), mode="json"),
                     "idempotency_key": "create-1",
                     "now": "2026-10-01",
                 },

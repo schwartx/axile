@@ -13,10 +13,11 @@ Notes
 """
 
 import math
+from dataclasses import dataclass, field
 from functools import partial
-from typing import Any, Dict, List, Literal, Tuple, cast
+from typing import Annotated, Any, Dict, List, Literal, Tuple, cast
 
-from pydantic import ConfigDict, Field
+from msgspec import Meta
 
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
@@ -48,54 +49,67 @@ from axile.executor.order_volume_limits import split_order_volumes
 from axile.executor.termination import ExecutionTerminated
 
 
+@dataclass(kw_only=True)
 class CTPTargetPosTaskParams(BaseAlgorithmParams, ChaseParamsMixin):
     """TARGET-POS-TASK 算法参数."""
 
-    model_config = ConfigDict(extra="forbid")
+    max_wait_seconds: Annotated[
+        int,
+        Meta(
+            ge=1,
+            le=3600,
+            title="最大等待",
+            description="等待本轮委托完成的上限，不保证持仓到位。",
+            extra_json_schema={"x-order": 30, "x-unit": "秒", "x-control": "stepper"},
+        ),
+    ] = field(default=60)
 
-    max_wait_seconds: int = Field(
-        default=60,
-        title="最大等待",
-        description="等待本轮委托完成的上限，不保证持仓到位。",
-        ge=1,
-        le=3600,
-        json_schema_extra={"x-order": 30, "x-unit": "秒", "x-control": "stepper"},
-    )
-
-    price_strategy: Literal["PASSIVE", "ACTIVE"] = Field(
-        default="PASSIVE",
-        title="报价方式",
-        description="限价单使用本方价或对手价；品种 price 规则优先。",
-        json_schema_extra={
-            "x-order": 10,
-            "x-control": "choice",
-            "x-enum-labels": {"PASSIVE": "本方挂单", "ACTIVE": "对手价"},
-        },
-    )
-    close_order_type: Literal["LIMIT", "MARKET"] = Field(
-        default="LIMIT",
-        title="平仓订单",
-        description="平仓使用限价或市价；报价方式仅对限价单生效。",
-        json_schema_extra={
-            "x-order": 11,
-            "x-control": "choice",
-            "x-enum-labels": {"LIMIT": "限价", "MARKET": "市价"},
-        },
-    )
-    open_order_type: Literal["LIMIT", "MARKET"] = Field(
-        default="LIMIT",
-        title="开仓订单",
-        description="开仓使用限价或市价；报价方式仅对限价单生效。",
-        json_schema_extra={
-            "x-order": 12,
-            "x-control": "choice",
-            "x-enum-labels": {"LIMIT": "限价", "MARKET": "市价"},
-        },
-    )
+    price_strategy: Annotated[
+        Literal["PASSIVE", "ACTIVE"],
+        Meta(
+            title="报价方式",
+            description="限价单使用本方价或对手价；品种 price 规则优先。",
+            extra_json_schema={
+                "x-order": 10,
+                "x-control": "choice",
+                "x-enum-labels": {"PASSIVE": "本方挂单", "ACTIVE": "对手价"},
+            },
+        ),
+    ] = field(default="PASSIVE")
+    close_order_type: Annotated[
+        Literal["LIMIT", "MARKET"],
+        Meta(
+            title="平仓订单",
+            description="平仓使用限价或市价；报价方式仅对限价单生效。",
+            extra_json_schema={
+                "x-order": 11,
+                "x-control": "choice",
+                "x-enum-labels": {"LIMIT": "限价", "MARKET": "市价"},
+            },
+        ),
+    ] = field(default="LIMIT")
+    open_order_type: Annotated[
+        Literal["LIMIT", "MARKET"],
+        Meta(
+            title="开仓订单",
+            description="开仓使用限价或市价；报价方式仅对限价单生效。",
+            extra_json_schema={
+                "x-order": 12,
+                "x-control": "choice",
+                "x-enum-labels": {"LIMIT": "限价", "MARKET": "市价"},
+            },
+        ),
+    ] = field(default="LIMIT")
 
     def __str__(self) -> str:
         """便于记录日志的字符串表示."""
         return f"CTPTargetPosTaskParams(max_wait_seconds={self.max_wait_seconds}, chase_enabled={self.chase_enabled})"
+
+    __forbid_unknown__ = True
+
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        super().validate()
 
 
 # ==================== CTP常量定义 ====================

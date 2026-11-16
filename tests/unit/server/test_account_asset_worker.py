@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from axile.common.serialization import to_payload
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.server.execution.worker_backend import worker as worker_entry
 from axile.server.execution.worker_backend.protocol import (
@@ -28,7 +29,7 @@ def test_worker_get_account_assets_command_returns_unified_payload(monkeypatch: 
     request = WorkerBackendRequest(
         request_id="asset-request",
         command="get_account_assets",
-        account_payload=account.model_dump(mode="json"),
+        account_payload=to_payload(account, mode="json"),
         execution_id=None,
         payload={},
     )

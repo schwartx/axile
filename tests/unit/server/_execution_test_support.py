@@ -7,6 +7,7 @@ from collections.abc import Callable
 from datetime import datetime
 from types import SimpleNamespace, TracebackType
 
+from axile.common.serialization import from_payload, parse_input, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.models.execution_result import AlgorithmResult
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
@@ -27,7 +28,7 @@ def capture_worker_audit_batch(
     def capture(batch: ExecutionAuditBatch) -> int:
         for entry in batch:
             callback = artifact if isinstance(entry, ExecutionArtifact) else event
-            callback(**entry.model_dump())
+            callback(**to_payload(entry))
         return len(batch)
 
     return capture
@@ -291,12 +292,12 @@ def build_account(**overrides: object) -> Account:
         "write_empty_record": 0,
     }
     payload.update(overrides)
-    return Account(**payload)
+    return parse_input(Account, payload)
 
 
 def account_settings_values(account: Account) -> dict[str, object]:
     """按 SQLite 夹具的列分组保存扁平账户配置。"""
-    values = account.model_dump(mode="json")
+    values = to_payload(account, mode="json")
     groups = {
         "execution": (
             "account_control_preset",
@@ -324,7 +325,7 @@ def account_settings_values(account: Account) -> dict[str, object]:
 
 def insert_account(connection: sqlite3.Connection, account: Account) -> None:
     """为已迁移的测试库设置显式账户 ID 与分组配置。"""
-    values = account.model_dump(mode="json")
+    values = to_payload(account, mode="json")
     for name in ("created_at", "updated_at"):
         values[name + "_us"] = to_us(values.pop(name))
     names = (
@@ -382,13 +383,13 @@ class WorkerCommandHarness:
         request = WorkerBackendRequest(
             request_id="unit-worker",
             command=command,
-            account_payload=account.model_dump(mode="json"),
+            account_payload=to_payload(account, mode="json"),
             execution_id=execution_id,
             payload=payload,
         )
         response = await asyncio.to_thread(_handle_worker_request, request, self.state)
         assert response.kind == "result", response.error
-        return UnifiedStandardOutput.model_validate(response.output_payload), response.normalized_symbol_fields
+        return from_payload(UnifiedStandardOutput, response.output_payload), response.normalized_symbol_fields
 
     async def execute_trade(self, *, account, execution_id, standard_input_dict, trigger_source, **kwargs):
         return await self._run(

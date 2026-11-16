@@ -33,12 +33,12 @@ sys.meta_path.insert(0, RejectORM())
 import axile
 assert Path(axile.__file__).resolve() == Path.cwd() / 'axile/__init__.py'
 importlib.import_module(sys.argv[1])
-from pydantic import BaseModel
+from dataclasses import is_dataclass
 from axile.server.db.models import Account, ExecutionEvent
 from axile.server.native_store import native_operation_sync
 
 for model in (Account, ExecutionEvent):
-    assert issubclass(model, BaseModel)
+    assert is_dataclass(model)
     assert not hasattr(model, '__table__')
 assert not {'sqlalchemy', 'sqlmodel', 'alembic', 'aiosqlite'} & sys.modules.keys()
 native_operation_sync('migration_upgrade', {}, database=sys.argv[2])

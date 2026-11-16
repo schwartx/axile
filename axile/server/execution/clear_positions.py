@@ -4,6 +4,7 @@ from typing import Any, cast
 
 import loguru
 
+from axile.common.serialization import to_payload
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionKind, ExecutionReasonFamily
 from axile.executor.algorithms.exceptions import execution_error_message
 from axile.executor.termination import ExecutionTerminated
@@ -57,7 +58,7 @@ async def _run_clear_positions(
         resolved_algorithm = resolve_empty_positions_algorithm(account, algorithm)
         empty_kwargs = {
             "trade_rules": account.trade_rules,
-            "futures_close_policy": account.futures_close_policy.model_dump(),
+            "futures_close_policy": to_payload(account.futures_close_policy),
             "algorithm": resolved_algorithm,
             "feishu_key": account.feishu_key if account.feishu_key else None,
             "execution_notification_code": account.execution_notification_code,

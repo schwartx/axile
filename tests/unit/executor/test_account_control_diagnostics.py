@@ -5,6 +5,7 @@ from datetime import datetime
 import pytest
 from loguru import logger
 
+from axile.common.serialization import from_payload, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.account_control.guard import AccountControlGuard
@@ -14,7 +15,7 @@ from tests.unit.executor.test_account_control_guard import _AdvancingClock
 
 
 def make_guard(rule, *, scope="account", timezone="Asia/Shanghai", clock=None):
-    policy = AccountControlPolicy.model_validate({"timezone": timezone, "operations": {"place_order": {scope: rule}}})
+    policy = from_payload(AccountControlPolicy, {"timezone": timezone, "operations": {"place_order": {scope: rule}}})
     return AccountControlGuard(
         account_id=12,
         execution_id="exec-diagnostics",
@@ -72,9 +73,9 @@ def test_wait_then_block_uses_final_snapshot():
         original_sleep(seconds)
         from axile.executor.account_control.models import AccountControlPolicy
 
-        data = guard.policy.model_dump(mode="json")
+        data = to_payload(guard.policy, mode="json")
         data["operations"]["place_order"]["account"]["per_day"] = {"limit": 1, "on_trigger": "block"}
-        guard.policy = AccountControlPolicy.model_validate(data)
+        guard.policy = from_payload(AccountControlPolicy, data)
 
     guard._sleep = exhaust_daily_quota
     with pytest.raises(AccountControlBlockedError) as caught:

@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from axile.common.serialization import to_payload
 from axile.server import performance_analysis as analysis
 from tests.conftest import native_store_call, require_native_store
 from tests.sqlite_oracle import connect as oracle_connect
@@ -54,7 +55,7 @@ _RESULT = {
 @pytest.fixture
 def database(native_database: Path) -> Path:
     account = build_account(trade_channel="tq", portfolio_id=None, backtest_fee_rate=0.0)
-    native_store_call(native_database, "account_create", {"account": account.model_dump(mode="json"), "now": _NOW})
+    native_store_call(native_database, "account_create", {"account": to_payload(account, mode="json"), "now": _NOW})
     return native_database
 
 

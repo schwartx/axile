@@ -2,11 +2,12 @@
 
 import json
 import threading
-from dataclasses import replace
+from dataclasses import fields, replace
 from types import SimpleNamespace
 
 import pytest
 
+from axile.common.serialization import copy_data, from_payload, to_payload
 from axile.executor.connection_state import ConnectionMonitor
 from axile.server._native import _core
 from axile.server.core import db
@@ -45,16 +46,17 @@ def runtime(tmp_path, monkeypatch):
         algorithm={"method": "SINGLE-MAKER", "params": {}},
         replay_recording_enabled=True,
     )
-    old = AccountSnapshot.model_validate(
+    old = from_payload(
+        AccountSnapshot,
         _core.account_create(
             str(database),
             json.dumps(
                 {
-                    "account": account.model_dump(mode="json", include=set(AccountCreate.model_fields)),
+                    "account": to_payload(account, mode="json", include={item.name for item in fields(AccountCreate)}),
                     "now": "2026-10-31T01:00:00Z",
                 }
             ),
-        )["account"]
+        )["account"],
     )
     monkeypatch.setattr(db, "database_path", lambda: str(database))
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda account, **_kwargs: Executor(account))
@@ -65,11 +67,11 @@ def runtime(tmp_path, monkeypatch):
     state = worker_state._WorkerBackendState(account_id=old.id)
 
     def update(**patch):
-        return AccountSnapshot.model_validate(
+        return from_payload(
+            AccountSnapshot,
             _core.account_update(
-                str(database),
-                json.dumps({"account_id": old.id, "patch": patch, "now": "2026-10-31T01:00:01Z"}),
-            )["account"]
+                str(database), json.dumps({"account_id": old.id, "patch": patch, "now": "2026-10-31T01:00:01Z"})
+            )["account"],
         )
 
     def resolve(account):
@@ -89,8 +91,8 @@ def allow_fixture_replay(channel, monkeypatch, *, supported=True):
         registration = original(name)
         descriptor = registration.descriptor
         if name == channel:
-            descriptor = descriptor.model_copy(
-                update={"replay": descriptor.replay.model_copy(update={"supported": supported})}
+            descriptor = copy_data(
+                descriptor, update={"replay": copy_data(descriptor.replay, update={"supported": supported})}
             )
         return SimpleNamespace(descriptor=descriptor)
 

@@ -11,6 +11,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from axile.common.serialization import to_payload
 from axile.executor.algorithms.utils.clock import get_default_clock
 from axile.executor.instrument_catalog import (
     CatalogError,
@@ -35,7 +36,7 @@ def catalog_database(native_database, monkeypatch):
         native_database,
         "account_create",
         {
-            "account": build_account(portfolio_id=None).model_dump(mode="json"),
+            "account": to_payload(build_account(portfolio_id=None), mode="json"),
             "now": "2026-10-23T09:00:00+08:00",
         },
     )

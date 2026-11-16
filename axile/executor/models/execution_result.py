@@ -4,9 +4,11 @@
 定义统一执行状态、单个品种的算法结果，以及成功态判断辅助函数。
 """
 
+from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Annotated, cast
 
-from pydantic import BaseModel, Field, computed_field, model_validator
+from msgspec import UNSET, Meta
 
 from axile.domain.execution import ExecutionReasonFamily
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
@@ -88,26 +90,29 @@ class TargetSizingStatus(StrEnum):
     UNAVAILABLE = "UNAVAILABLE"
 
 
-class TargetSizingDecision(BaseModel):
+@dataclass(kw_only=True)
+class TargetSizingDecision:
     """单品种从账户目标到可执行数量的结构化换算证据."""
 
-    symbol: str = Field(default="", description="品种代码")
-    sizing_mode: str = Field(default="weight", description="目标输入口径")
-    status: TargetSizingStatus = Field(default=TargetSizingStatus.SIZED, description="换算状态")
-    reason_code: str = Field(default="COMMON.SIZING.EXACT", description="结构化换算原因")
-    account_weight: float = Field(default=0.0, description="账户口径目标权重或直接数量")
-    equity: float = Field(default=0.0, description="换算时账户权益")
-    reference_price: float | None = Field(default=None, description="换算使用的参考价格")
-    unit_multiplier: float | None = Field(default=None, description="价格到单位名义价值的乘数")
-    unit_notional: float | None = Field(default=None, description="每个交易单位的名义价值")
-    target_notional: float | None = Field(default=None, description="账户权重对应的目标名义价值")
-    raw_quantity: float | None = Field(default=None, description="应用数量规则前的目标数量")
-    target_quantity: float | None = Field(default=None, description="应用数量规则后的目标数量")
-    current_quantity: float | None = Field(default=None, description="规划时当前带号持仓数量")
-    quantity_step: float | None = Field(default=None, description="数量步长或整手单位")
-    min_quantity: float | None = Field(default=None, description="最小可交易数量")
-    min_notional: float | None = Field(default=None, description="最小可交易名义价值")
-    value_conversion: PriceValueConversion | None = Field(default=None, description="规划时冻结的金额换算依据")
+    symbol: Annotated[str, Meta(description="品种代码")] = field(default="")
+    sizing_mode: Annotated[str, Meta(description="目标输入口径")] = field(default="weight")
+    status: Annotated[TargetSizingStatus, Meta(description="换算状态")] = field(default=TargetSizingStatus.SIZED)
+    reason_code: Annotated[str, Meta(description="结构化换算原因")] = field(default="COMMON.SIZING.EXACT")
+    account_weight: Annotated[float, Meta(description="账户口径目标权重或直接数量")] = field(default=0.0)
+    equity: Annotated[float, Meta(description="换算时账户权益")] = field(default=0.0)
+    reference_price: Annotated[float | None, Meta(description="换算使用的参考价格")] = field(default=None)
+    unit_multiplier: Annotated[float | None, Meta(description="价格到单位名义价值的乘数")] = field(default=None)
+    unit_notional: Annotated[float | None, Meta(description="每个交易单位的名义价值")] = field(default=None)
+    target_notional: Annotated[float | None, Meta(description="账户权重对应的目标名义价值")] = field(default=None)
+    raw_quantity: Annotated[float | None, Meta(description="应用数量规则前的目标数量")] = field(default=None)
+    target_quantity: Annotated[float | None, Meta(description="应用数量规则后的目标数量")] = field(default=None)
+    current_quantity: Annotated[float | None, Meta(description="规划时当前带号持仓数量")] = field(default=None)
+    quantity_step: Annotated[float | None, Meta(description="数量步长或整手单位")] = field(default=None)
+    min_quantity: Annotated[float | None, Meta(description="最小可交易数量")] = field(default=None)
+    min_notional: Annotated[float | None, Meta(description="最小可交易名义价值")] = field(default=None)
+    value_conversion: Annotated[PriceValueConversion | None, Meta(description="规划时冻结的金额换算依据")] = field(
+        default=None
+    )
 
 
 def is_success_status(status: ExecutionStatus) -> bool:
@@ -127,7 +132,8 @@ def is_success_status(status: ExecutionStatus) -> bool:
     return status in {ExecutionStatus.SUCCEEDED, ExecutionStatus.NOOP}
 
 
-class AlgorithmResult(BaseModel):
+@dataclass(kw_only=True)
+class AlgorithmResult:
     """
     单个品种的算法执行结果.
 
@@ -147,49 +153,53 @@ class AlgorithmResult(BaseModel):
         执行失败时的错误信息。
     """
 
-    outcome: ExecutionOutcome = Field(default=ExecutionOutcome.UNKNOWN, description="执行展示结论")
-    outcome_reason: str | None = Field(default=None, description="过程错误或未到位的具体原因")
-    final_volume: float | None = Field(default=None, description="结束时实际持仓；缺少证据时为空")
-    start_volume: float | None = Field(default=None, description="算法开始下单前实际读取的带号持仓")
-    expected_volume: float | None = Field(default=None, description="起始持仓与已确认终态订单净成交推导的仓位")
-    position_confirmed: bool | None = Field(default=None, description="渠道持仓是否与成交证据一致；未核对时为空")
-    symbol: str = Field(default="", description="品种代码")
-    algorithm: str = Field(default="", description="实际执行的算法名")
-    orders: list[UnifiedOrder] = Field(default_factory=list, description="该品种产生的订单")
-    trades: list[TradeRecord] = Field(default_factory=list, description="该品种产生的成交明细")
-    target_volume: int | float | None = Field(default=None, description="该品种目标持仓数量")
-    sizing: TargetSizingDecision | None = Field(default=None, description="目标数量换算证据")
-    first_tick: UnifiedPriceData | None = Field(default=None, description="该品种首笔行情快照")
-    memory: dict[str, object] = Field(default_factory=dict, description="算法附加信息")
-    status: ExecutionStatus = Field(default=ExecutionStatus.SUCCEEDED, description="该品种执行状态")
-    error: str | None = Field(default=None, description="该品种失败原因")
-    reason_code: str | None = Field(default=None, description="该品种失败或受阻的稳定原因码")
-    reason_family: ExecutionReasonFamily | None = Field(default=None, description="该品种失败或受阻的原因分类")
-    account_assets: UnifiedAccountAssets | None = Field(
-        default=None,
-        exclude=True,
-        repr=False,
-        description="执行结束时的账户资产快照，仅供运行时使用",
+    outcome: Annotated[ExecutionOutcome, Meta(description="执行展示结论")] = field(
+        default=cast(ExecutionOutcome, UNSET)
     )
+    outcome_reason: Annotated[str | None, Meta(description="过程错误或未到位的具体原因")] = field(
+        default=cast("str | None", UNSET)
+    )
+    final_volume: Annotated[float | None, Meta(description="结束时实际持仓；缺少证据时为空")] = field(default=None)
+    start_volume: Annotated[float | None, Meta(description="算法开始下单前实际读取的带号持仓")] = field(default=None)
+    expected_volume: Annotated[float | None, Meta(description="起始持仓与已确认终态订单净成交推导的仓位")] = field(
+        default=None
+    )
+    position_confirmed: Annotated[bool | None, Meta(description="渠道持仓是否与成交证据一致；未核对时为空")] = field(
+        default=None
+    )
+    symbol: Annotated[str, Meta(description="品种代码")] = field(default="")
+    algorithm: Annotated[str, Meta(description="实际执行的算法名")] = field(default="")
+    orders: Annotated[list[UnifiedOrder], Meta(description="该品种产生的订单")] = field(default_factory=list)
+    trades: Annotated[list[TradeRecord], Meta(description="该品种产生的成交明细")] = field(default_factory=list)
+    target_volume: Annotated[int | float | None, Meta(description="该品种目标持仓数量")] = field(default=None)
+    sizing: Annotated[TargetSizingDecision | None, Meta(description="目标数量换算证据")] = field(default=None)
+    first_tick: Annotated[UnifiedPriceData | None, Meta(description="该品种首笔行情快照")] = field(default=None)
+    memory: Annotated[dict[str, object], Meta(description="算法附加信息")] = field(default_factory=dict)
+    status: Annotated[ExecutionStatus, Meta(description="该品种执行状态")] = field(default=ExecutionStatus.SUCCEEDED)
+    error: Annotated[str | None, Meta(description="该品种失败原因")] = field(default=None)
+    reason_code: Annotated[str | None, Meta(description="该品种失败或受阻的稳定原因码")] = field(default=None)
+    reason_family: Annotated[ExecutionReasonFamily | None, Meta(description="该品种失败或受阻的原因分类")] = field(
+        default=None
+    )
+    account_assets: Annotated[
+        UnifiedAccountAssets | None, Meta(description="执行结束时的账户资产快照，仅供运行时使用")
+    ] = field(default=None, metadata={"exclude": True}, repr=False)
 
-    @model_validator(mode="after")
-    def _derive_outcome_from_status(self) -> "AlgorithmResult":
+    def __post_init__(self) -> None:
         """未显式给出 outcome/outcome_reason 时从 status 与 error 派生，保证两套结论不分离.
 
         Warning
         -------
         派生只发生在构造与校验时；构造之后修改 ``status``（直接赋值或
-        ``model_copy(update=...)``）不会触发重派生，会得到分离结论。
+        ``copy_data(..., update=...)``）不会触发重派生，会得到分离结论。
         需要改状态时必须重建实例；落库边界 ``records``
         会按当前 status 重派生兜底。
         """
-        if "outcome" not in self.model_fields_set:
+        if self.outcome is UNSET:
             self.outcome = outcome_from_status(self.status)
-        if "outcome_reason" not in self.model_fields_set and self.error is not None:
+        if self.outcome_reason is UNSET:
             self.outcome_reason = self.error
-        return self
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
     def success(self) -> bool:
         """
@@ -201,3 +211,5 @@ class AlgorithmResult(BaseModel):
             当 ``status`` 属于成功集合时返回 ``True``。
         """
         return is_success_status(self.status)
+
+    __json_properties__ = ("success",)

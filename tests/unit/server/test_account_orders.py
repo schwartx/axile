@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from axile.common.serialization import copy_data
 from axile.executor.account_orders import AccountOrderBook
 from axile.executor.models.unified_order import UnifiedOrder
 from axile.server import account_orders as service
@@ -238,14 +239,14 @@ def test_duplicate_cancel_across_concurrent_clients_is_sent_once(monkeypatch):
     async def run():
         account = build_account()
         one = OrderCancelRequest(request_id="r1", order_id="20261018:1:2:1", symbol="rb2610")
-        two = one.model_copy(update={"request_id": "r2"})
+        two = copy_data(one, update={"request_id": "r2"})
         receipts = await asyncio.gather(
             service.cancel_account_order(account, one), service.cancel_account_order(account, two)
         )
         assert receipts[0]["request_id"] == receipts[1]["request_id"] == "r1"
         await service.cancel_account_order(account, one)
         with pytest.raises(ValueError):
-            await service.cancel_account_order(account, one.model_copy(update={"symbol": "other"}))
+            await service.cancel_account_order(account, copy_data(one, update={"symbol": "other"}))
 
     asyncio.run(run())
     assert len(calls) == 1
@@ -271,7 +272,7 @@ def test_reused_receipt_keeps_original_identity_when_later_query_confirms_termin
         account = build_account()
         first_request = OrderCancelRequest(request_id="r1", order_id="20261018:1:2:1", symbol="rb2610")
         first = await service.cancel_account_order(account, first_request)
-        reused = await service.cancel_account_order(account, first_request.model_copy(update={"request_id": "r2"}))
+        reused = await service.cancel_account_order(account, copy_data(first_request, update={"request_id": "r2"}))
         assert reused["request_id"] == first["request_id"] == "r1"
         snapshot = await service.query_account_orders(account, refresh=True)
         assert snapshot["complete"] and snapshot["count"] == 0 and (snapshot["data"] == [])
@@ -302,7 +303,7 @@ def test_timeout_keeps_unknown_and_does_not_retry(monkeypatch):
         account = build_account()
         payload = OrderCancelRequest(request_id="r1", order_id="20261018:1:2:1", symbol="rb2610")
         first = await service.cancel_account_order(account, payload)
-        second = await service.cancel_account_order(account, payload.model_copy(update={"request_id": "new"}))
+        second = await service.cancel_account_order(account, copy_data(payload, update={"request_id": "new"}))
         assert first["state"] == second["state"] == "unknown"
 
     asyncio.run(run())

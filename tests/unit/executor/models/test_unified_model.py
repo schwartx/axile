@@ -1,7 +1,10 @@
 """账户估值不完整时保留未知状态，禁止输出部分市值。"""
 
+import json
+
 import pytest
 
+from axile.common.serialization import copy_data, from_payload, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 
@@ -88,10 +91,10 @@ def test_gm_cash_balance_survives_serialization_and_checks_snapshot_identity():
             },
         },
     )
-    restored = UnifiedAccountAssets.model_validate_json(assets.model_dump_json())
+    restored = from_payload(UnifiedAccountAssets, json.loads(json.dumps(to_payload(assets, mode="json"))))
     assert restored.validate_balance() is True
-    assert restored.model_copy(update={"total_asset": 90_000}).validate_balance() is False
-    assert restored.model_copy(update={"available_cash": 40_000}).validate_balance() is False
+    assert copy_data(restored, update={"total_asset": 90000}).validate_balance() is False
+    assert copy_data(restored, update={"available_cash": 40000}).validate_balance() is False
 
 
 @pytest.mark.parametrize("channel", [None, TradeChannel("ctp")])
@@ -103,4 +106,4 @@ def test_other_channel_balance_keeps_existing_relationship(channel):
         extra={"channel_type": channel},
     )
     assert assets.validate_balance() is True
-    assert assets.model_copy(update={"total_asset": 100_000}).validate_balance() is False
+    assert copy_data(assets, update={"total_asset": 100000}).validate_balance() is False
