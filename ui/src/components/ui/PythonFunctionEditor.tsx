@@ -34,6 +34,7 @@ import { downloadCode } from '@/features/editor/drafts'
 import { useOfflineEditor } from '@/features/editor/offline'
 import { useWasmResource } from '@/lib/wasmResources'
 import { setEditorWasmEnabled, useEditorWasmEnabled } from '@/features/editor/wasmPreference'
+import { Tooltip } from '@/components/ui/Tooltip'
 import { AccessibilitySwitch } from '@/components/ui/AccessibilitySwitch'
 import { WasmDownloadProgress, downloadSize } from '@/components/ui/WasmDownloadProgress'
 
@@ -543,15 +544,19 @@ export function PythonFunctionEditor({
   </div>)
   const analyzerLabel = languageStatus === 'disabled' ? editorEnabled ? '代码辅助需下载更新' : '本地代码辅助未启用' : languageStatus === 'ready' ? '本地代码分析器' : languageStatus === 'connecting' ? '代码分析器初始化中…' : '代码分析器恢复中…'
   const analyzerDescription = languageStatus === 'ready' ? '代码分析在浏览器本地运行' : languageStatus === 'connecting' ? '本地代码分析器初始化中' : '可继续编辑并保存本地草稿'
-  const wasmControls = <div className="flex-none border-b border-line px-3 py-2 text-xs text-ink-3">
-    <div className="flex flex-wrap items-center gap-3">
-      <span id={`${wasmId}-label`}>本地代码辅助</span>
+  const wasmDescription = wasmState.phase === 'checking' ? '正在检查组件缓存' : wasmState.phase === 'cached' ? canAnalyze && languageStatus !== 'ready' ? '正在初始化代码辅助…' : '组件已下载，可离线使用' : `下载 ${downloadSize(editorWasm.bytes)} 后可启用本地代码辅助`
+  const downloadVisible = wasmState.phase === 'downloading' || wasmState.phase === 'error'
+  const wasmControls = <Tooltip interactive={downloadVisible} open={downloadVisible ? true : undefined} content={downloadVisible
+    ? <WasmDownloadProgress state={wasmState} onCancel={stopAnalysis} onRetry={() => void startAnalysis()} />
+    : wasmDescription}>
+    <div data-testid="editor-wasm-controls" className="ml-auto inline-flex shrink-0 items-center gap-2 text-ink-3" tabIndex={-1}>
+      <span id={`${wasmId}-label`} className="sr-only">本地代码辅助</span>
+      <span id={`${wasmId}-description`} className="sr-only">{wasmDescription}</span>
+      <span role="status" aria-label="代码分析器" aria-description={analyzerDescription} data-state={languageStatus} className={languageStatus === 'reconnecting' ? 'text-warn' : ''}><InkRewrite text={languageStatus === 'disabled' ? '本地代码辅助' : analyzerLabel} tone="label" /></span>
       <AccessibilitySwitch checked={editorEnabled || startRequested} labelledBy={`${wasmId}-label`} describedBy={`${wasmId}-description`} disabled={wasmState.phase === 'checking' || wasmState.phase === 'downloading'} onChange={value => { if (value) void startAnalysis(); else stopAnalysis() }} />
-      <span id={`${wasmId}-description`}>{wasmState.phase === 'checking' ? '正在检查组件缓存' : wasmState.phase === 'cached' ? canAnalyze && languageStatus !== 'ready' ? '正在初始化代码辅助…' : '组件已下载，可离线使用' : `下载 ${downloadSize(editorWasm.bytes)} 后可启用本地代码辅助`}</span>
       {wasmState.phase === 'missing' && <button type="button" className="text-accent focus-visible:outline-accent" onClick={() => void startAnalysis()}>{editorEnabled ? '下载更新并启用' : '下载并开启'}</button>}
     </div>
-    <WasmDownloadProgress state={wasmState} onCancel={stopAnalysis} onRetry={() => void startAnalysis()} />
-  </div>
+  </Tooltip>
   const draftIndicator = <a href={`/editor?draft=${encodeURIComponent(localDraft.key)}`} className="text-ink-3 hover:text-ink-1" title={`${offlineStatus} · 打开本地草稿工作台`} aria-label="本地草稿" aria-description={offlineStatus}>{localDraft.error ? '本地保存失败' : localDraft.status}</a>
   const draftNotice = (localDraft.error || localDraft.recovery) && <div role="alert" className="flex flex-wrap items-center gap-3 border-b border-line bg-surface px-3 py-2 text-[12px] text-warn">
     <span>{localDraft.error?.message ?? '本地草稿与当前服务器代码不同，请选择要保留的内容。'}</span>
@@ -566,10 +571,8 @@ export function PythonFunctionEditor({
       {sourceTab ? <><button type="button" onClick={() => editor && gotoLine(editor)}>行 {(sourcePosition?.line ?? 0) + 1}，列 {(sourcePosition?.character ?? 0) + 1}</button><span>只读</span><span>Python</span></> : <>
       <button type="button" onClick={() => view && gotoLine(view)}>行 {position.line}，列 {position.column}</button>
       <span>4 空格</span><span>Python</span>{draftIndicator}
-      <span role="status" aria-label="代码分析器" aria-description={analyzerDescription} title={analyzerDescription} data-state={languageStatus} className={`ml-auto ${languageStatus === 'reconnecting' ? 'text-warn' : ''}`}>
-        <InkRewrite text={analyzerLabel} tone="label" />
-      </span>
       </>}
+      {wasmControls}
     </div>
   )
 
@@ -626,10 +629,12 @@ export function PythonFunctionEditor({
         {editorMessage && <p role="status" className="px-3 text-[12px] text-warn">{editorMessage}</p>}
         <ErrorNotice intent="mutation" title="代码格式化失败" error={formatError} variant="compact" onRetry={() => formatRef.current?.()} />
         {fileTabs}
-        {wasmControls}
         {draftNotice}
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{codeBlock}{sourceDocuments}</div>
-        {statusTarget && createPortal(sourceTab ? <div className="flex items-center gap-2 text-[11px] text-ink-3"><button type="button" title="跳转到行" onClick={() => editor && gotoLine(editor)}>{(sourcePosition?.line ?? 0) + 1}:{(sourcePosition?.character ?? 0) + 1}</button><span>只读 · Python</span></div> : <div className="flex items-center gap-2 whitespace-nowrap text-[11px] text-ink-3">{draftIndicator}<button type="button" title="跳转到行" onClick={() => view && gotoLine(view)}><span className="max-[480px]:hidden">行 {position.line}，列 {position.column}</span><span className="hidden max-[480px]:inline">{position.line}:{position.column}</span></button><span role="status" aria-label="代码分析器" aria-description={analyzerDescription} title={analyzerDescription} data-state={languageStatus} className={languageStatus === 'reconnecting' ? 'text-warn' : ''}><InkRewrite text={analyzerLabel} tone="label" /></span></div>, statusTarget)}
+        {statusTarget ? createPortal(<div data-testid="editor-status-bar" className="flex items-center gap-2 whitespace-nowrap text-[11px] text-ink-3">
+          {sourceTab ? <><button type="button" title="跳转到行" onClick={() => editor && gotoLine(editor)}>{(sourcePosition?.line ?? 0) + 1}:{(sourcePosition?.character ?? 0) + 1}</button><span>只读 · Python</span></> : <>{draftIndicator}<button type="button" title="跳转到行" onClick={() => view && gotoLine(view)}><span className="max-[480px]:hidden">行 {position.line}，列 {position.column}</span><span className="hidden max-[480px]:inline">{position.line}:{position.column}</span></button></>}
+          {wasmControls}
+        </div>, statusTarget) : statusBar}
         {saveBar}
       </div>
     )
@@ -645,7 +650,6 @@ export function PythonFunctionEditor({
         }`}
       >
         {draftNotice}
-        {wasmControls}
         <PythonCheckStatus checks={currentChecks} onRetry={() => { if (view) forceLinting(view) }} onQuickFixRetry={() => { if (view) quickFix(view, kind) }} />
         {/* 工具条：状态句同槽换字；图标槽恒占 14px，出现/消失不推字。 */}
         <div className={`flex flex-none flex-wrap items-center gap-x-3.5 gap-y-2 border-b px-3.5 py-2.5 ${style.band}`}>

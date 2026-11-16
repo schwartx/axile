@@ -18,6 +18,7 @@ async function seedDraft(page: Page) {
 }
 
 test('editor waits for consent even with the Service Worker, reports both assets, and remembers off', async ({ page, context }) => {
+  await page.emulateMedia({ colorScheme: 'dark' })
   const requests: string[] = []
   context.on('request', request => { if (/\.wasm(?:$|[-.])|library[^/]*\.bin/.test(request.url())) requests.push(request.url()) })
   await page.goto('/editor')
@@ -27,6 +28,16 @@ test('editor waits for consent even with the Service Worker, reports both assets
   const url = `/editor?draft=${encodeURIComponent(key)}`
   await page.goto(url)
   const toggle = page.getByRole('switch', { name: '本地代码辅助' })
+  const controls = page.getByTestId('editor-wasm-controls')
+  const editorBox = (await page.locator('.cm-editor').first().boundingBox())!
+  expect((await controls.boundingBox())!.y).toBeGreaterThanOrEqual(editorBox.y + editorBox.height)
+  await expect(page.getByRole('tooltip')).toHaveCount(0)
+  await controls.hover()
+  await expect(page.getByRole('tooltip')).toContainText('下载 9.33 MB 后可启用本地代码辅助')
+  await page.screenshot({ path: 'test-results/wasm-editor-bottom-hover.png', fullPage: true })
+  await page.mouse.move(0, 0)
+  await expect(page.getByRole('tooltip')).toHaveCount(0)
+  await page.screenshot({ path: 'test-results/wasm-editor-bottom.png', fullPage: true })
   await expect(toggle).toHaveAttribute('aria-checked', 'false')
   await expect(page.getByRole('status', { name: '代码分析器' })).toHaveAttribute('data-state', 'disabled')
   expect(requests).toEqual([])
