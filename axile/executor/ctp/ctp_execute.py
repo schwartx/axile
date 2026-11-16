@@ -55,7 +55,7 @@ from axile.executor.ctp.options import (
     finish_option_action,
     option_ref,
 )
-from axile.executor.ctp.quote_time import resolve_quote_time
+from axile.executor.ctp.quote_time import resolve_quote_time, resolve_quote_trading_day
 from axile.executor.ctp.quote_validation import (
     fresh_valuation_quote_error,
     price_in_bounds,
@@ -2167,6 +2167,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         q = quote_to_unified(row)
         if q.symbol not in self._subscriptions:
             return
+        self._normalize_quote_time(q)
         quote_day = q.extra["trading_day"]
         if quote_day != self._trading_day:
             try:
@@ -2197,7 +2198,6 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 ),
             )
             return
-        self._normalize_quote_time(q)
         q.extra["received_at"] = received_at
         error = self._snapshot_quote_error(q.symbol, q, now=received_at)
         previous = quotes.get(q.symbol)
@@ -2243,8 +2243,14 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         if calendar is None:
             calendar = self._quote_calendar
             calendar_id = CHINA_CALENDAR_ID
+        native_day = quote.extra["trading_day"]
+        trading_day = resolve_quote_trading_day(
+            quote.update_time, native_day, sessions, lambda day: calendar.is_open(calendar_id, day)
+        )
+        if trading_day != native_day:
+            quote.extra.update(raw_trading_day=native_day, trading_day=trading_day)
         value, status, reason = resolve_quote_time(
-            quote.update_time, self._trading_day, sessions, lambda day: calendar.is_open(calendar_id, day)
+            quote.update_time, trading_day, sessions, lambda day: calendar.is_open(calendar_id, day)
         )
         quote.update_time = value
         quote.timestamp = int(datetime.fromisoformat(value).timestamp() * 1000) if value else 0

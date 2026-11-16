@@ -1,10 +1,31 @@
-"""CTP 夜盘 ActionDay 兼容解析；不使用接收时刻猜测交易日期。"""
+"""CTP 夜盘日期兼容解析；不使用接收时刻猜测交易日期。"""
 
 from collections.abc import Callable, Sequence
 from datetime import date, datetime, time, timedelta
 
 from axile.executor.china_futures_session import is_regular_night_session_transition
 from axile.executor.ctp_product_sessions import CtpProductSession
+
+
+def resolve_quote_trading_day(
+    native_time: str,
+    trading_day: str,
+    sessions: Sequence[CtpProductSession],
+    calendar_is_open: Callable[[date], bool | None],
+) -> str:
+    """将郑商所晚盘的自然日字段转换为交易日；无法确认时返回空值。"""
+    if not native_time or not sessions or sessions[0].exchange_id != "CZCE":
+        return trading_day
+    parsed = datetime.fromisoformat(native_time)
+    if parsed.strftime("%Y%m%d") != trading_day or parsed.time() < time(17):
+        return trading_day
+    if not any(session.time_begin <= parsed.time() < session.time_end for session in sessions):
+        return trading_day
+    # 沿用现有夜盘规则：只接受隔日或周五至周一，不跨长假推断。
+    following = parsed.date() + timedelta(days=3 if parsed.weekday() == 4 else 1)
+    if _previous_open_day(following, calendar_is_open) != parsed.date():
+        return ""
+    return following.strftime("%Y%m%d")
 
 
 def resolve_quote_time(
