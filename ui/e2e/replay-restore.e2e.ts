@@ -10,7 +10,6 @@ test.beforeEach(async ({ page }) => {
       const response = await route.fetch({ url: `http://127.0.0.1:15481${url.pathname}${url.search}` })
       return route.fulfill({ response })
     }
-    if (/\/executions\/(E|E-bulk)\/replay$/.test(url.pathname)) return route.fulfill({ status: 404, json: { detail: 'raw protocol' } })
     const json = url.pathname.endsWith('/init/status') ? { configured: true, values: {} }
       : url.pathname.endsWith('/capabilities/channels') ? []
       : url.pathname.endsWith('/account/dashboard') ? { data: [{ account_id: 7, name: '回放验收', trade_channel: 'paper', market: 'demo', is_started: false }] }
@@ -20,6 +19,10 @@ test.beforeEach(async ({ page }) => {
 })
 
 test('the original complete workbench reads V2 recordings through WASM and restores chart, ladder, transport, fullscreen and details', async ({ page }) => {
+  const legacyRequests: string[] = []
+  page.on('request', request => {
+    if (/^\/api\/v1\/account\/executions\/[^/]+\/replay(?:\/window)?$/.test(new URL(request.url()).pathname) && request.method() === 'GET') legacyRequests.push(request.url())
+  })
   await page.goto('/accounts/7/executions/E/replay')
   await page.getByRole('button', { name: '下载并进入回放' }).click()
   await expect(page.locator('.replay-workbench')).toBeVisible()
@@ -56,6 +59,7 @@ test('the original complete workbench reads V2 recordings through WASM and resto
   await page.reload()
   await expect(page.locator('.replay-chart')).toBeVisible()
   await expect(page.getByRole('button', { name: '下载并进入回放' })).toHaveCount(0)
+  expect(legacyRequests).toEqual([])
 })
 
 test('many small blocks load in batches and skip other symbols while preserving the original workbench', async ({ page }) => {

@@ -5,7 +5,6 @@ const account = { id: 7, name: '下载测试账户', market: 'demo', trade_chann
 async function defaults(page: Page) {
   await page.route('**/api/v1/**', route => {
     const url = new URL(route.request().url()), path = url.pathname
-    if (path.endsWith('/executions/E/replay')) return route.fulfill({ status: 404, json: { detail: 'raw protocol' } })
     const range = url.searchParams.get('range') ?? '30'
     const context = { account_id: 7, execution_id: 'E', recording_id: 'R', through_seq: 1, commit_id: 'c', index_generation: 'g' }
     const json = path.endsWith('/init/status') ? { configured: true, environment: 'test', values: {} }
