@@ -13,7 +13,7 @@ async function defaults(page: Page) {
       : path.endsWith('/account/analysis/7/status') ? { schema_version: 1, status: 'ready', version: 's1', source_version: 1, computed_at: null }
       : path.endsWith('/account/analysis/7/inputs') ? { protocol: 2, kind: url.searchParams.get('kind'), algorithm: 'local-analysis-1', account_id: 7, version: 's1', range, initial_equity: null, records: [], next_cursor: null }
       : path.endsWith('/account/analysis/7') ? { account_id: 7, schema_version: 1, version: 's1', range, daily_costs: {}, events: [], execution_index: [], event_count: 0, contributions: [], result: { range, settings: { backtest_fee_rate: 0, backtest_weight_type: 'cs' }, points: [{ date: '2026-01-01', account_return: 0, portfolio_return: 0 }, { date: '2026-01-02', account_return: 0.1, portfolio_return: 0.1 }], skips: null, bindings: [], record_count: 0, observation_count: 2, used_record_count: 0, calendar: { status: 'available', closed_ranges: [], unavailable_ranges: [] } } }
-      : path.endsWith('/session') ? { reader_epoch: 'test', session: 'session', recovery_wait_seconds: 0 }
+      : path.endsWith('/session') ? { reader_epoch: 'test', session: 'session' }
       : path.endsWith('/control') ? { state: 'settled', session_bytes: 0 }
       : path.endsWith('/manifest') ? { schema_version: 2, account_id: 7, execution_id: 'E', index_generation: 'g', recordings: [{ id: 'R', seq: 0, watermark: 1, commit_id: 'c', start_us: 0, state: 'closed', streams: [], symbols: ['S'] }] }
       : path.endsWith('/plan') ? { ...context, target_us: JSON.parse(route.request().postData()!).time_us, cutoff_seq: 1, selected: null, evidence: [], blocks: [], planned_bytes: 0 }

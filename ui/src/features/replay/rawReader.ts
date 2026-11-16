@@ -84,7 +84,6 @@ export class RawReader {
     const session = await apiSend<RawSession>('POST', this.path('session'), { resume: { ...old, root_seq: this.root, attempt: this.attempt + 1, profile: this.profile,
       elapsed_ms: performance.now() - this.started, spent_bytes: this.spent.bytes, spent_steps: this.spent.index_steps, total_bytes: this.bytes } }, AbortSignal.timeout(5000))
     this.session = session; this.offsetBytes = 0; this.root = 1; this.attempt++; this.estimated = true
-    if (session.recovery_wait_seconds > 0) await delay(Math.ceil(session.recovery_wait_seconds * 1000), signal)
     if (performance.now() - this.started >= (this.profile === 'interval' ? 120_000 : 60_000)) throw Error('REPLAY_ROOT_DEADLINE')
   }
 
@@ -139,14 +138,11 @@ export class RawReader {
     const abort = this.abort = new AbortController()
     let admitted = false
     try {
-      const fresh = !this.session
-      if (fresh) this.session = await apiSend<RawSession>('POST', this.path('session'), {}, AbortSignal.any([abort.signal, AbortSignal.timeout(5000)]))
+      if (!this.session) this.session = await apiSend<RawSession>('POST', this.path('session'), {}, AbortSignal.any([abort.signal, AbortSignal.timeout(5000)]))
       if (this.closed) throw Error('REPLAY_CLOSED')
       this.renewal ??= setInterval(() => {
         if (!this.closed) void apiSend('POST',this.path('control'),{ ...this.session,root_seq:this.root,operation:'renew' },AbortSignal.timeout(5000)).catch(() => {})
       }, 30_000)
-      if (fresh && this.session!.recovery_wait_seconds > 0) await delay(Math.ceil(this.session!.recovery_wait_seconds * 1000), abort.signal)
-      if (this.closed) throw Error('REPLAY_CLOSED')
       this.beginRoot(); admitted = true
       const manifest = this.remember(await this.data('manifest', {}, abort.signal) as RawManifest)
       this.account = manifest.account_id
@@ -253,7 +249,6 @@ export class RawReader {
     const proof = await apiSend<{state:string;estimated?:boolean}>('POST',this.path('control'),{...old,root_seq:sequence,operation:'status'},AbortSignal.timeout(5000))
     if (proof.state !== 'retired') throw Error('REPLAY_RECOVERY_STOPPING')
     this.offsetBytes = this.bytes; this.session = fresh; this.root = 0; this.estimated = true
-    if (fresh.recovery_wait_seconds > 0) await delay(Math.ceil(fresh.recovery_wait_seconds*1000))
   }
 
   private async pump() {

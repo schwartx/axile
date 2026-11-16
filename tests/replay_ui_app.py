@@ -140,10 +140,7 @@ for sequence in range(1, 141):
     )
     bulk.seal()
 bulk.finish()
-clock = [0.0]
-reader.readers = reader.Readers(lambda: clock[0])
-reader.readers.open(7, "E", ROOT)
-clock[0] = 20.0
+reader.readers = reader.Readers()
 
 
 async def execution_account(execution_id: str) -> int:

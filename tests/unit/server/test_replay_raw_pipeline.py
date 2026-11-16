@@ -470,7 +470,7 @@ def test_raw_index_cannot_follow_a_link_to_another_database(tmp_path):
     assert target.read_bytes() == b"preserve"
 
 
-def test_new_reader_waits_for_old_owner_then_full_window(tmp_path):
+def test_new_reader_starts_immediately_after_old_owner_stops(tmp_path):
     clock = [0.0]
     old = reader.Readers(lambda: clock[0])
     old.open(7, "E", tmp_path)
@@ -480,11 +480,6 @@ def test_new_reader_waits_for_old_owner_then_full_window(tmp_path):
         replacement.open(7, "E", tmp_path)
     del old
     token = {**replacement.open(7, "E", tmp_path), "root_seq": 1, "attempt": 1}
-    assert token["recovery_wait_seconds"] == 11
-    clock[0] = 30
-    with pytest.raises(reader.ReadError, match="REPLAY_READ_WAIT"):
-        replacement.admit(7, "E", token, 1)
-    clock[0] = 31
     session, task = replacement.admit(7, "E", token, 1)
     replacement.release(session, task, 1, 1, 100)
 
@@ -510,7 +505,9 @@ def test_inflight_response_keeps_old_read_owner_alive(tmp_path, monkeypatch):
     del release, check
     gc.collect()
     assert reference() is None
-    assert replacement.open(7, "E", tmp_path)["recovery_wait_seconds"] == 11
+    token = {**replacement.open(7, "E", tmp_path), "root_seq": 1, "attempt": 1}
+    session, task = replacement.admit(7, "E", token, 1)
+    replacement.release(session, task, 1, 1, 100)
 
 
 def test_route_uses_execution_owner_and_echoes_context(recording, monkeypatch):
