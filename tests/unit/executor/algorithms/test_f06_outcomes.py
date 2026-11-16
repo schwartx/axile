@@ -382,7 +382,7 @@ def test_real_algorithm_crosses_zero_within_slice_budget(monkeypatch, module, mo
         for callback in callbacks["price"]:
             callback(copy_data(price, update={"volume": seen_market_volume[0]}))
 
-    def register_price(callback):
+    def register_price(callback, *, bind_order_context=True):
         callbacks["price"].append(callback)
         callback(price)
         emit_market_volume()
@@ -477,7 +477,7 @@ def test_real_tracker_handles_restriction_within_original_budget(monkeypatch, mo
         getattr(executor, f"register_{kind}_callback").side_effect = callbacks[kind].append
         getattr(executor, f"unregister_{kind}_callback").side_effect = callbacks[kind].remove
 
-    def register_price(callback):
+    def register_price(callback, *, bind_order_context=True):
         callbacks["price"].append(callback)
         callback(price)
 
