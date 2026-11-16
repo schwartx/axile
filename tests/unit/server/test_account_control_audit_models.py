@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from axile.common.serialization import from_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.account_control.guard import AccountControlGuard
@@ -106,7 +107,8 @@ def test_account_control_event_schema_supports_audit_drill_down_queries(native_d
 
 def test_account_control_event_write_and_guard_emit_monotonic_seq() -> None:
     """写模型与防护层都应显式写出 execution 内递增 seq。"""
-    event = AccountControlEventWrite.model_validate(
+    event = from_payload(
+        AccountControlEventWrite,
         {
             "account_id": 1,
             "control_date": "2026-03-22",
@@ -120,8 +122,8 @@ def test_account_control_event_write_and_guard_emit_monotonic_seq() -> None:
             "outcome": "submitted",
             "event_uid": "event-seq-1",
             "seq": 1,
-            "occurred_at_ms": 1_763_202_660_123,
-        }
+            "occurred_at_ms": 1763202660123,
+        },
     )
 
     assert event.seq == 1
@@ -133,7 +135,7 @@ def test_account_control_event_write_and_guard_emit_monotonic_seq() -> None:
         channel=TradeChannel("ctp"),
         policy=resolve_account_control_policy(
             "default",
-            AccountControlOverride.model_validate(normalize_account_control_override({"place_order": {"per_day": 1}})),
+            from_payload(AccountControlOverride, normalize_account_control_override({"place_order": {"per_day": 1}})),
         ),
         baseline=AccountControlCounterSnapshot(),
         clock=_clock,

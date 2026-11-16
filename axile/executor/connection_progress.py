@@ -7,12 +7,14 @@ import traceback
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Literal
+from dataclasses import dataclass, field
+from typing import Annotated, Literal
 from uuid import uuid4
 
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field
+from msgspec import Meta
 
+from axile.common.serialization import copy_data, from_payload, to_payload
 from axile.executor.algorithms.utils.clock import clock_now_iso
 
 type ConnectionPurpose = Literal["connect", "recovery", "validation"]
@@ -20,16 +22,18 @@ type ConnectionStepUpdate = Literal["running", "passed", "skipped"]
 type ConnectionRunResult = Literal["succeeded", "failed", "cancelled"]
 
 
-class ConnectionStepDefinition(BaseModel):
+@dataclass(kw_only=True, frozen=True)
+class ConnectionStepDefinition:
     """渠道声明的一个真实连接阶段。"""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    id: Annotated[str, Meta(pattern="^[a-z][a-z0-9_]*$")]
+    label: Annotated[str, Meta(min_length=1)]
 
-    id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
-    label: str = Field(min_length=1)
+    __forbid_unknown__ = True
 
 
-class ConnectionStepError(BaseModel):
+@dataclass(kw_only=True)
+class ConnectionStepError:
     """错误摘要与完整柜台原文分开传递。"""
 
     reason_code: str
@@ -39,21 +43,24 @@ class ConnectionStepError(BaseModel):
     traceback: str | None = None
 
 
-class ConnectionDetailRow(BaseModel):
+@dataclass(kw_only=True)
+class ConnectionDetailRow:
     """保持渠道声明顺序的键值行，允许同名字段与空值。"""
 
     key: str
     value: str | int | float | bool | None
 
 
-class ConnectionStepDetails(BaseModel):
+@dataclass(kw_only=True)
+class ConnectionStepDetails:
     """渠道提供展示内容，服务与前端不解释业务字段。"""
 
     title: str
     rows: list[ConnectionDetailRow]
 
 
-class ConnectionTableColumn(BaseModel):
+@dataclass(kw_only=True)
+class ConnectionTableColumn:
     """通用记录列的名称与排序类型。"""
 
     key: str
@@ -62,7 +69,8 @@ class ConnectionTableColumn(BaseModel):
     filterable: bool = False
 
 
-class ConnectionTableSummary(BaseModel):
+@dataclass(kw_only=True)
+class ConnectionTableSummary:
     """轮询只返回表格描述，完整数据按需读取。"""
 
     kind: Literal["table"] = "table"
@@ -73,13 +81,15 @@ class ConnectionTableSummary(BaseModel):
     row_count: int
 
 
+@dataclass(kw_only=True)
 class ConnectionTable(ConnectionTableSummary):
     """连接时的只读记录快照，不通过此接口触发柜台查询。"""
 
     rows: list[list[str | int | float | bool | None]]
 
 
-class ConnectionStep(BaseModel):
+@dataclass(kw_only=True)
+class ConnectionStep:
     """阶段的完整快照。"""
 
     id: str
@@ -91,15 +101,16 @@ class ConnectionStep(BaseModel):
     details: ConnectionStepDetails | ConnectionTableSummary | None = None
 
 
-class ConnectionRun(BaseModel):
+@dataclass(kw_only=True)
+class ConnectionRun:
     """一次连接的完整进度，独立于账户当前的可用状态。"""
 
-    run_id: str = Field(default_factory=lambda: uuid4().hex)
+    run_id: str = field(default_factory=lambda: uuid4().hex)
     channel: str
     purpose: Literal["connect", "recovery", "validation"] = "connect"
     status: Literal["queued", "running", "succeeded", "failed", "cancelled"] = "running"
     steps: list[ConnectionStep]
-    created_at: str = Field(default_factory=clock_now_iso)
+    created_at: str = field(default_factory=clock_now_iso)
     finished_at: str | None = None
     error: ConnectionStepError | None = None
 
@@ -160,16 +171,16 @@ class ConnectionProgressTracker:
         self.run = run or ConnectionRun(
             channel=channel,
             purpose=purpose,
-            steps=[ConnectionStep(**step.model_dump()) for step in connection_plan(channel, purpose)],
+            steps=[ConnectionStep(**to_payload(step)) for step in connection_plan(channel, purpose)],
         )
         self.tables: dict[str, ConnectionTable] = {}
 
     def snapshot(self, *, tables: bool = False) -> dict:
         """公开快照只带摘要；完整表格仅通过 IPC 和按需查询传递。"""
         with self._lock:
-            data = self.run.model_dump(mode="json")
+            data = to_payload(self.run, mode="json")
             if tables:
-                data["tables"] = {key: table.model_dump(mode="json") for key, table in self.tables.items()}
+                data["tables"] = {key: to_payload(table, mode="json") for key, table in self.tables.items()}
             return data
 
     def publish(self) -> None:
@@ -196,11 +207,11 @@ class ConnectionProgressTracker:
                 step.finished_at = clock_now_iso()
             if details is not None:
                 if details.get("kind") == "table":
-                    table = ConnectionTable.model_validate({**details, "row_count": len(details.get("rows", []))})
+                    table = from_payload(ConnectionTable, {**details, "row_count": len(details.get("rows", []))})
                     self.tables[step_id] = table
-                    step.details = ConnectionTableSummary.model_validate(table.model_dump(exclude={"rows"}))
+                    step.details = from_payload(ConnectionTableSummary, to_payload(table, exclude={"rows"}))
                 else:
-                    step.details = ConnectionStepDetails.model_validate(details)
+                    step.details = from_payload(ConnectionStepDetails, details)
             self.publish()
 
     def finish(self, status: ConnectionRunResult = "succeeded", error: ConnectionStepError | None = None) -> None:
@@ -231,7 +242,7 @@ class ConnectionProgressTracker:
         previous = self.run.error
         if previous is None or not error.traceback or previous.traceback == error.traceback:
             return
-        enriched = previous.model_copy(update={"traceback": error.traceback})
+        enriched = copy_data(previous, update={"traceback": error.traceback})
         self.run.error = enriched
         for step in self.run.steps:
             if step.status == "failed":

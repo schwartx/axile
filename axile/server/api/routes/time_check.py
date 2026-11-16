@@ -1,8 +1,12 @@
 """系统时间诊断：读取不会触发外部请求。"""
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from dataclasses import dataclass
+from typing import Annotated
 
+from fastapi import APIRouter, Depends, HTTPException
+from msgspec import Meta
+
+from axile.server.api.inputs import json_body
 from axile.server.time_check.models import TimeCheckSettings
 from axile.server.time_check.service import preview, service
 
@@ -23,7 +27,7 @@ async def status() -> dict:
 
 
 @router.put("/settings", response_model=None)
-async def settings(config: TimeCheckSettings) -> dict:
+async def settings(config: Annotated[TimeCheckSettings, Depends(json_body(TimeCheckSettings))]) -> dict:
     """保存后热更新调度，不自动发起检查。"""
     ensure_ready()
     try:
@@ -39,14 +43,15 @@ async def run() -> dict:
     return await service.run("manual")
 
 
-class PreviewRequest(BaseModel):
+@dataclass(kw_only=True)
+class PreviewRequest:
     """与通用定时编辑器一致的 Cron 文本。"""
 
-    cron_expr: str = Field(min_length=1, max_length=10000)
+    cron_expr: Annotated[str, Meta(min_length=1, max_length=10000)]
 
 
 @router.post("/schedule-preview", response_model=None)
-async def schedule_preview(payload: PreviewRequest) -> dict:
+async def schedule_preview(payload: Annotated[PreviewRequest, Depends(json_body(PreviewRequest))]) -> dict:
     """仅计算排程，不保存或查询外部时间。"""
     try:
         return {"timezone": "Asia/Shanghai", "times": preview(payload.cron_expr)}

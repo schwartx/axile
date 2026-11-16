@@ -1,36 +1,43 @@
 """每日分时段算法配置；与渠道市场钟共用左闭右开的隔夜语义。"""
 
+from dataclasses import dataclass, field
 from typing import Annotated, Any
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
+from msgspec import Meta
 
+from axile.common.serialization import provided_fields
 from axile.server.db.models.account_validation import _validate_algorithm_config
 
-ClockTime = Annotated[str, Field(pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")]
+ClockTime = Annotated[str, Meta(pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")]
 
 
-class ScheduledAlgorithm(BaseModel):
+@dataclass(kw_only=True)
+class ScheduledAlgorithm:
     """北京时间的每日时段及独立、完整的算法配置。"""
-
-    model_config = ConfigDict(extra="forbid")
 
     start: ClockTime
     end: ClockTime
     algorithm: dict[str, Any]
 
-    @field_validator("algorithm")
     @classmethod
     def validate_algorithm(cls, value: dict[str, Any]) -> dict[str, Any]:
         """复用账户主算法的参数约束。"""
         _validate_algorithm_config(value, "时段算法")
         return value
 
-    @model_validator(mode="after")
     def validate_duration(self) -> "ScheduledAlgorithm":
         """相同时刻不能隐式解释为全天，全天配置由默认算法承担。"""
         if self.start == self.end:
             raise ValueError("时段开始和结束不能相同")
         return self
+
+    __forbid_unknown__ = True
+
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        if "algorithm" in provided_fields(self):
+            object.__setattr__(self, "algorithm", self.validate_algorithm(self.algorithm))
+        self.validate_duration()
 
 
 def validate_algorithm_schedule(value: list[ScheduledAlgorithm]) -> list[ScheduledAlgorithm]:
@@ -49,20 +56,26 @@ def validate_algorithm_schedule(value: list[ScheduledAlgorithm]) -> list[Schedul
     return value
 
 
-AlgorithmSchedule = Annotated[list[ScheduledAlgorithm], AfterValidator(validate_algorithm_schedule)]
+AlgorithmSchedule = list[ScheduledAlgorithm]
 
 
-class ProductAlgorithm(BaseModel):
+@dataclass(kw_only=True)
+class ProductAlgorithm:
     """单个品种独立的默认算法与每日时段，不继承账户时段。"""
 
-    model_config = ConfigDict(extra="forbid")
-
     algorithm: dict[str, Any]
-    algorithm_schedule: AlgorithmSchedule = Field(default_factory=list)
+    algorithm_schedule: AlgorithmSchedule = field(default_factory=list)
 
-    @field_validator("algorithm")
     @classmethod
     def validate_algorithm(cls, value: dict[str, Any]) -> dict[str, Any]:
         """复用完整算法的参数校验。"""
         _validate_algorithm_config(value, "品种默认算法")
         return {**value, "params": value.get("params") or {}}
+
+    __forbid_unknown__ = True
+
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        validate_algorithm_schedule(self.algorithm_schedule)
+        if "algorithm" in provided_fields(self):
+            object.__setattr__(self, "algorithm", self.validate_algorithm(self.algorithm))

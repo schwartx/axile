@@ -2,11 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-from pydantic import GetCoreSchemaHandler
-from pydantic_core import CoreSchema, core_schema
-
 
 class TradeChannel(str):
     """
@@ -37,30 +32,3 @@ class TradeChannel(str):
         if not isinstance(value, str) or not value.strip():
             raise ValueError("交易渠道标识必须是非空字符串")
         return super().__new__(cls, value.strip().lower())
-
-    @classmethod
-    def __get_pydantic_core_schema__(
-        cls,
-        _source_type: Any,
-        _handler: GetCoreSchemaHandler,
-    ) -> CoreSchema:
-        """
-        返回开放字符串对应的 Pydantic 核心校验模式.
-
-        Parameters
-        ----------
-        _source_type : Any
-            Pydantic 请求生成模式的源类型。
-        _handler : GetCoreSchemaHandler
-            Pydantic 模式生成处理器。
-
-        Returns
-        -------
-        CoreSchema
-            接受非空字符串并构造 ``TradeChannel`` 的核心模式。
-        """
-        return core_schema.no_info_after_validator_function(
-            cls,
-            core_schema.str_schema(min_length=1),
-            serialization=core_schema.to_string_ser_schema(),
-        )

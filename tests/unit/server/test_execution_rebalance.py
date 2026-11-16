@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from axile.channels.gm_sessions import SHANGHAI, GMSessionSettings, gm_session_context
+from axile.common.serialization import to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionArtifactType, ExecutionEventStatus, ExecutionEventType
 from axile.executor.abstract_executor.base import AbstractExecutor
@@ -182,7 +183,7 @@ def test_trade_serializes_success_result_to_json_safe_dict(
         execution_id: str | None = None,
         execution_kind: object = None,
     ) -> dict[str, object]:
-        result = cast("dict[str, object]", cast(UnifiedStandardOutput, output).model_dump(mode="json"))
+        result = cast("dict[str, object]", to_payload(cast(UnifiedStandardOutput, output), mode="json"))
         captured["account"] = account
         captured["raw_input"] = raw_input
         captured["result"] = result
@@ -367,7 +368,7 @@ def test_trade_routes_gm_account_to_worker_manager(
     captured: dict[str, object] = {}
     context = (
         gm_session_context(
-            GMSessionSettings(opening_cancelable={"enabled": True, "time": "09:15"}).model_dump(),
+            to_payload(GMSessionSettings(opening_cancelable={"enabled": True, "time": "09:15"})),
             datetime(2026, 9, 1, 9, 19, tzinfo=SHANGHAI),
         )
         if auction
@@ -525,7 +526,7 @@ def test_trade_persists_failed_gm_worker_output(
         execution_kind: object = None,
     ) -> dict[str, object]:
         _ = account
-        raw_result = cast("dict[str, object]", output.model_dump(mode="json"))
+        raw_result = cast("dict[str, object]", to_payload(output, mode="json"))
         captured_error_record.update(
             {
                 "account_id": 1,
@@ -907,7 +908,7 @@ def test_trade_completion_event_matches_output_status(
         execution_kind: object = None,
     ) -> dict[str, object]:
         _ = account
-        raw_result = cast("dict[str, object]", output.model_dump(mode="json"))
+        raw_result = cast("dict[str, object]", to_payload(output, mode="json"))
         captured_error_record.update(
             {
                 "account_id": 1,
@@ -1026,7 +1027,7 @@ def test_standard_input_accepts_database_trade_channel_string(trigger_source) ->
     )
     account.trade_channel = cast("TradeChannel", "gm")
     context = gm_session_context(
-        GMSessionSettings(opening_cancelable={"enabled": True, "time": "09:15"}).model_dump(),
+        to_payload(GMSessionSettings(opening_cancelable={"enabled": True, "time": "09:15"})),
         datetime(2026, 9, 1, 9, 15, tzinfo=SHANGHAI),
     )
 

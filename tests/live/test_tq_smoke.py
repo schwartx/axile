@@ -6,6 +6,7 @@ import os
 
 import pytest
 
+from axile.common.serialization import from_payload
 from axile.executor.models.unified_input import TQAccountConfig
 from axile.executor.tq import TQExecutor
 
@@ -29,7 +30,7 @@ def test_tq_account_can_connect_and_query_assets() -> None:
     elif mode == "sim":
         payload["initial_balance"] = float(os.getenv("AXILE_TQ_INITIAL_BALANCE", "10000000"))
 
-    executor = TQExecutor(TQAccountConfig.model_validate(payload))
+    executor = TQExecutor(from_payload(TQAccountConfig, payload))
     try:
         assets = executor.get_account_assets()
         assert assets.source == "real"

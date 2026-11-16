@@ -6,6 +6,7 @@ from collections import OrderedDict
 from threading import RLock
 from uuid import uuid4
 
+from axile.common.serialization import copy_data
 from axile.executor.algorithms.utils.clock import clock_now_iso
 from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
 from axile.executor.order_observation import merge_order, merge_trade, with_trade_average
@@ -109,7 +110,7 @@ class AccountActivityBook:
                     if symbol is None or o.symbol == symbol
                 ],
                 "trades": [
-                    t.model_copy(deep=True) for t in self._trades.values() if symbol is None or t.symbol == symbol
+                    copy_data(t, deep=True) for t in self._trades.values() if symbol is None or t.symbol == symbol
                 ],
                 "failures": [dict(f) for f in self._failures.values() if symbol is None or f["symbol"] == symbol],
                 "started_at": self.started_at,

@@ -5,6 +5,7 @@ from __future__ import annotations
 from multiprocessing import get_context
 from multiprocessing.connection import Connection
 
+from axile.common.serialization import to_payload
 from axile.executor.models.portfolio_target import PortfolioTarget
 from axile.server.context import Context, ContextSettings
 from axile.server.portfolio_function import (
@@ -25,7 +26,7 @@ def _run_sample_portfolio_child(connection: Connection, code: str, settings: Con
     """在子进程内构造无账户 Context 并返回函数结果载荷."""
     try:
         result = calculate_portfolio_target(code, Context(settings=settings))
-        connection.send(result.model_dump())
+        connection.send(to_payload(result))
     except BaseException as exc:  # noqa: BLE001 - 子进程边界统一回传结构化错误
         connection.send(exc if isinstance(exc, PortfolioFunctionError) else _error_from_exception(exc))
     finally:

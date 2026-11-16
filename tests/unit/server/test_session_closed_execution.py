@@ -5,6 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from axile.common.serialization import from_payload, to_payload
 from axile.domain.execution import ExecutionTaskStatus
 from axile.executor.session_closed import COMMON_SESSION_CLOSED, session_closed_scope
 from axile.server.execution import records, registry
@@ -34,14 +35,11 @@ def closed_result():
 
 def _record(path, result, *, execution_id="session-closed-record", is_success=0):
     """使用真实原生终态，回放只读取持久化后的紧凑 DTO。"""
-    return ExecuteRecord.model_validate(
+    return from_payload(
+        ExecuteRecord,
         persist_result(
-            path,
-            result,
-            execution_id=execution_id,
-            is_success=is_success,
-            created_at="2026-10-16T10:15:07",
-        )
+            path, result, execution_id=execution_id, is_success=is_success, created_at="2026-10-16T10:15:07"
+        ),
     )
 
 
@@ -94,7 +92,7 @@ def test_order_evidence_prevents_a_neutral_session_title_in_lightweight_results(
         },
     )
     assert output.reason_code is None
-    assert session_closed_scope(output.model_dump(mode="json")) is None
+    assert session_closed_scope(to_payload(output, mode="json")) is None
 
 
 def test_closed_and_open_noop_is_partial_and_keeps_unhandled_target(native_database):

@@ -1,9 +1,11 @@
 """独立 SQL oracle 的公开摘要字段；不依赖生产响应模型。"""
 
+from axile.common.serialization import to_payload
+
 
 def execution_summary(value):
     """用明确字段和默认值组装对照值。"""
-    data = value if isinstance(value, dict) else value.model_dump(mode="json")
+    data = value if isinstance(value, dict) else to_payload(value, mode="json")
     return {
         "execution_id": data.get("execution_id", None),
         "is_success": data.get("is_success", None),

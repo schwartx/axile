@@ -10,6 +10,8 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
+from axile.common.serialization import to_payload
+
 
 def _guard_first_party_imports() -> None:
     import builtins
@@ -271,7 +273,7 @@ def _assert_api_contract() -> None:
         "remark": None,
         "brokerage": "",
         "weight_precision": 0.01,
-        "algorithm": defaults.trade_algorithm.model_dump(mode="json"),
+        "algorithm": to_payload(defaults.trade_algorithm, mode="json"),
         "empty_positions_algorithm": None,
         "trade_rules": None,
         "forbidden_symbols": None,

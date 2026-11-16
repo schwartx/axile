@@ -5,17 +5,19 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
+from dataclasses import dataclass
 from threading import RLock
 from typing import Literal
 from uuid import uuid4
 
 from loguru import logger
-from pydantic import BaseModel
 
+from axile.common.serialization import copy_data
 from axile.executor.algorithms.utils.clock import clock_now_ms
 
 
-class OrderSubmissionFact(BaseModel):
+@dataclass(kw_only=True)
+class OrderSubmissionFact:
     """一次原生调用的身份及结果；未知结果不能推断为柜台已受理。"""
 
     submission_uid: str
@@ -82,7 +84,7 @@ class OrderSubmissionRecorder:
                 raise ValueError("同一记录器不能重复使用原生 request_id")
             self._sink(fact)
             # 初始待确认事实先落盘；已知发送结果采用紧邻原生调用的时间，避免写盘跨日误归桶。
-            fact = fact.model_copy(update={"occurred_at_ms": clock_now_ms()})
+            fact = copy_data(fact, update={"occurred_at_ms": clock_now_ms()})
             self._requests[request_id] = fact
             if operation == "place_order":
                 self._orders[order_id] = request_id
@@ -121,7 +123,7 @@ class OrderSubmissionRecorder:
                 return
             if fact.broker_status == "rejected" and changes.get("broker_status") == "acknowledged":
                 return
-            updated = fact.model_copy(update={**changes, "revision": fact.revision + 1})
+            updated = copy_data(fact, update={**changes, "revision": fact.revision + 1})
             self._requests[request_id] = updated
             try:
                 self._sink(updated)

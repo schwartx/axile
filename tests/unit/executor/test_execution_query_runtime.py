@@ -6,6 +6,7 @@ import threading
 
 import pytest
 
+from axile.common.serialization import copy_data
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.execution_query_runtime import ExecutionQueryRuntime
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
@@ -91,7 +92,7 @@ def test_late_pending_response_cannot_overwrite_callback_or_invalidation(update:
         calls.append(1)
         if len(calls) == 2:
             if update == "patch":
-                runtime.apply_pending_order_update(pending.model_copy(update={"status": OrderStatus.FILLED}))
+                runtime.apply_pending_order_update(copy_data(pending, update={"status": OrderStatus.FILLED}))
             else:
                 runtime.invalidate_orders()
             return [pending]
@@ -268,7 +269,7 @@ def test_trade_patch_updates_cached_trade_snapshot_without_touching_pending_orde
 
     def fetch_pending_orders_snapshot() -> list[UnifiedOrder]:
         order_fetch_calls.append("pending")
-        return [pending_order.model_copy(deep=True)]
+        return [copy_data(pending_order, deep=True)]
 
     def fetch_trades_snapshot() -> list[TradeRecord]:
         trade_fetch_calls.append("trades")

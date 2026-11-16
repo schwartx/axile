@@ -2,10 +2,11 @@
 
 import sqlite3
 from contextlib import closing
+from dataclasses import fields
 
 import pytest
-from pydantic import ValidationError
 
+from axile.common.serialization import from_payload, parse_input, to_payload
 from axile.server.core import db
 from axile.server.db.models import Account, AccountNotificationState, AccountSnapshot, AccountUpdate
 from axile.server.db.models.account import AccountCreate
@@ -39,41 +40,41 @@ def account_data() -> dict:
 
 
 def stored_account(path):
-    return Account.model_validate(native_store_call(path, "account_get", {"account_id": 1}))
+    return from_payload(Account, native_store_call(path, "account_get", {"account_id": 1}))
 
 
 def test_replay_recording_models_default_false_and_patch_preserves_omission():
     account = Account(**account_data())
     assert account.replay_recording_enabled is False
-    assert AccountSnapshot.model_validate(account.model_dump()).replay_recording_enabled is False
+    assert from_payload(AccountSnapshot, to_payload(account)).replay_recording_enabled is False
     assert account_view(account)["replay_recording_enabled"] is False
     create_data = account_data()
     create_data.pop("id")
     assert AccountCreate(**create_data).replay_recording_enabled is False
-    assert AccountUpdate().model_dump(exclude_unset=True) == {}
-    assert AccountUpdate(replay_recording_enabled=False).model_dump(exclude_unset=True) == {
+    assert to_payload(AccountUpdate(), exclude_unset=True) == {}
+    assert to_payload(AccountUpdate(replay_recording_enabled=False), exclude_unset=True) == {
         "replay_recording_enabled": False
     }
     assert AccountUpdate(replay_recording_enabled=True).replay_recording_enabled is True
     assert account.replay_config_version == 0
-    snapshot = AccountSnapshot.model_validate(account_data() | {"runtime_sync": {"revision": 7}})
-    assert snapshot.model_dump()["replay_config_version"] == 7
-    snapshot = AccountSnapshot.model_validate(
-        account_data() | {"runtime_sync": {"revision": 7}, "replay_config_version": 8}
+    snapshot = from_payload(AccountSnapshot, account_data() | {"runtime_sync": {"revision": 7}})
+    assert to_payload(snapshot)["replay_config_version"] == 7
+    snapshot = from_payload(
+        AccountSnapshot, account_data() | {"runtime_sync": {"revision": 7}, "replay_config_version": 8}
     )
     assert snapshot.replay_config_version == 8
     assert "replay_config_version" not in account_view(account)
-    assert "replay_config_version" not in AccountCreate.model_fields
+    assert "replay_config_version" not in {item.name for item in fields(AccountCreate)}
 
 
 @pytest.mark.parametrize("value", [None, 0, 1, "true", "false"])
 def test_replay_recording_models_reject_non_boolean(value):
-    account = Account(**account_data()).model_dump()
+    account = to_payload(Account(**account_data()))
     for model in (Account, AccountSnapshot):
-        with pytest.raises(ValidationError, match="replay_recording_enabled"):
-            model.model_validate(account | {"replay_recording_enabled": value})
-    with pytest.raises(ValidationError, match="replay_recording_enabled"):
-        AccountUpdate(replay_recording_enabled=value)
+        with pytest.raises(ValueError, match="replay_recording_enabled"):
+            parse_input(model, account | {"replay_recording_enabled": value})
+    with pytest.raises(ValueError, match="replay_recording_enabled"):
+        parse_input(AccountUpdate, {"replay_recording_enabled": value})
 
 
 def test_replay_recording_native_group_patch_and_legacy_default(native_database):
@@ -130,19 +131,19 @@ def test_settings_persist_patch_and_snapshot_are_independent(native_database):
     with closing(sqlite3.connect(native_database)) as connection, connection:
         insert_account(connection, Account(**account_data()))
     loaded = stored_account(native_database)
-    snapshot = AccountSnapshot.model_validate(loaded.model_dump())
+    snapshot = from_payload(AccountSnapshot, to_payload(loaded))
     assert isinstance(snapshot, AccountSnapshot)
     snapshot.account_config["nested"]["secret"] = "changed"
     assert loaded.account_config["nested"]["secret"] == "test-only"
     patch = {"long_leverage": 3, "execution_notification_code": None}
-    loaded = Account.model_validate(loaded.model_dump() | patch)
+    loaded = from_payload(Account, to_payload(loaded) | patch)
     assert loaded.is_started
     assert loaded.feishu_key == "test-key"
     assert loaded.execution_notification_code is None
-    with pytest.raises(ValidationError):
-        Account.model_validate(loaded.model_dump() | {"weight_precision": -1, "cron_expr": "bad cron"})
-    with pytest.raises(ValidationError):
-        AccountUpdate(name="invalid", weight_precision=-1, cron_expr="bad cron")
+    with pytest.raises(ValueError):
+        parse_input(Account, to_payload(loaded) | {"weight_precision": -1, "cron_expr": "bad cron"})
+    with pytest.raises(ValueError):
+        parse_input(AccountUpdate, {"name": "invalid", "weight_precision": -1, "cron_expr": "bad cron"})
     assert loaded.name == "账户"
     assert loaded.weight_precision == 0.01
     native_store_call(
@@ -153,7 +154,7 @@ def test_settings_persist_patch_and_snapshot_are_independent(native_database):
     assert account.execution_notification_code is None
     with closing(sqlite3.connect(native_database)) as connection:
         assert "algorithm" not in {row[1] for row in connection.execute("PRAGMA table_info(account)")}
-    assert account.model_dump()["algorithm"] == account_data()["algorithm"]
+    assert to_payload(account)["algorithm"] == account_data()["algorithm"]
 
 
 def test_success_state_only_advances_and_deleted_account_is_ignored(monkeypatch, native_database):
@@ -189,12 +190,12 @@ def test_public_response_exposes_success_summary_without_credentials():
     assert "feishu_key" not in public
     assert "test-only" not in str(public)
     assert "test-key" not in str(public)
-    assert account.model_dump(include={"name", "feishu_key"}) == {"name": "账户", "feishu_key": "test-key"}
-    assert "remark" not in account.model_dump(exclude_none=True)
-    before = account.model_dump()
+    assert to_payload(account, include={"name", "feishu_key"}) == {"name": "账户", "feishu_key": "test-key"}
+    assert "remark" not in to_payload(account, exclude_none=True)
+    before = to_payload(account)
     with pytest.raises(ValueError):
-        Account.model_validate(before | {"long_leverage": 3, "account_config": None})
-    assert account.model_dump() == before
+        parse_input(Account, before | {"long_leverage": 3, "account_config": None})
+    assert to_payload(account) == before
 
 
 def test_notification_result_preserves_success_and_ignores_older_results(monkeypatch, native_database):
@@ -220,22 +221,22 @@ def test_gm_sessions_persist_and_roundtrip_in_public_snapshot(native_database):
     from axile.channels.gm_sessions import GMSessionSettings
 
     sessions = GMSessionSettings(opening_cancelable={"enabled": True, "time": "09:15"})
-    data = account_data() | {"trade_channel": "gm", "channel_options": {"gm": sessions.model_dump()}}
+    data = account_data() | {"trade_channel": "gm", "channel_options": {"gm": to_payload(sessions)}}
     created = native_store_call(
         native_database,
         "account_create",
-        {"account": Account(**data).model_dump(mode="json"), "now": "2026-09-01T09:00:00+08:00"},
+        {"account": to_payload(Account(**data), mode="json"), "now": "2026-09-01T09:00:00+08:00"},
     )
     account_id = created["account"]["id"]
-    loaded = Account.model_validate(native_store_call(native_database, "account_get", {"account_id": account_id}))
-    assert loaded.channel_options["gm"] == sessions.model_dump()
-    assert loaded.channel_options == {"gm": sessions.model_dump()}
+    loaded = from_payload(Account, native_store_call(native_database, "account_get", {"account_id": account_id}))
+    assert loaded.channel_options["gm"] == to_payload(sessions)
+    assert loaded.channel_options == {"gm": to_payload(sessions)}
     from tests.unit.server._native_read_views import account_view
 
     assert account_view(loaded)["channel_options"] == loaded.channel_options
-    assert AccountSnapshot.model_validate(loaded.model_dump()).channel_options["gm"] == sessions.model_dump()
+    assert from_payload(AccountSnapshot, to_payload(loaded)).channel_options["gm"] == to_payload(sessions)
     scheduled = native_store_call(native_database, "runtime_sync_scheduler_account", {"account_id": account_id})
-    assert scheduled["channel_options"]["gm"] == sessions.model_dump()
+    assert scheduled["channel_options"]["gm"] == to_payload(sessions)
     native_store_call(
         native_database,
         "account_update",
@@ -261,5 +262,5 @@ def test_gm_sessions_persist_and_roundtrip_in_public_snapshot(native_database):
     ],
 )
 def test_snapshot_channel_options_do_not_bypass_plugin_validation(options):
-    with pytest.raises(ValidationError):
-        AccountSnapshot.model_validate(account_data() | {"channel_options": options})
+    with pytest.raises(ValueError):
+        parse_input(AccountSnapshot, account_data() | {"channel_options": options})

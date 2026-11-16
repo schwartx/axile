@@ -5,6 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from axile.common.serialization import copy_data, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.outcome import TARGET_NOT_REACHED, summarize_outcome
 from axile.executor.constants.order_status import OrderStatus
@@ -93,7 +94,7 @@ def test_two_phase_snapshot_reuse_preserves_normal_query_order(monkeypatch, chan
     monkeypatch.setattr(e._owner, "get_account_assets", lambda: trace.append("assets") or read())
     monkeypatch.setattr(e._owner, "cancel_all_orders", lambda: trace.append("cancel") or cancel())
     reduction = result(observed=observed)
-    original = reduction.model_dump()
+    original = to_payload(reduction)
     sizing = []
 
     def dispatch(tasks):
@@ -112,7 +113,7 @@ def test_two_phase_snapshot_reuse_preserves_normal_query_order(monkeypatch, chan
     assert output.symbol_results[BUY].final_volume == 1400
     assert output.symbol_results[SELL].account_assets is output.account_assets
     assert output.account_assets.get_position(BUY).volume == 1400
-    assert reduction.model_dump() == original
+    assert to_payload(reduction) == original
     assert output.symbol_results[SELL].memory == {"debug": "unchanged"}
     assert output.symbol_results[SELL].outcome_reason is None
     e._owner.reconcile_terminal_order.assert_not_called()
@@ -230,7 +231,7 @@ def test_invalid_position_blocks_open_and_preserves_serializable_evidence(monkey
             trade_price=100,
         )
     )
-    original = reduction.model_dump()
+    original = to_payload(reduction)
     dispatch = Mock(side_effect=[[reduction], [buy_result()]])
     monkeypatch.setattr(e, "_run_prepared_symbol_algorithms", dispatch)
 
@@ -243,11 +244,11 @@ def test_invalid_position_blocks_open_and_preserves_serializable_evidence(monkey
     assert output.symbol_results[SELL].final_volume == 500
     assert output.symbol_results[SELL].orders == reduction.orders
     assert output.symbol_results[SELL].trades == reduction.trades
-    assert reduction.model_dump() == original
+    assert to_payload(reduction) == original
     assert e._owner.account_assets_calls == 2
     e._runtime.sleep_or_terminate.assert_not_called()
     e._owner.reconcile_terminal_order.assert_not_called()
-    json.dumps(output.model_dump(mode="json"), allow_nan=False)
+    json.dumps(to_payload(output, mode="json"), allow_nan=False)
 
 
 def test_final_snapshot_also_corrects_a_previously_successful_result(monkeypatch):
@@ -293,7 +294,7 @@ def test_direct_quantity_survives_equity_change_between_phases(monkeypatch):
         return [result(symbol=BUY, start=0, observed=7.5, target=7.5, filled=7.5, direction=OrderDirection.BUY)]
 
     monkeypatch.setattr(e, "_run_prepared_symbol_algorithms", dispatch)
-    request = inputs(e).model_copy(update={"target_mode": "quantity", "curr_target": {SELL: 500.0, BUY: 7.5}})
+    request = copy_data(inputs(e), update={"target_mode": "quantity", "curr_target": {SELL: 500.0, BUY: 7.5}})
     output = e.run(request)
     assert [task.algorithm_input.target_volume for task in planned] == [500, 7.5]
     assert all(task.sizing.sizing_mode == "quantity" for task in planned)

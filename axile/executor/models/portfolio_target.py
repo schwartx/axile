@@ -3,22 +3,21 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Literal, cast
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from axile.common.serialization import parse_input, provided_fields, to_payload
 
 TargetMode = Literal["weight", "quantity"]
 
 
-class PortfolioTarget(BaseModel):
+@dataclass(kw_only=True)
+class PortfolioTarget:
     """一份完整的带符号目标持仓；数量使用渠道原生交易单位。"""
-
-    model_config = ConfigDict(extra="forbid")
 
     mode: TargetMode = "weight"
     targets: dict[str, float]
 
-    @field_validator("targets", mode="before")
     @classmethod
     def validate_targets(cls, value: object) -> dict[str, float]:
         """拒绝隐式字符串转换、布尔值和非有限数值。"""
@@ -40,11 +39,18 @@ class PortfolioTarget(BaseModel):
     def from_result(cls, result: object) -> PortfolioTarget:
         """旧字典按权重解释，显式返回值必须完整声明口径与目标。"""
         if isinstance(result, cls):
-            return cls.model_validate(result.model_dump())
+            return parse_input(cls, to_payload(result))
         if not isinstance(result, dict):
             raise TypeError(f"calculate_portfolio 必须返回目标字典，实际返回 {type(result).__name__}")
         if isinstance(result.get("mode"), str) or isinstance(result.get("targets"), dict):
             if set(result) != {"mode", "targets"}:
                 raise ValueError("显式组合目标必须且只能包含 mode 和 targets")
-            return cls.model_validate(result)
+            return parse_input(cls, result)
         return cls(targets=cls.validate_targets(result))
+
+    __forbid_unknown__ = True
+
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        if "targets" in provided_fields(self):
+            object.__setattr__(self, "targets", self.validate_targets(self.targets))

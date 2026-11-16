@@ -1,7 +1,11 @@
 """平仓设置浏览器验收服务：使用真实 DTO，不启动柜台、数据库或调度。"""
 
-from fastapi import FastAPI, HTTPException
+from typing import Annotated
 
+from fastapi import Depends, FastAPI, HTTPException
+
+from axile.common.serialization import parse_input, to_payload
+from axile.server.api.inputs import json_body
 from axile.server.api.routes.algorithms import router as algorithms_router
 from axile.server.api.routes.capabilities import router as capabilities_router
 from axile.server.db.models import Account, AccountUpdate
@@ -70,13 +74,13 @@ def account_info(account_id: int):
 
 
 @app.patch("/api/v1/account/{account_id}")
-def update_account(account_id: int, patch: AccountUpdate):
+def update_account(account_id: int, patch: Annotated[AccountUpdate, Depends(json_body(AccountUpdate))]):
     """校验后仅修改内存账户；不存在任何柜台连接。"""
     account = _accounts[account_id]
     try:
         policy = patch.futures_close_policy or account.futures_close_policy
         policy.validate_channel(account.trade_channel)
-        _accounts[account_id] = Account.model_validate(account.model_dump() | patch.model_dump(exclude_unset=True))
+        _accounts[account_id] = parse_input(Account, to_payload(account) | to_payload(patch, exclude_unset=True))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     return account_info(account_id)

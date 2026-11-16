@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import ipaddress
 import re
-from typing import Literal, override
+from dataclasses import dataclass, field
+from typing import Annotated, Literal, override
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from msgspec import Meta
 
+from axile.common.serialization import provided_fields
 from axile.common.trade_channel import TradeChannel
 from axile.executor.ctp_input_validation import validate_credential
 
@@ -111,7 +113,8 @@ def validate_windows_directory(value: str) -> str:
     raise ValueError("请输入 Windows 绝对路径")
 
 
-class BaseAccountConfig(BaseModel):
+@dataclass(kw_only=True)
+class BaseAccountConfig:
     """
     基础账户配置抽象模型.
 
@@ -121,16 +124,17 @@ class BaseAccountConfig(BaseModel):
         账户所属的交易渠道类型。
     """
 
-    model_config = ConfigDict(extra="forbid")
-
-    channel_type: TradeChannel = Field(..., description="交易渠道类型")
+    channel_type: Annotated[TradeChannel, Meta(description="交易渠道类型")]
 
     @override
     def __str__(self) -> str:
         """返回便于记录日志的简要字符串表示."""
         return f"{self.channel_type}AccountConfig"
 
+    __forbid_unknown__ = True
 
+
+@dataclass(kw_only=True)
 class CTPAccountConfig(BaseAccountConfig):
     """
     CTP 期货账户配置.
@@ -145,27 +149,27 @@ class CTPAccountConfig(BaseAccountConfig):
         登录密码。
     """
 
-    broker_id: str = Field(..., description="经纪公司代码")
-    investor_id: str = Field(..., description="投资者代码")
-    password: str = Field(..., description="密码")
+    channel_type: TradeChannel = TradeChannel("ctp")
 
-    td_front: str = Field(..., description="交易服务器地址")
-    md_front: str = Field(..., description="行情服务器地址")
-    product_info: str | None = Field(None, description="产品信息")
-    auth_code: str = Field(..., description="认证码")
-    app_id: str = Field(..., description="应用ID")
+    broker_id: Annotated[str, Meta(description="经纪公司代码")]
+    investor_id: Annotated[str, Meta(description="投资者代码")]
+    password: Annotated[str, Meta(description="密码")]
 
-    @field_validator("broker_id", "investor_id", "password", "auth_code", "app_id")
+    td_front: Annotated[str, Meta(description="交易服务器地址")]
+    md_front: Annotated[str, Meta(description="行情服务器地址")]
+    product_info: Annotated[str | None, Meta(description="产品信息")] = field(default=None)
+    auth_code: Annotated[str, Meta(description="认证码")]
+    app_id: Annotated[str, Meta(description="应用ID")]
+
     @classmethod
     def validate_required_field(cls, value: str, info: object) -> str:
         """校验 CTP 凭据字段非空且为单行。"""
-        field_name = getattr(info, "field_name", "CTP 字段")
+        field_name = info
         value = _validate_single_line(value, str(field_name))
         if field_name != "password":
             return validate_credential(str(field_name), value)
         return value
 
-    @field_validator("td_front", "md_front")
     @classmethod
     def validate_front(cls, value: str) -> str:
         """校验 CTP 前置地址为带端口的 TCP 地址。"""
@@ -176,7 +180,6 @@ class CTPAccountConfig(BaseAccountConfig):
             port="required",
         )
 
-    @model_validator(mode="before")
     @classmethod
     def set_channel_type(cls, data: dict[str, object] | BaseAccountConfig) -> dict[str, object] | BaseAccountConfig:
         """
@@ -198,7 +201,31 @@ class CTPAccountConfig(BaseAccountConfig):
         normalized["channel_type"] = TradeChannel("ctp")
         return normalized
 
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        if "broker_id" in provided_fields(self):
+            object.__setattr__(self, "broker_id", self.validate_required_field(self.broker_id, "broker_id"))
+        if "investor_id" in provided_fields(self):
+            object.__setattr__(self, "investor_id", self.validate_required_field(self.investor_id, "investor_id"))
+        if "password" in provided_fields(self):
+            object.__setattr__(self, "password", self.validate_required_field(self.password, "password"))
+        if "auth_code" in provided_fields(self):
+            object.__setattr__(self, "auth_code", self.validate_required_field(self.auth_code, "auth_code"))
+        if "app_id" in provided_fields(self):
+            object.__setattr__(self, "app_id", self.validate_required_field(self.app_id, "app_id"))
+        if "td_front" in provided_fields(self):
+            object.__setattr__(self, "td_front", self.validate_front(self.td_front))
+        if "md_front" in provided_fields(self):
+            object.__setattr__(self, "md_front", self.validate_front(self.md_front))
 
+    @classmethod
+    def prepare(cls, value):
+        """在输入入口归一化历史字段和渠道标识。"""
+        value = cls.set_channel_type(value)
+        return value
+
+
+@dataclass(kw_only=True)
 class GMAccountConfig(BaseAccountConfig):
     """
     掘金账户配置.
@@ -215,26 +242,25 @@ class GMAccountConfig(BaseAccountConfig):
         远程服务地址。
     """
 
-    connection_mode: Literal["terminal", "service"]
-    account_id: str = Field(..., description="掘金账户ID")
-    token: str = Field(..., description="掘金终端令牌")
-    terminal_path: str | None = Field(None, description="掘金终端目录")
-    serv_addr: str | None = Field(None, description="掘金服务地址")
+    channel_type: TradeChannel = TradeChannel("gm")
 
-    @field_validator("account_id", "token")
+    connection_mode: Literal["terminal", "service"]
+    account_id: Annotated[str, Meta(description="掘金账户ID")]
+    token: Annotated[str, Meta(description="掘金终端令牌")]
+    terminal_path: Annotated[str | None, Meta(description="掘金终端目录")] = field(default=None)
+    serv_addr: Annotated[str | None, Meta(description="掘金服务地址")] = field(default=None)
+
     @classmethod
     def validate_required_field(cls, value: str, info: object) -> str:
         """校验 GM 账号与 Token 非空且为单行。"""
-        field_name = getattr(info, "field_name", "GM 字段")
+        field_name = info
         return _validate_single_line(value, str(field_name))
 
-    @field_validator("terminal_path")
     @classmethod
     def validate_terminal_path(cls, value: str | None) -> str | None:
         """校验本机终端路径为 Windows 绝对目录。"""
         return None if value is None else validate_windows_directory(value)
 
-    @field_validator("serv_addr")
     @classmethod
     def validate_service_address(cls, value: str | None) -> str | None:
         """校验远程终端地址为裸主机端口。"""
@@ -247,7 +273,6 @@ class GMAccountConfig(BaseAccountConfig):
             port="required",
         )
 
-    @model_validator(mode="before")
     @classmethod
     def set_channel_type(cls, data: dict[str, object] | BaseAccountConfig) -> dict[str, object] | BaseAccountConfig:
         """
@@ -274,7 +299,6 @@ class GMAccountConfig(BaseAccountConfig):
             normalized.pop("terminal_path", None)
         return normalized
 
-    @model_validator(mode="after")
     def validate_connection_target(self) -> "GMAccountConfig":
         """
         校验连接目标配置是否合法.
@@ -294,35 +318,52 @@ class GMAccountConfig(BaseAccountConfig):
             raise ValueError(f"{self.connection_mode} 模式缺少连接目标")
         return self
 
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        if "account_id" in provided_fields(self):
+            object.__setattr__(self, "account_id", self.validate_required_field(self.account_id, "account_id"))
+        if "token" in provided_fields(self):
+            object.__setattr__(self, "token", self.validate_required_field(self.token, "token"))
+        if "terminal_path" in provided_fields(self):
+            object.__setattr__(self, "terminal_path", self.validate_terminal_path(self.terminal_path))
+        if "serv_addr" in provided_fields(self):
+            object.__setattr__(self, "serv_addr", self.validate_service_address(self.serv_addr))
+        self.validate_connection_target()
 
+    @classmethod
+    def prepare(cls, value):
+        """在输入入口归一化历史字段和渠道标识。"""
+        value = cls.set_channel_type(value)
+        return value
+
+
+@dataclass(kw_only=True)
 class TQAccountConfig(BaseAccountConfig):
     """天勤 TqSdk 账户配置."""
 
+    channel_type: TradeChannel = TradeChannel("tq")
     account_mode: Literal["live", "kq", "sim"]
-    tq_username: str = Field(min_length=1, description="天勤账号")
-    tq_password: str = Field(min_length=1, description="天勤密码")
-    broker_name: str | None = Field(None, description="期货公司名称")
-    account_id: str | None = Field(None, description="交易账户")
-    account_password: str | None = Field(None, description="交易密码")
-    initial_balance: float = Field(10_000_000.0, gt=0, description="本地模拟初始资金")
+    tq_username: Annotated[str, Meta(min_length=1, description="天勤账号")]
+    tq_password: Annotated[str, Meta(min_length=1, description="天勤密码")]
+    broker_name: Annotated[str | None, Meta(description="期货公司名称")] = field(default=None)
+    account_id: Annotated[str | None, Meta(description="交易账户")] = field(default=None)
+    account_password: Annotated[str | None, Meta(description="交易密码")] = field(default=None)
+    initial_balance: Annotated[float, Meta(gt=0, description="本地模拟初始资金")] = field(default=10000000.0)
 
-    @field_validator("tq_username", "tq_password")
     @classmethod
     def validate_tq_credential(cls, value: str, info: object) -> str:
         """校验天勤公共凭据非空且为单行。"""
-        field_name = getattr(info, "field_name", "天勤凭据")
+        field_name = info
         return _validate_single_line(value, str(field_name))
 
-    @field_validator("broker_name", "account_id", "account_password")
     @classmethod
     def validate_live_credential(cls, value: str | None, info: object) -> str | None:
         """校验已填写的实盘凭据非空且为单行。"""
         if value is None:
             return None
-        field_name = getattr(info, "field_name", "实盘凭据")
+        field_name = info
         return _validate_single_line(value, str(field_name))
 
-    @model_validator(mode="before")
     @classmethod
     def set_channel_type(cls, data: dict[str, object] | BaseAccountConfig) -> dict[str, object] | BaseAccountConfig:
         """补齐 TqSdk 渠道类型并移除非当前模式字段."""
@@ -338,7 +379,6 @@ class TQAccountConfig(BaseAccountConfig):
             normalized.pop("initial_balance", None)
         return normalized
 
-    @model_validator(mode="after")
     def validate_mode_fields(self) -> "TQAccountConfig":
         """校验实盘模式的交易账户凭据."""
         if self.account_mode == "live":
@@ -346,6 +386,28 @@ class TQAccountConfig(BaseAccountConfig):
             if missing:
                 raise ValueError(f"TqAccount 模式缺少必填字段: {', '.join(missing)}")
         return self
+
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        if "tq_username" in provided_fields(self):
+            object.__setattr__(self, "tq_username", self.validate_tq_credential(self.tq_username, "tq_username"))
+        if "tq_password" in provided_fields(self):
+            object.__setattr__(self, "tq_password", self.validate_tq_credential(self.tq_password, "tq_password"))
+        if "broker_name" in provided_fields(self):
+            object.__setattr__(self, "broker_name", self.validate_live_credential(self.broker_name, "broker_name"))
+        if "account_id" in provided_fields(self):
+            object.__setattr__(self, "account_id", self.validate_live_credential(self.account_id, "account_id"))
+        if "account_password" in provided_fields(self):
+            object.__setattr__(
+                self, "account_password", self.validate_live_credential(self.account_password, "account_password")
+            )
+        self.validate_mode_fields()
+
+    @classmethod
+    def prepare(cls, value):
+        """在输入入口归一化历史字段和渠道标识。"""
+        value = cls.set_channel_type(value)
+        return value
 
 
 AccountConfig = BaseAccountConfig

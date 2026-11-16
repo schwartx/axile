@@ -9,12 +9,15 @@ import os
 import secrets
 import tempfile
 import threading
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Annotated
 
 import httpx
-from pydantic import BaseModel, Field, model_validator
+from msgspec import Meta
 
+from axile.common.serialization import from_payload, to_payload
 from axile.server.core.db import database_path
 from axile.server.native_store import native_call, native_operation_sync
 
@@ -23,17 +26,17 @@ _lock = asyncio.Lock()
 _settings_lock = threading.RLock()
 
 
-class TransferPlan(BaseModel):
+@dataclass(kw_only=True)
+class TransferPlan:
     """保存一次传送的范围、来源和源端保留规则。"""
 
     start: datetime | None = None
     end: datetime | None = None
     source_url: str = ""
-    every_hours: int = Field(default=0, ge=0, le=8760)
-    execution_days: int | None = Field(default=None, ge=1)
-    replay_days: int | None = Field(default=None, ge=1)
+    every_hours: Annotated[int, Meta(ge=0, le=8760)] = field(default=0)
+    execution_days: Annotated[int, Meta(ge=1)] | None = field(default=None)
+    replay_days: Annotated[int, Meta(ge=1)] | None = field(default=None)
 
-    @model_validator(mode="after")
     def validate_range(self):
         """验证时间范围与定时目标。"""
         for value in (self.start, self.end):
@@ -53,6 +56,10 @@ class TransferPlan(BaseModel):
         if self.every_hours and not self.source_url:
             raise ValueError("定时拉取需要来源端地址")
         return self
+
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        self.validate_range()
 
 
 def root() -> Path:
@@ -88,7 +95,7 @@ def settings() -> dict:
 def save_plan(plan: TransferPlan) -> None:
     """持久化传送规则。"""
     value = settings()
-    value["plan"] = plan.model_dump(mode="json")
+    value["plan"] = to_payload(plan, mode="json")
     write_json(root() / "settings.json", value)
 
 
@@ -108,7 +115,7 @@ def _plan_request(plan: TransferPlan) -> dict:
     """向数据层传递范围和保留规则。"""
     return {
         "source_id": settings()["source_id"],
-        "plan": plan.model_dump(mode="json", include={"start", "end", "execution_days", "replay_days"}),
+        "plan": to_payload(plan, mode="json", include={"start", "end", "execution_days", "replay_days"}),
     }
 
 
@@ -244,7 +251,7 @@ async def pull(plan: TransferPlan) -> dict:
 async def scheduled_pull() -> None:
     """执行定时拉取并保存结果。"""
     try:
-        result = await pull(TransferPlan.model_validate(settings()["plan"]))
+        result = await pull(from_payload(TransferPlan, settings()["plan"]))
         write_json(root() / "last-run.json", {"ok": True, "at": datetime.now(UTC).isoformat(), "result": result})
     except Exception:
         # 凭据和账户配置不进入调度错误日志。
@@ -264,7 +271,7 @@ def configure_schedule() -> None:
 
     if scheduler.get_job("data-transfer"):
         scheduler.remove_job("data-transfer")
-    plan = TransferPlan.model_validate(settings()["plan"])
+    plan = from_payload(TransferPlan, settings()["plan"])
     if plan.every_hours:
         scheduler.add_job(
             scheduled_pull, "interval", hours=plan.every_hours, id="data-transfer", max_instances=1, coalesce=True

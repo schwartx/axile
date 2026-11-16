@@ -13,6 +13,7 @@ from typing import cast
 
 from loguru import logger
 
+from axile.common.serialization import to_payload
 from axile.executor.connection_state import connection_error_scope
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.termination import ExecutionTerminated
@@ -123,10 +124,8 @@ def _dump_output_payload(output: UnifiedStandardOutput) -> dict[str, object]:
     dict[str, object]
         适合跨进程传输和审计落盘的 JSON 兼容字典。
     """
-    # inputs 是主进程已持有的请求副本，其中包含账户凭据。Pydantic 还会按
-    # BaseAccountConfig 声明类型截断渠道子类字段，导致主进程无法重新校验该副本。
-    # 审计输入使用独立的脱敏 audit_input，因此 worker 响应无需回传 inputs。
-    return cast("dict[str, object]", output.model_dump(mode="json", exclude={"inputs"}))
+    # 主进程已持有 inputs；worker 只回传结果，审计使用独立的脱敏 audit_input。
+    return cast("dict[str, object]", to_payload(output, mode="json", exclude={"inputs"}))
 
 
 def _build_result_response(

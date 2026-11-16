@@ -18,6 +18,7 @@ from zipfile import ZipFile
 import pytest
 import sqlalchemy as sa
 
+from axile.common.serialization import from_payload
 from axile.domain.execution import (
     ExecutionArtifactType,
     ExecutionEventStatus,
@@ -249,7 +250,7 @@ def test_roundtrip_preview_matches_prior_notification_semantics_without_channel(
     monkeypatch.setattr(feishu_notifications, "clock_now", lambda: datetime(2026, 10, 20, 1, tzinfo=UTC))
     monkeypatch.setattr(account_feishu, "clock_now", lambda: datetime(2026, 10, 20, 1, tzinfo=UTC))
     previous = feishu_notifications.build_execution_notification_context(
-        account_feishu._TestNotificationSource(account.name), UnifiedStandardOutput.model_validate(old_payload)
+        account_feishu._TestNotificationSource(account.name), from_payload(UnifiedStandardOutput, old_payload)
     )
     asyncio.run(_store(facts_database, result=payload))
     channel = AsyncMock(side_effect=AssertionError("historical preview must not connect to a channel"))

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
+from axile.common.serialization import parse_input
 from axile.executor.feishu_notifications import build_execution_notification_context
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.server.api.routes import account_feishu
@@ -104,9 +105,9 @@ def test_notification_trial_key_matches_mode_without_saving(monkeypatch, supplie
         result = asyncio.run(
             account_feishu.test_account_notification_function(
                 1,
-                account_feishu.AccountNotificationFunctionTestRequest(
-                    code="def notify(context): pass" if custom else DEFAULT_ACCOUNT_NOTIFICATION_CODE,
-                    **supplied,
+                parse_input(
+                    account_feishu.AccountNotificationFunctionTestRequest,
+                    {"code": "def notify(context): pass" if custom else DEFAULT_ACCOUNT_NOTIFICATION_CODE, **supplied},
                 ),
             )
         )

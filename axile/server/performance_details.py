@@ -1,22 +1,24 @@
 """按事实修订号查询成本；明细从规范事实按需计算。"""
 
-from typing import Literal
+from dataclasses import dataclass, field
+from math import isfinite
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from msgspec import Meta
 
+from axile.common.serialization import provided_fields
 from axile.server.db.models.performance import RangeKey
 
 
-class CostSelection(BaseModel):
+@dataclass(kw_only=True)
+class CostSelection:
     """成本查询和本地输入共用的精确选区。"""
 
-    model_config = ConfigDict(extra="forbid")
     day: str | None = None
-    start: float | None = Field(default=None, allow_inf_nan=False)
-    end: float | None = Field(default=None, allow_inf_nan=False)
-    record_id: int | None = Field(default=None, gt=0, le=2**63 - 1)
+    start: float | None = field(default=None)
+    end: float | None = field(default=None)
+    record_id: Annotated[int, Meta(gt=0, le=2**63 - 1)] | None = field(default=None)
 
-    @model_validator(mode="after")
     def boundaries(self):
         """Reject ambiguous or malformed time selectors."""
         if (self.start is None) != (self.end is None):
@@ -32,16 +34,31 @@ class CostSelection(BaseModel):
                 raise ValueError("day must be YYYY-MM-DD")
         return self
 
+    __forbid_unknown__ = True
 
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        if "start" in provided_fields(self) and self.start is not None and not isfinite(self.start):
+            raise ValueError("start 必须是有限数值")
+        if "end" in provided_fields(self) and self.end is not None and not isfinite(self.end):
+            raise ValueError("end 必须是有限数值")
+        self.boundaries()
+
+
+@dataclass(kw_only=True)
 class CostQuery(CostSelection):
     """事实修订号与成本筛选条件。"""
 
-    version: str = Field(pattern=r"^[0-9]{1,19}$")
+    version: Annotated[str, Meta(pattern="^[0-9]{1,19}$")]
     range: RangeKey = "all"
     dimension: Literal["execution", "symbol", "trade", "summary"] = "execution"
     sort: Literal["time", "cost"] = "time"
     symbol: str | None = None
     symbol_search: str | None = None
     side: Literal["buy", "sell", "none"] | None = None
-    limit: int = Field(default=20, ge=1, le=100)
-    cursor: str | None = Field(default=None, max_length=1024)
+    limit: Annotated[int, Meta(ge=1, le=100)] = field(default=20)
+    cursor: Annotated[str, Meta(max_length=1024)] | None = field(default=None)
+
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        super().validate()

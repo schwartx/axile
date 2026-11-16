@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
 
+from axile.common.serialization import from_payload, to_payload
 from axile.executor.connection_state import ConnectionObservation
 from axile.server.api.routes import account_connection as routes
 from axile.server.connection_runtime import observe_session, register_session
@@ -36,7 +37,7 @@ def client(account, monkeypatch):
     monkeypatch.setattr(routes, "_get_account_or_404", get_account)
 
     async def snapshot(account_id):
-        return AccountSnapshot.model_validate((await get_account(account_id)).model_dump())
+        return from_payload(AccountSnapshot, to_payload(await get_account(account_id)))
 
     monkeypatch.setattr(routes, "_get_account_snapshot_or_404", snapshot)
     return TestClient(app)
@@ -178,7 +179,7 @@ def test_concurrent_failed_reconnects_share_one_attempt(monkeypatch, connect):
         monkeypatch.setattr(routes, "_get_account_or_404", get_account)
 
         async def snapshot(account_id):
-            return AccountSnapshot.model_validate((await get_account(account_id)).model_dump())
+            return from_payload(AccountSnapshot, to_payload(await get_account(account_id)))
 
         monkeypatch.setattr(routes, "_get_account_snapshot_or_404", snapshot)
         monkeypatch.setattr(routes, "_operate_connection", operate)

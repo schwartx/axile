@@ -4,12 +4,14 @@
 提供所有算法参数的基础类和混入类，包含完整的参数验证规则。
 """
 
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Annotated
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from msgspec import Meta
 
 
-class BaseAlgorithmParams(BaseModel):
+@dataclass(kw_only=True)
+class BaseAlgorithmParams:
     """
     定义所有算法共享的基础参数。
 
@@ -19,44 +21,24 @@ class BaseAlgorithmParams(BaseModel):
     参数模型的公共接口。
     """
 
-    max_wait_seconds: int = Field(
-        default=60,
-        title="最大等待",
-        description="本轮等待成交的上限，不保证到时完成。",
-        ge=1,
-        le=3600,
-        json_schema_extra={"x-order": 20, "x-unit": "秒", "x-control": "stepper"},
-    )
-
-    @field_validator("max_wait_seconds")
-    @classmethod
-    def validate_max_wait_seconds(cls, v: int) -> int:
-        """
-        验证最大等待时间。
-
-        Parameters
-        ----------
-        v : int
-            调用方传入的最大等待秒数。
-
-        Returns
-        -------
-        int
-            通过字段边界校验后的等待秒数。
-
-        Notes
-        -----
-        这里故意不再叠加“建议值”一类软限制；超过建议值的合法配置仍允许进入
-        执行阶段，由调用方按具体渠道和策略自行决定是否记录告警。
-        """
-        return v
+    max_wait_seconds: Annotated[
+        int,
+        Meta(
+            ge=1,
+            le=3600,
+            title="最大等待",
+            description="本轮等待成交的上限，不保证到时完成。",
+            extra_json_schema={"x-order": 20, "x-unit": "秒", "x-control": "stepper"},
+        ),
+    ] = field(default=60)
 
     def __str__(self) -> str:
         """便于记录日志的字符串表示."""
         return f"BaseAlgorithmParams(max_wait_seconds={self.max_wait_seconds})"
 
 
-class ChaseParamsMixin(BaseModel):
+@dataclass(kw_only=True)
+class ChaseParamsMixin:
     """
     为算法参数补充追单相关配置。
 
@@ -67,60 +49,42 @@ class ChaseParamsMixin(BaseModel):
     风险的配置组合。
     """
 
-    chase_enabled: bool = Field(
-        default=False,
-        title="追单",
-        description="开启后按条件撤单追价；关闭时保留下面的追单配置。",
-        json_schema_extra={"x-order": 50},
-    )
-    chase_ticks: int = Field(
-        default=1,
-        title="偏离跳数",
-        description="触发追价的价格偏离，不是每次加价幅度。开启追单后生效。",
-        ge=0,
-        json_schema_extra={"x-order": 60, "x-unit": "跳", "x-control": "stepper"},
-    )
-    max_chase_count: int = Field(
-        default=5,
-        title="最大追单次数",
-        description="单笔委托最多追价次数。开启追单后生效。",
-        ge=0,
-        json_schema_extra={"x-order": 70, "x-unit": "次", "x-control": "stepper"},
-    )
-    chase_interval: float = Field(
-        default=5.0,
-        title="追单间隔",
-        description="两次追价的最小间隔。开启追单后生效。",
-        ge=0.0,
-        json_schema_extra={"x-order": 80, "x-unit": "秒", "x-control": "stepper"},
-    )
+    chase_enabled: Annotated[
+        bool,
+        Meta(
+            title="追单",
+            description="开启后按条件撤单追价；关闭时保留下面的追单配置。",
+            extra_json_schema={"x-order": 50},
+        ),
+    ] = field(default=False)
+    chase_ticks: Annotated[
+        int,
+        Meta(
+            ge=0,
+            title="偏离跳数",
+            description="触发追价的价格偏离，不是每次加价幅度。开启追单后生效。",
+            extra_json_schema={"x-order": 60, "x-unit": "跳", "x-control": "stepper"},
+        ),
+    ] = field(default=1)
+    max_chase_count: Annotated[
+        int,
+        Meta(
+            ge=0,
+            title="最大追单次数",
+            description="单笔委托最多追价次数。开启追单后生效。",
+            extra_json_schema={"x-order": 70, "x-unit": "次", "x-control": "stepper"},
+        ),
+    ] = field(default=5)
+    chase_interval: Annotated[
+        float,
+        Meta(
+            ge=0.0,
+            title="追单间隔",
+            description="两次追价的最小间隔。开启追单后生效。",
+            extra_json_schema={"x-order": 80, "x-unit": "秒", "x-control": "stepper"},
+        ),
+    ] = field(default=5.0)
 
-    @field_validator("chase_ticks")
-    @classmethod
-    def validate_chase_ticks(cls, v: int, info: Any) -> int:
-        """
-        校验追单位数的兼容性边界。
-
-        Parameters
-        ----------
-        v : int
-            当前配置的追单位数。
-        info : Any
-            Pydantic 提供的同模型字段上下文。
-
-        Returns
-        -------
-        int
-            原样返回的追单位数。
-
-        Notes
-        -----
-        ``chase_ticks > 20`` 在经验上已经偏激进，但历史配置里可能存在这类值。
-        这里保留校验钩子而不升级为硬错误，避免仅因参数回放就破坏兼容性。
-        """
-        return v
-
-    @model_validator(mode="after")
     def validate_chase_consistency(self) -> "ChaseParamsMixin":
         """
         校验追单参数的组合约束。
@@ -191,3 +155,7 @@ class ChaseParamsMixin(BaseModel):
             f"max_count={self.max_chase_count}, "
             f"interval={self.chase_interval})"
         )
+
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        self.validate_chase_consistency()

@@ -4,9 +4,9 @@ from datetime import datetime
 
 import pytest
 from fastapi.testclient import TestClient
-from pydantic import ValidationError
 
 from axile.channels.algorithm_scopes import futures_algorithm_scope
+from axile.common.serialization import from_payload, parse_input, to_payload
 from axile.domain.execution import ExecutionKind
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.server.db.models.account import Account, AccountUpdate
@@ -37,8 +37,8 @@ def profile(slices=3):
     ],
 )
 def test_channel_normalizes_scope(channel, raw, expected):
-    account = Account.model_validate(
-        build_account().model_dump() | {"trade_channel": channel, "product_algorithms": {raw: profile()}}
+    account = parse_input(
+        Account, to_payload(build_account()) | {"trade_channel": channel, "product_algorithms": {raw: profile()}}
     )
     assert list(account.product_algorithms) == [expected]
 
@@ -56,39 +56,40 @@ def test_channel_normalizes_scope(channel, raw, expected):
     ],
 )
 def test_channel_rejects_invalid_scope(channel, key):
-    with pytest.raises(ValidationError):
-        Account.model_validate(
-            build_account().model_dump() | {"trade_channel": channel, "product_algorithms": {key: profile()}}
+    with pytest.raises(ValueError):
+        parse_input(
+            Account, to_payload(build_account()) | {"trade_channel": channel, "product_algorithms": {key: profile()}}
         )
 
 
 def test_alias_duplicates_channel_changes_and_nested_schedules_rejected():
     account = build_account()
-    with pytest.raises(ValidationError, match="重复"):
-        Account.model_validate(account.model_dump() | {"product_algorithms": {"ag": profile(), "SHFE.ag": profile()}})
-    configured = Account.model_validate(account.model_dump() | {"product_algorithms": {"ag": profile()}})
-    with pytest.raises(ValidationError, match="格式"):
-        Account.model_validate(configured.model_dump() | {"trade_channel": "gm"})
+    with pytest.raises(ValueError, match="重复"):
+        parse_input(Account, to_payload(account) | {"product_algorithms": {"ag": profile(), "SHFE.ag": profile()}})
+    configured = parse_input(Account, to_payload(account) | {"product_algorithms": {"ag": profile()}})
+    with pytest.raises(ValueError, match="格式"):
+        parse_input(Account, to_payload(configured) | {"trade_channel": "gm"})
     overlapping = profile()
     overlapping["algorithm_schedule"] *= 2
-    with pytest.raises(ValidationError, match="重叠"):
-        AccountUpdate(product_algorithms={"ag": overlapping})
-    with pytest.raises(ValidationError):
-        AccountUpdate(product_algorithms={"ag": profile(slices=0)})
-    assert AccountUpdate(remark="only").model_dump(exclude_unset=True) == {"remark": "only"}
+    with pytest.raises(ValueError, match="重叠"):
+        parse_input(AccountUpdate, {"product_algorithms": {"ag": overlapping}})
+    with pytest.raises(ValueError):
+        parse_input(AccountUpdate, {"product_algorithms": {"ag": profile(slices=0)}})
+    assert to_payload(AccountUpdate(remark="only"), exclude_unset=True) == {"remark": "only"}
 
 
 @pytest.mark.parametrize("time,slices", [("01:00", 8), ("02:30", 3), ("09:30", 3), ("21:00", 8)])
 def test_independent_product_schedule_freezes_and_survives_input_roundtrip(monkeypatch, time, slices):
-    account = Account.model_validate(
-        build_account().model_dump()
+    account = parse_input(
+        Account,
+        to_payload(build_account())
         | {
             "algorithm": {"method": "TWAP", "params": {"slices": 5}},
             "algorithm_schedule": [
                 {"start": "09:00", "end": "10:00", "algorithm": {"method": "TWAP", "params": {"slices": 6}}}
             ],
             "product_algorithms": {"ag": profile()},
-        }
+        },
     )
     calls = []
 
@@ -148,11 +149,10 @@ def test_security_exchange_is_part_of_the_match_without_ownership_validation():
 
 
 def test_standard_input_rejects_malformed_product_map_and_accepts_default_params():
-    account = Account.model_validate(
-        build_account().model_dump()
-        | {
-            "product_algorithms": {"ag": {"algorithm": {"method": "TWAP"}, "algorithm_schedule": []}},
-        }
+    account = parse_input(
+        Account,
+        to_payload(build_account())
+        | {"product_algorithms": {"ag": {"algorithm": {"method": "TWAP"}, "algorithm_schedule": []}}},
     )
     selected, _ = execution_algorithms.select_rebalance_algorithm(account)
     standard = _build_rebalance_standard_input(
@@ -160,7 +160,7 @@ def test_standard_input_rejects_malformed_product_map_and_accepts_default_params
     )
     assert standard.get_symbol_algorithm("ag2612") == {"method": "TWAP", "params": {}}
     for invalid in ([], None, {"ag": "TWAP"}, {"ag": {"params": {}}}):
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValueError):
             UnifiedStandardInput.from_dict(standard.to_dict() | {"product_algorithms": invalid})
 
 
@@ -259,7 +259,7 @@ def test_frozen_product_algorithms_survive_native_storage(native_database):
     from tests.unit.server._business_facts_test_support import freeze_input
     from tests.unit.server._native_read_views import read_view
 
-    account = Account.model_validate(build_account().model_dump() | {"product_algorithms": {"ag": profile()}})
+    account = from_payload(Account, to_payload(build_account()) | {"product_algorithms": {"ag": profile()}})
     selected, _ = execution_algorithms.select_rebalance_algorithm(account)
     standard = _build_rebalance_standard_input(
         account=selected,

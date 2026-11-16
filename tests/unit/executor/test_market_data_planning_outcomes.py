@@ -1,9 +1,11 @@
 """行情不可用时两阶段规划结果及审计归因。"""
 
+import json
 from typing import Any
 
 import pytest
 
+from axile.common.serialization import from_payload, to_payload
 from axile.domain.execution import ExecutionReasonFamily
 from axile.executor.execution_engine import ExecutionEngine
 from axile.executor.models.execution_result import AlgorithmResult, ExecutionOutcome, ExecutionStatus
@@ -72,7 +74,7 @@ def test_phase_merge_serialization_and_audit_use_one_reason_pair(code, family):
     merged = engine._merge_algorithm_result(previous, current)
     expected = (code, family) if code or family else (previous.reason_code, previous.reason_family)
     assert (merged.reason_code, merged.reason_family) == expected
-    restored = AlgorithmResult.model_validate_json(merged.model_dump_json())
+    restored = from_payload(AlgorithmResult, json.loads(json.dumps(to_payload(merged, mode="json"))))
     assert (restored.reason_code, restored.reason_family) == expected
     for memory in ({}, current.memory, {"start_volume": 999, "error_count": 0}):
         restored.memory = memory

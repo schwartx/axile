@@ -1,9 +1,11 @@
 """录制意愿读取当前数据库版本，不继承在途交易的旧设置。"""
 
+from dataclasses import fields
 from types import SimpleNamespace
 
 import pytest
 
+from axile.common.serialization import copy_data, from_payload, to_payload
 from axile.server import connection_state, native_store
 from axile.server.core import db
 from axile.server.db.models.account import Account, AccountCreate, AccountSnapshot
@@ -29,11 +31,11 @@ def saved_account(native_database, monkeypatch):
         native_database,
         "account_create",
         {
-            "account": account.model_dump(mode="json", include=set(AccountCreate.model_fields)),
+            "account": to_payload(account, mode="json", include={item.name for item in fields(AccountCreate)}),
             "now": "2026-10-31T01:00:00Z",
         },
     )["account"]
-    return native_database, AccountSnapshot.model_validate(value)
+    return native_database, from_payload(AccountSnapshot, value)
 
 
 def handle():
@@ -47,13 +49,14 @@ def handle():
 
 
 def request(account):
-    return WorkerBackendRequest("old-execution", "prepare", account.model_dump(mode="json"), "E", {})
+    return WorkerBackendRequest("old-execution", "prepare", to_payload(account, mode="json"), "E", {})
 
 
 @pytest.mark.parametrize("entry", ["cold", "replacement", "new_manager"])
 def test_saved_off_wins_over_old_on_snapshot_for_every_new_worker(saved_account, monkeypatch, entry):
     path, frozen = saved_account
-    latest = AccountSnapshot.model_validate(
+    latest = from_payload(
+        AccountSnapshot,
         native_store_call(
             path,
             "account_update",
@@ -62,7 +65,7 @@ def test_saved_off_wins_over_old_on_snapshot_for_every_new_worker(saved_account,
                 "patch": {"replay_recording_enabled": False, "name": "updated after capture"},
                 "now": "2026-10-31T01:00:01Z",
             },
-        )["account"]
+        )["account"],
     )
     assert latest.replay_config_version > frozen.replay_config_version
     backend = manager.WorkerBackendManager()
@@ -108,7 +111,7 @@ def test_saved_off_wins_over_old_on_snapshot_for_every_new_worker(saved_account,
 
 def test_saved_on_also_supersedes_an_old_off_snapshot(saved_account):
     _, latest = saved_account
-    frozen = latest.model_copy(update={"replay_recording_enabled": False, "replay_config_version": 0})
+    frozen = copy_data(latest, update={"replay_recording_enabled": False, "replay_config_version": 0})
     selected = replay.current_replay_config(frozen)
     assert selected is not None and selected.enabled is True
     assert selected.config_version == latest.replay_config_version

@@ -1,5 +1,7 @@
 """原子结果文件、批次占用和集中脱敏。"""
 
+from axile.common.serialization import to_payload
+
 import hashlib
 import json
 import os
@@ -23,8 +25,7 @@ class Redactor:
         )
 
     def __call__(self, value):
-        if hasattr(value, "model_dump"):
-            value = value.model_dump(mode="json")
+        value = to_payload(value, mode="json")
         if isinstance(value, dict):
             return {str(k): "[REDACTED]" if SENSITIVE.search(str(k)) else self(v) for k, v in value.items()}
         if isinstance(value, (list, tuple)):

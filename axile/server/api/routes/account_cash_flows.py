@@ -1,15 +1,18 @@
 """账户出入金流水：手工录入、修订、核对与渠道同步。"""
 
+from dataclasses import dataclass, field
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Path, Query
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from msgspec import Meta
 
 from axile.channels import get_channel
+from axile.common.serialization import to_payload
 from axile.executor.algorithms.utils.clock import clock_now_iso
 from axile.executor.models.cash_flow import CashFlowInput
 from axile.server._native import _core
 from axile.server.account_cash_flows import sync_cash_flows
+from axile.server.api.inputs import json_body
 from axile.server.api.routes.account_support import _get_account_or_404, ensure_account_current
 from axile.server.execution.registry import clear_account_asset_refresh, try_register_account_asset_refresh
 from axile.server.execution.resident_connection import AccountConnectionUnavailable
@@ -20,19 +23,22 @@ AccountId = Annotated[int, Path(gt=0, le=2**63 - 1)]
 FlowId = Annotated[int, Path(gt=0, le=2**63 - 1)]
 
 
+@dataclass(kw_only=True)
 class CashFlowEdit(CashFlowInput):
     """修订必须绑定用户读取的版本。"""
 
-    revision: int = Field(gt=0, le=2**63 - 1)
+    revision: Annotated[int, Meta(gt=0, le=2**63 - 1)]
 
 
-class CashFlowResolution(BaseModel):
+@dataclass(kw_only=True)
+class CashFlowResolution:
     """核对或撤销绑定已有流水，关联手工记录需提供双方版本。"""
 
-    model_config = ConfigDict(extra="forbid")
-    revision: int = Field(gt=0, le=2**63 - 1)
-    manual_id: int | None = Field(default=None, gt=0, le=2**63 - 1)
-    manual_revision: int | None = Field(default=None, gt=0, le=2**63 - 1)
+    revision: Annotated[int, Meta(gt=0, le=2**63 - 1)]
+    manual_id: Annotated[int, Meta(gt=0, le=2**63 - 1)] | None = field(default=None)
+    manual_revision: Annotated[int, Meta(gt=0, le=2**63 - 1)] | None = field(default=None)
+
+    __forbid_unknown__ = True
 
 
 async def operation(account_id: int, op: str, **body):
@@ -65,23 +71,30 @@ async def list_cash_flows(
 
 
 @router.post("/{account_id}/cash-flows", status_code=201, response_model=None)
-async def create_cash_flow(account_id: AccountId, body: CashFlowInput):
+async def create_cash_flow(account_id: AccountId, body: Annotated[CashFlowInput, Depends(json_body(CashFlowInput))]):
     """补录已发生的账户资金变动，触发历史分析重算。"""
-    return await operation(account_id, "create", **body.model_dump(mode="json"))
+    return await operation(account_id, "create", **to_payload(body, mode="json"))
 
 
 @router.patch("/{account_id}/cash-flows/{flow_id}", response_model=None)
-async def edit_cash_flow(account_id: AccountId, flow_id: FlowId, body: CashFlowEdit):
+async def edit_cash_flow(
+    account_id: AccountId, flow_id: FlowId, body: Annotated[CashFlowEdit, Depends(json_body(CashFlowEdit))]
+):
     """修订手工流水并保留旧值。"""
-    return await operation(account_id, "edit", id=flow_id, **body.model_dump(mode="json"))
+    return await operation(account_id, "edit", id=flow_id, **to_payload(body, mode="json"))
 
 
 @router.post("/{account_id}/cash-flows/{flow_id}/{action}", response_model=None)
-async def resolve_cash_flow(account_id: AccountId, flow_id: FlowId, action: str, body: CashFlowResolution):
+async def resolve_cash_flow(
+    account_id: AccountId,
+    flow_id: FlowId,
+    action: str,
+    body: Annotated[CashFlowResolution, Depends(json_body(CashFlowResolution))],
+):
     """撤销、确认独立流水，或将待核对渠道流水关联至手工记录。"""
     if action not in {"void", "confirm", "link"}:
         raise HTTPException(404, detail="操作不存在")
-    return await operation(account_id, action, id=flow_id, **body.model_dump(mode="json"))
+    return await operation(account_id, action, id=flow_id, **to_payload(body, mode="json"))
 
 
 @router.post("/{account_id}/cash-flows/sync", response_model=None)

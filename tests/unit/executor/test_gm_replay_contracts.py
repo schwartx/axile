@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from axile.channels import get_channel
+from axile.common.serialization import to_payload
 from axile.executor.gm import replay
 from axile.server.execution_replay.contracts import freeze_data
 
@@ -47,5 +48,5 @@ def test_actual_gm_capture_matches_frontend_projection_truth(case):
     topic, data = received[0]
     assert topic == case["topic"]
     assert_subset(data, case["data"])
-    context = get_channel("gm").descriptor.replay.model_dump(mode="json")
+    context = to_payload(get_channel("gm").descriptor.replay, mode="json")
     assert freeze_data(topic, data, context) == data

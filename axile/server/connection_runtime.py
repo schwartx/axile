@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from threading import RLock
 from typing import Any
 
+from axile.common.serialization import from_payload
 from axile.executor.algorithms.utils.clock import clock_monotonic, clock_now_iso
 from axile.executor.connection_state import ConnectionObservation, ConnectionStatus
 from axile.server.db.models.account_connection import AccountSessionStatus
@@ -117,9 +118,9 @@ def end_session(binding, message: str, *, failed: bool = False) -> bool:
                 ConnectionTable,
             )
 
-            tracker = ConnectionProgressTracker("", run=ConnectionRun.model_validate(session.progress))
+            tracker = ConnectionProgressTracker("", run=from_payload(ConnectionRun, session.progress))
             tracker.tables = {
-                key: ConnectionTable.model_validate(value) for key, value in session.progress.get("tables", {}).items()
+                key: from_payload(ConnectionTable, value) for key, value in session.progress.get("tables", {}).items()
             }
             tracker.finish(
                 "failed" if failed else "cancelled",

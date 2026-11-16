@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException
 
+from axile.common.serialization import to_payload
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.server import account_assets as assets_service
 from axile.server.api.routes import account_assets
@@ -38,10 +39,10 @@ def test_refresh_account_assets_persists_manual_snapshot(monkeypatch, route_depe
     assert response["account_id"] == 41
     assert response["source"] == "manual"
     assert response["created_at"] == "clock-time"
-    assert response["assets"] == returned.model_dump(mode="json")
+    assert response["assets"] == to_payload(returned, mode="json")
     route_dependencies.read.assert_awaited_once_with(41)
     query.assert_awaited_once_with(route_dependencies.account)
-    route_dependencies.save.assert_awaited_once_with(41, returned.model_dump(mode="json"))
+    route_dependencies.save.assert_awaited_once_with(41, to_payload(returned, mode="json"))
     assert route_dependencies.clear == [41]
 
 

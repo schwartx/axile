@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from math import isfinite
 from typing import Generic, TypeVar, cast
 
+from axile.common.serialization import copy_data
 from axile.executor.algorithms.utils.clock import Clock, clock_monotonic, get_default_clock
 from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
 
@@ -256,7 +257,7 @@ class ExecutionQueryRuntime:
                 return
 
             pending_orders = cast("list[UnifiedOrder]", cached_snapshot)
-            updated_order = order.model_copy(deep=True)
+            updated_order = copy_data(order, deep=True)
             existing_index = self._find_pending_order_index(pending_orders, updated_order)
 
             if updated_order.is_active():
@@ -310,7 +311,7 @@ class ExecutionQueryRuntime:
             最新成交记录。
         """
         with self._lock:
-            trade_copy = trade.model_copy(deep=True)
+            trade_copy = copy_data(trade, deep=True)
             self._upsert_trade_in_snapshot_locked(trade_copy)
 
             symbol, order_id = self._resolve_trade_scope(trade_copy)

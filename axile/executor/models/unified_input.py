@@ -6,10 +6,12 @@
 """
 
 from collections.abc import Mapping
-from typing import cast, override
+from dataclasses import dataclass, field
+from typing import Annotated, cast, override
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from msgspec import Meta
 
+from axile.common.serialization import parse_input, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.futures_close_policy import FuturesClosePolicy
 from axile.executor.models.portfolio_target import PortfolioTarget, TargetMode
@@ -70,7 +72,8 @@ Notes
 # ==================== 主输入模型 ====================
 
 
-class UnifiedStandardInput(BaseModel):
+@dataclass(kw_only=True)
+class UnifiedStandardInput:
     """
     统一标准输入数据模型.
 
@@ -90,49 +93,52 @@ class UnifiedStandardInput(BaseModel):
         各品种交易规则。
     """
 
-    model_config = ConfigDict(extra="allow", validate_assignment=True)  # 允许额外的字段，并校验运行期赋值
-
     # === 核心必填字段 ===
-    channel_type: TradeChannel = Field(..., description="交易渠道类型")
-    account_config: BaseAccountConfig = Field(..., description="账户配置")
-    curr_target: dict[str, float] = Field(..., description="当前带符号目标持仓，口径由 target_mode 决定")
-    target_mode: TargetMode = Field(default="weight", description="目标口径：权重或渠道原生数量")
+    channel_type: Annotated[TradeChannel, Meta(description="交易渠道类型")]
+    account_config: Annotated[BaseAccountConfig, Meta(description="账户配置")]
+    curr_target: Annotated[dict[str, float], Meta(description="当前带符号目标持仓，口径由 target_mode 决定")]
+    target_mode: Annotated[TargetMode, Meta(description="目标口径：权重或渠道原生数量")] = field(default="weight")
 
     # === 可选字段 ===
-    last_target: dict[str, float] = Field(default={}, description="上次目标持仓权重")
+    last_target: Annotated[dict[str, float], Meta(description="上次目标持仓权重")] = field(default_factory=lambda: {})
 
     # 算法配置
-    algorithm: TradeAlgorithm = Field(
-        default_factory=_get_default_algorithm,
-        description="交易算法配置",
+    algorithm: Annotated[TradeAlgorithm, Meta(description="交易算法配置")] = field(
+        default_factory=_get_default_algorithm
     )
-    symbol_algorithms: SymbolAlgorithms = Field(
-        default={},
-        description="按品种覆盖的交易算法配置",
+    symbol_algorithms: Annotated[SymbolAlgorithms, Meta(description="按品种覆盖的交易算法配置")] = field(
+        default_factory=lambda: {}
     )
-    product_algorithms: SymbolAlgorithms = Field(default_factory=dict, description="已按开始时间冻结的渠道品种算法")
+    product_algorithms: Annotated[SymbolAlgorithms, Meta(description="已按开始时间冻结的渠道品种算法")] = field(
+        default_factory=dict
+    )
 
     # 交易规则
-    trade_rules: dict[str, TradeRule] = Field(default={}, description="各品种的交易规则")
-    futures_close_policy: FuturesClosePolicy = Field(default_factory=FuturesClosePolicy)
+    trade_rules: Annotated[dict[str, TradeRule], Meta(description="各品种的交易规则")] = field(
+        default_factory=lambda: {}
+    )
+    futures_close_policy: FuturesClosePolicy = field(default_factory=FuturesClosePolicy)
 
     # 风控配置
-    forbidden_symbols: list[str] = Field(default=[], description="禁止交易的品种列表")
-    risk_symbols: list[str] = Field(default=[], description="风险品种列表")
+    forbidden_symbols: Annotated[list[str], Meta(description="禁止交易的品种列表")] = field(default_factory=lambda: [])
+    risk_symbols: Annotated[list[str], Meta(description="风险品种列表")] = field(default_factory=lambda: [])
 
     # 通知配置
-    feishu_key: str | None = Field(None, description="飞书通知key")
-    execution_notification_code: str | None = Field(default=None, description="执行通知函数源码；空值不通知")
-    feishu_account: dict[str, object] = Field(default={}, description="通知可使用的脱敏账户元数据")
-
-    # 执行配置
-    execution_timeout: int = Field(
-        default=DEFAULT_EXECUTION_TIMEOUT_SECONDS,
-        description="执行层总超时时间（秒）；<=0 表示不启用。与算法级 max_wait_seconds 不是一个层次",
+    feishu_key: Annotated[str | None, Meta(description="飞书通知key")] = field(default=None)
+    execution_notification_code: Annotated[str | None, Meta(description="执行通知函数源码；空值不通知")] = field(
+        default=None
+    )
+    feishu_account: Annotated[dict[str, object], Meta(description="通知可使用的脱敏账户元数据")] = field(
+        default_factory=lambda: {}
     )
 
+    # 执行配置
+    execution_timeout: Annotated[
+        int, Meta(description="执行层总超时时间（秒）；<=0 表示不启用。与算法级 max_wait_seconds 不是一个层次")
+    ] = field(default=DEFAULT_EXECUTION_TIMEOUT_SECONDS)
+
     # 渠道特定参数
-    extra: dict[str, object] = Field(default={}, description="渠道特定的额外参数")
+    extra: Annotated[dict[str, object], Meta(description="渠道特定的额外参数")] = field(default_factory=lambda: {})
 
     @override
     def __str__(self) -> str:
@@ -141,42 +147,6 @@ class UnifiedStandardInput(BaseModel):
         algorithm_method = _algorithm_dict(self.algorithm).get("method", "Unknown")
         return f"UnifiedStandardInput(channel={channel}, symbols={len(self.curr_target)}, algorithm={algorithm_method})"
 
-    @override
-    def model_copy(
-        self,
-        *,
-        update: Mapping[str, object] | None = None,
-        deep: bool = False,
-    ) -> "UnifiedStandardInput":
-        """
-        复制当前输入对象，并对更新后的结果重新执行完整校验.
-
-        Parameters
-        ----------
-        update : Mapping[str, object] | None, default=None
-            需要覆盖到副本上的字段。
-        deep : bool, default=False
-            是否对嵌套对象执行深拷贝。
-
-        Returns
-        -------
-        UnifiedStandardInput
-            经过完整校验后的副本对象。
-
-        Raises
-        ------
-        ValidationError
-            当更新后的字段不满足模型约束时抛出。
-        ValueError
-            当字段组合不一致时抛出。
-        """
-        copied = super().model_copy(update=update, deep=deep)
-        payload = dict(copied.__dict__)
-        if copied.model_extra:
-            payload.update(copied.model_extra)
-        return type(self).model_validate(payload)
-
-    @model_validator(mode="before")
     @classmethod
     def validate_channel_account_config(cls, value: object) -> object:
         """
@@ -211,7 +181,6 @@ class UnifiedStandardInput(BaseModel):
 
     # ==================== 验证器 ====================
 
-    @model_validator(mode="after")
     def validate_consistency(self) -> "UnifiedStandardInput":
         """
         校验输入对象的一致性并补齐派生字段.
@@ -222,13 +191,15 @@ class UnifiedStandardInput(BaseModel):
             校验完成后的当前输入对象。
         """
         self.futures_close_policy.validate_channel(self.channel_type)
+        if not isinstance(self.product_algorithms, dict):
+            raise ValueError("品种算法必须是对象")
         if self.product_algorithms:
             from axile.channels import get_channel
             from axile.channels.algorithm_scopes import normalize_algorithm_scopes
 
             normalized_products = normalize_algorithm_scopes(get_channel(self.channel_type), self.product_algorithms)
             for config in normalized_products.values():
-                if not config.get("method") or "params" not in config:
+                if not isinstance(config, dict) or not config.get("method") or "params" not in config:
                     raise ValueError("品种算法必须提供完整的 method 和 params")
             object.__setattr__(self, "product_algorithms", normalized_products)
         channel_value = str(self.channel_type)
@@ -313,7 +284,7 @@ class UnifiedStandardInput(BaseModel):
         execution_timeout_obj = data.get("execution_timeout", DEFAULT_EXECUTION_TIMEOUT_SECONDS)
         extra = _collect_unified_input_extra(data)
 
-        return cls(
+        result = cls(
             channel_type=channel,
             account_config=account_config,
             curr_target=(
@@ -327,7 +298,7 @@ class UnifiedStandardInput(BaseModel):
             symbol_algorithms=symbol_algorithms,
             product_algorithms=cast("SymbolAlgorithms", data.get("product_algorithms", {})),
             trade_rules=trade_rules,
-            futures_close_policy=FuturesClosePolicy.model_validate(data.get("futures_close_policy") or {}),
+            futures_close_policy=parse_input(FuturesClosePolicy, data.get("futures_close_policy") or {}),
             forbidden_symbols=_as_str_list(data.get("forbidden_symbols", [])),
             risk_symbols=_as_str_list(data.get("risk_symbols", [])),
             feishu_key=feishu_key_obj if isinstance(feishu_key_obj, str) else None,
@@ -336,6 +307,8 @@ class UnifiedStandardInput(BaseModel):
             execution_timeout=as_timeout_int(execution_timeout_obj, DEFAULT_EXECUTION_TIMEOUT_SECONDS),
             extra=extra,
         )
+        result.validate_consistency()
+        return result
 
     # ==================== 便捷方法 ====================
 
@@ -358,7 +331,7 @@ class UnifiedStandardInput(BaseModel):
             "symbol_algorithms": self.symbol_algorithms,
             "product_algorithms": self.product_algorithms,
             "trade_rules": self.trade_rules,
-            "futures_close_policy": self.futures_close_policy.model_dump(),
+            "futures_close_policy": to_payload(self.futures_close_policy),
             "forbidden_symbols": self.forbidden_symbols,
             "risk_symbols": self.risk_symbols,
             "execution_timeout": self.execution_timeout,
@@ -419,6 +392,8 @@ class UnifiedStandardInput(BaseModel):
                 fallback_method=str(self.algorithm.get("method", "SINGLE-MAKER")),
                 fallback_algorithm=self.algorithm,
             )
+        if not isinstance(self.product_algorithms, dict):
+            raise ValueError("品种算法必须是对象")
         if self.product_algorithms:
             from axile.channels import get_channel
             from axile.channels.algorithm_scopes import normalize_algorithm_scopes
@@ -475,3 +450,13 @@ class UnifiedStandardInput(BaseModel):
             若解析成功则返回带模型参数的配置，否则返回原配置。
         """
         return _parse_algorithm_params_with_metadata(algorithm, algorithm_name)
+
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        self.validate_consistency()
+
+    @classmethod
+    def prepare(cls, value):
+        """在输入入口归一化历史字段和渠道标识。"""
+        value = cls.validate_channel_account_config(value)
+        return value

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from types import SimpleNamespace
+from typing import Annotated
 
 import pandas as pd
 import pytest
-from pydantic import Field, ValidationError
+from msgspec import Meta
 
 from axile.channels import (
     AlgorithmReference,
@@ -61,7 +63,7 @@ def test_gm_config_requires_explicit_connection_mode() -> None:
         "curr_target": {"SHSE.600000": 1.0},
     }
 
-    with pytest.raises(ValidationError, match="connection_mode"):
+    with pytest.raises(ValueError, match="connection_mode"):
         UnifiedStandardInput.from_dict(payload)
 
 
@@ -91,8 +93,9 @@ def test_gm_config_serializes_only_active_connection_target() -> None:
 
 
 def test_external_plugin_controls_unknown_channel_config_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    @dataclass(kw_only=True)
     class ExternalConfig(BaseAccountConfig):
-        account_ref: str = Field(min_length=1)
+        account_ref: Annotated[str, Meta(min_length=1)]
 
     class _NoEntryPoints(list[object]):
         def select(self, **_kwargs: object) -> _NoEntryPoints:

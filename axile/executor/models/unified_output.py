@@ -4,10 +4,10 @@
 封装执行器的账户级输出结果，并通过 ``symbol_results`` 聚合各品种执行细节。
 """
 
-from datetime import datetime
-from typing import Any, TypedDict, override
+from dataclasses import dataclass, field
+from typing import Annotated, Any, TypedDict, override
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from msgspec import Meta
 
 from axile.common.trade_channel import TradeChannel
 from axile.executor.models.execution_result import (
@@ -65,9 +65,7 @@ def _derive_output_reason_code(
     status: ExecutionStatus,
 ) -> str | None:
     """提升成功休市跳过或整单受阻时一致的品种原因码。"""
-    if is_success_status(status) and any(
-        normal_session_skip(result.model_dump()) for result in symbol_results.values()
-    ):
+    if is_success_status(status) and any(normal_session_skip(result) for result in symbol_results.values()):
         return COMMON_SESSION_CLOSED
     if status != ExecutionStatus.BLOCKED:
         return None
@@ -83,7 +81,8 @@ def _derive_output_reason_code(
     return code if isinstance(code, str) and code else None
 
 
-class UnifiedStandardOutput(BaseModel):
+@dataclass(kw_only=True)
+class UnifiedStandardOutput:
     """
     统一标准输出数据模型.
 
@@ -103,30 +102,29 @@ class UnifiedStandardOutput(BaseModel):
         本次执行所属的交易渠道。
     """
 
-    model_config = ConfigDict(
-        json_encoders={datetime: lambda v: v.isoformat() if v else ""},
-    )
-
     # === 核心字段（与现有standard_output完全一致） ===
-    account_assets: UnifiedAccountAssets = Field(..., description="账户资产信息")
-    memory: dict[str, Any] = Field(default_factory=dict, description="执行过程中的附加信息")
-    inputs: UnifiedStandardInput | None = Field(None, description="原始输入参数")
-    symbol_results: dict[str, AlgorithmResult] = Field(default_factory=dict, description="各品种执行结果")
-    status: ExecutionStatus = Field(..., description="本次执行的整体状态")
-    error: str | None = Field(default=None, description="本次执行的整体失败原因")
-    reason_code: str | None = Field(default=None, description="整体失败或受阻的稳定原因码；原因不同时为空")
-    outcome: ExecutionOutcome | None = Field(default=None, description="执行展示结论")
-    outcome_reason: str | None = Field(default=None, description="展示结论的具体原因")
+    account_assets: Annotated[UnifiedAccountAssets, Meta(description="账户资产信息")]
+    memory: Annotated[dict[str, Any], Meta(description="执行过程中的附加信息")] = field(default_factory=dict)
+    inputs: Annotated[UnifiedStandardInput | None, Meta(description="原始输入参数")] = field(default=None)
+    symbol_results: Annotated[dict[str, AlgorithmResult], Meta(description="各品种执行结果")] = field(
+        default_factory=dict
+    )
+    status: Annotated[ExecutionStatus, Meta(description="本次执行的整体状态")]
+    error: Annotated[str | None, Meta(description="本次执行的整体失败原因")] = field(default=None)
+    reason_code: Annotated[str | None, Meta(description="整体失败或受阻的稳定原因码；原因不同时为空")] = field(
+        default=None
+    )
+    outcome: Annotated[ExecutionOutcome | None, Meta(description="执行展示结论")] = field(default=None)
+    outcome_reason: Annotated[str | None, Meta(description="展示结论的具体原因")] = field(default=None)
 
     # === 元数据字段 ===
-    execution_time: float = Field(default=0.0, ge=0.0, description="执行耗时（秒）")
-    channel_type: TradeChannel = Field(..., description="交易渠道类型")
-    success: bool = Field(default=True, description="执行是否成功")
+    execution_time: Annotated[float, Meta(ge=0.0, description="执行耗时（秒）")] = field(default=0.0)
+    channel_type: Annotated[TradeChannel, Meta(description="交易渠道类型")]
+    success: Annotated[bool, Meta(description="执行是否成功")] = field(default=True)
 
     # === 渠道特有数据 ===
-    extra: dict[str, Any] = Field(
-        default_factory=dict,
-        description="渠道特有数据，包含原始输出和其他特定信息",
+    extra: Annotated[dict[str, Any], Meta(description="渠道特有数据，包含原始输出和其他特定信息")] = field(
+        default_factory=dict
     )
 
     @override
@@ -144,8 +142,7 @@ class UnifiedStandardOutput(BaseModel):
 
     # ==================== 验证器 ====================
 
-    @model_validator(mode="after")
-    def validate_consistency(self) -> "UnifiedStandardOutput":
+    def __post_init__(self) -> None:
         """
         校验并补齐输出对象的派生字段.
 
@@ -159,10 +156,10 @@ class UnifiedStandardOutput(BaseModel):
             channel_value = str(self.channel_type)
             self.extra["channel_type"] = channel_value
 
-        if ("error" not in self.model_fields_set or self.error is None) and self.error is None:
+        if self.error is None:
             self.error = _derive_output_error(self.symbol_results, self.status)
 
-        if "reason_code" not in self.model_fields_set or self.reason_code is None:
+        if self.reason_code is None:
             self.reason_code = _derive_output_reason_code(self.symbol_results, self.status)
 
         if self.outcome is None:
@@ -177,11 +174,9 @@ class UnifiedStandardOutput(BaseModel):
                 None,
             )
         self.success = is_success_status(self.status)
-        skipped = [result for result in self.symbol_results.values() if normal_session_skip(result.model_dump())]
+        skipped = [result for result in self.symbol_results.values() if normal_session_skip(result)]
         if self.success and skipped:
             self.outcome_reason = f"{len(skipped)} 个品种休市，已跳过"
-
-        return self
 
     @property
     def orders(self) -> list[UnifiedOrder]:

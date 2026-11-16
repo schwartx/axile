@@ -12,6 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from axile.common.serialization import copy_data, from_payload, to_payload
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.account_control.guard import resolve_control_window
 from axile.executor.account_control.models import (
@@ -45,7 +46,7 @@ def test_native_session_classification_preserves_raw_audit_fields(native_databas
     (session,) = native_store_call(native_database, "control_monitor_inputs", request)["sessions"]
     assert session["context_kind"] == session["source"] == "unknown"
     assert session["effective_context_kind"] == "account_operation"
-    assert "effective_context_kind" not in AccountControlSession.model_validate(session).model_dump()
+    assert "effective_context_kind" not in to_payload(from_payload(AccountControlSession, session))
     assert tuple(runtime_rows(native_database, "SELECT context_kind,source FROM account_control_session")[0]) == (
         "unknown",
         "unknown",
@@ -84,7 +85,7 @@ def test_session_context_retains_gaps_in_the_sessions_timezone(native_database, 
     result = native_store_call(
         native_database, "control_monitor_inputs", {"accounts": [{"account_id": 1, "control_date": day}]}
     )
-    sessions = {row["instance_id"]: AccountControlSession.model_validate(row) for row in result["sessions"]}
+    sessions = {row["instance_id"]: from_payload(AccountControlSession, row) for row in result["sessions"]}
     assert "gap" in sessions
     assert monitor_module._affected(sessions["gap"], day, clock_now(tz=UTC))
 
@@ -250,9 +251,9 @@ def test_handoff_rebinding_and_late_results_never_double_count(monkeypatch):
             first = await persistence.build_account_control_guard(account, "same-execution")
             from axile.executor.account_control.models import EffectiveAccountControlPolicy
 
-            data = first.policy.model_dump(mode="json")
+            data = to_payload(first.policy, mode="json")
             data["operations"]["place_order"]["account"]["min_interval_ms"] = None
-            first.policy = EffectiveAccountControlPolicy.model_validate(data)
+            first.policy = from_payload(EffectiveAccountControlPolicy, data)
             for _ in range(3):
                 first.begin_operation("place_order").record_outcome("submitted")
             # 采样有 200ms 预算，CI 的首个线程任务可能尚未调度完成。
@@ -414,7 +415,7 @@ def test_warning_from_unknown_source_is_retried_after_its_session_is_visible(mon
                 remaining=1,
             )
             frame = guard.monitor_snapshot()
-            frame.update(instance_id="delayed-source", quota_warnings=[warning.model_dump(mode="json")])
+            frame.update(instance_id="delayed-source", quota_warnings=[to_payload(warning, mode="json")])
 
             async def source(account_id):
                 monitor._sources[account_id] = [(frame, clock_now_ms(), False)]
@@ -619,11 +620,11 @@ def test_saved_policy_does_not_replace_active_policy(monkeypatch):
             await monitor.refresh()
             assert resolver.call_count == 1
             old = monitor.frames[1]["actual_fingerprint"]
-            changed = account.model_copy(deep=True)
+            changed = copy_data(account, deep=True)
             from axile.executor.account_control.models import AccountControlOverride
 
-            changed.account_control_override = AccountControlOverride.model_validate(
-                {"operations": {"place_order": {"account": {"per_day": {"limit": 700}}}}}
+            changed.account_control_override = from_payload(
+                AccountControlOverride, {"operations": {"place_order": {"account": {"per_day": {"limit": 700}}}}}
             )
             save_account(path, changed)
             await monitor.refresh()
@@ -711,8 +712,9 @@ def test_orphan_session_warns_without_blocking_and_known_quota_still_applies(mon
 
     async def scenario():
         async with database(monkeypatch) as (path, account, _):
-            account.account_control_override = AccountControlOverride.model_validate(
-                {"operations": {"place_order": {"account": {"per_day": {"limit": 1, "on_trigger": "block"}}}}}
+            account.account_control_override = from_payload(
+                AccountControlOverride,
+                {"operations": {"place_order": {"account": {"per_day": {"limit": 1, "on_trigger": "block"}}}}},
             )
             with closing(sqlite3.connect(path)) as connection, connection:
                 connection.execute("DELETE FROM account_control_counter_delta")
@@ -780,8 +782,9 @@ def test_commit_response_loss_and_duplicate_flush_do_not_restore_daily_quota(mon
         async with database(monkeypatch) as (path, account, _):
             with closing(sqlite3.connect(path)) as connection, connection:
                 connection.execute("DELETE FROM account_control_counter_delta")
-            account.account_control_override = AccountControlOverride.model_validate(
-                {"operations": {"place_order": {"account": {"per_day": {"limit": 1, "on_trigger": "block"}}}}}
+            account.account_control_override = from_payload(
+                AccountControlOverride,
+                {"operations": {"place_order": {"account": {"per_day": {"limit": 1, "on_trigger": "block"}}}}},
             )
             first = await persistence.build_account_control_guard(account, "committed")
             first.begin_operation("place_order").record_outcome("submitted")

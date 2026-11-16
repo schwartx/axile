@@ -5,6 +5,7 @@ from zipfile import ZipFile
 
 import pytest
 
+from axile.common.serialization import to_payload
 from axile.server._native import _core
 from axile.server.business_facts import artifacts as fact_artifacts
 from axile.server.evidence.archive import build_archive
@@ -23,7 +24,7 @@ from tests.unit.server.test_evidence_export import _event
 
 
 def _event_details(path, event):
-    native_store_call(path, "append_execution_event", _event(**event).model_dump(mode="json"))
+    native_store_call(path, "append_execution_event", to_payload(_event(**event), mode="json"))
     return json.loads(native_store_call(path, "list_execution_events_json", {"execution_id": event["execution_id"]}))[
         "data"
     ][0]["details"]

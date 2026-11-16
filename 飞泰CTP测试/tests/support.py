@@ -1,5 +1,7 @@
 """离线柜台替身：运行同一个场景算法，绝不导入或连接 CTP SDK。"""
 
+from axile.common.serialization import copy_data, from_payload, to_payload
+
 import copy
 import hashlib
 import io
@@ -114,7 +116,7 @@ class OfflineSession:
         return True
 
     def publish(self, order):
-        self.orders[order.order_id] = order.model_copy(deep=True)
+        self.orders[order.order_id] = copy_data(order, deep=True)
         for callback in self.order_callbacks:
             callback(order)
 
@@ -187,17 +189,17 @@ class OfflineSession:
         self.fill(order, filled)
         self.publish(order)
         if fault == "late":
-            late = order.model_copy(update={"status": OrderStatus.PENDING, "filled_volume": 0})
+            late = copy_data(order, update={'status': OrderStatus.PENDING, 'filled_volume': 0})
             for callback in self.order_callbacks:
                 callback(late)
-        return order.model_copy(update={"status": OrderStatus.SUBMITTED, "filled_volume": 0})
+        return copy_data(order, update={'status': OrderStatus.SUBMITTED, 'filled_volume': 0})
 
     def cancel_order(self, order_id):
         self.api.control(self.execution_id, "cancel_order")
         self.api.control(self.execution_id, "cancel_order_ctp")
         if self.api.config.offline_fault == "cancel_failed":
             raise RuntimeError("离线注入：撤单请求被拒绝")
-        order = self.orders[order_id].model_copy(update={"status": OrderStatus.CANCELED})
+        order = copy_data(self.orders[order_id], update={'status': OrderStatus.CANCELED})
         self.publish(order)
         return True
 
@@ -315,7 +317,7 @@ class OfflineApi(Api):
 
     def execute(self):
         execution_id = f"offline-{len(self.executions) + 1:04d}"
-        params = ScenarioParams.model_validate(self.account["algorithm"]["params"])
+        params = from_payload(ScenarioParams, self.account['algorithm']['params'])
         self.events[execution_id], self.controls[execution_id] = [], []
         session = OfflineSession(self, execution_id, params)
         self.sessions[execution_id] = session
@@ -362,7 +364,7 @@ class OfflineApi(Api):
                 {
                     "id": 1,
                     "artifact_type": "execution_summary",
-                    "content": {"results": [result.model_dump(mode="json")]},
+                    "content": {"results": [to_payload(result, mode='json')]},
                 }
             ]
             self.executions[execution_id]["status"] = "SUCCEEDED" if result.success else "FAILED"
@@ -420,7 +422,7 @@ class OfflineApi(Api):
         if route.endswith("/orders"):
             orders = [
                 {
-                    **o.model_dump(mode="json"),
+                    **to_payload(o, mode='json'),
                     "execution_id": s.execution_id,
                     "native_identity": {k: str(v) for k, v in o.extra.items()},
                     "uncertain": False,
@@ -431,7 +433,7 @@ class OfflineApi(Api):
             ]
             return {"data": orders, "complete": True, "count": len(orders), "instance_id": self.instance_id}
         if route.endswith("/assets/refresh"):
-            return {"assets": self.assets().model_dump(mode="json"), "account_id": 4}
+            return {"assets": to_payload(self.assets(), mode='json'), "account_id": 4}
         if route.endswith("/control/monitor"):
             return self.monitor()
         if route.endswith("/target_snapshot/refresh"):

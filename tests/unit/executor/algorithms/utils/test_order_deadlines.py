@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from axile.common.serialization import copy_data
 from axile.executor.algorithms.utils.order_tracker import ChaseConfig, OrderTracker
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.models.unified_order import OrderDirection
@@ -52,7 +53,7 @@ def test_cancel_confirmation_at_deadline_does_not_replace(monkeypatch, cancel_du
 
     def confirm_cancel(_order_id):
         clock.sleep(cancel_duration)
-        tracker.on_order_update(order.model_copy(update={"status": OrderStatus.CANCELED}))
+        tracker.on_order_update(copy_data(order, update={"status": OrderStatus.CANCELED}))
         return True
 
     monkeypatch.setattr(executor, "cancel_order", confirm_cancel)
@@ -77,7 +78,7 @@ def test_late_fallback_callback_cannot_submit_or_extend_deadline() -> None:
     tracker._restrict_submission_deadlines(10)
     clock.sleep(1)
 
-    tracker.on_order_update(order.model_copy(update={"status": OrderStatus.CANCELED}))
+    tracker.on_order_update(copy_data(order, update={"status": OrderStatus.CANCELED}))
 
     assert executor._placed == 0
     assert tracker.get_pending_count() == 0
@@ -90,7 +91,7 @@ def test_fallback_batch_checks_deadline_before_each_child(monkeypatch) -> None:
     clock = ClockStub()
     tracker = OrderTracker(executor=executor, clock=clock, chase_config=ChaseConfig(enabled=True))
     executor.tracker = tracker
-    order = _build_pending_order("deadline-batch").model_copy(update={"volume": 3})
+    order = copy_data(_build_pending_order("deadline-batch"), update={"volume": 3})
     tracker.add_order(order, direction=OrderDirection.BUY, submission_deadline=1)
     info = dict(tracker._chase_info[order.order_id])
     monkeypatch.setattr(tracker, "_is_market_fallback_price_safe", lambda *_: True)

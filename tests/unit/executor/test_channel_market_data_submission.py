@@ -8,6 +8,8 @@ from unittest.mock import Mock
 
 import pytest
 
+from axile.common.serialization import copy_data
+
 pytest.importorskip("gm.api")
 
 from axile.channels.gm_sessions import SHANGHAI
@@ -99,7 +101,7 @@ def test_tq_queue_revalidates_before_audit_registration_and_sdk(executor, monkey
             )
             assert queued.wait(2)
             clock.sleep(11)
-            fresh = consumed.model_copy(update={"timestamp": int(clock.time() * 1000)})
+            fresh = copy_data(consumed, update={"timestamp": int(clock.time() * 1000)})
             publish(fresh)
             quote_calls = api.quote_calls
             release.set()
@@ -147,7 +149,7 @@ def test_gm_queue_preserves_validator_error_and_excludes_callback_from_sdk(monke
             assert request.kwargs["submission_validator"] is not None
             bridge._request_queue.put(request)
             clock.sleep(11)
-            publish(consumed.model_copy(update={"timestamp": int(clock.time() * 1000)}))
+            publish(copy_data(consumed, update={"timestamp": int(clock.time() * 1000)}))
             gm_strategy._process_bridge_requests(None)
             with pytest.raises(MarketDataUnavailableError, match="已过期") as rejected:
                 order.result(timeout=2)
@@ -219,7 +221,7 @@ def test_ctp_revalidates_frozen_quote_after_final_send_lock_wait(config, monkeyp
                 start_send.set()
                 assert waiting.wait(2)
                 clock.sleep(11)
-                fresh = consumed.model_copy(deep=True)
+                fresh = copy_data(consumed, deep=True)
                 fresh.timestamp = int(clock.time() * 1000)
                 fresh.extra["received_at"] = clock.time()
                 instance._quotes["ag2612"] = fresh

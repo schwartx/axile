@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from axile.common.serialization import from_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.guard import AccountControlGuard
 from axile.executor.account_control.models import AccountControlOverride
@@ -52,8 +53,9 @@ def test_submission_revalidates_consumed_quote_after_real_guard_wait(monkeypatch
         channel=TradeChannel("ctp"),
         policy=resolve_account_control_policy(
             "default",
-            AccountControlOverride.model_validate(
-                {"operations": {"place_order": {"account": {"min_interval_ms": {"limit": 11000}}}}}
+            from_payload(
+                AccountControlOverride,
+                {"operations": {"place_order": {"account": {"min_interval_ms": {"limit": 11000}}}}},
             ),
         ),
         baseline=AccountControlCounterSnapshot(),

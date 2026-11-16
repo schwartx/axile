@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Response
 
 from axile.channels import get_channel
+from axile.common.serialization import from_payload
 from axile.server.api.routes.account_crud import account_connection
 from axile.server.api.routes.account_support import (
     _get_account_or_404,
@@ -44,7 +45,7 @@ async def _connection_operation(account_id: int, *, reconnect: bool, connect_acc
                 plugin = get_channel(account.trade_channel)
                 if plugin.connect_account is None:
                     raise HTTPException(400, "当前渠道不支持连接交易账户，请按连接说明处理")
-                config = plugin.account_config_model.model_validate(account.account_config)
+                config = from_payload(plugin.account_config_model, account.account_config)
                 await asyncio.to_thread(plugin.connect_account, config)
             await _operate_connection(account, reconnect=reconnect)
         except HTTPException:

@@ -8,6 +8,7 @@ from typing import Callable
 import pytest
 
 import axile.executor.execution_runtime as execution_runtime_module
+from axile.common.serialization import copy_data, from_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor.base import AbstractExecutor
 from axile.executor.account_control.guard import AccountControlGuard
@@ -68,7 +69,7 @@ def _build_guard(
         channel=TradeChannel("gm"),
         policy=resolve_account_control_policy(
             "default",
-            AccountControlOverride.model_validate(normalized_override),
+            from_payload(AccountControlOverride, normalized_override),
         ),
         baseline=AccountControlCounterSnapshot(),
         clock=clock,
@@ -578,7 +579,7 @@ def test_cancel_all_orders_queries_once_and_cancels_every_pending_order(monkeypa
         executor,
         "reconcile_terminal_order",
         lambda symbol, order_id: next(
-            order.model_copy(update={"status": "已撤销"})
+            copy_data(order, update={"status": "已撤销"})
             for order in executor.pending_orders
             if order.symbol == symbol and order.order_id == order_id
         ),
@@ -708,7 +709,7 @@ def test_startup_cleanup_keeps_missing_old_order_until_actual_terminal():
         executor.cancel_all_orders()
     assert executor.account_orders.snapshot()["data"][0].order_id == old.order_id
     assert ("cancel", f"{old.symbol}:{old.order_id}") in executor.raw_calls
-    executor.account_orders.apply(old.model_copy(update={"status": "已成交", "filled_volume": old.volume}))
+    executor.account_orders.apply(copy_data(old, update={"status": "已成交", "filled_volume": old.volume}))
     executor.set_account_control_guard(None)
     executor.cancel_all_orders()
     assert executor.account_orders.snapshot()["data"] == []
@@ -729,9 +730,9 @@ def test_startup_cleanup_rechecks_terminal_callback_after_channel_query(monkeypa
     executor.pending_orders = [old]
 
     def reconcile(symbol, order_id):
-        terminal = old.model_copy(update={"status": "已成交", "filled_volume": old.volume})
+        terminal = copy_data(old, update={"status": "已成交", "filled_volume": old.volume})
         if not same_symbol:
-            terminal = terminal.model_copy(update={"symbol": "SZSE.000001"})
+            terminal = copy_data(terminal, update={"symbol": "SZSE.000001"})
         executor.account_orders.apply(terminal)
         return None
 

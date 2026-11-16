@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from loguru import logger
 
+from axile.common.serialization import copy_data
 from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor.capability import AbstractExecutorCapabilityMixin
 from axile.executor.algorithms.utils import clock as clock_module
@@ -80,7 +81,7 @@ def test_sizing_does_not_require_order_book():
     ],
 )
 def test_invalid_order_book(changes):
-    assert market_data_error(quote().model_copy(update=changes), now=1000, max_age=5, purpose="order")
+    assert market_data_error(copy_data(quote(), update=changes), now=1000, max_age=5, purpose="order")
 
 
 def test_fresh_two_sided_order_book_is_usable():

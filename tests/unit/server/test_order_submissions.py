@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from axile.common.serialization import copy_data
 from axile.executor.order_submissions import OrderSubmissionFact
 from axile.server import order_submissions as submissions
 from axile.server._native import _core
@@ -38,7 +39,7 @@ def test_main_and_script_share_account_day_without_recounting_callbacks(tmp_path
             )
 
         main = fact("main", "accepted", start, source="algorithm")
-        rejected = main.model_copy(update={"revision": 2, "broker_status": "rejected", "error_id": 31})
+        rejected = copy_data(main, update={"revision": 2, "broker_status": "rejected", "error_id": 31})
         for row in [main, rejected, main, rejected]:
             submissions._save_fact(database, row)
         for row in [
@@ -89,7 +90,7 @@ def test_main_and_script_share_account_day_without_recounting_callbacks(tmp_path
         boundary = fact("boundary", "pending", start - 1)
         submissions._save_fact(database, boundary)
         submissions._save_fact(
-            database, boundary.model_copy(update={"revision": 1, "occurred_at_ms": start, "send_status": "accepted"})
+            database, copy_data(boundary, update={"revision": 1, "occurred_at_ms": start, "send_status": "accepted"})
         )
         rows = json.loads(
             _core.order_submissions(_core.Store(database), 1, "2026-10-19", "Asia/Shanghai", start, end, 100)

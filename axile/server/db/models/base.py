@@ -5,15 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC
 
-from pydantic import BaseModel, ConfigDict
-
 from axile.executor.algorithms.utils.clock import clock_now, clock_now_ms
-
-
-class Model(BaseModel):
-    """支持从属性读取的服务端数据模型。"""
-
-    model_config = ConfigDict(from_attributes=True)
 
 
 def now_str() -> str:

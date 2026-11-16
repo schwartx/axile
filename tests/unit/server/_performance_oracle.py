@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
+from axile.common.serialization import to_payload
 from axile.server.asset_observations import is_asset_observation
 from axile.server.db.models.performance import PerformanceSettings, RangeKey
 from axile.server.performance import local_time
@@ -559,7 +560,7 @@ def calculate_performance(
     """使用独立模拟权益与实际资产比值生成同口径收益对比。"""
     items = select_range(observations, range_key)
     result = dict(
-        settings=settings.model_dump(mode="json"),
+        settings=to_payload(settings, mode="json"),
         backtest_included=include_backtest,
         engine_version=ENGINE_VERSION,
         range=range_key,

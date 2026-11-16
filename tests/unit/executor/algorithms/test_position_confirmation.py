@@ -2,6 +2,7 @@
 
 import pytest
 
+from axile.common.serialization import copy_data
 from axile.executor.algorithms.utils.outcome import confirmed_position, summarize_outcome
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.models.execution_result import ExecutionStatus
@@ -26,8 +27,8 @@ def order(**changes):
 
 def test_duplicate_cumulative_fills_and_trade_records_are_not_added_twice():
     filled = order()
-    assert confirmed_position(0, [filled, filled.model_copy()]) == 100
-    result = summarize_outcome(0, 0, 100, [filled, filled.model_copy()], [])
+    assert confirmed_position(0, [filled, copy_data(filled)]) == 100
+    result = summarize_outcome(0, 0, 100, [filled, copy_data(filled)], [])
     assert result["status"] == ExecutionStatus.SUCCEEDED
     assert result["expected_volume"] == 100
     assert result["final_volume"] is None

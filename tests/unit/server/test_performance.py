@@ -4,8 +4,8 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from pydantic import ValidationError
 
+from axile.common.serialization import parse_input
 from axile.server.db.models.performance import PerformanceSettings
 from axile.server.performance import close_before
 from axile.server.trading_calendar import CalendarDayDecision, CalendarDecisionStatus
@@ -512,8 +512,8 @@ def test_below_min_weight_excluded_from_portfolio_pnl():
 
 @pytest.mark.parametrize("fee", [True, None, "0.01", float("nan"), float("inf"), -0.1, 1.0])
 def test_invalid_settings_rejected(fee):
-    with pytest.raises(ValidationError):
-        PerformanceSettings(backtest_weight_type="cs", backtest_fee_rate=fee)
+    with pytest.raises(ValueError):
+        parse_input(PerformanceSettings, {"backtest_weight_type": "cs", "backtest_fee_rate": fee})
 
 
 def test_empty_and_single_observation():

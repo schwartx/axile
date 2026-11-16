@@ -3,12 +3,13 @@
 from copy import deepcopy
 from math import isclose, isfinite
 
+from axile.common.serialization import copy_data
 from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
 
 
 def merge_trade(previous: TradeRecord | None, incoming: TradeRecord) -> TradeRecord:
     """同一笔成交合并查询和回报信息，缺失值不覆盖已知字段。"""
-    result = incoming.model_copy(deep=True)
+    result = copy_data(incoming, deep=True)
     if previous is None:
         return result
     extra = deepcopy(previous.extra)
@@ -28,7 +29,7 @@ def merge_trade(previous: TradeRecord | None, incoming: TradeRecord) -> TradeRec
 
 def merge_order(previous: UnifiedOrder | None, incoming: UnifiedOrder) -> UnifiedOrder:
     """保留未携带的扩展信息；均价只对应同一累计成交量。"""
-    result = incoming.model_copy(deep=True)
+    result = copy_data(incoming, deep=True)
     if previous is None:
         return result
     extra = deepcopy(previous.extra)
@@ -55,7 +56,7 @@ def merge_order(previous: UnifiedOrder | None, incoming: UnifiedOrder) -> Unifie
 
 def with_trade_average(order: UnifiedOrder, trades: list[TradeRecord]) -> UnifiedOrder:
     """仅用完整且唯一关联的逐笔成交补齐缺失均价，不修改原订单。"""
-    result = order.model_copy(deep=True)
+    result = copy_data(order, deep=True)
     if result.extra.get("avg_price_source") == "trades":
         result.avg_price = 0
         result.extra.pop("avg_price_source", None)

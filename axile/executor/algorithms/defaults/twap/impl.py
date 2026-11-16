@@ -30,9 +30,10 @@ TWAP（时间加权平均价格）算法.
     )
 """
 
-from typing import Any, Literal
+from dataclasses import dataclass, field
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, model_validator
+from msgspec import Meta
 
 from axile.executor.algorithms.common.params import BaseAlgorithmParams
 from axile.executor.algorithms.core.base import (
@@ -66,6 +67,7 @@ from axile.executor.termination import ExecutionTerminated
 ALGORITHM_NAME = "TWAP"
 
 
+@dataclass(kw_only=True)
 class TwapParams(BaseAlgorithmParams):
     """
     TWAP 算法参数.
@@ -81,41 +83,54 @@ class TwapParams(BaseAlgorithmParams):
         可能欠量，更依赖后续片追平）。
     """
 
-    max_wait_seconds: int = Field(
-        default=60,
-        title="单片最大等待",
-        description="实际取此值与切片间隔中的较小值。",
-        ge=1,
-        le=3600,
-        json_schema_extra={"x-order": 40, "x-unit": "秒", "x-control": "stepper"},
-    )
+    max_wait_seconds: Annotated[
+        int,
+        Meta(
+            ge=1,
+            le=3600,
+            title="单片最大等待",
+            description="实际取此值与切片间隔中的较小值。",
+            extra_json_schema={"x-order": 40, "x-unit": "秒", "x-control": "stepper"},
+        ),
+    ] = field(default=60)
 
-    total_duration: int = Field(
-        default=300,
-        title="执行时长",
-        description="安排拆单节奏的计划时长，不是严格截止时间。",
-        ge=1,
-        le=86400,
-        json_schema_extra={"x-order": 10, "x-unit": "秒", "x-control": "presets", "x-presets": [60, 300, 600, 1800]},
-    )
-    slices: int = Field(
-        default=10,
-        title="切片数量",
-        description="切片间隔＝执行时长÷片数，至少 0.1 秒。",
-        ge=1,
-        le=1000,
-        json_schema_extra={"x-order": 20, "x-unit": "片", "x-control": "stepper"},
-    )
-    price_strategy: Literal["ACTIVE", "PASSIVE"] = Field(
-        default="ACTIVE",
-        title="报价方式",
-        description="每片使用本方价或对手价；前片欠量滚入后片。",
-        json_schema_extra={
-            "x-order": 30,
-            "x-control": "choice",
-            "x-enum-labels": {"PASSIVE": "本方挂单", "ACTIVE": "对手价"},
-        },
-    )
+    total_duration: Annotated[
+        int,
+        Meta(
+            ge=1,
+            le=86400,
+            title="执行时长",
+            description="安排拆单节奏的计划时长，不是严格截止时间。",
+            extra_json_schema={
+                "x-order": 10,
+                "x-unit": "秒",
+                "x-control": "presets",
+                "x-presets": [60, 300, 600, 1800],
+            },
+        ),
+    ] = field(default=300)
+    slices: Annotated[
+        int,
+        Meta(
+            ge=1,
+            le=1000,
+            title="切片数量",
+            description="切片间隔＝执行时长÷片数，至少 0.1 秒。",
+            extra_json_schema={"x-order": 20, "x-unit": "片", "x-control": "stepper"},
+        ),
+    ] = field(default=10)
+    price_strategy: Annotated[
+        Literal["ACTIVE", "PASSIVE"],
+        Meta(
+            title="报价方式",
+            description="每片使用本方价或对手价；前片欠量滚入后片。",
+            extra_json_schema={
+                "x-order": 30,
+                "x-control": "choice",
+                "x-enum-labels": {"PASSIVE": "本方挂单", "ACTIVE": "对手价"},
+            },
+        ),
+    ] = field(default="ACTIVE")
 
     @property
     def interval_seconds(self) -> float:
@@ -129,7 +144,6 @@ class TwapParams(BaseAlgorithmParams):
         """
         return self.total_duration / self.slices
 
-    @model_validator(mode="after")
     def _validate_interval(self) -> "TwapParams":
         """
         校验单片间隔不至于过密.
@@ -159,6 +173,10 @@ class TwapParams(BaseAlgorithmParams):
             f"slices={self.slices}, "
             f"price_strategy={self.price_strategy})"
         )
+
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        self._validate_interval()
 
 
 def compute_slice_quantity(

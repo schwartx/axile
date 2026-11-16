@@ -3,6 +3,7 @@
 from typing import Any
 
 from axile.channels.registry import get_channel
+from axile.common.serialization import parse_input, to_payload
 
 
 def validate_schedule_options(options: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -18,5 +19,5 @@ def validate_schedule_options(options: dict[str, dict[str, Any]]) -> dict[str, d
             raise ValueError(f"渠道配置须使用规范标识: {plugin.descriptor.channel}")
         if model is None:
             raise ValueError(f"渠道 {channel} 不支持专属调度配置")
-        validated[channel] = model.model_validate(value).model_dump(mode="json")
+        validated[channel] = to_payload(parse_input(model, value), mode="json")
     return validated

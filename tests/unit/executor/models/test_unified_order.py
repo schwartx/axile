@@ -1,7 +1,10 @@
 """统一订单的成交关联、剩余数量及零数量保护。"""
 
+import json
+
 import pytest
 
+from axile.common.serialization import from_payload, to_payload
 from axile.executor.models.unified_order import (
     TradeRecord,
     UnifiedOrder,
@@ -80,18 +83,18 @@ def test_order_update_time_survives_construction_and_json_roundtrip(construct, u
         "update_time": updated,
         "extra": {},
     }
-    order = UnifiedOrder.model_construct(**payload) if construct else UnifiedOrder.model_validate(payload)
+    order = UnifiedOrder(**payload) if construct else from_payload(UnifiedOrder, payload)
     for _ in range(2):
         assert order.update_time == updated
-        dumped = order.model_dump(mode="json")
+        dumped = to_payload(order, mode="json")
         assert "update_timestamp" not in dumped
         assert dumped["extra"] == {}
-        order = UnifiedOrder.model_validate_json(order.model_dump_json())
+        order = from_payload(UnifiedOrder, json.loads(json.dumps(to_payload(order, mode="json"))))
 
 
 def test_order_create_preserves_explicit_time():
     order = UnifiedOrder.create("O-time", "rb2610", "BUY", "LIMIT", 1, update_time="2026-10-15T18:38:33")
-    assert UnifiedOrder.model_validate(order.model_dump()).update_time == order.update_time
+    assert from_payload(UnifiedOrder, to_payload(order)).update_time == order.update_time
     assert "_update_time_str" not in order.extra
 
 

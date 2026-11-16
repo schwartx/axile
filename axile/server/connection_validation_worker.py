@@ -12,6 +12,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from axile.common.serialization import from_payload, to_payload
 from axile.executor.connection_progress import connection_step_error
 
 
@@ -45,7 +46,7 @@ def validation_worker(connection: Connection) -> None:
         if not isinstance(channel, str):
             raise ValueError("连接验证缺少渠道标识")
         plugin = get_channel(channel)
-        config = plugin.account_config_model.model_validate(request["account_config"])
+        config = from_payload(plugin.account_config_model, request["account_config"])
         validate = plugin.validate_connection
         if validate is None:
             raise RuntimeError("渠道未声明验证器")
@@ -59,7 +60,7 @@ def validation_worker(connection: Connection) -> None:
         error = connection_step_error(exc)
         send(
             {
-                **error.model_dump(mode="json"),
+                **to_payload(error, mode="json"),
                 "result": "failed",
                 # 仅保留异常类型及代码位置；不包含异常原文、源码行或局部变量。
                 "diagnostic": {

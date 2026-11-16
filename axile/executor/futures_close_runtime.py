@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 
+from axile.common.serialization import copy_data, to_payload
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
 from axile.executor.algorithms.utils.clock import clock_now_iso
 from axile.executor.futures_close_policy import PRESET_VERSION, FuturesClosePolicy, futures_product, rule_priority
@@ -17,7 +18,7 @@ class FuturesCloseRuntimeMixin:
 
     def _prepare_futures_close_policy(self, policy: FuturesClosePolicy) -> None:
         policy.validate_channel(getattr(self, "channel_type"))
-        self._futures_close_policy = policy.model_copy(deep=True)
+        self._futures_close_policy = copy_data(policy, deep=True)
         self._futures_fee_failures: dict[str, str] = {}
         if not hasattr(self, "_futures_fee_lock"):
             self._futures_fee_lock = threading.RLock()
@@ -58,7 +59,7 @@ class FuturesCloseRuntimeMixin:
                     if day:
                         self._futures_fee_cache[key] = rates
                 decision.update(
-                    commission_rates=rates.model_dump(),
+                    commission_rates=to_payload(rates),
                     reference_price=None,
                     queried_at=rates.queried_at,
                     trading_day=day,

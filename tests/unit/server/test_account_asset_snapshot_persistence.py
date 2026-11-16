@@ -6,6 +6,7 @@ import asyncio
 
 import pytest
 
+from axile.common.serialization import from_payload
 from axile.server._native import _core
 from axile.server.business_facts.assets import latest_asset_snapshot
 from axile.server.execution.records import append_success_execute_record
@@ -32,7 +33,7 @@ def test_success_record_persists_matching_asset_snapshot(native_database, monkey
         saved = await append_success_execute_record(account, raw_input={}, result=result, execution_id="exec-assets-51")
         records = rows(native_database, "executerecord")
         assert len(records) == 1
-        record = ExecuteRecord.model_validate(records[0])
+        record = from_payload(ExecuteRecord, records[0])
         assert record.id == saved["record_id"]
         snapshots = rows(native_database, "account_asset_snapshot")
         assert len(snapshots) == 1

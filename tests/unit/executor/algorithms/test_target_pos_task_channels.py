@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from axile.common.serialization import copy_data, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor.capability import AbstractExecutorCapabilityMixin
 from axile.executor.algorithms.core.base import AlgorithmInput, ExecutorProtocol
@@ -135,7 +136,7 @@ def test_final_check_does_not_accept_first_direction_as_net():
 def test_position_aggregation_boundaries(indices, expected):
     book = _native_book()
     selected = [book.positions[index] for index in indices]
-    selected.append(book.positions[0].model_copy(update={"symbol": "other"}))
+    selected.append(copy_data(book.positions[0], update={"symbol": "other"}))
     book.positions = selected
     detail = _extract_ctp_position_details(book, ["rb2610"])["rb2610"]
     assert (detail.long_total, detail.short_total, detail.net_position) == expected
@@ -491,7 +492,7 @@ def test_target_pos_task_uses_same_close_then_open_flow(channel: TradeChannel) -
 def test_target_pos_task_params_expose_execution_defaults() -> None:
     params = CTPTargetPosTaskParams()
 
-    assert params.model_dump() == {
+    assert to_payload(params) == {
         "chase_enabled": False,
         "chase_ticks": 1,
         "max_chase_count": 5,
@@ -636,7 +637,7 @@ def test_target_pos_task_price_strategy_uses_expected_book_side(
 
 
 def test_target_pos_task_active_price_falls_back_to_last_price() -> None:
-    market_data = _FuturesExecutor(TradeChannel("ctp")).get_market_data().model_copy(update={"asks": []})
+    market_data = copy_data(_FuturesExecutor(TradeChannel("ctp")).get_market_data(), update={"asks": []})
 
     assert _calculate_order_price(market_data, "ACTIVE", OrderDirection.BUY) == 3200
 
@@ -712,7 +713,7 @@ def test_target_pos_task_propagates_session_recovery_from_final_account_query() 
 def test_target_pos_task_does_not_trade_when_start_snapshot_is_unknown(source):
     executor = _FuturesExecutor(TradeChannel("ctp"))
     executor.get_account_assets = MagicMock(
-        return_value=UnifiedAccountAssets.unavailable().model_copy(update={"source": source})
+        return_value=copy_data(UnifiedAccountAssets.unavailable(), update={"source": source})
     )
     executor.place_order = MagicMock()
     result = ctp_target_pos_task_algorithm(
@@ -765,7 +766,7 @@ def test_target_pos_task_forwards_tracker_cancel_error(monkeypatch):
 def test_target_pos_task_does_not_claim_flat_when_final_snapshot_is_unavailable(source):
     executor = _FuturesExecutor(TradeChannel("ctp"))
     initial = executor.get_account_assets()
-    unavailable = UnifiedAccountAssets.unavailable().model_copy(update={"source": source})
+    unavailable = copy_data(UnifiedAccountAssets.unavailable(), update={"source": source})
     executor.get_account_assets = MagicMock(side_effect=[initial, initial, unavailable])
     result = ctp_target_pos_task_algorithm(
         cast("ExecutorProtocol", executor),

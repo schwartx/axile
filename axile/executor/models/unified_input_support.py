@@ -8,10 +8,10 @@
 from __future__ import annotations
 
 from copy import deepcopy
-
-from pydantic import BaseModel, ValidationError
+from dataclasses import is_dataclass
 
 from axile.channels import get_channel
+from axile.common.serialization import parse_input, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.models.unified_input_accounts import (
     BaseAccountConfig,
@@ -179,11 +179,11 @@ def _build_account_config(
         return account_config_data
 
     if isinstance(account_config_data, BaseAccountConfig):
-        normalized_account_config = dict(account_config_data.model_dump(mode="python"))
+        normalized_account_config = dict(to_payload(account_config_data, mode="python"))
     else:
         normalized_account_config = account_config_data.copy()
     normalized_account_config["channel_type"] = channel
-    return plugin.account_config_model.model_validate(normalized_account_config)
+    return parse_input(plugin.account_config_model, normalized_account_config)
 
 
 def _get_default_algorithm_method(channel: TradeChannel) -> str:
@@ -194,7 +194,7 @@ def _get_default_algorithm_method(channel: TradeChannel) -> str:
 def _get_channel_default_algorithm(channel: TradeChannel) -> TradeAlgorithm:
     """返回指定渠道的默认调仓算法配置副本."""
     default = get_channel(channel).descriptor.defaults.trade_algorithm
-    return dict(default.model_dump(mode="python"))
+    return dict(to_payload(default, mode="python"))
 
 
 def _normalize_trade_rules_dict(value: object) -> dict[str, TradeRule]:
@@ -230,7 +230,7 @@ def _collect_unified_input_extra(data: dict[str, object]) -> dict[str, object]:
 
 def _serialize_account_config(account_config: BaseAccountConfig) -> dict[str, object]:
     """返回账户配置的标准序列化字典."""
-    return dict(account_config.model_dump(mode="json", exclude_none=True))
+    return dict(to_payload(account_config, mode="json", exclude_none=True))
 
 
 def _serialize_extra(
@@ -276,7 +276,7 @@ def _parse_algorithm_params_with_metadata(
     """
     algorithm_config = _algorithm_dict(algorithm)
     params_raw = algorithm_config.get("params")
-    if params_raw is not None and isinstance(params_raw, BaseModel):
+    if params_raw is not None and is_dataclass(params_raw):
         return algorithm_config
 
     try:
@@ -294,7 +294,7 @@ def _parse_algorithm_params_with_metadata(
         params_raw = {}
     params_dict: dict[str, object] = params_raw
     try:
-        algorithm_config["params"] = params_class(**params_dict)
-    except (ValidationError, TypeError) as exc:
+        algorithm_config["params"] = parse_input(params_class, params_dict)
+    except (ValueError, TypeError) as exc:
         raise AlgorithmParamsError(f"算法 {algorithm_name!r} 的参数非法: {exc}") from exc
     return algorithm_config

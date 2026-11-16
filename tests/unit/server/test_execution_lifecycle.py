@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from axile.common.serialization import from_payload, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
 from axile.executor.termination import ExecutionTerminated
@@ -356,7 +357,7 @@ def test_queue_serializes_coalesced_rebalances_and_clear(native_database, monkey
     async def run():
         await records.native_operation(
             "account_create",
-            {"account": build_account(portfolio_id=None).model_dump(mode="json"), "now": "2026-10-24T10:00:00+08:00"},
+            {"account": to_payload(build_account(portfolio_id=None), mode="json"), "now": "2026-10-24T10:00:00+08:00"},
         )
         first = await execution_lifecycle.enqueue_execute_trade(1)
         task = asyncio.create_task(dispatcher._dispatch_account(1))
@@ -655,7 +656,7 @@ def test_timeout_termination_sends_alert(monkeypatch, kind, trigger) -> None:
     monkeypatch.setattr(
         execution_lifecycle,
         "get_account_snapshot",
-        AsyncMock(return_value=AccountSnapshot.model_validate(build_account().model_dump())),
+        AsyncMock(return_value=from_payload(AccountSnapshot, to_payload(build_account()))),
     )
     monkeypatch.setattr(execution_lifecycle, "now_str", lambda: "2026-07-27T10:03:00")
 
@@ -766,7 +767,7 @@ def test_worker_failure_persists_once_through_task_lifecycle(native_database, mo
     seed_account(native_database)
     monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
     execution_id = f"failed-{kind.value}"
-    account = AccountSnapshot.model_validate(build_account(id=1).model_dump())
+    account = from_payload(AccountSnapshot, to_payload(build_account(id=1)))
     failure = RuntimeError("worker exploded")
     worker = SimpleNamespace(
         execute_trade=AsyncMock(side_effect=failure), empty_positions=AsyncMock(side_effect=failure)
@@ -829,7 +830,7 @@ def test_worker_failure_persists_once_through_task_lifecycle(native_database, mo
 def test_direct_worker_entry_preserves_promotion_and_termination_boundaries(monkeypatch, kind, phase):
     """认领失败不能派发，worker 已确认的终止不能被入口记成失败或二次归档。"""
     module = rebalance if kind == ExecutionKind.REBALANCE else clear_positions
-    account = AccountSnapshot.model_validate(build_account().model_dump())
+    account = from_payload(AccountSnapshot, to_payload(build_account()))
     error = (
         RuntimeError("intent no longer runnable")
         if phase == "promotion"

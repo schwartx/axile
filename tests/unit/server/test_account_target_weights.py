@@ -9,6 +9,7 @@ import sqlalchemy as sa
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from axile.common.serialization import copy_data, from_payload, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionArtifactType
 from axile.server.api.routes import account as account_routes
@@ -110,15 +111,15 @@ def _build_app(data: _RouteData, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     async def account(account_id: int):
         if data.account is None or data.account.id != account_id:
             raise HTTPException(status_code=404, detail="账户不存在")
-        return AccountSnapshot.model_validate(data.account.model_dump())
+        return from_payload(AccountSnapshot, to_payload(data.account))
 
     async def read(name: str, request: dict[str, object]) -> dict[str, object]:
         if name == "portfolio_operation":
             assert request == {"op": "bound_context", "account_id": 1}
             return {
-                "account": data.account.model_dump() if data.account else None,
+                "account": to_payload(data.account) if data.account else None,
                 "portfolio_id": data.portfolio.id if data.portfolio else None,
-                "portfolio": data.portfolio.model_dump() if data.portfolio else None,
+                "portfolio": to_payload(data.portfolio) if data.portfolio else None,
             }
         assert name == "execution_read" and request["op"] == "target_sizing"
         return data.sizing_evidence(str(request["execution_id"]))
@@ -728,7 +729,7 @@ def test_clear_all_waits_for_atomic_stop_before_scheduler_and_worker(monkeypatch
     app = _build_app(data, monkeypatch)
     calls: list[str] = []
     assert data.account is not None
-    stopped = AccountSnapshot.model_validate(data.account.model_dump()).model_copy(update={"is_started": False})
+    stopped = copy_data(from_payload(AccountSnapshot, to_payload(data.account)), update={"is_started": False})
 
     async def stop(account_id: int):
         assert account_id == 1
@@ -781,7 +782,7 @@ def test_audit_http_pages_normalize_hydrated_legacy_content(native_database, mon
         }
 
     model = ExecutionEvent if kind == "events" else ExecutionArtifact
-    values = [model(**(row | {"id": identity})).model_dump(mode="json") for identity in range(5, 14)]
+    values = [to_payload(model(**row | {"id": identity}), mode="json") for identity in range(5, 14)]
     for value in values:
         for name in ("ts_local_created", "ts_exchange", "ts_persisted") if kind == "events" else ("created_at",):
             recorded = value.pop(name)

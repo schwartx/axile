@@ -20,9 +20,10 @@
     )
 """
 
-from typing import Any, Literal
+from dataclasses import dataclass, field
+from typing import Annotated, Any, Literal
 
-from pydantic import Field
+from msgspec import Meta
 
 from axile.domain.execution import ExecutionReasonFamily
 from axile.executor.algorithms.common.params import BaseAlgorithmParams, ChaseParamsMixin
@@ -56,33 +57,35 @@ from axile.executor.models.unified_price import UnifiedPriceData, clone_price_da
 from axile.executor.termination import ExecutionTerminated
 
 
+@dataclass(kw_only=True)
 class SingleMakerParams(BaseAlgorithmParams, ChaseParamsMixin):
     """SINGLE-MAKER 算法参数."""
 
-    price_strategy: Literal["PASSIVE", "ACTIVE"] = Field(
-        default="ACTIVE",
-        title="报价方式",
-        description="本方挂单等成交；对手价优先成交并承担点差。",
-        json_schema_extra={
-            "x-order": 10,
-            "x-control": "choice",
-            "x-enum-labels": {"PASSIVE": "本方挂单", "ACTIVE": "对手价"},
-        },
-    )
-    on_missing_book: Literal["skip", "market"] = Field(
-        default="skip",
-        title="盘口缺失处理",
-        description="盘口无效时可跳过或请求市价单。",
-        json_schema_extra={
-            "x-order": 30,
-            "x-control": "cards",
-            "x-option-descriptions": {
-                "skip": "跳过本次下单。",
-                "market": "提交市价单，成交价格由市场决定。",
+    price_strategy: Annotated[
+        Literal["PASSIVE", "ACTIVE"],
+        Meta(
+            title="报价方式",
+            description="本方挂单等成交；对手价优先成交并承担点差。",
+            extra_json_schema={
+                "x-order": 10,
+                "x-control": "choice",
+                "x-enum-labels": {"PASSIVE": "本方挂单", "ACTIVE": "对手价"},
             },
-            "x-enum-labels": {"skip": "跳过", "market": "市价单"},
-        },
-    )
+        ),
+    ] = field(default="ACTIVE")
+    on_missing_book: Annotated[
+        Literal["skip", "market"],
+        Meta(
+            title="盘口缺失处理",
+            description="盘口无效时可跳过或请求市价单。",
+            extra_json_schema={
+                "x-order": 30,
+                "x-control": "cards",
+                "x-option-descriptions": {"skip": "跳过本次下单。", "market": "提交市价单，成交价格由市场决定。"},
+                "x-enum-labels": {"skip": "跳过", "market": "市价单"},
+            },
+        ),
+    ] = field(default="skip")
 
     def __str__(self) -> str:
         """便于记录日志的字符串表示."""
@@ -93,6 +96,10 @@ class SingleMakerParams(BaseAlgorithmParams, ChaseParamsMixin):
             f"price_strategy={self.price_strategy}, "
             f"on_missing_book={self.on_missing_book})"
         )
+
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        super().validate()
 
 
 def _resolve_pricing_on_book(

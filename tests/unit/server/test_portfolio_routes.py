@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from axile.common.serialization import to_payload
 from axile.server.portfolio_function import _normalize_target
 
 CODE = "def calculate_portfolio(context):\n    return {'rb2610': 1.0}\n"
@@ -57,7 +58,7 @@ def test_run_and_save_persists_only_successful_trial(monkeypatch, account_id, va
         assert name == "portfolio_operation"
         stages.append(request["op"])
         if request["op"] == "context":
-            return {"portfolio": portfolio.model_dump(), "account_id": account_id, "account": account}
+            return {"portfolio": to_payload(portfolio), "account_id": account_id, "account": account}
         assert stages == ["context", "run", "save_trial"]
         assert request["portfolio_id"] == 3
         assert request["changes"] == {"name": "after", "custom_calc_py_code": CODE}

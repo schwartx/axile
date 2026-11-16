@@ -9,6 +9,7 @@ from weakref import WeakKeyDictionary
 
 from loguru import logger
 
+from axile.common.serialization import to_payload
 from axile.executor.account_control.guard import AccountControlGuard
 
 _lock = RLock()
@@ -27,7 +28,7 @@ def observe_outcomes(guard: AccountControlGuard) -> None:
 
     def outcome(event: Any) -> None:
         with _lock:
-            data = event.model_dump(mode="json")
+            data = to_payload(event, mode="json")
             _updates.setdefault(account_id, deque(maxlen=100)).append(data)
             final = _final.get(account_id)
             if final is not None:

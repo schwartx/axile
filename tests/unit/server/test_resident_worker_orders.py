@@ -4,6 +4,7 @@ from contextlib import nullcontext
 
 import pytest
 
+from axile.common.serialization import from_payload, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.server.db.models.account import AccountSnapshot
 from axile.server.execution.resident_connection import AccountConnectionUnavailable
@@ -13,7 +14,7 @@ from tests.unit.server.test_resident_connection import Executor
 
 
 def setup_worker(monkeypatch):
-    account = AccountSnapshot.model_validate(build_account(id=7, trade_channel=TradeChannel("gm")).model_dump())
+    account = from_payload(AccountSnapshot, to_payload(build_account(id=7, trade_channel=TradeChannel("gm"))))
     state = worker_state._WorkerBackendState()
     created, initialized, closed, commands = [], [], [], []
 
@@ -35,7 +36,7 @@ def setup_worker(monkeypatch):
     monkeypatch.setattr(
         orders, "run_order_command", lambda executor, payload: commands.append(payload["command"]) or {"data": []}
     )
-    payload = {"account": account.model_dump(mode="json"), "command": "query"}
+    payload = {"account": to_payload(account, mode="json"), "command": "query"}
     return account, state, payload, created, initialized, closed, commands
 
 

@@ -1,11 +1,14 @@
 """后端增量分析；按事实修订号读取，不提供旧快照接口。"""
 
+from dataclasses import dataclass, field
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException, Path, Query
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from fastapi import APIRouter, Depends, HTTPException, Path
+from msgspec import Meta
 
+from axile.common.serialization import to_payload
 from axile.server._native import _core
+from axile.server.api.inputs import query_params
 from axile.server.core.db import database_path
 from axile.server.db.models.performance import RangeKey
 from axile.server.native_store import native_operation
@@ -16,33 +19,41 @@ router = APIRouter()
 AccountId = Annotated[int, Path(gt=0, le=2**63 - 1)]
 
 
-class AnalysisQuery(BaseModel):
+@dataclass(kw_only=True)
+class AnalysisQuery:
     """请求必须绑定已观察到的事实修订号。"""
 
-    model_config = ConfigDict(extra="forbid")
-    version: str = Field(pattern=r"^[0-9]{1,19}$")
+    version: Annotated[str, Meta(pattern="^[0-9]{1,19}$")]
     range: RangeKey = "all"
 
+    __forbid_unknown__ = True
 
+
+@dataclass(kw_only=True)
 class DetailQuery(AnalysisQuery):
     """单次执行的有界明细读取。"""
 
-    limit: int = Field(default=200, ge=1, le=500)
-    offset: int = Field(default=0, ge=0, le=2**63 - 1)
+    limit: Annotated[int, Meta(ge=1, le=500)] = field(default=200)
+    offset: Annotated[int, Meta(ge=0, le=2**63 - 1)] = field(default=0)
 
 
+@dataclass(kw_only=True)
 class InputsQuery(AnalysisQuery, CostSelection):
     """成本输入只读取选区；费率试算保留完整窗口。"""
 
-    cursor: str | None = Field(default=None, max_length=1024)
+    cursor: Annotated[str, Meta(max_length=1024)] | None = field(default=None)
     kind: Literal["costs", "fees"] = "costs"
 
-    @model_validator(mode="after")
     def fee_window(self):
         """费率重放不能使用局部事实。"""
         if self.kind == "fees" and any(value is not None for value in (self.day, self.start, self.end, self.record_id)):
             raise ValueError("fee inputs require the complete window")
         return self
+
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        super().validate()
+        self.fee_window()
 
 
 async def _query(account_id: int, command: str, **query):
@@ -68,29 +79,31 @@ async def get_status(account_id: AccountId):
 
 
 @router.get("/analysis/{account_id}", response_model=None)
-async def get_chart(account_id: AccountId, query: Annotated[AnalysisQuery, Query()]):
+async def get_chart(account_id: AccountId, query: Annotated[AnalysisQuery, Depends(query_params(AnalysisQuery))]):
     """返回日级成果及按需读取的展示数据。"""
-    return await _query(account_id, "chart", **query.model_dump(exclude_none=True))
+    return await _query(account_id, "chart", **to_payload(query, exclude_none=True))
 
 
 @router.get("/analysis/{account_id}/costs", response_model=None)
-async def get_costs(account_id: AccountId, query: Annotated[CostQuery, Query()]):
+async def get_costs(account_id: AccountId, query: Annotated[CostQuery, Depends(query_params(CostQuery))]):
     """按请求范围从规范事实计算成本和明细，不写派生副本。"""
-    return await _query(account_id, "costs", **query.model_dump(exclude_none=True))
+    return await _query(account_id, "costs", **to_payload(query, exclude_none=True))
 
 
 @router.get("/analysis/{account_id}/inputs", response_model=None)
-async def get_inputs(account_id: AccountId, query: Annotated[InputsQuery, Query()]):
+async def get_inputs(account_id: AccountId, query: Annotated[InputsQuery, Depends(query_params(InputsQuery))]):
     """读取冻结事实供浏览器试算，不写入绩效或执行记录。"""
-    return await _query(account_id, "inputs", **query.model_dump(exclude_none=True))
+    return await _query(account_id, "inputs", **to_payload(query, exclude_none=True))
 
 
 @router.get("/analysis/{account_id}/execution/{record_id}", response_model=None)
 async def get_detail(
-    account_id: AccountId, record_id: Annotated[int, Path(gt=0, le=2**63 - 1)], query: Annotated[DetailQuery, Query()]
+    account_id: AccountId,
+    record_id: Annotated[int, Path(gt=0, le=2**63 - 1)],
+    query: Annotated[DetailQuery, Depends(query_params(DetailQuery))],
 ):
     """选中执行后读取其事实和成本明细。"""
-    return await _query(account_id, "detail", record_id=record_id, **query.model_dump(exclude_none=True))
+    return await _query(account_id, "detail", record_id=record_id, **to_payload(query, exclude_none=True))
 
 
 @router.post("/analysis/{account_id}/refresh", status_code=202, response_model=None)

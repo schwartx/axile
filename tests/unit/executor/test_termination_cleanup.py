@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from axile.common.serialization import copy_data
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.guard import AccountControlGuard
 from axile.executor.account_control.presets import resolve_account_control_policy
@@ -209,7 +210,7 @@ def test_termination_cleans_retained_missing_order_only_for_current_symbol(monke
         status="状态未知",
     )
     owner.account_orders.apply(old)
-    owner.account_orders.apply(old.model_copy(update={"symbol": "ag"}))
+    owner.account_orders.apply(copy_data(old, update={"symbol": "ag"}))
     monkeypatch.setattr(owner, "_get_pending_orders_for_execution", lambda symbol: [])
 
     def blocked_cancel(symbol, order_id):
@@ -224,7 +225,7 @@ def test_termination_cleans_retained_missing_order_only_for_current_symbol(monke
     assert caught.value.cancel_details == {"rb:missing-old": "当前不可撤单"}
     assert caught.value.cancel_unconfirmed
 
-    owner.account_orders.apply(old.model_copy(update={"status": "已成交", "filled_volume": 1}))
+    owner.account_orders.apply(copy_data(old, update={"status": "已成交", "filled_volume": 1}))
     with pytest.raises(ExecutionTerminated) as caught:
         session.handle_termination_checkpoint()
     assert caught.value.cancel_details == {}

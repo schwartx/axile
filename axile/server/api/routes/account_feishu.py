@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
-from typing import Any, Literal, NamedTuple
+from dataclasses import dataclass
+from typing import Annotated, Any, Literal, NamedTuple
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from loguru import logger
-from pydantic import BaseModel, ConfigDict
 
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.feishu import push_feishu_card
 from axile.common.notification_function import run_notification_function
+from axile.common.serialization import provided_fields
 from axile.executor.algorithms.utils import clock_now
 from axile.executor.feishu_notifications import (
     LoggerLike,
@@ -25,6 +26,7 @@ from axile.executor.models.unified_order import OrderDirection, OrderType, Trade
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.server._native import _core
 from axile.server.account_assets import query_account_assets
+from axile.server.api.inputs import json_body
 from axile.server.api.routes.account_support import _get_account_or_404
 from axile.server.db.models.account import AccountContext
 from axile.server.error_details import exception_details
@@ -41,15 +43,17 @@ def get_default_account_notification(account_id: int) -> dict[str, str]:
     return {"code": DEFAULT_ACCOUNT_NOTIFICATION_CODE}
 
 
-class AccountFeishuTestRequest(BaseModel):
+@dataclass(kw_only=True)
+class AccountFeishuTestRequest:
     """账户飞书通知测试载荷."""
-
-    model_config = ConfigDict(extra="forbid")
 
     feishu_key: str
 
+    __forbid_unknown__ = True
 
-class AccountNotificationFunctionTestRequest(BaseModel):
+
+@dataclass(kw_only=True)
+class AccountNotificationFunctionTestRequest:
     """使用当前编辑草稿试跑账户执行通知函数。"""
 
     code: str
@@ -266,7 +270,7 @@ async def _build_test_card(
 @router.post("/{account_id}/feishu/test", response_model=None)
 async def test_account_feishu(
     account_id: int,
-    payload: AccountFeishuTestRequest,
+    payload: Annotated[AccountFeishuTestRequest, Depends(json_body(AccountFeishuTestRequest))],
 ) -> dict[str, Any]:
     """使用账户当前资产、目标快照与页面草稿推送样例执行结果卡片。"""
     account = await _get_account_or_404(account_id)
@@ -313,11 +317,13 @@ async def _load_notification_preview_context(
 @router.post("/{account_id}/notification/test", response_model=None)
 async def test_account_notification_function(
     account_id: int,
-    payload: AccountNotificationFunctionTestRequest,
+    payload: Annotated[
+        AccountNotificationFunctionTestRequest, Depends(json_body(AccountNotificationFunctionTestRequest))
+    ],
 ) -> dict[str, Any]:
     """复用最近一次执行的真实快照，在独立进程中运行页面草稿函数。"""
     account = await _get_account_or_404(account_id)
-    key = payload.feishu_key if "feishu_key" in payload.model_fields_set else account.feishu_key
+    key = payload.feishu_key if "feishu_key" in provided_fields(payload) else account.feishu_key
     if payload.code.strip() and payload.code.strip() != DEFAULT_ACCOUNT_NOTIFICATION_CODE.strip():
         key = None
     if payload.code.strip() == DEFAULT_ACCOUNT_NOTIFICATION_CODE.strip() and not key:

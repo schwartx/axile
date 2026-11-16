@@ -5,6 +5,7 @@ from threading import Event
 import pytest
 
 from axile.common.order_param_model import OrderParamModel
+from axile.common.serialization import copy_data, to_payload
 from axile.domain.execution import ExecutionReasonFamily
 from axile.executor import execution_engine as engine_module
 from axile.executor.algorithms.core.base import AlgorithmInput, resolve_algorithm
@@ -78,7 +79,7 @@ class _QuoteExecutor(_TestExecutor):
 
     def get_market_data(self, symbols: list[str]) -> dict[str, UnifiedPriceData]:
         self.market_data_requests.append(list(symbols))
-        return {symbol: self.quote.model_copy(deep=True) for symbol in symbols}
+        return {symbol: copy_data(self.quote, deep=True) for symbol in symbols}
 
     def register_order_callback(self, callback: OrderUpdateCallback) -> None:
         self.order_callbacks.append(callback)
@@ -95,7 +96,7 @@ class _QuoteExecutor(_TestExecutor):
     def register_price_callback(self, callback: PriceDataCallback) -> None:
         self.price_callbacks.append(callback)
         # POV 必须真实收到成交量回调才会走参与下单，而非只覆盖到期补单。
-        callback(self.quote.model_copy(deep=True))
+        callback(copy_data(self.quote, deep=True))
 
     def unregister_price_callback(self, callback: PriceDataCallback) -> None:
         self.price_callbacks.remove(callback)
@@ -218,7 +219,7 @@ def test_builtin_caught_pre_submit_stale_quote_is_blocked(
 
     def observe_algorithm(real_session, algorithm_input):
         result = algorithm(real_session, algorithm_input)
-        raw_results.append(result.model_copy(deep=True))
+        raw_results.append(copy_data(result, deep=True))
         if diagnostics == "clear":
             result.memory.clear()
         elif diagnostics == "forge":
@@ -247,8 +248,8 @@ def test_builtin_caught_pre_submit_stale_quote_is_blocked(
     assert attempted_types == [OrderType.LIMIT]
     assert len(raw_results) == 1
     _assert_blocked(raw_results[0], session, owner)
-    assert raw_results[0].model_dump(exclude={"memory", "symbol", "algorithm"}) == result.model_dump(
-        exclude={"memory", "symbol", "algorithm"}
+    assert to_payload(raw_results[0], exclude={"memory", "symbol", "algorithm"}) == to_payload(
+        result, exclude={"memory", "symbol", "algorithm"}
     )
     assert ("自定义行情说明" if diagnostics == "forge" else "已过期") in result.error
     assert result.symbol == SYMBOL

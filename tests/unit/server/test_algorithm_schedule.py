@@ -3,14 +3,12 @@
 from datetime import datetime
 
 import pytest
-from pydantic import TypeAdapter, ValidationError
 
+from axile.common.serialization import parse_input, to_payload
 from axile.server.db.models.account import AccountUpdate
 from axile.server.db.models.algorithm_schedule import AlgorithmSchedule
 from axile.server.execution import execution_algorithms
 from tests.unit.server._execution_test_support import build_account
-
-SCHEDULE = TypeAdapter(AlgorithmSchedule)
 
 
 def rule(start="09:30", end="10:00", **params):
@@ -30,14 +28,14 @@ def rule(start="09:30", end="10:00", **params):
     ],
 )
 def test_invalid_schedule_is_rejected(rules):
-    with pytest.raises(ValidationError):
-        AccountUpdate(algorithm_schedule=rules)
+    with pytest.raises(ValueError):
+        parse_input(AccountUpdate, {"algorithm_schedule": rules})
 
 
 def test_midnight_adjacency_and_old_patch_compatibility():
-    assert len(SCHEDULE.validate_python([rule("21:00", "00:00"), rule("00:00", "02:30")])) == 2
-    assert AccountUpdate(name="changed").model_dump(exclude_unset=True) == {"name": "changed"}
-    assert AccountUpdate(algorithm_schedule=[]).model_dump(exclude_unset=True) == {"algorithm_schedule": []}
+    assert len(parse_input(AlgorithmSchedule, [rule("21:00", "00:00"), rule("00:00", "02:30")])) == 2
+    assert to_payload(AccountUpdate(name="changed"), exclude_unset=True) == {"name": "changed"}
+    assert to_payload(AccountUpdate(algorithm_schedule=[]), exclude_unset=True) == {"algorithm_schedule": []}
 
 
 @pytest.mark.parametrize(
@@ -54,8 +52,8 @@ def test_midnight_adjacency_and_old_patch_compatibility():
 )
 def test_selection_uses_beijing_time_and_freezes_complete_params(monkeypatch, moment, expected):
     account = build_account()
-    account.algorithm_schedule = SCHEDULE.validate_python(
-        [rule(slices=4), rule("10:00", "11:00", slices=6), rule("21:00", "02:30", slices=8)]
+    account.algorithm_schedule = parse_input(
+        AlgorithmSchedule, [rule(slices=4), rule("10:00", "11:00", slices=6), rule("21:00", "02:30", slices=8)]
     )
     monkeypatch.setattr(execution_algorithms, "clock_now", lambda **_: datetime.fromisoformat(moment))
     selected, evidence = execution_algorithms.select_rebalance_algorithm(account)
@@ -76,14 +74,14 @@ def test_schedule_checks_algorithm_channel_when_only_channel_changes(monkeypatch
     from axile.server.db.models import account_validation
 
     account = build_account()
-    account.algorithm_schedule = SCHEDULE.validate_python([rule()])
+    account.algorithm_schedule = parse_input(AlgorithmSchedule, [rule()])
 
     def incompatible(config, channel, label):
         raise ValueError("时段算法不适配新渠道")
 
     monkeypatch.setattr(account_validation, "_check_algorithm_channel_compat", incompatible)
     with pytest.raises(ValueError, match="不适配新渠道"):
-        type(account).model_validate(account.model_dump() | {"trade_channel": "gm"})
+        parse_input(type(account), to_payload(account) | {"trade_channel": "gm"})
 
 
 def test_account_http_roundtrip_preserves_schedule_and_rejects_conflicts():

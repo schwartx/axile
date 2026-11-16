@@ -2,6 +2,7 @@
 
 import pytest
 
+from axile.common.serialization import copy_data
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.ctp.ctp_execute import CtpSessionRecoveryRequired
 from axile.executor.models.unified_order import OrderType, TradeRecord
@@ -39,17 +40,18 @@ def test_market_batch_handles_synchronous_cancel_and_early_callbacks(monkeypatch
             tracker.on_trade_record(trade)
             tracker.on_trade_record(trade)
         if early_status:
-            update = child.model_copy(
+            update = copy_data(
+                child,
                 update={
                     "status": early_status,
                     "filled_volume": child.volume if early_status == OrderStatus.FILLED else 0,
-                }
+                },
             )
             tracker.on_order_update(update)
         return child
 
     monkeypatch.setattr(executor, "place_order", place)
-    terminal = parent.model_copy(update={"status": OrderStatus.CANCELED, "filled_volume": 2})
+    terminal = copy_data(parent, update={"status": OrderStatus.CANCELED, "filled_volume": 2})
 
     def cancel(_order_id):
         tracker.on_order_update(terminal)
@@ -101,7 +103,7 @@ def test_market_batch_stops_after_partial_submission(monkeypatch, recovery):
 
     monkeypatch.setattr(executor, "place_order", place)
     tracker._fallback_to_market_order()
-    terminal = parent.model_copy(update={"status": OrderStatus.CANCELED})
+    terminal = copy_data(parent, update={"status": OrderStatus.CANCELED})
     if recovery:
         with pytest.raises(CtpSessionRecoveryRequired):
             tracker.on_order_update(terminal)
@@ -120,7 +122,7 @@ def test_market_batch_records_unrepresentable_tail(monkeypatch):
     parent.volume = 5
     monkeypatch.setattr(executor, "get_order_volume_bounds", lambda *_: (3, 4), raising=False)
     tracker._fallback_to_market_order()
-    tracker.on_order_update(parent.model_copy(update={"status": OrderStatus.CANCELED}))
+    tracker.on_order_update(copy_data(parent, update={"status": OrderStatus.CANCELED}))
     assert [call["volume"] for call in executor.place_calls] == [4]
     assert executor.audit_events[-1]["details"]["fallback"]["remaining_volume"] == 1
 

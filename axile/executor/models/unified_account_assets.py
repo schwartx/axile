@@ -5,10 +5,11 @@
 """
 
 import math
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, cast
+from typing import Annotated, Any, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from msgspec import Meta
 from typing_extensions import override
 
 from axile.common.trade_channel import TradeChannel
@@ -47,7 +48,8 @@ class PositionDirection(str, Enum):
     NET = "净"
 
 
-class Position(BaseModel):
+@dataclass(kw_only=True)
+class Position:
     """
     统一持仓数据模型.
 
@@ -65,24 +67,16 @@ class Position(BaseModel):
         持仓方向。
     """
 
-    symbol: str = Field(..., description="品种代码（统一格式）")
-    volume: float = Field(..., description="持仓数量（统一为float类型）")
-    available_volume: float = Field(..., description="可用数量")
-    market_value: float | None = Field(..., description="持仓市值；缺少有效行情时为 None")
-    direction: PositionDirection = Field(..., description="持仓方向")
-    avg_price: float | None = Field(None, description="成本价")
+    symbol: Annotated[str, Meta(description="品种代码（统一格式）")]
+    volume: Annotated[float, Meta(description="持仓数量（统一为float类型）")]
+    available_volume: Annotated[float, Meta(description="可用数量")]
+    market_value: Annotated[float | None, Meta(description="持仓市值；缺少有效行情时为 None")]
+    direction: Annotated[PositionDirection, Meta(description="持仓方向")]
+    avg_price: Annotated[float | None, Meta(description="成本价")] = field(default=None)
 
     # 渠道特有数据
-    extra: ExtraData = Field(
-        default={},
-        description="渠道特有数据，包含原始数据和渠道特定字段",
-    )
-
-    model_config = ConfigDict(
-        use_enum_values=True,
-        validate_default=False,
-        validate_assignment=False,
-        extra="ignore",
+    extra: Annotated[ExtraData, Meta(description="渠道特有数据，包含原始数据和渠道特定字段")] = field(
+        default_factory=lambda: {}
     )
 
     @override
@@ -91,7 +85,8 @@ class Position(BaseModel):
         return f"Position(symbol={self.symbol}, volume={self.volume}, direction={self.direction})"
 
 
-class UnifiedAccountAssets(BaseModel):
+@dataclass(kw_only=True)
+class UnifiedAccountAssets:
     """
     统一账户资产快照模型.
 
@@ -115,33 +110,24 @@ class UnifiedAccountAssets(BaseModel):
     """
 
     # === 核心字段 ===
-    available_cash: float = Field(..., description="可用资金")
-    total_asset: float = Field(..., description="总资产")
-    market_value: float | None = Field(..., description="持仓市值；缺少有效行情时为 None")
-    positions: list[Position] = Field(default=[], description="持仓列表")
+    available_cash: Annotated[float, Meta(description="可用资金")]
+    total_asset: Annotated[float, Meta(description="总资产")]
+    market_value: Annotated[float | None, Meta(description="持仓市值；缺少有效行情时为 None")]
+    positions: Annotated[list[Position], Meta(description="持仓列表")] = field(default_factory=lambda: [])
 
     # === 账户级补充字段 ===
-    currency: str = Field(default="CNY", description="币种")
-    update_time: str = Field(
-        default_factory=_get_now_iso,
-        description="更新时间（ISO格式）",
-    )
-    source: str = Field(
-        default="real",
-        description="账户读取来源：real 或渠道自定义有效来源；assumed、unavailable、error 为降级来源，不提供持仓与权益事实。",
-    )
+    currency: Annotated[str, Meta(description="币种")] = field(default="CNY")
+    update_time: Annotated[str, Meta(description="更新时间（ISO格式）")] = field(default_factory=_get_now_iso)
+    source: Annotated[
+        str,
+        Meta(
+            description="账户读取来源：real 或渠道自定义有效来源；assumed、unavailable、error 为降级来源，不提供持仓与权益事实。"
+        ),
+    ] = field(default="real")
 
     # === 渠道特有数据 ===
-    extra: ExtraData = Field(
-        default={},
-        description="渠道特有数据，包含原始账户数据和渠道特定字段",
-    )
-
-    model_config = ConfigDict(
-        use_enum_values=True,
-        validate_default=False,
-        validate_assignment=False,
-        extra="ignore",
+    extra: Annotated[ExtraData, Meta(description="渠道特有数据，包含原始账户数据和渠道特定字段")] = field(
+        default_factory=lambda: {}
     )
 
     @classmethod
@@ -214,8 +200,8 @@ class UnifiedAccountAssets(BaseModel):
         if self.extra.get("total_asset_source") != "gm.cash.nav" or not isinstance(cash, dict):
             return False
         values: list[float] = []
-        for field in ("nav", "available", "order_frozen", "market_value"):
-            value = cash.get(field)
+        for name in ("nav", "available", "order_frozen", "market_value"):
+            value = cash.get(name)
             if isinstance(value, bool) or not isinstance(value, int | float):
                 return False
             number = float(value)
@@ -325,7 +311,7 @@ class UnifiedAccountAssets(BaseModel):
             positions = []
             for pos_data in positions_data:
                 # 创建pos_data的副本避免修改原始数据
-                pos_copy = dict(pos_data)
+                pos_copy = dict(cast("dict[str, Any]", pos_data))
 
                 # 统一volume类型为float
                 if isinstance(pos_copy.get("volume"), int):

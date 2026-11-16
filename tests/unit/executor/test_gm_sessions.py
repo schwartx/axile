@@ -6,6 +6,8 @@ from unittest.mock import Mock
 
 import pytest
 
+from axile.common.serialization import to_payload
+
 pytest.importorskip("gm.api")
 
 from axile.channels.gm_sessions import SHANGHAI, GMSessionSettings, gm_session_context
@@ -29,7 +31,7 @@ from tests.unit.executor.test_market_data_validation import quote
 def test_sdk_dequeue_rechecks_clock_for_both_order_and_cancel(monkeypatch):
     now = datetime(2026, 9, 1, 9, 19, tzinfo=SHANGHAI)
     context = gm_session_context(
-        GMSessionSettings(opening_cancelable={"enabled": True, "time": "09:15"}).model_dump(), now
+        to_payload(GMSessionSettings(opening_cancelable={"enabled": True, "time": "09:15"})), now
     )
     order = {
         "symbol": "SHSE.600000",
@@ -65,11 +67,11 @@ def test_auction_preserves_default_and_symbol_algorithms(symbol_override):
         connect=False,
     )
     settings = GMSessionSettings(opening_locked={"enabled": True, "time": "09:20"})
-    context = gm_session_context(settings.model_dump(), datetime(2026, 9, 1, 9, 20, tzinfo=SHANGHAI))
+    context = gm_session_context(to_payload(settings), datetime(2026, 9, 1, 9, 20, tzinfo=SHANGHAI))
     standard_input = UnifiedStandardInput.from_dict(
         {
             "channel_type": "gm",
-            "account_config": instance.account_config.model_dump(),
+            "account_config": to_payload(instance.account_config),
             "curr_target": {"600000.SH": 0.1},
             "algorithm": {"method": "SINGLE-MAKER" if symbol_override else "TWAP"},
             "symbol_algorithms": {"600000.SH": {"method": "TWAP"}} if symbol_override else {},
@@ -105,7 +107,7 @@ def test_execution_always_releases_phase_context(monkeypatch, cleanup, retain_ru
         connect=False,
     )
     context = gm_session_context(
-        GMSessionSettings(opening_locked={"enabled": True, "time": "09:20"}).model_dump(),
+        to_payload(GMSessionSettings(opening_locked={"enabled": True, "time": "09:20"})),
         datetime(2026, 9, 1, 9, 20, tzinfo=SHANGHAI),
     )
     request = {

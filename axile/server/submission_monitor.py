@@ -3,23 +3,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Annotated, Literal
 
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field
+from msgspec import Meta
 
+from axile.common.serialization import to_payload
 from axile.executor.algorithms.utils.clock import clock_now_ms
 from axile.server.native_store import native_operation
 from axile.server.order_submissions import submission_database
 
 
-class SubmissionMonitorUpdate(BaseModel):
+@dataclass(kw_only=True)
+class SubmissionMonitorUpdate:
     """两个自然日调用阈值；空值禁用，正整数启用。"""
 
-    model_config = ConfigDict(extra="forbid")
+    order_limit: Annotated[int, Meta(ge=1, le=1000000000)] | None = field(default=None)
+    combined_limit: Annotated[int, Meta(ge=1, le=1000000000)] | None = field(default=None)
 
-    order_limit: int | None = Field(default=None, strict=True, ge=1, le=1_000_000_000)
-    combined_limit: int | None = Field(default=None, strict=True, ge=1, le=1_000_000_000)
+    __forbid_unknown__ = True
 
 
 @dataclass(slots=True, kw_only=True)
@@ -78,7 +80,7 @@ async def save_submission_monitor(account_id: int, update: SubmissionMonitorUpda
     """保存后立即重评估；重复保存相同配置不制造新版本或重复预警。"""
     receipt = await native_operation(
         "save_submission_monitor",
-        {"account_id": account_id, **update.model_dump(), "timezone": timezone, "now_ms": clock_now_ms()},
+        {"account_id": account_id, **to_payload(update), "timezone": timezone, "now_ms": clock_now_ms()},
         database=submission_database(),
     )
     if receipt["changed"]:

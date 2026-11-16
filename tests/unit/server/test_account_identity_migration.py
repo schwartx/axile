@@ -5,6 +5,7 @@ from contextlib import closing
 
 import pytest
 
+from axile.common.serialization import to_payload
 from axile.server._native import _core
 from tests.conftest import initialize_native_database, native_store_call
 from tests.sqlite_oracle import connect as oracle_connect
@@ -16,7 +17,7 @@ _NOW = "2026-10-20T09:30:00+08:00"
 
 def _insert_0033_account(connection):
     account = build_account(id=7, portfolio_id=None, created_at=_NOW, updated_at=_NOW)
-    values = account.model_dump(mode="json")
+    values = to_payload(account, mode="json")
     names = (
         "id",
         "name",
@@ -87,7 +88,7 @@ def test_account_identity_upgrade_and_downgrade_preserve_schema_and_data(tmp_pat
             assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     native_store_call(path, "migration_upgrade", {})
     created = native_store_call(
-        path, "account_create", {"account": build_account(portfolio_id=None).model_dump(mode="json"), "now": _NOW}
+        path, "account_create", {"account": to_payload(build_account(portfolio_id=None), mode="json"), "now": _NOW}
     )["account"]
     with closing(oracle_connect(path)) as connection:
         assert connection.execute("SELECT * FROM account_identity_log").fetchall() == [(created["name"],)]
@@ -109,7 +110,7 @@ def test_account_identity_upgrade_skips_legacy_orphan_ids(tmp_path):
         )
     initialize_native_database(path)
     request = {
-        "account": build_account(portfolio_id=None).model_dump(mode="json"),
+        "account": to_payload(build_account(portfolio_id=None), mode="json"),
         "now": _NOW,
         "idempotency_key": "new-create",
     }

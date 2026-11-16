@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from axile.common.serialization import copy_data
 from axile.executor.ctp.ctp_execute import CtpRequestError, CtpSessionRecoveryRequired
 from axile.executor.models.unified_order import OrderDirection, OrderType
 from tests.unit.executor.ctp.test_connection_recovery import ScriptedBroker
@@ -39,7 +40,7 @@ def test_sizing_refreshes_price_when_callback_updates_planning_snapshot(broker):
     executor = broker.executor
     planning = executor.get_market_data(["ag2612"])
     original = planning["ag2612"]
-    executor._quotes["ag2612"] = original.model_copy(update={"last_price": 9001})
+    executor._quotes["ag2612"] = copy_data(original, update={"last_price": 9001})
     assets = executor._recovery_snapshot["assets"]
     result = executor.calculate_target_sizing({"ag2612": 0.5}, assets, planning, {}, {})["ag2612"]
     assert result.status == "SIZED"
@@ -51,7 +52,7 @@ def test_sizing_refreshes_price_when_callback_updates_planning_snapshot(broker):
 def test_sizing_does_not_refresh_from_stale_cache(broker):
     executor = broker.executor
     planning = executor.get_market_data(["ag2612"])
-    stale = planning["ag2612"].model_copy(deep=True)
+    stale = copy_data(planning["ag2612"], deep=True)
     stale.extra["received_at"] -= 10
     executor._quotes["ag2612"] = stale
     result = executor.calculate_target_sizing({"ag2612": 0.5}, executor._recovery_snapshot["assets"], planning, {}, {})[
@@ -63,12 +64,12 @@ def test_sizing_does_not_refresh_from_stale_cache(broker):
 def test_sizing_uses_same_snapshot_if_cache_changes_during_validation(broker, monkeypatch):
     executor = broker.executor
     planning = executor.get_market_data(["ag2612"])
-    selected = planning["ag2612"].model_copy(update={"last_price": 9001})
+    selected = copy_data(planning["ag2612"], update={"last_price": 9001})
     executor._quotes["ag2612"] = selected
     validate = executor._snapshot_quote_error
 
     def update_during_validation(symbol, quote):
-        executor._quotes[symbol] = selected.model_copy(update={"last_price": 9002})
+        executor._quotes[symbol] = copy_data(selected, update={"last_price": 9002})
         return validate(symbol, quote)
 
     monkeypatch.setattr(executor, "_snapshot_quote_error", update_during_validation)

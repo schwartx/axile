@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from axile.common.serialization import copy_data, from_payload, to_payload
 from axile.executor.order_submissions import OrderSubmissionFact, OrderSubmissionRecorder
 from axile.server import order_submissions as submissions
 from tests.conftest import native_store_call, require_native_store
@@ -125,7 +126,7 @@ def database(native_database: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     receipt = native_store_call(
         native_database,
         "account_create",
-        {"account": account.model_dump(mode="json"), "now": _NOW, "idempotency_key": None},
+        {"account": to_payload(account, mode="json"), "now": _NOW, "idempotency_key": None},
     )
     assert receipt["account"]["id"] == 1
     monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
@@ -377,13 +378,13 @@ def test_callback_before_sdk_return_and_duplicate_commits_keep_newest_fact(datab
 
     assert recorder.submit(send, symbol="A", order_id="o1", request_id=1) == 0
     first = _rows(database, "order_submission")[0]
-    fact = OrderSubmissionFact.model_validate_json(first["data"])
+    fact = from_payload(OrderSubmissionFact, json.loads(first["data"]))
     assert fact.revision == 2
     assert fact.send_status == "accepted"
     assert fact.broker_status == "rejected"
     for revision in (2, 0, 1, 2):
         submissions._save_fact(
-            str(database), fact.model_copy(update={"revision": revision, "broker_status": "acknowledged"})
+            str(database), copy_data(fact, update={"revision": revision, "broker_status": "acknowledged"})
         )
     recorder.broker_result("o1", rejected=False)
     assert _rows(database, "order_submission") == [first]

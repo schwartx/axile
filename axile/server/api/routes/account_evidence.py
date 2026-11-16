@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import date
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
+from msgspec import Meta
 from starlette.types import Receive, Scope, Send
 
 from axile.common.config import settings
+from axile.common.serialization import provided_fields
+from axile.server.api.inputs import json_body
 from axile.server.evidence.archive import EvidenceArchive, build_archive
 from axile.server.evidence.collect import collect_evidence
 from axile.server.evidence.logs import collect_logs
@@ -30,19 +33,25 @@ _RESPONSES: dict[int | str, dict[str, Any]] = {
 }
 
 
-class EvidenceExecutionSelection(BaseModel):
+@dataclass(kw_only=True)
+class EvidenceExecutionSelection:
     """限定同一账户的明确执行清单，防止同日范围无法拆分。"""
 
-    model_config = ConfigDict(extra="forbid")
-    execution_ids: list[StrictStr] = Field(min_length=1, max_length=100)
+    execution_ids: Annotated[list[str], Meta(min_length=1, max_length=100)]
 
-    @field_validator("execution_ids")
     @classmethod
     def validate_ids(cls, values: list[str]) -> list[str]:
         """拒绝重复、空白及过长标识，不修改历史标识。"""
         if any(not value.strip() or len(value) > 256 for value in values) or len(set(values)) != len(values):
             raise ValueError("execution_ids 须为不重复的非空标识，每项最多 256 字符")
         return values
+
+    __forbid_unknown__ = True
+
+    def validate(self) -> None:
+        """在输入入口检查本对象的业务约束。"""
+        if "execution_ids" in provided_fields(self):
+            object.__setattr__(self, "execution_ids", self.validate_ids(self.execution_ids))
 
 
 class EvidenceFileResponse(FileResponse):
@@ -131,7 +140,7 @@ async def export_account_evidence(
 @router.post("/{account_id}/evidence", response_class=FileResponse, responses=_RESPONSES, response_model=None)
 async def export_selected_execution_evidence(
     account_id: int,
-    selection: EvidenceExecutionSelection,
+    selection: Annotated[EvidenceExecutionSelection, Depends(json_body(EvidenceExecutionSelection))],
     profile: EvidenceProfile = EvidenceProfile.SHAREABLE,
     include_logs: bool = False,
 ) -> FileResponse:

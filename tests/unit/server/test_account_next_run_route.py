@@ -7,6 +7,7 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from axile.common.serialization import to_payload
 from axile.server.api.deps import get_scheduler
 from axile.server.api.routes import account_crud
 from tests.unit.server.test_account_control_routes import _build_account
@@ -30,7 +31,7 @@ def test_next_run_time_returns_three_real_trigger_times(monkeypatch) -> None:
     trigger = CronTrigger(hour=9, minute=3, timezone="Asia/Shanghai")
     next_run = datetime.fromisoformat("2026-07-02T09:03:00+08:00")
     operation = AsyncMock(
-        return_value={"account": _build_account().model_dump(mode="json"), "pending_scheduled_at": []}
+        return_value={"account": to_payload(_build_account(), mode="json"), "pending_scheduled_at": []}
     )
     monkeypatch.setattr(account_crud, "native_operation", operation)
     app = FastAPI()

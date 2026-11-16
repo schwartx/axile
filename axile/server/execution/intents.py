@@ -8,6 +8,7 @@ from typing import Any, Literal, cast
 import loguru
 
 from axile.channels.gm_sessions import GMSessionSettings
+from axile.common.serialization import to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
 from axile.server._native import _core
@@ -310,7 +311,7 @@ async def _insert_intent(
             or trigger_source == "scheduler"
             or (phase in AUCTION_PHASES and getattr(sessions, phase).enabled)
         ):
-            context = context or gm_session_context(sessions.model_dump(), now)
+            context = context or gm_session_context(to_payload(sessions), now)
             check_gm_operation(now, context=context)
             payload = {**payload, "gm_session": context}
     algorithm = resolve_execution_algorithm_name(

@@ -40,9 +40,7 @@ def test_only_trustworthy_zero_lots_without_gross_positions_skip_quote(source, h
     owner = Owner()
     engine = ExecutionEngine(owner, runtime=object())
     positions = (
-        [Position(symbol="old", direction="多头", volume=1, available_volume=1, price=100, market_value=100)]
-        if held
-        else []
+        [Position(symbol="old", direction="多头", volume=1, available_volume=1, market_value=100)] if held else []
     )
     assets = UnifiedAccountAssets(
         available_cash=1000, total_asset=1000, market_value=100 if held else 0, positions=positions, source=source

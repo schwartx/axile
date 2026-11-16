@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 import math
 import traceback
+from dataclasses import is_dataclass
 from typing import Any
 
-from pydantic import BaseModel
-
+from axile.common.serialization import to_payload
 from axile.executor.connection_state import connection_error_scope
 
 
@@ -28,7 +28,7 @@ def json_error_value(value: Any) -> Any:
     return json.loads(
         json.dumps(
             _finite_error_values(value),
-            default=lambda item: item.model_dump(mode="json") if isinstance(item, BaseModel) else str(item),
+            default=lambda item: to_payload(item, mode="json") if is_dataclass(item) else str(item),
             ensure_ascii=False,
             allow_nan=False,
         )

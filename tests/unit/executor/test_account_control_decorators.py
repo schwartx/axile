@@ -7,6 +7,7 @@ from datetime import datetime
 import pytest
 
 import axile.executor.account_control.decorators as decorators_module
+from axile.common.serialization import from_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.decorators import controlled_operation
 from axile.executor.account_control.guard import AccountControlGuard
@@ -65,7 +66,8 @@ def test_controlled_operation_registers_defaults_and_records_single_event() -> N
         channel=TradeChannel("external"),
         policy=resolve_account_control_policy(
             "default",
-            AccountControlOverride.model_validate(
+            from_payload(
+                AccountControlOverride,
                 {
                     "operations": {
                         "demo_place": {
@@ -73,7 +75,7 @@ def test_controlled_operation_registers_defaults_and_records_single_event() -> N
                             "symbol": {"min_interval_ms": {"limit": 300, "on_trigger": "wait"}},
                         }
                     }
-                }
+                },
             ),
         ),
         baseline=AccountControlCounterSnapshot(),

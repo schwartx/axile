@@ -8,6 +8,7 @@ from unittest.mock import Mock
 
 import sqlalchemy as sa
 
+from axile.common.serialization import from_payload
 from axile.server._native import _core
 from axile.server.api.routes import account_schedule
 from tests.fixtures.rust_store.execution_rows import ExecuteRecord
@@ -90,7 +91,7 @@ def test_mixed_pages_keep_ties_counts_filters_and_existing_projection(tmp_path, 
                     {**head, "symbol_results": {"A": {"outcome": None}}, "trade_count": projected["tradeCount"]}
                 )
                 expected[source.id] = _compact_execution_activity(
-                    ExecuteRecord.model_validate(head), summary, trades, source.result["account_assets"]["total_asset"]
+                    from_payload(ExecuteRecord, head), summary, trades, source.result["account_assets"]["total_asset"]
                 )
             order = [
                 ("execution", 6),

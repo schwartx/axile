@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import pytest
 
+from axile.common.serialization import from_payload, to_payload
 from axile.domain.execution import ExecutionArtifactType
 from axile.server._native import _core
 from axile.server.business_facts.artifacts import make_artifact_reference
@@ -125,7 +126,8 @@ def _freeze(path, *, account_id=1, execution_id="facts-one", payload=None, creat
 
 
 def _store(path, *, execution_id="facts-one", account_id=1, payload=None, result=None, is_success=1):
-    return ExecuteRecord.model_validate(
+    return from_payload(
+        ExecuteRecord,
         persist_record_fixture(
             path,
             {
@@ -138,7 +140,7 @@ def _store(path, *, execution_id="facts-one", account_id=1, payload=None, result
                 "raw_input": _input() if payload is None else payload,
                 "raw_result": _result() if result is None else result,
             },
-        )
+        ),
     )
 
 
@@ -158,7 +160,7 @@ def _append_artifact(path, execution_id, kind, content, schema_version=3):
         content=content,
         created_at=_CREATED,
     )
-    assert native_store_call(path, "append_execution_artifact", artifact.model_dump(mode="json"))
+    assert native_store_call(path, "append_execution_artifact", to_payload(artifact, mode="json"))
     return _artifact(path, execution_id)
 
 
@@ -166,7 +168,7 @@ def _artifact(path, execution_id):
     (row,) = _rows(path, "SELECT * FROM execution_artifact WHERE execution_id=?", (execution_id,))
     row["content"] = json.loads(row["content"])
     row["artifact_type"] = row["artifact_type"].lower()
-    return ExecutionArtifact.model_validate(row)
+    return from_payload(ExecutionArtifact, row)
 
 
 def _resolved(path, execution_id):

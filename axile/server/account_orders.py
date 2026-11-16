@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from loguru import logger
 
+from axile.common.serialization import to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.clock import clock_now_iso
 from axile.executor.ctp_input_validation import validate_cancel_id
@@ -291,7 +292,7 @@ async def _cancel(account: AccountContext, state: _OrdersState, payload: OrderCa
             "message": "正在提交撤单请求",
             "requested_at": clock_now_iso(),
             "order": last,
-            **payload.model_dump(),
+            **to_payload(payload),
         }
         state.receipts[payload.request_id] = receipt
         try:
@@ -361,5 +362,5 @@ async def cancel_account_order(account: AccountContext, payload: OrderCancelRequ
             "message": "撤单结果待确认；未自动重试",
             "requested_at": clock_now_iso(),
             "order": previous["order"] if previous is not None else None,
-            **payload.model_dump(),
+            **to_payload(payload),
         }
