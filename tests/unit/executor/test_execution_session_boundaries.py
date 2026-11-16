@@ -6,7 +6,7 @@ from typing import Any, cast
 
 import pytest
 
-from axile.common.serialization import from_payload
+from axile.common.serialization import copy_data, from_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor.base import AbstractExecutor
 from axile.executor.abstract_executor.capability import AbstractExecutorCapabilityMixin
@@ -445,7 +445,7 @@ def test_price_callback_controls_snapshot_copy_and_restores_context(monkeypatch,
     monkeypatch.setattr(owner, "register_price_callback_for_symbol", lambda cb, symbol: registered.append(cb))
     monkeypatch.setattr(owner, "unregister_price_callback_for_symbol", lambda cb, symbol: registered.remove(cb))
     quote = owner.get_market_data([session.symbol])[session.symbol]
-    outer = quote.model_copy(deep=True)
+    outer = copy_data(quote, deep=True)
     original_clone = execution_session.clone_price_data
     copies = []
 
