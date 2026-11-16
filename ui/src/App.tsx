@@ -1,4 +1,5 @@
 import { AccountEditGuard } from '@/features/account/AccountEditGuard'
+import { LocalEditorPage } from '@/features/editor/LocalEditorPage'
 import { useEffect, useState } from 'react'
 import { createBrowserRouter, Navigate, Outlet, RouterProvider, ScrollRestoration } from 'react-router'
 import { AccountConnectionAlerts } from '@/features/account/AccountConnectionAlerts'
@@ -42,6 +43,8 @@ import {
   AcctConfirm,
 } from '@/pages/setup/AccountSteps'
 
+const offlineEditorPath = /^(\/|\/portfolios\/[^/]+\/edit|\/accounts\/[^/]+\/edit\/notification|\/settings\/notification)$/
+
 /** 已完成初始化后的正常应用：单点驱动共享领域状态轮询 + 执行实时态 SSE + 滚动复位/恢复。跨两个布局分支。 */
 function ConfiguredApp() {
   useChannelCatalogSync()
@@ -70,12 +73,13 @@ function Splash() {
  * 未完成初始化时整屏渲染初始化向导；否则进入正常应用。
  */
 function AppRoot() {
-  const [phase, setPhase] = useState<'loading' | 'setup' | 'ready'>('loading')
+  const [phase, setPhase] = useState<'loading' | 'setup' | 'ready' | 'offline'>(navigator.onLine ? 'loading' : offlineEditorPath.test(window.location.pathname) ? 'offline' : 'ready')
   const [initial, setInitial] = useState<InitValues | null>(null)
 
   useEffect(() => {
+    if (!navigator.onLine) return
     let alive = true
-    initStatus()
+    initStatus(AbortSignal.timeout(3000))
       .then((s) => {
         if (!alive) return
         document.title = browserTitle(s.values.browser_title ?? '', window.location)
@@ -84,7 +88,7 @@ function AppRoot() {
       })
       .catch(() => {
         // 探测失败（如后端重启中）时退回正常应用，由其自身错误提示处理。
-        if (alive) setPhase('ready')
+        if (alive) setPhase(offlineEditorPath.test(window.location.pathname) ? 'offline' : 'ready')
       })
     return () => {
       alive = false
@@ -92,11 +96,13 @@ function AppRoot() {
   }, [])
 
   if (phase === 'loading') return <Splash />
+  if (phase === 'offline') return <LocalEditorPage />
   if (phase === 'setup' && initial) return <InitWizard initial={initial} />
   return <ConfiguredApp />
 }
 
 const router = createBrowserRouter([
+  { path: 'editor', element: <LocalEditorPage /> },
   {
     element: <AppRoot />,
     children: [

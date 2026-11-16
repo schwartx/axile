@@ -79,16 +79,22 @@ def test_no_budget_reset_on_retry_or_new_session_and_expiry_does_not_release_act
     assert readers.control(7, "E", {**other, "operation": "status"}) == {"state": "retired", "estimated": True}
 
 
-def test_startup_waits_entire_window_and_tokens_do_not_cross_owner_lifetimes():
+def test_startup_reads_immediately_with_account_rate_and_owner_fences(monkeypatch):
+    monkeypatch.setattr(reader, "WINDOW_BYTES", 1)
     clock = [0.0]
     first = Readers(lambda: clock[0])
     token = {**first.open(7, "E"), "root_seq": 1, "attempt": 1}
-    with pytest.raises(ReadError, match="REPLAY_READ_WAIT"):
-        first.admit(7, "E", token, 1)
+    session, task = first.admit(7, "E", token, 1)
+    first.release(session, task, 1, 1, 100)
+    other = {**first.open(7, "E"), "root_seq": 1, "attempt": 1}
+    with pytest.raises(ReadError, match="REPLAY_READ_RATE"):
+        first.admit(7, "E", other, 1)
     second = Readers(lambda: clock[0])
-    clock[0] = 12
     with pytest.raises(ReadError, match="REPLAY_READER_EPOCH"):
         second.admit(7, "E", token, 1)
+    fresh = {**second.open(7, "E"), "root_seq": 1, "attempt": 1}
+    session, task = second.admit(7, "E", fresh, 1)
+    second.release(session, task, 1, 1, 100)
 
 
 def test_account_index_work_is_not_reset_by_new_session(owner, monkeypatch):

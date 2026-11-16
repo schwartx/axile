@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import tempfile
@@ -12,6 +13,8 @@ from pathlib import Path
 
 def main() -> None:
     """断言 wheel 内容和运行能力与构建源码一致。"""
+    import zstandard
+
     import axile
     from axile.server._native import _core
 
@@ -30,6 +33,16 @@ def main() -> None:
     static = package / "server" / "_static"
     assert (static / "index.html").is_file()
     assert list(static.rglob("*.wasm")), "wheel 缺少回放 WASM"
+    assert (static / "editor-sw.js").is_file(), "wheel 缺少离线编辑器入口"
+    assert list(static.rglob("ty_wasm_bg.wasm-*.bin")), "wheel 缺少编辑器 WASM"
+    assert list(static.rglob("library.json-*.bin")), "wheel 缺少离线类型和源码"
+    assert list(static.rglob("python.worker-*.js")), "wheel 缺少本地语言服务 Worker"
+    decoder = zstandard.ZstdDecompressor()
+    editor_wasm = next(static.rglob("ty_wasm_bg.wasm-*.bin"))
+    assert decoder.decompress(editor_wasm.read_bytes()).startswith(b"\x00asm"), "编辑器 WASM 不是有效 zstd 资源"
+    library = json.loads(decoder.decompress(next(static.rglob("library.json-*.bin")).read_bytes()))
+    assert "/lib/axile/server/context.py" in library["files"]
+    assert library["versions"]["axile"] == expected
 
     with tempfile.TemporaryDirectory(prefix="axile-release-verify-") as directory:
         runtime = Path(directory)
@@ -59,6 +72,9 @@ def main() -> None:
             assert resources, "页面未引用内嵌资源"
             for resource in resources:
                 assert client.get(resource).status_code == 200, resource
+            worker = client.get("/editor-sw.js")
+            assert worker.status_code == 200
+            assert "javascript" in worker.headers["content-type"]
         _core.close_database(database)
     print(f"Verified axile=={expected}: {package}; native schemas, migrations, UI and WASM")
 

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'react-router'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
-import { usePythonDraft, usePythonRun, usePythonSave } from '@/components/ui/pythonWorkbenchState'
+import { assertPythonBaseline, usePythonDraft, usePythonRun, usePythonSave } from '@/components/ui/pythonWorkbenchState'
 import { NotificationWorkbench } from '@/features/notification/NotificationWorkbench'
 import { AccountPageTitle } from '@/features/account/pageHead'
 import { EditError, EditLoading } from '@/features/account/editUi'
@@ -73,6 +73,8 @@ export function AccountEditNotificationPage() {
     await trial.run()
   }
   const save = () => saveState.save(dirty && !trial.running, async () => {
+    const current = await getAccount(accountId)
+    assertPythonBaseline(current.execution_notification_code, draftState.baseline)
     await updateAccount(accountId, { execution_notification_code: code.trim() ? code : null })
     setSavedCode(code)
     toast(code.trim() ? '执行通知函数已保存' : '执行通知已关闭')
@@ -95,6 +97,7 @@ export function AccountEditNotificationPage() {
         {code.trim() && code.trim() !== defaultCode?.trim() && <p className="mt-2 text-[13px] text-ink-3">保存自定义通知会清除账户的飞书 Webhook。试跑与保存后 AXILE_ACCOUNT_FEISHU_KEY 均为空，通知渠道和凭据需由函数自行配置。</p>}
       </>}
       code={code}
+      savedCode={draftState.baseline ?? ''}
       onChange={(value) => { setCode(value); saveState.clearError() }}
       defaultCode={templateLoading ? null : defaultCode}
       onReset={() => { setCode(defaultCode); saveState.clearError() }}

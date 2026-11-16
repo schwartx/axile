@@ -2,10 +2,10 @@
 
 import pytest
 
-from axile.server.execution_replay.reader import WINDOW, ReadError, Readers
+from axile.server.execution_replay.reader import ReadError, Readers
 
 
-def test_restart_requires_signed_old_owner_and_waits_without_refilling_root(tmp_path):
+def test_restart_resumes_immediately_with_signed_old_owner_without_refilling_root(tmp_path):
     clock = [0.0]
     old = Readers(lambda: clock[0])
     token = old.open(7, "E", tmp_path)
@@ -34,13 +34,9 @@ def test_restart_requires_signed_old_owner_and_waits_without_refilling_root(tmp_
     )
     root = new.sessions[resumed["session"]].root
     assert root.bytes == 80 and root.index_steps == 300 and root.started == 7
-    assert resumed["recovery_wait_seconds"] == WINDOW + 1
-    with pytest.raises(ReadError, match="READ_WAIT"):
-        new.admit(7, "E", {**resumed, "root_seq": 1, "attempt": 2}, 10)
     assert new.control(7, "E", {**token, "operation": "status", "root_seq": 1})["old_owner_stopped"]
     with pytest.raises(ReadError, match="STOP_PROOF"):
         new.control(7, "E", {**token, "session_proof": "forged", "operation": "status", "root_seq": 1})
-    clock[0] += WINDOW + 1
     session, task = new.admit(7, "E", {**resumed, "root_seq": 1, "attempt": 2}, 10)
     new.release(session, task, 10, 5, 100)
     assert task.bytes == 85 and task.index_steps == 400

@@ -100,10 +100,10 @@ class Readers:
 
     def __init__(self, now=time.monotonic):
         self.now = now
-        self.started = now()
         self.epoch = uuid4().hex
         self.lock = threading.RLock()
         self.sessions: dict[str, ReadSession] = {}
+        # shortcut: 速率桶仅保存在进程内；需要跨重启限流时再持久化。
         self.accounts: dict[int, Account] = {}
         self._owner = None
         self._owner_root: str | None = None
@@ -238,7 +238,6 @@ class Readers:
                 "session": sid,
                 "session_proof": self.proof(account, execution, self.epoch, sid),
                 "lease_seconds": LEASE,
-                "recovery_wait_seconds": max(0, WINDOW + 1 - (self.now() - self.started)),
             }
 
     def _claim_owner(self, root_path: str | Path) -> None:
@@ -272,8 +271,6 @@ class Readers:
                 os.fsync(fd)
             finally:
                 os.close(fd)
-        # Start the conservative recovery window only after every old owner's job released its lock.
-        self.started = self.now()
 
     def _expire(self) -> None:
         for sid, session in list(self.sessions.items()):
@@ -324,7 +321,6 @@ class Readers:
                     "state": "retired",
                     "estimated": True,
                     "old_owner_stopped": True,
-                    "recovery_wait_seconds": max(0, WINDOW + 1 - (self.now() - self.started)),
                 }
             owner = self.accounts.get(account)
             if owner is not None:
@@ -403,11 +399,7 @@ class Readers:
             owner = self.accounts[account]
             owner.buckets = {s: b for s, b in owner.buckets.items() if self.now() - s < WINDOW + 1}
             owner.step_buckets = {s: n for s, n in owner.step_buckets.items() if self.now() - s < WINDOW + 1}
-            if (
-                self.now() - self.started < WINDOW + 1
-                or owner.active >= 2
-                or sum(a.active for a in self.accounts.values()) >= 4
-            ):
+            if owner.active >= 2 or sum(a.active for a in self.accounts.values()) >= 4:
                 raise ReadError("REPLAY_READ_WAIT", 429)
             if sum(owner.buckets.values()) + credit > WINDOW_BYTES:
                 raise ReadError("REPLAY_READ_RATE", 429)
@@ -538,7 +530,8 @@ def metadata(db, request: dict, work=lambda amount, read_bytes=0: None) -> dict:
             symbols = [s[0] for s in db.rows("recording_symbols", [row["id"], row["seq"]])]
             recordings.append(
                 {
-                    **dict(row),
+                    **{key: row[key] for key in row.keys() if key != "context"},
+                    "context": json.loads(row["context"]) if "context" in row.keys() else {},
                     "start_us": start[0] if start else None,
                     "streams": streams,
                     "symbols": symbols[:128],
@@ -568,6 +561,16 @@ def metadata(db, request: dict, work=lambda amount, read_bytes=0: None) -> dict:
     if frozen is None or through != frozen["seq"]:
         raise ReadError("REPLAY_SOURCE_COMMIT")
     row = frozen
+    if request.get("operation") == "display-blocks":
+        from axile.server.execution_replay.raw_range import display_blocks
+
+        return {
+            **display_blocks(db, request),
+            "recording_id": recording,
+            "through_seq": through,
+            "commit_id": commit,
+            "index_generation": generation,
+        }
     if request.get("operation") in {"range-blocks", "business-blocks"}:
         from axile.server.execution_replay.raw_range import locations
 

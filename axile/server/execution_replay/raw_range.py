@@ -4,6 +4,44 @@ from axile.server.execution_replay.raw_index import _stream_ids, integer
 from axile.server.execution_replay.reader import ReadError
 
 
+def display_blocks(db, request):
+    """跨流合并所选行情与业务前史，每页最多 128 块。"""
+    recording, through = request["recording"], request["through_seq"]
+    after = request.get("after", [0, 0])
+    if not isinstance(after, list) or len(after) != 2:
+        raise ReadError("REPLAY_CURSOR_INVALID", 422)
+    stream = integer(after[0], maximum=65535)
+    sequence = integer(after[1], maximum=through)
+    symbols = request.get("symbols", [])
+    if (
+        not isinstance(symbols, list)
+        or len(symbols) > 128
+        or any(not isinstance(symbol, str) or not 1 <= len(symbol.encode()) <= 1024 for symbol in symbols)
+    ):
+        raise ReadError("REPLAY_SCOPE_INVALID", 422)
+    sources = db.rows("recording_streams", [recording, through])
+    if len(sources) > 128:
+        raise ReadError("REPLAY_DEPENDENCY_WORKING_SET", 413)
+    rows = []
+    for source in sources:
+        if source["id"] < stream:
+            continue
+        topic = source["topic"]
+        if symbols and topic.startswith(("/quote/", "/market_trade/")) and topic.split("/", 2)[2] not in symbols:
+            continue
+        rows.extend(
+            dict(row)
+            for row in db.rows(
+                "business_blocks",
+                [recording, source["id"], sequence if source["id"] == stream else 0, through, 129 - len(rows)],
+            )
+        )
+        if len(rows) == 129:
+            break
+    page = rows[:128]
+    return {"blocks": page, "next": [page[-1]["stream"], page[-1]["first_seq"]] if len(rows) > 128 else None}
+
+
 def locations(db, request, work):
     """Return the quote seed and indexed range without materializing its observations."""
     recording, cutoff = request["recording"], integer(request.get("cutoff_seq"), maximum=request["through_seq"])

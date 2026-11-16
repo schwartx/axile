@@ -8,12 +8,13 @@ import { PythonWorkbenchPane } from '@/components/ui/PythonWorkbenchPane'
 import { WorkbenchPanel } from '@/components/ui/WorkbenchPanel'
 import type { PythonSaveAction } from '@/components/ui/pythonSaveAction'
 
-export function NotificationWorkbench({ kind, storageKey, header, controls, code, onChange, defaultCode, onReset, running, result, message, stale, onRun, saveAction, docHref, runDisabled = false }: {
+export function NotificationWorkbench({ kind, storageKey, header, controls, code, savedCode, onChange, defaultCode, onReset, running, result, message, stale, onRun, saveAction, docHref, runDisabled = false }: {
   kind: 'account_notification' | 'system_notification'
   storageKey: string
   header: ReactNode
   controls?: ReactNode
   code: string
+  savedCode?: string
   onChange: (code: string) => void
   defaultCode: string | null
   onReset: () => void
@@ -65,7 +66,7 @@ export function NotificationWorkbench({ kind, storageKey, header, controls, code
         </div>
       )}
     >
-      <PythonWorkbenchPane kind={kind} editorRef={editorRef} statusTarget={editorStatus} storageKey={`${storageKey}.editorSplit`} title="通知函数" dirty={saveAction.dirty} docHref={docHref} code={code} onChange={onChange} running={running} runDisabled={saveAction.saving || runDisabled} stale={stale} result={result} onRun={run} onResizeChange={setResizing} />
+      <PythonWorkbenchPane kind={kind} editorRef={editorRef} statusTarget={editorStatus} storageKey={`${storageKey}.editorSplit`} title="通知函数" dirty={saveAction.dirty} docHref={docHref} code={code} savedCode={savedCode} onChange={onChange} running={running} runDisabled={saveAction.saving || runDisabled} stale={stale} result={result} onRun={run} onResizeChange={setResizing} />
     </PythonWorkbench>
   )
 }

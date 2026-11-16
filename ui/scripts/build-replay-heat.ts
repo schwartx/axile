@@ -9,7 +9,7 @@ const run = (cmd: string[], extra: Record<string, string> = {}) => {
   if (result.exitCode) process.exit(result.exitCode)
 }
 const version = Bun.spawnSync(['wasm-bindgen', '--version']).stdout.toString().trim()
-if (version !== 'wasm-bindgen 0.2.128') throw Error('Install wasm-bindgen-cli 0.2.128 and rustup target add wasm32-unknown-unknown')
+if (version !== 'wasm-bindgen 0.2.130') throw Error('Install wasm-bindgen-cli 0.2.130 and rustup target add wasm32-unknown-unknown')
 run(['cargo', 'build', '--manifest-path', 'rust/replay-heat/Cargo.toml', '--target', 'wasm32-unknown-unknown', '--release', '--locked'])
 const output = resolve(root, 'ui/src/features/replay/heat-wasm')
 mkdirSync(output, { recursive: true })

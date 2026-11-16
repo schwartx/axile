@@ -42,6 +42,7 @@ export function SystemEditNotificationPage() {
   return (
     <NotificationWorkbench
       kind="system_notification" storageKey="axon.systemNotificationWorkbench"
+      savedCode={baseline.code}
       header={<>
         <ErrorNotice intent="read" hasData title="系统告警配置读取失败" error={state.loadError} onRetry={state.reload} />
         <ErrorNotice intent="read" hasData title="系统告警模板读取失败" error={templateError} onRetry={loadTemplate} />

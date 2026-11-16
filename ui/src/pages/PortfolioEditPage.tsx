@@ -16,7 +16,7 @@ import { Tooltip } from '@/components/ui/Tooltip'
 import { ConfirmModal, type ConfirmSpec } from '@/components/ui/ConfirmModal'
 import type { PythonEditorHandle } from '@/components/ui/PythonFunctionEditor'
 import { PythonWorkbench } from '@/components/ui/PythonWorkbench'
-import { usePythonDraft, usePythonSave } from '@/components/ui/pythonWorkbenchState'
+import { assertPythonBaseline, usePythonDraft, usePythonSave } from '@/components/ui/pythonWorkbenchState'
 import { PythonWorkbenchPane } from '@/components/ui/PythonWorkbenchPane'
 import { PythonRunPanel } from '@/components/ui/PythonRunPanel'
 import { WorkbenchPanel } from '@/components/ui/WorkbenchPanel'
@@ -274,6 +274,8 @@ export function PortfolioEditPage() {
     const saveBlocked = !name.trim() || !code.trim()
     if (saveBlocked || currentSyntaxError || calc.validating || saving || !dirty) return
     await saveState.save(true, async () => {
+      const current = await getPortfolio(portfolioId)
+      assertPythonBaseline(current.custom_calc_py_code, original.code)
       await updatePortfolio(portfolioId, { name: name.trim(), custom_calc_py_code: code })
       toast('组合已更新')
       setOriginal({ name: name.trim(), code })
@@ -544,6 +546,7 @@ export function PortfolioEditPage() {
           dirty={dirty}
           docHref="/docs/custom-calc"
           code={code}
+          savedCode={original.code}
           onChange={(value) => {
             setCode(value)
             saveState.clearError()

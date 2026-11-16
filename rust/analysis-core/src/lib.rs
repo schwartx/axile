@@ -1,6 +1,5 @@
 //! Pure numeric analysis shared by the native service and browser WASM.
 pub mod account;
-pub mod book;
 pub mod cost;
 pub mod equity;
 pub mod replay;

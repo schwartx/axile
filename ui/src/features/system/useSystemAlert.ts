@@ -1,7 +1,7 @@
 /** 草稿只存内存；系统配置与函数工作台共享，跨页编辑不丢失待保存内容。 */
 import { useEffect } from 'react'
 import { create } from 'zustand'
-import { usePythonSave } from '@/components/ui/pythonWorkbenchState'
+import { assertPythonBaseline, usePythonSave } from '@/components/ui/pythonWorkbenchState'
 import { initStatus, saveExecutionAlert } from '@/lib/api/init'
 import { usePolling } from '@/lib/hooks/usePolling'
 import { useToastStore } from '@/stores/ui'
@@ -40,6 +40,9 @@ export function useSystemAlert() {
   const blocked = state.draft?.mode === 'function' && !state.draft.code.trim()
   const save = (allowed = true) => saveState.save(dirty && !blocked && allowed && !loading, async () => {
     const submitted = useAlertStore.getState().draft!
+    const baselineCode = useAlertStore.getState().baseline?.code ?? ''
+    const current = await initStatus()
+    assertPythonBaseline(current.values.system_execution_notification_code, baselineCode)
     const key = systemAlertKey(submitted)
     const result = await saveExecutionAlert(key, submitted.mode, submitted.code)
     if (!result.ok) throw new Error(result.message)

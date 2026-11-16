@@ -87,6 +87,7 @@ async def replay_raw(execution_id: str, operation: str, request: Request):
             "market-blocks",
             "market-links",
             "range-blocks",
+            "display-blocks",
             "business-blocks",
         }:
             raise HTTPException(404, detail="REPLAY_OPERATION")

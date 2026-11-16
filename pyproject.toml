@@ -17,8 +17,6 @@ dependencies = [
     "shinny-calendar>=1.0.2026,<2",
     "typer>=0.20.1",
     "tomlkit>=0.15.0",
-    "ty>=0.0.83,<0.1",
-    "ruff>=0.11,<1",
     "requests>=2.32.3",
     "msgspec>=0.19,<1",
 ]
@@ -48,7 +46,7 @@ dev = [
     "psutil>=7.0.0",
     "pytest>=8.4.1",
     "pytest-cov>=7.0.0",
-    "ruff>=0.11.0",
+    "ruff>=0.11,<1",
 ]
 
 [project.scripts]

@@ -43,6 +43,11 @@ export function usePythonSave() {
   return { saving, error, clearError, save }
 }
 
+/** Re-read before submitting a recovered draft; never overwrite a known newer server version. */
+export function assertPythonBaseline(current: string | null, baseline: string | null) {
+  if ((current ?? '') !== (baseline ?? '')) throw new Error('服务器函数已更新。当前代码已保留，请重新打开原页面处理差异后再保存。')
+}
+
 export function pythonRunIsStale(result: unknown, ranInput: string | null, input: string) {
   return result != null && ranInput !== input
 }

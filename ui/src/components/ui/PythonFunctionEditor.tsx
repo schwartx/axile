@@ -2,7 +2,7 @@ import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 import { PythonCheckStatus } from '@/components/ui/PythonCheckStatus'
 import { type PythonChecks } from '@/components/ui/pythonChecks'
-import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode, type Ref } from 'react'
+import { useCallback, useEffect, useId, useImperativeHandle, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode, type Ref } from 'react'
 import { createPortal } from 'react-dom'
 import { python } from '@codemirror/lang-python'
 import { linter, forceLinting, forEachDiagnostic, type Diagnostic } from '@codemirror/lint'
@@ -21,7 +21,6 @@ import type { DocumentSymbol, SymbolInformation, Range } from 'vscode-languagese
 import { PythonSaveBar } from '@/components/ui/PythonSaveBar'
 import { usePythonSaveShortcut, type PythonSaveAction } from '@/components/ui/pythonSaveAction'
 import { editingExtensions, isMac } from '@/components/ui/pythonEditorExtensions'
-import { apiSend } from '@/lib/api/client'
 import { PythonSourcePreview, type SourceTab } from '@/components/ui/PythonSourcePreview'
 import { quickFix, renamePythonSymbol } from '@/components/ui/pythonLanguageFeatures'
 import { jumpToDefinition, findReferences } from '@codemirror/lsp-client'
@@ -30,6 +29,14 @@ import { pythonEditorZoomKeys, usePythonEditorFontSize } from '@/components/ui/p
 import { pythonStickyScroll } from '@/components/ui/pythonStickyScroll'
 import { centeredFoldGutter, foldedLineHighlight } from '@/components/ui/pythonEditorReading'
 import { PythonSymbolTree, symbolPath } from '@/components/ui/PythonSymbolTree'
+import { useLocalDraft } from '@/features/editor/useLocalDraft'
+import { downloadCode } from '@/features/editor/drafts'
+import { useOfflineEditor } from '@/features/editor/offline'
+import { useWasmResource } from '@/lib/wasmResources'
+import { setEditorWasmEnabled, useEditorWasmEnabled } from '@/features/editor/wasmPreference'
+import { Tooltip } from '@/components/ui/Tooltip'
+import { AccessibilitySwitch } from '@/components/ui/AccessibilitySwitch'
+import { WasmDownloadProgress, downloadSize } from '@/components/ui/WasmDownloadProgress'
 
 export interface PythonProblem { line: number; message: string; source: string; severity: string }
 const runtimeChanged = StateEffect.define<null>()
@@ -114,6 +121,8 @@ export function PythonRunResultBody({
 export function PythonFunctionEditor({
   kind,
   code,
+  savedCode,
+  draftKey,
   onChange,
   running,
   runDisabled = false,
@@ -141,6 +150,8 @@ export function PythonFunctionEditor({
 }: {
   kind: PythonEditorKind
   code: string
+  savedCode?: string
+  draftKey?: string
   onChange: (code: string) => void
   running: boolean
   /** 保存等外部操作期间阻止试跑；按钮和 Ctrl/Cmd+Enter 使用同一条件。 */
@@ -172,6 +183,18 @@ export function PythonFunctionEditor({
   statusTarget?: HTMLElement | null
 }) {
   const cmRef = useRef<ReactCodeMirrorRef>(null)
+  const initialCode = useRef(code)
+  const localDraft = useLocalDraft(kind, code, savedCode ?? initialCode.current, onChange, draftKey)
+  const offlineStatus = useOfflineEditor()
+  const { resource: editorWasm, state: wasmState } = useWasmResource('editor')
+  const editorEnabled = useEditorWasmEnabled()
+  const [startRequested, setStartRequested] = useState(false)
+  const canAnalyze = (editorEnabled || startRequested) && wasmState.phase === 'cached'
+  const wasmId = useId()
+  const startAnalysis = async () => { if (await editorWasm.download()) setStartRequested(true) }
+  const stopAnalysis = () => { editorWasm.cancel(); setStartRequested(false); setEditorWasmEnabled(false) }
+  useEffect(() => { if (editorEnabled) void editorWasm.check() }, [editorEnabled, editorWasm])
+  useEffect(() => () => editorWasm.cancel(), [editorWasm])
   const fontSize = usePythonEditorFontSize()
   const hasCode = code.trim().length > 0
   const runAllowed = !running && !disabled && !runDisabled && hasCode
@@ -186,7 +209,7 @@ export function PythonFunctionEditor({
   const [checks, setChecks] = useState<PythonChecks | null>(null)
   const checksCallback = useRef(onChecks)
   checksCallback.current = onChecks
-  const [languageStatus, setLanguageStatus] = useState<LanguageStatus>('connecting')
+  const [languageStatus, setLanguageStatus] = useState<LanguageStatus>('disabled')
   const [languageClient, setLanguageClient] = useState<LSPClient | null>(null)
   const [position, setPosition] = useState({ line: 1, column: 1 })
   const [symbols, setSymbols] = useState<DocumentSymbols | null>(null)
@@ -215,8 +238,18 @@ export function PythonFunctionEditor({
   const formattingRef = useRef(false)
 
   useEffect(() => {
-    if (!view) return
-    return connectPython(view, languageSlot, kind, (status) => { setLanguageStatus(status); if (status !== 'ready') setSymbols(null) }, (uri, code) => new Promise((resolve) => {
+    if (!view || !canAnalyze) {
+      setLanguageStatus('disabled'); setSymbols(null); setActiveSource(null); setSourceTabs([])
+      pendingSourceViews.current.forEach(pending => pending.forEach(resolve => resolve(null)))
+      pendingSourceViews.current.clear(); sourceViews.current.clear()
+      setSourceSymbols({}); setSourcePositions({})
+      return
+    }
+    return connectPython(view, languageSlot, kind, (status) => {
+      setLanguageStatus(status)
+      if (status !== 'ready') setSymbols(null)
+      else { setEditorWasmEnabled(true); setStartRequested(false) }
+    }, (uri, code) => new Promise((resolve) => {
       if (uri === LSPPlugin.get(view)?.uri) {
         setActiveSource(null)
         resolve(view)
@@ -228,7 +261,14 @@ export function PythonFunctionEditor({
       pendingSourceViews.current.set(uri, [...(pendingSourceViews.current.get(uri) ?? []), resolve])
       setSourceTabs((tabs) => tabs.some((tab) => tab.uri === uri) ? tabs : [...tabs, { uri, code }])
     }), (next) => setSymbols(next), setLanguageClient, (next) => { setChecks(next); checksCallback.current?.(next) })
-  }, [view, languageSlot, kind])
+  }, [view, languageSlot, kind, canAnalyze])
+
+  useEffect(() => {
+    if (canAnalyze) return
+    const source = { status: 'disabled' as const, diagnostics: [], error: null }
+    const next: PythonChecks = { document: code, version: 0, generation: 0, lsp: source, contract: source, quickFixError: null }
+    setChecks(next); checksCallback.current?.(next)
+  }, [canAnalyze, code])
 
   const closeSource = (uri: string) => {
     pendingSourceViews.current.get(uri)?.forEach((resolve) => resolve(null))
@@ -261,13 +301,15 @@ export function PythonFunctionEditor({
 
   formatRef.current = () => {
     const editor = cmRef.current?.view
-    if (!editor || disabled || formattingRef.current) return
+    if (!editor || disabled || formattingRef.current || languageStatus !== 'ready') return
     const before = editor.state.doc
     formattingRef.current = true
     setFormatting(true)
     setEditorMessage('')
     setFormatError(null)
-    void apiSend<{ code: string }>('POST', '/editor/format', { code: before.toString() })
+    void (languageClient?.connected
+      ? languageClient.request<object, { code: string }>('axile/format', { code: before.toString() })
+      : Promise.reject(new Error('本地代码分析器尚未就绪')))
       .then(({ code: formatted }) => {
         if (cmRef.current?.view !== editor || editor.state.readOnly) return
         if (editor.state.doc !== before) {
@@ -432,7 +474,7 @@ export function PythonFunctionEditor({
   const actions = ['查找 / 替换', '撤销', '重做', '定义', '引用', '重命名', '快速修复']
   const sourceActions = ['查找', '定义', '引用']
   const actionDisabled = (name: string) => sourceTab ? ['定义', '引用'].includes(name) && !plugin?.client.connected
-    : name === '格式化' && formatting ? true : name === '开发文档 ↗' ? false : ['定义', '引用', '重命名', '快速修复'].includes(name) ? languageStatus !== 'ready' || (disabled && ['重命名', '快速修复'].includes(name)) : disabled && name !== '查找 / 替换'
+    : name === '格式化' && (formatting || languageStatus !== 'ready') ? true : name === '开发文档 ↗' ? false : ['定义', '引用', '重命名', '快速修复'].includes(name) ? languageStatus !== 'ready' || (disabled && ['重命名', '快速修复'].includes(name)) : disabled && name !== '查找 / 替换'
   const workbenchHeader = (
     <div className="@container flex h-8 min-w-0 items-center gap-1 border-b border-line bg-surface px-3 text-[12px] text-ink-2">
       {sourceTab ? <>
@@ -454,7 +496,7 @@ export function PythonFunctionEditor({
         </span>)}
       </div>
       <button type="button" className={`${toolbarActionClass} hidden items-center gap-1 @min-[480px]:inline-flex`} disabled={disabled} onClick={() => void paste()}><Clipboard size={12} /> 粘贴</button>
-      <button type="button" className={`${toolbarActionClass} hidden items-center gap-2 @min-[480px]:inline-flex`} disabled={disabled || formatting} onClick={() => formatRef.current()}>{formatting ? '格式化中…' : '格式化'}{shortcutHint('格式化')}</button>
+      <button type="button" className={`${toolbarActionClass} hidden items-center gap-2 @min-[480px]:inline-flex`} disabled={actionDisabled('格式化')} onClick={() => formatRef.current()}>{formatting ? '格式化中…' : '格式化'}{shortcutHint('格式化')}</button>
       <button type="button" className={toolbarActionClass} aria-haspopup="menu" aria-expanded={menu?.kind === 'actions'} onClick={(event) => openMenu('actions', event.currentTarget)}>菜单</button>
       {docHref && <a className={`${toolbarActionClass} hidden @min-[480px]:block`} href={docHref} target="_blank" rel="noopener">开发文档 ↗</a>}
       </>}
@@ -500,17 +542,37 @@ export function PythonFunctionEditor({
       pendingSourceViews.current.delete(tab.uri)
     }} />
   </div>)
-  const analyzerLabel = languageStatus === 'ready' ? '代码分析器' : languageStatus === 'connecting' ? '代码分析器连接中…' : '代码分析器重连中…'
-  const analyzerDescription = languageStatus === 'ready' ? '代码分析器已连接' : languageStatus === 'connecting' ? '代码分析器连接中' : '暂时无法分析代码，可继续编辑'
+  const analyzerLabel = languageStatus === 'disabled' ? editorEnabled ? '代码辅助需下载更新' : '本地代码辅助未启用' : languageStatus === 'ready' ? '本地代码分析器' : languageStatus === 'connecting' ? '代码分析器初始化中…' : '代码分析器恢复中…'
+  const analyzerDescription = languageStatus === 'ready' ? '代码分析在浏览器本地运行' : languageStatus === 'connecting' ? '本地代码分析器初始化中' : '可继续编辑并保存本地草稿'
+  const wasmDescription = wasmState.phase === 'checking' ? '正在检查组件缓存' : wasmState.phase === 'cached' ? canAnalyze && languageStatus !== 'ready' ? '正在初始化代码辅助…' : '组件已下载，可离线使用' : `下载 ${downloadSize(editorWasm.bytes)} 后可启用本地代码辅助`
+  const downloadVisible = wasmState.phase === 'downloading' || wasmState.phase === 'error'
+  const wasmControls = <Tooltip interactive={downloadVisible} open={downloadVisible ? true : undefined} content={downloadVisible
+    ? <WasmDownloadProgress state={wasmState} onCancel={stopAnalysis} onRetry={() => void startAnalysis()} />
+    : wasmDescription}>
+    <div data-testid="editor-wasm-controls" className="ml-auto inline-flex shrink-0 items-center gap-2 text-ink-3" tabIndex={-1}>
+      <span id={`${wasmId}-label`} className="sr-only">本地代码辅助</span>
+      <span id={`${wasmId}-description`} className="sr-only">{wasmDescription}</span>
+      <span role="status" aria-label="代码分析器" aria-description={analyzerDescription} data-state={languageStatus} className={languageStatus === 'reconnecting' ? 'text-warn' : ''}><InkRewrite text={languageStatus === 'disabled' ? '本地代码辅助' : analyzerLabel} tone="label" /></span>
+      <AccessibilitySwitch compact checked={editorEnabled || startRequested} labelledBy={`${wasmId}-label`} describedBy={`${wasmId}-description`} disabled={wasmState.phase === 'checking' || wasmState.phase === 'downloading'} onChange={value => { if (value) void startAnalysis(); else stopAnalysis() }} />
+      {wasmState.phase === 'missing' && <button type="button" className="text-accent focus-visible:outline-accent" onClick={() => void startAnalysis()}>{editorEnabled ? '下载更新并启用' : '下载并开启'}</button>}
+    </div>
+  </Tooltip>
+  const draftIndicator = <a href={`/editor?draft=${encodeURIComponent(localDraft.key)}`} className="text-ink-3 hover:text-ink-1" title={`${offlineStatus} · 打开本地草稿工作台`} aria-label="本地草稿" aria-description={offlineStatus}>{localDraft.error ? '本地保存失败' : localDraft.status}</a>
+  const draftNotice = (localDraft.error || localDraft.recovery) && <div role="alert" className="flex flex-wrap items-center gap-3 border-b border-line bg-surface px-3 py-2 text-[12px] text-warn">
+    <span>{localDraft.error?.message ?? '本地草稿与当前服务器代码不同，请选择要保留的内容。'}</span>
+    {localDraft.recovery && <>
+      <button type="button" className="text-accent" onClick={localDraft.restore}>恢复本地代码</button>
+      <button type="button" className="text-ink-2" onClick={localDraft.keepCurrent}>放弃旧草稿，保留当前代码</button>
+    </>}
+    <button type="button" className="text-accent" onClick={() => downloadCode(localDraft.recovery?.code ?? code)}>下载代码</button>
+  </div>
   const statusBar = (
     <div className="flex flex-none items-center gap-3 border-t border-line bg-surface px-3 py-1 text-[11px] text-ink-3">
       {sourceTab ? <><button type="button" onClick={() => editor && gotoLine(editor)}>行 {(sourcePosition?.line ?? 0) + 1}，列 {(sourcePosition?.character ?? 0) + 1}</button><span>只读</span><span>Python</span></> : <>
       <button type="button" onClick={() => view && gotoLine(view)}>行 {position.line}，列 {position.column}</button>
-      <span>4 空格</span><span>Python</span>
-      <span role="status" aria-label="代码分析器" aria-description={analyzerDescription} title={analyzerDescription} data-state={languageStatus} className={`ml-auto ${languageStatus === 'reconnecting' ? 'text-warn' : ''}`}>
-        <InkRewrite text={analyzerLabel} tone="label" />
-      </span>
+      <span>4 空格</span><span>Python</span>{draftIndicator}
       </>}
+      {wasmControls}
     </div>
   )
 
@@ -567,8 +629,12 @@ export function PythonFunctionEditor({
         {editorMessage && <p role="status" className="px-3 text-[12px] text-warn">{editorMessage}</p>}
         <ErrorNotice intent="mutation" title="代码格式化失败" error={formatError} variant="compact" onRetry={() => formatRef.current?.()} />
         {fileTabs}
+        {draftNotice}
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{codeBlock}{sourceDocuments}</div>
-        {statusTarget && createPortal(sourceTab ? <div className="flex items-center gap-2 text-[11px] text-ink-3"><button type="button" title="跳转到行" onClick={() => editor && gotoLine(editor)}>{(sourcePosition?.line ?? 0) + 1}:{(sourcePosition?.character ?? 0) + 1}</button><span>只读 · Python</span></div> : <div className="flex items-center gap-2 whitespace-nowrap text-[11px] text-ink-3"><button type="button" title="跳转到行" onClick={() => view && gotoLine(view)}><span className="max-[480px]:hidden">行 {position.line}，列 {position.column}</span><span className="hidden max-[480px]:inline">{position.line}:{position.column}</span></button><span role="status" aria-label="代码分析器" aria-description={analyzerDescription} title={analyzerDescription} data-state={languageStatus} className={languageStatus === 'reconnecting' ? 'text-warn' : ''}><InkRewrite text={analyzerLabel} tone="label" /></span></div>, statusTarget)}
+        {statusTarget ? createPortal(<div data-testid="editor-status-bar" className="flex items-center gap-2 whitespace-nowrap text-[11px] text-ink-3">
+          {sourceTab ? <><button type="button" title="跳转到行" onClick={() => editor && gotoLine(editor)}>{(sourcePosition?.line ?? 0) + 1}:{(sourcePosition?.character ?? 0) + 1}</button><span>只读 · Python</span></> : <>{draftIndicator}<button type="button" title="跳转到行" onClick={() => view && gotoLine(view)}><span className="max-[480px]:hidden">行 {position.line}，列 {position.column}</span><span className="hidden max-[480px]:inline">{position.line}:{position.column}</span></button></>}
+          {wasmControls}
+        </div>, statusTarget) : statusBar}
         {saveBar}
       </div>
     )
@@ -583,6 +649,7 @@ export function PythonFunctionEditor({
           fill ? 'flex min-h-0 flex-1 flex-col' : ''
         }`}
       >
+        {draftNotice}
         <PythonCheckStatus checks={currentChecks} onRetry={() => { if (view) forceLinting(view) }} onQuickFixRetry={() => { if (view) quickFix(view, kind) }} />
         {/* 工具条：状态句同槽换字；图标槽恒占 14px，出现/消失不推字。 */}
         <div className={`flex flex-none flex-wrap items-center gap-x-3.5 gap-y-2 border-b px-3.5 py-2.5 ${style.band}`}>

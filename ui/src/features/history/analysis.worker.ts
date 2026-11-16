@@ -1,15 +1,14 @@
-import init, { AccountAnalysis, ReplayAnalysis } from '@/features/replay/heat-wasm/axile_replay_heat'
-import wasmUrl from '@/features/replay/heat-wasm/axile_replay_heat_bg.wasm?url'
+import init, { AccountAnalysis } from '@/features/replay/heat-wasm/axile_replay_heat'
 
-let kernel: AccountAnalysis | ReplayAnalysis | null = null
-const ready = init({ module_or_path: wasmUrl })
-self.onmessage = async (event: MessageEvent<{ kind: 'load'; mode: 'account' | 'replay'; input: string } | { kind: 'query'; id: number; query: unknown }>) => {
+let kernel: AccountAnalysis | null = null
+self.onmessage = async (event: MessageEvent<{ kind: 'load'; input: string; wasm: ArrayBuffer } | { kind: 'query'; id: number; query: unknown }>) => {
   const request = event.data
   try {
-    await ready
     if (request.kind === 'load') {
+      if (!(request.wasm instanceof ArrayBuffer)) throw Error('请先下载本地分析组件')
+      await init({ module_or_path: request.wasm })
       kernel?.free()
-      kernel = request.mode === 'account' ? new AccountAnalysis(request.input) : new ReplayAnalysis(request.input)
+      kernel = new AccountAnalysis(request.input)
       self.postMessage({ kind: 'ready' })
     } else {
       if (!kernel) throw new Error('本地分析输入尚未就绪')

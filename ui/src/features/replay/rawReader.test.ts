@@ -5,6 +5,95 @@ const originalFetch = globalThis.fetch
 const originalWorker = globalThis.Worker
 afterEach(() => { globalThis.fetch = originalFetch; globalThis.Worker = originalWorker })
 
+test('workbench pages cross streams in 128-block batches without losing any observation', async () => {
+  let page: any[] = []
+  globalThis.Worker = class {
+    onmessage: ((event: { data: any }) => void) | null = null
+    terminate() {}
+    postMessage(request: any) {
+      let output: any = {}
+      if (request.kind === 'has') output = { present: request.keys.map(() => true) }
+      if (request.kind === 'display-begin') page = [...request.rows]
+      if (request.kind === 'display-step') {
+        const events = page.splice(0, 16).map(row => ({ capture_seq: row.block.first_seq, time_us: row.block.first_seq, topic: '/quote/S', data: { symbol: 'S' } }))
+        output = { events, done: page.length === 0 }
+      }
+      queueMicrotask(() => this.onmessage?.({ data: { id: request.id, wasm_bytes: 65536, cache_bytes: 0, ...output } }))
+    }
+  } as unknown as typeof Worker
+  const recording = { id: 'R', seq: 130, commit_id: 'c', watermark: 130, start_us: 1, state: 'closed', streams: [{ id: 1, topic: '/quote/S', symbol: 'S' }] }
+  const cursors: unknown[] = []
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const request = JSON.parse(String(init?.body ?? '{}')), operation = String(input).split('/').at(-1)
+    if (operation === 'session') return Response.json({ reader_epoch: 'owner', session: 's' })
+    if (operation === 'control') return Response.json({ state: 'settled', session_bytes: 0 })
+    if (operation === 'manifest') return Response.json({ schema_version: 2, account_id: 7, execution_id: 'E', index_generation: 'g', recordings: [recording] })
+    expect(operation).toBe('display-blocks')
+    expect(request.symbols).toEqual(['S'])
+    cursors.push(request.after)
+    const start = request.after[1] + 1, count = start === 1 ? 128 : 2
+    return Response.json({ recording_id: 'R', through_seq: 130, commit_id: 'c', index_generation: 'g',
+      blocks: Array.from({ length: count }, (_, i) => ({ id: start + i, first_seq: start + i, last_seq: start + i, raw_length: 20, length: 10, sha256: 'hash' + (start + i) })), next: start === 1 ? [1, 128] : null })
+  }) as typeof fetch
+  const reader = new RawReader('E', () => {}, () => {})
+  try {
+    await reader.manifest()
+    const events = await reader.displayWindow(recording, undefined, ['S'])
+    expect(cursors).toEqual([[0, 0], [1, 128]])
+    expect(events.map(event => event.capture_seq)).toEqual(Array.from({ length: 130 }, (_, i) => i + 1))
+  } finally { reader.close() }
+})
+
+test('raw initialization completes before queries and preserves the bytes for Worker recovery', async () => {
+  const requests: any[] = []
+  let initialized!: () => void
+  globalThis.Worker = class {
+    onmessage: ((event: { data: any }) => void) | null = null
+    terminate() {}
+    postMessage(request: any) {
+      requests.push(request)
+      if (request.kind === 'init') initialized = () => this.onmessage?.({ data: { kind: 'initialized' } })
+      else queueMicrotask(() => this.onmessage?.({ data: { id: request.id, present: [], wasm_bytes: 65536, cache_bytes: 0 } }))
+    }
+  } as unknown as typeof Worker
+  const bytes = new ArrayBuffer(1)
+  const phases: boolean[] = []
+  const reader = new RawReader('E', () => {}, () => {}, bytes, value => phases.push(value))
+  const client = reader as unknown as { workerRequest(request: Record<string, unknown>, signal: AbortSignal): Promise<unknown> }
+  const signal = new AbortController().signal
+  try {
+    const query = client.workerRequest({ kind: 'has', keys: [] }, signal)
+    expect(requests.map(request => request.kind)).toEqual(['init'])
+    expect(phases).toEqual([true])
+    expect(requests[0].wasm).not.toBe(bytes)
+    initialized()
+    await expect(query).resolves.toMatchObject({ present: [] })
+    expect(phases).toEqual([true, false])
+    await client.workerRequest({ kind: 'has', keys: [] }, signal)
+    expect(requests.map(request => request.kind)).toEqual(['init', 'has', 'has'])
+    expect(bytes.byteLength).toBe(1)
+  } finally { reader.close() }
+})
+
+test('cancel during raw initialization terminates the Worker and rejects before any query', async () => {
+  let terminated = false
+  const kinds: string[] = []
+  globalThis.Worker = class {
+    onmessage = null
+    terminate() { terminated = true }
+    postMessage(request: any) { kinds.push(request.kind) }
+  } as unknown as typeof Worker
+  const reader = new RawReader('E', () => {}, () => {}, new ArrayBuffer(1))
+  const client = reader as unknown as { workerRequest(request: Record<string, unknown>, signal: AbortSignal): Promise<unknown> }
+  const abort = new AbortController()
+  const result = client.workerRequest({ kind: 'has', keys: [] }, abort.signal)
+  abort.abort()
+  await expect(result).rejects.toThrow('REPLAY_WORKER_CANCELED')
+  expect(terminated).toBeTrue()
+  expect(kinds).toEqual(['init'])
+  reader.close()
+})
+
 test('point quote validity comes from the bounded control fold and preserves an exact same-time event cursor', async () => {
   const requests: any[] = []
   globalThis.Worker = class {
@@ -21,7 +110,7 @@ test('point quote validity comes from the bounded control fold and preserves an 
   } as unknown as typeof Worker
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const q = JSON.parse(String(init?.body ?? '{}')), op = String(input).split('/').at(-1)
-    if (op === 'session') return Response.json({ reader_epoch: 'owner', session: 's', recovery_wait_seconds: 0 })
+    if (op === 'session') return Response.json({ reader_epoch: 'owner', session: 's' })
     if (op === 'control') return Response.json({ state: 'settled', session_bytes: 200 })
     if (op === 'manifest') return Response.json({ schema_version: 2, account_id: 7, execution_id: 'E', index_generation: 'g', recordings: [] })
     const context = { account_id: 7, execution_id: 'E', recording_id: 'R', through_seq: 3, commit_id: 'c', index_generation: 'g' }
@@ -52,7 +141,7 @@ test('a lost admitted response resumes the same logical root with reserved cost 
   let opened=0, lost=false, resume: any
   globalThis.fetch=(async(input: string | URL | Request,init?:RequestInit)=>{
     const q=JSON.parse(String(init?.body??'{}')),op=String(input).split('/').at(-1)
-    if(op==='session') { opened++; if(q.resume)resume=q.resume; return Response.json({reader_epoch:opened===1?'old':'new',session:'s'+opened,session_proof:'signed',recovery_wait_seconds:0}) }
+    if(op==='session') { opened++; if(q.resume)resume=q.resume; return Response.json({reader_epoch:opened===1?'old':'new',session:'s'+opened,session_proof:'signed'}) }
     if(op==='control') {
       if(lost && q.reader_epoch==='old')return Response.json({detail:{code:'REPLAY_READER_EPOCH',message:'REPLAY_READER_EPOCH'}},{status:409})
       return Response.json({state:'settled',session_bytes:resume?resume.total_bytes+100:0})
@@ -81,7 +170,7 @@ test('index generation recovery resolves the stream again and rejects the old nu
   let generation='g1'
   globalThis.fetch=(async(input:string|URL|Request,init?:RequestInit)=>{
     const q=JSON.parse(String(init?.body??'{}')),op=String(input).split('/').at(-1)
-    if(op==='session')return Response.json({reader_epoch:'owner',session:'s',session_proof:'signed',recovery_wait_seconds:0})
+    if(op==='session')return Response.json({reader_epoch:'owner',session:'s',session_proof:'signed'})
     if(op==='control')return Response.json(q.operation==='status'?{state:'stopped',bytes:40,index_steps:100,session_bytes:40}:{state:'settled',session_bytes:100})
     if(op==='manifest')return Response.json({schema_version:2,account_id:7,execution_id:'E',index_generation:generation,recordings:[{id:'R',seq:3,commit_id:'c',watermark:3,start_us:0,state:'closed',streams:[{id:generation==='g1'?1:9,topic:'/quote/S',symbol:'S'}]}]})
     if(op==='objects'){cursors.push(q.after);return Response.json({account_id:7,execution_id:'E',recording_id:'R',through_seq:3,commit_id:'c',index_generation:'g2',subjects:[],next:null})}
@@ -104,7 +193,7 @@ test('refreshing a frozen manifest reuses its session and advances settled roots
   const roots: number[] = []
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const request = JSON.parse(String(init?.body ?? '{}')), operation = String(input).split('/').at(-1)
-    if (operation === 'session') { opens++; return Response.json({ reader_epoch: 'owner', session: 'session', recovery_wait_seconds: 0 }) }
+    if (operation === 'session') { opens++; return Response.json({ reader_epoch: 'owner', session: 'session' }) }
     if (operation === 'control') return Response.json({ state: 'settled', session_bytes: 0 })
     roots.push(request.root_seq)
     return Response.json({ schema_version: 2, account_id: 7, execution_id: 'E', index_generation: 'g', recordings: [] })
@@ -122,7 +211,7 @@ test('a failed session open can be retried without retaining a busy refresh', as
     const operation = String(input).split('/').at(-1)
     if (operation === 'session') {
       if (++opens === 1) throw Error('offline')
-      return Response.json({ reader_epoch: 'owner', session: 'session', recovery_wait_seconds: 0 })
+      return Response.json({ reader_epoch: 'owner', session: 'session' })
     }
     if (operation === 'control') return Response.json({ state: 'settled' })
     return Response.json({ schema_version: 2, account_id: 7, execution_id: 'E', index_generation: 'g', recordings: [] })
@@ -142,7 +231,7 @@ test('a seek during refresh waits for the aborted manifest root to settle', asyn
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const request = JSON.parse(String(init?.body ?? '{}')), operation = String(input).split('/').at(-1)
     calls.push(`${operation === 'control' ? request.operation : operation}:${request.root_seq}`)
-    if (operation === 'session') return Response.json({ reader_epoch: 'owner', session: 'session', recovery_wait_seconds: 0 })
+    if (operation === 'session') return Response.json({ reader_epoch: 'owner', session: 'session' })
     if (operation === 'control') return Response.json({ state: 'settled' })
     if (operation === 'manifest') {
       if (request.root_seq === 2) { started(); return new Promise<Response>((_, reject) => init?.signal?.addEventListener('abort', () => reject(Error('aborted')), { once: true })) }
@@ -187,7 +276,7 @@ test('wide dependencies and large results split within the same root and keep ev
   } as unknown as typeof Worker
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const request = JSON.parse(String(init?.body ?? '{}')), operation = String(input).split('/').at(-1)
-    if (operation === 'session') return Response.json({ reader_epoch: 'owner', session: 'session', recovery_wait_seconds: 0 })
+    if (operation === 'session') return Response.json({ reader_epoch: 'owner', session: 'session' })
     if (operation === 'manifest') return reply({ schema_version: 2, account_id: 7, execution_id: 'E', index_generation: 'g', recordings: [] })
     if (operation === 'control') return Response.json({ state: 'settled', session_bytes: 0 })
     roots.add(request.root_seq)
@@ -232,7 +321,7 @@ test('rapid seeks settle the old root, retry lost ACK, and start only the latest
     const request = JSON.parse(String(init?.body ?? '{}'))
     const operation = url.split('/').at(-1)!
     calls.push({ operation: operation === 'control' ? request.operation : operation, root: request.root_seq, time: request.time_us })
-    if (operation === 'session') return Response.json({ reader_epoch: 'owner', session: 'session', recovery_wait_seconds: 0 })
+    if (operation === 'session') return Response.json({ reader_epoch: 'owner', session: 'session' })
     if (operation === 'manifest') return Response.json({ schema_version: 2, account_id: 7, execution_id: 'E', index_generation: 'g', recordings: [] })
     if (operation === 'control') {
       if (request.operation === 'ack' && request.root_seq === 2 && !lostAck) {
@@ -273,7 +362,7 @@ test('a synchronous Worker send failure releases the callback and settles exactl
   const controls: string[] = []
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const request = JSON.parse(String(init?.body ?? '{}')), operation = String(input).split('/').at(-1)
-    if (operation === 'session') return Response.json({ reader_epoch: 'owner', session: 'session', recovery_wait_seconds: 0 })
+    if (operation === 'session') return Response.json({ reader_epoch: 'owner', session: 'session' })
     if (operation === 'manifest') return Response.json({ schema_version: 2, account_id: 7, execution_id: 'E', index_generation: 'g', recordings: [] })
     if (operation === 'control') { controls.push(request.operation); return Response.json({ state: 'settled', session_bytes: 0 }) }
     return Response.json({ account_id: 7, execution_id: 'E', recording_id: 'R', through_seq: 3, commit_id: 'c', cutoff_seq: 3, index_generation: 'g', selected: null, evidence: [], blocks: [{ id: 1, length: 1 }], planned_bytes: 1, target_us: 3 })
@@ -296,7 +385,7 @@ test('rate waits retry the same root and attempt without resetting its budget', 
   const done = new Promise<void>(resolve => { complete = resolve })
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body ?? '{}')), operation = String(input).split('/').at(-1)
-    if (operation === 'session') return Response.json({ reader_epoch: 'owner', session: 'session', recovery_wait_seconds: 0 })
+    if (operation === 'session') return Response.json({ reader_epoch: 'owner', session: 'session' })
     if (operation === 'manifest') return Response.json({ schema_version: 2, account_id: 7, execution_id: 'E', index_generation: 'g', recordings: [] })
     if (operation === 'control') return Response.json({ state: 'settled', session_bytes: 0 })
     roots.push(body.root_seq)

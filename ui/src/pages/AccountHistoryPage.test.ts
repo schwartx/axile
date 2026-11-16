@@ -16,6 +16,7 @@ function renderPage(options: { displayed?: boolean; marker?: number; status?: st
     const displayed = options.displayed === false ? null : { version: 's1', range: '90', computed_at: null, data_until: null, result, daily_costs: {}, events: [], event_count: 0, execution_index: [{ record_id: 11, time_ms: 1000, has_transactions: false }] }
     mock.module('react-router', () => ({ useParams: () => ({ id: '7' }) }))
     mock.module('@/components/ui/nav', () => ({ useNavigate: () => () => {} }))
+    mock.module('@/lib/wasmResources', () => ({ wasmResource: () => ({}), useWasmResource: () => ({ resource: { bytes: 100, check: async () => {}, cancel: () => {}, download: async () => true }, state: { phase: 'missing', loaded: 0, total: 100, error: null } }) }))
     mock.module('@/features/account/pageHead', () => ({ AccountPageTitle: () => createElement('h1', null, 'History') }))
     mock.module('@/stores/domain', () => ({ useDomainStore: selector => selector({ accounts: [] }) }))
     mock.module('@/components/ui/Segmented', () => ({ Segmented: ({ value }) => createElement('span', { 'data-segment': value }) }))

@@ -58,7 +58,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@1.99.1
       with:
         targets: wasm32-unknown-unknown
-    - run: cargo install wasm-bindgen-cli --version 0.2.128 --locked
+    - run: cargo install wasm-bindgen-cli --version 0.2.130 --locked
     - run: bun run lint && bun run build
       working-directory: ui
     - uses: actions/upload-artifact@v4
