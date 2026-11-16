@@ -7,7 +7,7 @@ export function WasmDownloadProgress({ state, onCancel, onRetry }: {
 }) {
   if (state.phase === 'downloading') return <div className="space-y-1 py-2 text-xs text-ink-2">
     <div className="flex flex-wrap items-center gap-3"><span role="status">正在下载组件 · {downloadSize(state.loaded)} / {downloadSize(state.total)} · {state.total ? Math.floor(state.loaded / state.total * 100) : 100}%</span><button type="button" className="text-accent focus-visible:outline-accent" onClick={onCancel}>取消下载</button></div>
-    <progress aria-label="组件下载进度" className="h-1.5 w-full accent-accent" value={state.loaded} max={state.total || 1} />
+    <progress aria-label="组件下载进度" className="h-1.5 w-full appearance-none overflow-hidden rounded bg-fill [&::-webkit-progress-bar]:bg-fill [&::-webkit-progress-value]:bg-accent [&::-moz-progress-bar]:bg-accent" value={state.loaded} max={state.total || 1} />
   </div>
   if (state.phase === 'error') return <p role="alert" className="py-2 text-xs text-warn">{state.error}<button type="button" className="ml-3 text-accent focus-visible:outline-accent" onClick={onRetry}>重试下载</button></p>
   return null
