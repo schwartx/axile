@@ -77,7 +77,7 @@ def test_display_blocks_keep_full_payload_and_frozen_source_context(recording):
         "through_seq": source["seq"],
         "commit_id": source["commit_id"],
         "index_generation": manifest["index_generation"],
-        "stream": source["streams"][0]["id"],
+        "symbols": ["S"],
     }
     page, release, _ = reader.read(path, 7, "E", view)
     release()
@@ -88,7 +88,13 @@ def test_display_blocks_keep_full_payload_and_frozen_source_context(recording):
     events = [json.loads(line) for line in zlib.decompress(block).splitlines()]
     assert [event["capture_seq"] for event in events] == list(range(1, 101))
     assert events[-1]["data"]["bids"] == [[100, 1]]
-    for invalid in ({"through_seq": 99}, {"commit_id": "0" * 64}, {"stream": True}, {"after_seq": -1}):
+    for invalid in (
+        {"through_seq": 99},
+        {"commit_id": "0" * 64},
+        {"after": [True, 0]},
+        {"after": [0, -1]},
+        {"symbols": [False]},
+    ):
         with pytest.raises(reader.ReadError):
             reader.read(path, 7, "E", {**view, **invalid})
 
@@ -107,7 +113,7 @@ def test_sqlite_interruption_preserves_the_budget_or_cancel_reason(recording):
 
 def test_display_block_pages_do_not_include_blocks_after_the_frozen_commit(tmp_path):
     writer = _core.ExecutionReplayWriter(str(tmp_path), 7, "R", '{"schema_version":2}')
-    for seq in range(1, 34):
+    for seq in range(1, 130):
         writer.append(
             json.dumps(
                 {
@@ -128,8 +134,8 @@ def test_display_block_pages_do_not_include_blocks_after_the_frozen_commit(tmp_p
             {
                 "schema_version": 2,
                 "recording_id": "R",
-                "capture_seq": 34,
-                "time_us": 34,
+                "capture_seq": 130,
+                "time_us": 130,
                 "topic": "/quote/S",
                 "data": {"symbol": "S", "execution_id": "E"},
             }
@@ -144,13 +150,51 @@ def test_display_block_pages_do_not_include_blocks_after_the_frozen_commit(tmp_p
         "through_seq": source["seq"],
         "commit_id": source["commit_id"],
         "index_generation": manifest["index_generation"],
-        "stream": source["streams"][0]["id"],
+        "symbols": ["S"],
     }
     with reader.index(tmp_path, 7, lambda: None) as (db, _, _):
         first = reader.metadata(db, view)
-        last = reader.metadata(db, {**view, "after_seq": first["next"]})
-    assert len(first["blocks"]) == 32 and first["next"] == 33
-    assert [row["first_seq"] for row in last["blocks"]] == [33] and last["next"] is None
+        last = reader.metadata(db, {**view, "after": first["next"]})
+    assert len(first["blocks"]) == 128 and first["next"] == [source["streams"][0]["id"], 128]
+    assert [row["first_seq"] for row in last["blocks"]] == [129] and last["next"] is None
+
+
+def test_display_pages_merge_streams_and_keep_business_history_for_other_symbols(tmp_path):
+    writer = _core.ExecutionReplayWriter(str(tmp_path), 7, "R", '{"schema_version":2}')
+    for seq in range(1, 211):
+        symbol, topic = (
+            ("S", "/quote/S") if seq <= 60 else ("other", "/quote/other") if seq <= 140 else ("other", "/order")
+        )
+        writer.append(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "recording_id": "R",
+                    "capture_seq": seq,
+                    "time_us": seq,
+                    "topic": topic,
+                    "data": {"symbol": symbol, "execution_id": "E", "order_id": "O"},
+                }
+            )
+        )
+        writer.seal()
+    writer.finish()
+    with reader.index(tmp_path, 7, lambda: None) as (db, _, _):
+        manifest = reader.metadata(db, {"operation": "manifest", "execution_id": "E"})
+        source = manifest["recordings"][0]
+        view = {
+            "operation": "display-blocks",
+            "execution_id": "E",
+            "recording": "R",
+            "through_seq": source["seq"],
+            "commit_id": source["commit_id"],
+            "index_generation": manifest["index_generation"],
+            "symbols": ["S"],
+        }
+        first = reader.metadata(db, view)
+        last = reader.metadata(db, {**view, "after": first["next"]})
+    assert len(first["blocks"]) == 128 and len(last["blocks"]) == 2 and last["next"] is None
+    assert [row["first_seq"] for row in first["blocks"] + last["blocks"]] == [*range(1, 61), *range(141, 211)]
 
 
 def test_manifest_does_not_publish_a_stream_before_its_first_committed_observation(tmp_path):

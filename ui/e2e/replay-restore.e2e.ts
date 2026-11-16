@@ -71,7 +71,7 @@ test('many small blocks load in batches and skip other symbols while preserving 
   await page.getByRole('button', { name: '下载并进入回放' }).click()
   await expect(page.locator('.replay-chart')).toBeVisible({ timeout: 15000 })
   await expect(page.getByRole('button', { name: '跳到首个盘口' })).toBeEnabled()
-  expect(batches.map(batch => batch.length)).toEqual([32, 32, 6])
+  expect(batches.map(batch => batch.length)).toEqual([70])
   expect(batches.flat()).toHaveLength(70)
   await page.getByRole('button', { name: '选择回放品种' }).click()
   await page.getByRole('option', { name: 'ZZZ', exact: true }).click()

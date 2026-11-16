@@ -569,19 +569,10 @@ def metadata(db, request: dict, work=lambda amount, read_bytes=0: None) -> dict:
         raise ReadError("REPLAY_SOURCE_COMMIT")
     row = frozen
     if request.get("operation") == "display-blocks":
-        from axile.server.execution_replay.raw_index import integer
+        from axile.server.execution_replay.raw_range import display_blocks
 
-        stream = integer(request.get("stream"), minimum=1, maximum=65535)
-        after = integer(request.get("after_seq", 0), maximum=through)
-        identities = db.rows("quote_blocks", [recording, stream, after, through, 33])
-        blocks = (
-            [dict(row) for row in db.rows("blocks", [recording, *[row[0] for row in identities[:32]]])]
-            if identities
-            else []
-        )
         return {
-            "blocks": blocks,
-            "next": blocks[-1]["first_seq"] + 1 if len(identities) > 32 else None,
+            **display_blocks(db, request),
             "recording_id": recording,
             "through_seq": through,
             "commit_id": commit,

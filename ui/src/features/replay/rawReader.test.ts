@@ -5,6 +5,45 @@ const originalFetch = globalThis.fetch
 const originalWorker = globalThis.Worker
 afterEach(() => { globalThis.fetch = originalFetch; globalThis.Worker = originalWorker })
 
+test('workbench pages cross streams in 128-block batches without losing any observation', async () => {
+  let page: any[] = []
+  globalThis.Worker = class {
+    onmessage: ((event: { data: any }) => void) | null = null
+    terminate() {}
+    postMessage(request: any) {
+      let output: any = {}
+      if (request.kind === 'has') output = { present: request.keys.map(() => true) }
+      if (request.kind === 'display-begin') page = [...request.rows]
+      if (request.kind === 'display-step') {
+        const events = page.splice(0, 16).map(row => ({ capture_seq: row.block.first_seq, time_us: row.block.first_seq, topic: '/quote/S', data: { symbol: 'S' } }))
+        output = { events, done: page.length === 0 }
+      }
+      queueMicrotask(() => this.onmessage?.({ data: { id: request.id, wasm_bytes: 65536, cache_bytes: 0, ...output } }))
+    }
+  } as unknown as typeof Worker
+  const recording = { id: 'R', seq: 130, commit_id: 'c', watermark: 130, start_us: 1, state: 'closed', streams: [{ id: 1, topic: '/quote/S', symbol: 'S' }] }
+  const cursors: unknown[] = []
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const request = JSON.parse(String(init?.body ?? '{}')), operation = String(input).split('/').at(-1)
+    if (operation === 'session') return Response.json({ reader_epoch: 'owner', session: 's', recovery_wait_seconds: 0 })
+    if (operation === 'control') return Response.json({ state: 'settled', session_bytes: 0 })
+    if (operation === 'manifest') return Response.json({ schema_version: 2, account_id: 7, execution_id: 'E', index_generation: 'g', recordings: [recording] })
+    expect(operation).toBe('display-blocks')
+    expect(request.symbols).toEqual(['S'])
+    cursors.push(request.after)
+    const start = request.after[1] + 1, count = start === 1 ? 128 : 2
+    return Response.json({ recording_id: 'R', through_seq: 130, commit_id: 'c', index_generation: 'g',
+      blocks: Array.from({ length: count }, (_, i) => ({ id: start + i, first_seq: start + i, last_seq: start + i, raw_length: 20, length: 10, sha256: 'hash' + (start + i) })), next: start === 1 ? [1, 128] : null })
+  }) as typeof fetch
+  const reader = new RawReader('E', () => {}, () => {})
+  try {
+    await reader.manifest()
+    const events = await reader.displayWindow(recording, undefined, ['S'])
+    expect(cursors).toEqual([[0, 0], [1, 128]])
+    expect(events.map(event => event.capture_seq)).toEqual(Array.from({ length: 130 }, (_, i) => i + 1))
+  } finally { reader.close() }
+})
+
 test('raw initialization completes before queries and preserves the bytes for Worker recovery', async () => {
   const requests: any[] = []
   let initialized!: () => void
