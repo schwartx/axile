@@ -72,9 +72,7 @@ def test_sqlite_interruption_preserves_the_budget_or_cancel_reason(recording):
 
     with pytest.raises(reader.ReadError, match="REPLAY_ROOT_INDEX_BUDGET") as error:
         with reader.index(path, 7, canceled) as (db, _, _):
-            db.execute(
-                "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<10000) SELECT sum(x) FROM n"
-            ).fetchone()
+            db.one("layout")
     assert error.value.status == 413
 
 

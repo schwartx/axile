@@ -133,6 +133,7 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<ReplayReadOwner>()?;
     module.add_class::<ReplayReadLease>()?;
     module.add_class::<ExecutionReplayWriter>()?;
+    module.add_class::<crate::execution_replay_raw_read::ReplayIndex>()?;
     module.add("EXECUTION_REPLAY_SCHEMA", 2)?;
     Ok(())
 }

@@ -1,7 +1,7 @@
 """Bounded quote ranges and control prefixes for browser interval integration."""
 
 from axile.server.execution_replay.raw_index import _stream_ids, integer
-from axile.server.execution_replay.reader import BLOCK_COLUMNS, ReadError
+from axile.server.execution_replay.reader import ReadError
 
 
 def locations(db, request, work):
@@ -13,20 +13,13 @@ def locations(db, request, work):
             raise ReadError("REPLAY_PLAN_CURSOR", 422)
         stream = integer(after[0], maximum=65535)
         sequence = integer(after[1], maximum=cutoff)
-        sources = [
-            r[0]
-            for r in db.execute(
-                "SELECT id FROM streams WHERE recording=? AND id>=? AND topic NOT LIKE '/quote/%' AND topic NOT LIKE '/market_trade/%' ORDER BY id LIMIT 129",
-                [recording, stream],
-            )
-        ]
+        sources = [r[0] for r in db.rows("business_streams", [recording, stream])]
         rows = []
         for source in sources:
             rows.extend(
                 dict(r)
-                for r in db.execute(
-                    f"SELECT {BLOCK_COLUMNS} FROM blocks WHERE recording=? AND stream=? AND first_seq>? AND first_seq<=? ORDER BY first_seq LIMIT ?",
-                    [recording, source, sequence if source == stream else 0, cutoff, 129 - len(rows)],
+                for r in db.rows(
+                    "business_blocks", [recording, source, sequence if source == stream else 0, cutoff, 129 - len(rows)]
                 )
             )
             if len(rows) == 129:
@@ -48,19 +41,14 @@ def locations(db, request, work):
         streams = (
             set()
             if request.get("controls_only") is True
-            else {
-                r[0]
-                for r in db.execute(
-                    "SELECT id FROM streams WHERE recording=? AND topic=?", [recording, "/quote/" + symbol]
-                )
-            }
+            else {r[0] for r in db.rows("topic_streams", [recording, "/quote/" + symbol])}
         )
         for topic in ["/connection", "/capture"]:
             for scope in ["", symbol]:
                 streams.update(
                     _stream_ids(
                         db,
-                        "SELECT stream,first_seq FROM scope_blocks WHERE recording=? AND kind=? AND symbol=? AND stream>? ORDER BY stream,block LIMIT 1",
+                        "next_scope_stream",
                         [recording, topic, scope],
                         cutoff,
                     )
@@ -90,7 +78,7 @@ def _page(db, request, limit, work):
     recording, cutoff, symbol = request["recording"], request["cutoff_seq"], request["scope_symbol"]
     stream = integer(request["stream"], maximum=65535)
     after = integer(request.get("after_block", 0))
-    source = db.execute("SELECT topic FROM streams WHERE recording=? AND id=?", [recording, stream]).fetchone()
+    source = db.one("stream_topic", [recording, stream])
     if source is None:
         raise ReadError("REPLAY_STREAM_INVALID", 422)
     ids = set()
@@ -101,40 +89,24 @@ def _page(db, request, limit, work):
         selected, _ = locate(db, recording, request["through_seq"], start, 0, stream, work)
         low = selected["seq"] if selected else 0
         if selected:
-            low = db.execute(
-                "SELECT first_seq FROM blocks WHERE recording=? AND id=?", [recording, selected["block"]]
-            ).fetchone()[0]
+            low = db.one("block_start", [recording, selected["block"]])[0]
         if after:
-            previous = db.execute(
-                "SELECT first_seq FROM blocks WHERE recording=? AND id=? AND stream=?", [recording, after, stream]
-            ).fetchone()
+            previous = db.one("stream_block_start", [recording, after, stream])
             if previous is None:
                 raise ReadError("REPLAY_PLAN_CURSOR")
             low = max(low, previous[0] + 1)
-        ids.update(
-            r[0]
-            for r in db.execute(
-                "SELECT id FROM blocks WHERE recording=? AND stream=? AND first_seq>=? AND first_seq<=? ORDER BY first_seq LIMIT ?",
-                [recording, stream, low, cutoff, limit + 1],
-            )
-        )
+        ids.update(r[0] for r in db.rows("quote_blocks", [recording, stream, low, cutoff, limit + 1]))
     elif source[0] in {"/connection", "/capture"}:
         for scope in ["", symbol]:
             ids.update(
-                r[0]
-                for r in db.execute(
-                    "SELECT block FROM scope_blocks WHERE recording=? AND kind=? AND symbol=? AND stream=? AND block>? AND first_seq<=? ORDER BY block LIMIT ?",
-                    [recording, source[0], scope, stream, after, cutoff, limit + 1],
-                )
+                r[0] for r in db.rows("control_blocks", [recording, source[0], scope, stream, after, cutoff, limit + 1])
             )
     else:
         raise ReadError("REPLAY_STREAM_INVALID", 422)
     result, size = [], 0
     budget = integer(request.get("page_bytes", 1024 * 1024), minimum=1, maximum=1024 * 1024)
     for identity in sorted(ids)[:limit]:
-        row = db.execute(
-            f"SELECT {BLOCK_COLUMNS} FROM blocks WHERE recording=? AND id=?", [recording, identity]
-        ).fetchone()
+        row = db.one("block", [recording, identity])
         if result and size + row["length"] > budget:
             break
         result.append(dict(row))

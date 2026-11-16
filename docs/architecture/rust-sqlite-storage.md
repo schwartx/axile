@@ -8,6 +8,8 @@ Python 通过 `native_operation()` 或 `native_operation_sync()` 调用一个完
 
 PyO3 入口在持有 GIL 时取得请求和路径，等待数据库、查询、计算和编码时释放 GIL。异步入口在线程中执行，避免 SQLite 等待阻塞事件循环。Python 只保留少量按领域命名的读取和模型辅助函数，例如 `repositories.py`；不要增加 Session 兼容层、通用 SQL 代理或 Python 存储回退。
 
+原始回放的独立索引使用 `ReplayIndex` 固定只读查询目录。Python 只传查询名和绑定参数，不能提交 SQL；原生连接按请求持有读快照，查询每 100 条 SQLite 指令检查取消和预算，页面缓存 2 MiB、预编译语句缓存最多 64 项，关闭 mmap。单次结果最多 256 行和 1 MiB，HTTP 元数据还受更小的既有响应预算约束；每次响应发送前结束索引事务。
+
 ## 前端响应边界
 
 前端 API 不注册 Pydantic 响应模型。已有 Rust JSON 出口继续以 `Response` 逐字节透传；Python 只负责必要协调和公开字段投影，并在返回普通值的路由显式声明 `response_model=None`。默认值、空值、数值口径、排序与时间格式由所属输出函数负责。账户配置仍通过渠道声明的连接字段白名单回显，Webhook 和其他内部配置不进入响应。

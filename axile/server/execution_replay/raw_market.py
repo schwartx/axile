@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from axile.server.execution_replay.raw_index import _stream_ids, integer
-from axile.server.execution_replay.reader import BLOCK_COLUMNS, ReadError
+from axile.server.execution_replay.reader import ReadError
 
 SAFE = 9_007_199_254_740_991
 
@@ -18,13 +18,8 @@ def _subjects(db, rec, request):
         or len(set(integer(i, minimum=1) for i in ids)) != len(ids)
     ):
         raise ReadError("REPLAY_OBJECT_BUDGET", 422)
-    marks = ",".join("?" for _ in ids)
-    rows = list(
-        db.execute(
-            f"SELECT * FROM market_objects WHERE recording=? AND first_seq IN ({marks}) AND first_seq<=?",
-            [rec, *ids, request["cutoff_seq"]],
-        )
-    )
+
+    rows = list(db.rows("market_subjects", [rec, *ids, request["cutoff_seq"]]))
     if len(rows) != len(ids):
         raise ReadError("REPLAY_OBJECT_INVALID")
     return rows
@@ -33,7 +28,7 @@ def _subjects(db, rec, request):
 def locations(db, request):
     """Stable namespace-major cursors and bounded reference pages within a validated source view."""
     recording, cutoff = request["recording"], integer(request.get("cutoff_seq"), maximum=request["through_seq"])
-    owner = db.execute("SELECT id FROM recording_keys WHERE recording=?", [recording]).fetchone()
+    owner = db.one("market_recording", [recording])
     operation = request["operation"]
     if operation == "market-objects":
         if owner is None:
@@ -50,25 +45,15 @@ def locations(db, request):
             raise ReadError("REPLAY_SCOPE_INVALID", 422)
         result, size = [], 0
         for _ in range(32):
-            current = (
-                db.execute(
-                    "SELECT id,prefix FROM market_namespaces WHERE recording=? AND id=?", [owner[0], ns]
-                ).fetchone()
-                if ns and seq < SAFE
-                else None
-            )
+            current = db.one("market_namespace", [owner[0], ns]) if ns and seq < SAFE else None
             if current is None:
-                current = db.execute(
-                    "SELECT n.id,n.prefix FROM market_namespaces n WHERE n.recording=? AND n.id>? AND EXISTS(SELECT 1 FROM market_namespace_symbols s WHERE s.namespace=n.id AND s.symbol IN ('',?) AND s.first_seq<=?) ORDER BY n.id LIMIT 1",
-                    [owner[0], ns, symbol, cutoff],
-                ).fetchone()
+                current = db.one("next_market_namespace", [owner[0], ns, symbol, cutoff])
                 seq = 0
             if current is None:
                 return {"subjects": result, "next": None}
             ns = current["id"]
-            rows = db.execute(
-                "SELECT first_seq,suffix FROM market_objects INDEXED BY market_page WHERE recording=? AND kind=? AND namespace=? AND first_seq>? AND first_seq<=? ORDER BY first_seq LIMIT ?",
-                [owner[0], int(kind == "weak_market_trade"), ns, seq, cutoff, 129 - len(result)],
+            rows = db.rows(
+                "market_identities", [owner[0], int(kind == "weak_market_trade"), ns, seq, cutoff, 129 - len(result)]
             )
             for row in rows:
                 key = current["prefix"] + row["suffix"] + "]" if current["prefix"] else row["suffix"]
@@ -86,13 +71,10 @@ def locations(db, request):
     rec = owner[0]
     subjects = _subjects(db, rec, request)
     ids = [s["first_seq"] for s in subjects]
-    marks = ",".join("?" for _ in ids)
+
     start = integer(request.get("after_seq", 0), maximum=cutoff)
     if operation == "market-origin":
-        changed = db.execute(
-            f"SELECT 1 FROM market_links WHERE recording=? AND object IN ({marks}) AND known_seq>? AND known_seq<=? AND seq<=? LIMIT 1",
-            [rec, *ids, start, cutoff, start],
-        ).fetchone()
+        changed = db.one("market_origin", [rec, *ids, start, cutoff, start])
         return {"rebuild": changed is not None}
     if operation == "market-links":
         if not any(s["linked"] for s in subjects):
@@ -101,13 +83,7 @@ def locations(db, request):
         if not isinstance(after, list) or len(after) != 2:
             raise ReadError("REPLAY_CURSOR_INVALID", 422)
         seq, identity = [integer(v) for v in after]
-        rows = [
-            dict(r)
-            for r in db.execute(
-                f"SELECT l.seq,l.object,EXISTS(SELECT 1 FROM market_links x WHERE x.recording=l.recording AND x.seq=l.seq AND x.object!=l.object AND x.known_seq<=?) AS conflict FROM market_links l WHERE l.recording=? AND l.object IN ({marks}) AND (l.seq,l.object)>(?,?) AND l.seq>? AND l.known_seq<=? ORDER BY l.seq,l.object LIMIT 129",
-                [cutoff, rec, *ids, seq, identity, start, cutoff],
-            )
-        ]
+        rows = [dict(r) for r in db.rows("market_links", [cutoff, rec, *ids, seq, identity, start, cutoff])]
         page = rows[:128]
         for row in page:
             row["conflict"] = bool(row["conflict"])
@@ -119,7 +95,7 @@ def locations(db, request):
                 streams.update(
                     _stream_ids(
                         db,
-                        "SELECT stream,known_seq AS first_seq FROM market_refs INDEXED BY market_ref_known WHERE recording=? AND object=? AND stream>? ORDER BY stream,known_seq,block LIMIT 1",
+                        "next_market_stream",
                         [rec, subject["first_seq"]],
                         cutoff,
                     )
@@ -127,13 +103,7 @@ def locations(db, request):
             if len(streams) > 16:
                 raise ReadError("REPLAY_DEPENDENCY_WORKING_SET", 413)
         if any(s["linked"] for s in subjects):
-            streams.update(
-                r[0]
-                for r in db.execute(
-                    f"SELECT DISTINCT w.stream FROM market_links l JOIN market_objects w ON w.recording=l.recording AND w.first_seq=l.seq AND w.kind=1 WHERE l.recording=? AND l.object IN ({marks}) AND l.known_seq<=? LIMIT 17",
-                    [rec, *ids, cutoff],
-                )
-            )
+            streams.update(r[0] for r in db.rows("linked_market_streams", [rec, *ids, cutoff]))
         if len(streams) > 16:
             raise ReadError("REPLAY_DEPENDENCY_WORKING_SET", 413)
         streams = sorted(streams)
@@ -162,12 +132,9 @@ def _blocks(db, recording, rec, subjects, request, limit):
     after = integer(request.get("after_block", 0))
     start, cutoff = integer(request.get("after_seq", 0)), request["cutoff_seq"]
     ids = [s["first_seq"] for s in subjects]
-    marks = ",".join("?" for _ in ids)
+
     if start:
-        first = db.execute(
-            "SELECT id FROM blocks WHERE recording=? AND stream=? AND first_seq<=? ORDER BY first_seq DESC LIMIT 1",
-            [recording, stream, start],
-        ).fetchone()
+        first = db.one("quote_block_seed_id", [recording, stream, start])
         if first:
             after = max(after, first[0] - 1)
     blocks = {s["block"] for s in subjects if s["stream"] == stream and s["block"] > after}
@@ -175,27 +142,19 @@ def _blocks(db, recording, rec, subjects, request, limit):
         if subject["last_seq"] > subject["first_seq"]:
             blocks.update(
                 r[0]
-                for r in db.execute(
-                    "SELECT block FROM market_refs WHERE recording=? AND object=? AND stream=? AND block>? AND seq>? AND known_seq<=? ORDER BY block LIMIT ?",
-                    [rec, subject["first_seq"], stream, after, start, cutoff, limit + 1],
+                for r in db.rows(
+                    "market_reference_blocks", [rec, subject["first_seq"], stream, after, start, cutoff, limit + 1]
                 )
             )
     if any(s["linked"] for s in subjects):
         blocks.update(
-            r[0]
-            for r in db.execute(
-                f"SELECT DISTINCT w.block FROM market_links l JOIN market_objects w ON w.recording=l.recording AND w.first_seq=l.seq AND w.kind=1 WHERE l.recording=? AND l.object IN ({marks}) AND w.stream=? AND w.block>? AND l.seq>? AND l.known_seq<=? ORDER BY w.block LIMIT ?",
-                [rec, *ids, stream, after, start, cutoff, limit + 1],
-            )
+            r[0] for r in db.rows("linked_market_blocks", [rec, *ids, stream, after, start, cutoff, limit + 1])
         )
     selected = sorted(blocks)[:limit]
     output, size = [], 0
     budget = integer(request.get("page_bytes", 1024 * 1024), minimum=1, maximum=1024 * 1024)
     for identity in selected:
-        row = db.execute(
-            f"SELECT {BLOCK_COLUMNS} FROM blocks WHERE recording=? AND id=? AND last_seq>? AND first_seq<=?",
-            [recording, identity, start, cutoff],
-        ).fetchone()
+        row = db.one("market_block", [recording, identity, start, cutoff])
         if row is None:
             continue
         if output and size + row["length"] > budget:

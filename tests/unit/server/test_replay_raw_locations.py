@@ -83,9 +83,13 @@ def test_native_interleaved_pages_quiet_commit_and_sparse_stream_selection(tmp_p
         if seq in [1, 2, 3, 4, 5, 100]:
             writer.seal()
     writer.finish()
-    with reader.index(tmp_path, 7, lambda: None) as (db, _, _):
-        streams = {r["topic"]: r["id"] for r in db.execute("SELECT id,topic FROM streams WHERE recording='R'")}
-        pages = list(db.execute("SELECT * FROM location_pages ORDER BY first_seq"))
+    with (
+        reader.index(tmp_path, 7, lambda: None) as (db, _, _),
+        sqlite3.connect(tmp_path / "account-7/.replay-v2.sqlite") as oracle,
+    ):
+        oracle.row_factory = sqlite3.Row
+        streams = {r["topic"]: r["id"] for r in oracle.execute("SELECT id,topic FROM streams WHERE recording='R'")}
+        pages = list(oracle.execute("SELECT * FROM location_pages ORDER BY first_seq"))
         assert sum(p["last_seq"] - p["first_seq"] + 1 for p in pages) == 700
         assert all(p["last_seq"] - p["first_seq"] < 256 for p in pages)
         for through, target, tie in [
@@ -109,7 +113,9 @@ def test_native_interleaved_pages_quiet_commit_and_sparse_stream_selection(tmp_p
         # The sparse stream is absent from the latest global page and must use its block index.
         chosen, evidence = locate(db, "R", 700, 233, 700, streams["/quote/sparse"], lambda _, read_bytes=0: None)
         assert chosen["seq"] == 600 and all(r["seq"] != 600 for r in evidence)
-        block = db.execute("SELECT positions FROM blocks WHERE recording='R' AND id=?", [chosen["block"]]).fetchone()[0]
+        block = oracle.execute(
+            "SELECT positions FROM blocks WHERE recording='R' AND id=?", [chosen["block"]]
+        ).fetchone()[0]
         assert isinstance(block, bytes)
         for seq in [1, 256, 257, 700]:
             assert at_sequence(db, "R", 700, seq, lambda *_: None)["time"] == events[seq - 1]["time_us"]
@@ -139,7 +145,7 @@ def test_every_single_event_commit_still_needs_at_most_32_evidence_pages(tmp_pat
     # Valid large blocks change only the optional preview size, never the target cursor.
     with sqlite3.connect(tmp_path / "account-7/.replay-v2.sqlite") as db:
         db.execute("UPDATE blocks SET length=?", [600 * 1024])
-        db.row_factory = sqlite3.Row
+    with reader.index(tmp_path, 7, lambda: None) as (db, _, _):
         manifest = reader.metadata(db, {"operation": "manifest", "execution_id": "E"})
         plan = reader.metadata(
             db,

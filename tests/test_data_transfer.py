@@ -36,10 +36,9 @@ def seed(path, ident=1):
 
 
 def raw_manifest(database, execution):
-    from axile.server.execution_replay.reader import metadata
+    from axile.server.execution_replay.reader import index, metadata
 
-    with sqlite3.connect(database.parent / "replay/account-1/.replay-v2.sqlite") as c:
-        c.row_factory = sqlite3.Row
+    with index(database.parent / "replay", 1, lambda: None) as (c, _, _):
         return metadata(c, {"operation": "manifest", "execution_id": execution})
 
 

@@ -98,7 +98,7 @@ async def replay_raw(execution_id: str, operation: str, request: Request):
         raise HTTPException(exc.status, detail={"code": exc.code, "message": exc.code}) from exc
     except (ValueError, TypeError, KeyError) as exc:
         raise HTTPException(422, detail="REPLAY_REQUEST_INVALID") from exc
-    except (OSError, reader.sqlite3.Error) as exc:
+    except OSError as exc:
         raise HTTPException(409, detail="REPLAY_RAW_UNAVAILABLE") from exc
 
 

@@ -65,3 +65,11 @@
 证据保存在 `/private/tmp/axon-replay-single-source/delivery/`：`review-viewport-before-preflight.json`、`review-point-acceptance.json`、`review-page-steps.json`、`review-page-gaps.json`、`review-plot-navigation.json`、`review-no-quote-orders.json`、`review-viewport.png` 及 `review-*-tests.log`、构建日志。最初规划失败另保留为 `review-preflight-failed-attempt.json`，不计入通过结果。
 
 验收结束后已关闭专用浏览器任务空间、停止隔离服务，并删除临时前端验收入口与构建配置；原始样本及证据保留。
+
+## PR 合并检查补充
+
+创建 PR #243 时，仓库原生启动门禁发现回放读取仍导入 Python SQLite。此前定向验收没有覆盖这个存储边界，原报告不能作为该项通过的证据。现已把 SQL 和只读连接移入 Rust 的固定回放查询目录，保留原有逐请求取消、指令和时间计费；Python 不再导入数据库驱动，也不能传入任意 SQL。打包检查同时要求原生扩展提供 `ReplayIndex`。
+
+原有 103 项定向检查与 5 项原生启动检查、30 项源码边界检查一起复跑，138 项通过；新增的固定查询白名单、参数形状和关闭连接检查另 1 项通过。后续真实浏览器复验仍使用原来的完整区间、16 次跳转及 40,000 身份样本，未扩大压力测试范围。合并门禁最终状态以 PR 为准。
+
+原生读取路径的最终浏览器复验也已通过，证据为 `pr-browser-acceptance.json`：完整区间 84.26 秒、原始读取 60,726,822 B、索引工作 12,532,336；16 次精确跳转 50.1–107.3 毫秒。40,000 身份统计、订单、持仓分别为 28.30 / 31.66 / 39.81 秒，三段同会话原始读取合计 3,579,086 B，累计计费仍为 5,796,592 → 9,247,101 → 11,756,463 B；后两段原始读取为零。WASM 峰值 3,276,800 B、压缩缓存不超过 4 MiB，服务端峰值 RSS 151,617,536 B，每段结束活动读取为零。新增检查也验证 SQLite 原生执行过程中的取消能保留原拒绝原因。

@@ -11,9 +11,6 @@ PAGE_ROWS = 256
 BLOCK_ROWS = 1024
 PAGE_BYTES = PAGE_ROWS * 15 + 16
 BLOCK_BYTES = 26 + BLOCK_ROWS * 16
-PAGE_COLUMNS = (
-    f"first_seq,last_seq,first_time,last_time,CASE WHEN length(positions)<={PAGE_BYTES} THEN positions END AS positions"
-)
 
 
 class _Ints:
@@ -76,19 +73,13 @@ def _page(row, work):
 
 
 def _selected(db, recording, stream, cutoff, bound, evidence, work):
-    block = db.execute(
-        "SELECT id,first_seq,last_seq FROM blocks WHERE recording=? AND stream=? AND first_seq<=? ORDER BY first_seq DESC LIMIT 1",
-        [recording, stream, cutoff],
-    ).fetchone()
+    block = db.one("quote_block_seed", [recording, stream, cutoff])
     if block is None:
         return None
     for row in evidence:
         if row["block"] == block["id"]:
             return row
-    blob = db.execute(
-        f"SELECT CASE WHEN length(positions)<={BLOCK_BYTES} THEN positions END FROM blocks WHERE recording=? AND id=?",
-        [recording, block["id"]],
-    ).fetchone()[0]
+    blob = db.one("block_positions", [recording, block["id"]])[0]
     source = _Ints(blob, BLOCK_BYTES, work)
     count, time = source.read(BLOCK_ROWS), source.read()
     if not count:
@@ -118,17 +109,11 @@ def locate(db, recording, through, target, tie, stream, work):
     """按冻结提交定位精确观察、最近 32 条证据与所选流的最后观察。"""
     if through == 0:
         return None, []
-    last = db.execute(
-        "SELECT last_seq,last_time FROM location_pages WHERE recording=? AND first_seq<=? ORDER BY first_seq DESC LIMIT 1",
-        [recording, through],
-    ).fetchone()
+    last = db.one("location_end", [recording, through])
     if last is None or last["last_seq"] != through:
         raise ReadError("REPLAY_INDEX_LOCATIONS")
     bound = min((target, tie), (last["last_time"], through))
-    page = db.execute(
-        f"SELECT {PAGE_COLUMNS} FROM location_pages WHERE recording=? AND (first_time,first_seq)<=(?,?) ORDER BY first_time DESC,first_seq DESC LIMIT 1",
-        [recording, *bound],
-    ).fetchone()
+    page = db.one("location_time", [recording, *bound])
     if page is None:
         return None, []
     rows = _page(page, work)
@@ -137,10 +122,7 @@ def locate(db, recording, through, target, tie, stream, work):
         raise ReadError("REPLAY_INDEX_LOCATIONS")
     # Each preceding page contributes at least one row; at most 32 pages are examined.
     while len(evidence) < 32 and page["first_seq"] > 1:
-        previous = db.execute(
-            f"SELECT {PAGE_COLUMNS} FROM location_pages WHERE recording=? AND first_seq<? ORDER BY first_seq DESC LIMIT 1",
-            [recording, page["first_seq"]],
-        ).fetchone()
+        previous = db.one("location_before", [recording, page["first_seq"]])
         if (
             previous is None
             or previous["last_seq"] + 1 != page["first_seq"]
@@ -157,10 +139,7 @@ def at_sequence(db, recording, through, sequence, work):
     """Locate one adjacent observation without loading a global event list."""
     if not 1 <= sequence <= through:
         return None
-    page = db.execute(
-        f"SELECT {PAGE_COLUMNS} FROM location_pages WHERE recording=? AND first_seq<=? ORDER BY first_seq DESC LIMIT 1",
-        [recording, sequence],
-    ).fetchone()
+    page = db.one("location_sequence", [recording, sequence])
     if page is None or page["last_seq"] < sequence:
         raise ReadError("REPLAY_INDEX_LOCATIONS")
     return _page(page, work)[sequence - page["first_seq"]]

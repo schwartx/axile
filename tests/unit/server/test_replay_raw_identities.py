@@ -3,12 +3,14 @@
 import hashlib
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 
 from axile.server._native import _core
 from axile.server.execution_replay import reader
+from axile.server.execution_replay.raw_store import RawIndex
 
 
 @pytest.fixture
@@ -231,10 +233,10 @@ def test_failed_rebuild_preserves_the_published_index(source):
     assert list((path / "account-7").glob(".replay-rebuild-*")) == []
 
 
-def test_stream_discovery_seeks_past_future_blocks_instead_of_scanning_history():
+def test_stream_discovery_seeks_past_future_blocks_instead_of_scanning_history(tmp_path):
     from axile.server.execution_replay.raw_index import locations
 
-    with sqlite3.connect(":memory:") as db:
+    with sqlite3.connect(tmp_path / "lookup.sqlite") as db:
         db.row_factory = sqlite3.Row
         db.executescript(Path("rust/storage/src/execution_replay_raw.sql").read_text())
         db.execute("INSERT INTO streams VALUES ('R',1,'/trade','future')")
@@ -250,15 +252,22 @@ def test_stream_discovery_seeks_past_future_blocks_instead_of_scanning_history()
         steps = [0]
 
         def progress():
-            steps[0] += 10
+            steps[0] += 100
             return int(steps[0] > 1000)
 
-        db.set_progress_handler(progress, 10)
-        result = locations(
-            db,
-            {"recording": "R", "operation": "object-streams", "through_seq": 20100, "cutoff_seq": 50, "objects": [1]},
-        )
-        assert result["streams"] == [2] and steps[0] < 1000
+        db.commit()
+        with closing(RawIndex(tmp_path / "lookup.sqlite", progress)) as native:
+            result = locations(
+                native,
+                {
+                    "recording": "R",
+                    "operation": "object-streams",
+                    "through_seq": 20100,
+                    "cutoff_seq": 50,
+                    "objects": [1],
+                },
+            )
+            assert result["streams"] == [2] and steps[0] < 1000
 
 
 def test_quiet_commit_is_a_distinct_frozen_view_and_cannot_borrow_a_new_watermark(tmp_path):
@@ -281,7 +290,7 @@ def test_quiet_commit_is_a_distinct_frozen_view_and_cannot_borrow_a_new_watermar
     writer.poll(2_000_001)
     writer.finish()
     with reader.index(tmp_path, 7, lambda: None) as (db, _, _):
-        generation = db.execute("SELECT value FROM meta WHERE key='generation'").fetchone()[0]
+        generation = db.one("generation")[0]
         request = {
             "operation": "plan",
             "recording": "R",
@@ -388,13 +397,7 @@ def test_order_dependencies_exclude_command_and_trade_streams_and_page_raw_versi
         ids = [o["id"] for o in objects]
         streams = get("object-streams", objects=ids)["streams"]
         assert len(streams) == 9  # Eight order streams and the shared full-scope stream.
-        topics = {
-            r[0]
-            for r in db.execute(
-                "SELECT topic FROM streams WHERE recording='R' AND id IN (" + ",".join("?" for _ in streams) + ")",
-                streams,
-            )
-        }
+        topics = {r[0] for r in [db.one("stream_topic", ["R", stream]) for stream in streams]}
         assert topics == {"/order", "/order_set"}
         assert len(get("commands", objects=ids)["subjects"]) == 8
         assert len(get("queries", objects=ids)["sequences"]) == 128
@@ -404,10 +407,10 @@ def test_order_dependencies_exclude_command_and_trade_streams_and_page_raw_versi
         assert len(rest["versions"]) == 10 and rest["next"] is None
 
 
-def test_block_page_seeks_both_sequence_bounds_without_scanning_future_history():
+def test_block_page_seeks_both_sequence_bounds_without_scanning_future_history(tmp_path):
     from axile.server.execution_replay.raw_index import locations
 
-    with sqlite3.connect(":memory:") as db:
+    with sqlite3.connect(tmp_path / "lookup.sqlite") as db:
         db.row_factory = sqlite3.Row
         db.executescript(Path("rust/storage/src/execution_replay_raw.sql").read_text())
         db.execute("INSERT INTO objects VALUES (1,'R','trade','T',2)")
@@ -420,24 +423,25 @@ def test_block_page_seeks_both_sequence_bounds_without_scanning_future_history()
         steps = [0]
 
         def progress():
-            steps[0] += 10
+            steps[0] += 100
             return int(steps[0] > 2000)
 
-        db.set_progress_handler(progress, 10)
-        page = locations(
-            db,
-            {
-                "recording": "R",
-                "operation": "object-blocks",
-                "through_seq": 20000,
-                "cutoff_seq": 10001,
-                "objects": [1],
-                "stream": 1,
-                "after_seq": 10000,
-            },
-        )
-        assert [b["id"] for b in page["blocks"]] == [10001]
-        assert page["next"] is None and steps[0] < 2000
+        db.commit()
+        with closing(RawIndex(tmp_path / "lookup.sqlite", progress)) as native:
+            page = locations(
+                native,
+                {
+                    "recording": "R",
+                    "operation": "object-blocks",
+                    "through_seq": 20000,
+                    "cutoff_seq": 10001,
+                    "objects": [1],
+                    "stream": 1,
+                    "after_seq": 10000,
+                },
+            )
+            assert [b["id"] for b in page["blocks"]] == [10001]
+            assert page["next"] is None and steps[0] < 2000
 
 
 def test_dependency_routes_are_exposed_with_the_same_frozen_context(source, monkeypatch):
@@ -467,28 +471,53 @@ def test_dependency_routes_are_exposed_with_the_same_frozen_context(source, monk
             assert response.json()["index_generation"] == view["index_generation"]
 
 
-def test_fixed_identity_lookup_uses_primary_keys_in_a_large_dictionary():
+def test_fixed_identity_lookup_uses_primary_keys_in_a_large_dictionary(tmp_path):
     from axile.server.execution_replay.raw_index import locations
 
-    with sqlite3.connect(":memory:") as db:
+    with sqlite3.connect(tmp_path / "lookup.sqlite") as db:
         db.row_factory = sqlite3.Row
         db.executescript(Path("rust/storage/src/execution_replay_raw.sql").read_text())
         db.executemany("INSERT INTO objects VALUES (?,'R','trade',?,1)", [(i, f"T{i}") for i in range(1, 20001)])
         steps = [0]
 
         def progress():
-            steps[0] += 10
+            steps[0] += 100
             return int(steps[0] > 2000)
 
-        db.set_progress_handler(progress, 10)
-        result = locations(
-            db,
-            {
-                "recording": "R",
-                "operation": "object-streams",
-                "through_seq": 20001,
-                "cutoff_seq": 20001,
-                "objects": list(range(1, 9)),
-            },
-        )
-        assert result["streams"] == [] and steps[0] < 2000
+        db.commit()
+        with closing(RawIndex(tmp_path / "lookup.sqlite", progress)) as native:
+            result = locations(
+                native,
+                {
+                    "recording": "R",
+                    "operation": "object-streams",
+                    "through_seq": 20001,
+                    "cutoff_seq": 20001,
+                    "objects": list(range(1, 9)),
+                },
+            )
+            assert result["streams"] == [] and steps[0] < 2000
+
+
+def test_native_lookup_accepts_only_fixed_read_operations_and_parameter_shapes(source):
+    path, _, _ = source
+    with reader.index(path, 7, lambda: None) as (db, _, _):
+        for operation, parameters in [("SELECT * FROM objects", "[]"), ("subjects", '["R",1]'), ("layout", "[true]")]:
+            with pytest.raises(_core.NativeError):
+                db.native.lookup(operation, parameters)
+        assert db.one("layout")[0] == "7"
+        native = db.native
+    with pytest.raises(_core.NativeError, match="closed"):
+        native.lookup("layout", "[]")
+
+    checks = [0]
+
+    def canceled_during_native_query():
+        checks[0] += 1
+        if checks[0] > 1:
+            raise reader.ReadError("REPLAY_ROOT_CANCELED")
+
+    with pytest.raises(reader.ReadError, match="REPLAY_ROOT_CANCELED"):
+        with reader.index(path, 7, canceled_during_native_query) as (db, _, _):
+            db.rows("subjects", ["R", *range(1, 129), 5])
+    assert checks[0] > 1

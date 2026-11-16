@@ -7,7 +7,6 @@ import hashlib
 import hmac
 import json
 import os
-import sqlite3
 import struct
 import threading
 import time
@@ -25,7 +24,6 @@ MAX_BATCH = 1024 * 1024
 MAX_PACKED = MAX_BATCH + 8 + 128 * 8
 MAX_RAW = 512 * 1024 + 1
 METADATA_CREDIT = 256 * 1024
-BLOCK_COLUMNS = "id,stream,offset,length,raw_length,sha256,first_seq,last_seq"
 WINDOW_INDEX_STEPS = 2_000_000
 REQUEST_INDEX_STEPS = 200_000
 # A 40,000-identity fold spans many bounded reads; the account rate and root deadline still apply.
@@ -67,7 +65,7 @@ class Root:
 
 
 @dataclass
-class Session:
+class ReadSession:
     """有期限的读会话；已回收根序号不得复用。"""
 
     account: int
@@ -104,7 +102,7 @@ class Readers:
         self.started = now()
         self.epoch = uuid4().hex
         self.lock = threading.RLock()
-        self.sessions: dict[str, Session] = {}
+        self.sessions: dict[str, ReadSession] = {}
         self.accounts: dict[int, Account] = {}
         self._owner = None
         self._owner_root: str | None = None
@@ -168,7 +166,7 @@ class Readers:
             if account not in self.accounts and len(self.accounts) >= 64:
                 raise ReadError("REPLAY_READER_CAPACITY", 429)
             sid = uuid4().hex
-            self.sessions[sid] = Session(account, execution, self.now() + LEASE)
+            self.sessions[sid] = ReadSession(account, execution, self.now() + LEASE)
             self.accounts.setdefault(account, Account())
             if resume is not None:
                 try:
@@ -284,7 +282,7 @@ class Readers:
                 if session.root is None or not session.root.active:
                     del self.sessions[sid]
 
-    def session(self, account: int, execution: str, request: dict, *, control=False) -> Session:
+    def session(self, account: int, execution: str, request: dict, *, control=False) -> ReadSession:
         """验证读取实例、会话归属及数据通道租约。"""
         if request.get("reader_epoch") != self.epoch:
             # The old process may still be alive. Never claim its jobs retired from a new epoch.
@@ -296,7 +294,7 @@ class Readers:
             raise ReadError("REPLAY_READER_EXPIRED")
         return session
 
-    def root(self, session: Session, sequence: int) -> Root:
+    def root(self, session: ReadSession, sequence: int) -> Root:
         """只准入 ACK 水位之后紧邻的一个根任务。"""
         if type(sequence) is not int or sequence <= session.ack or sequence != session.ack + 1:
             raise ReadError("REPLAY_ROOT_RETIRED")
@@ -382,7 +380,7 @@ class Readers:
                 session.ack, session.root = seq, None
             return result
 
-    def admit(self, account: int, execution: str, request: dict, credit: int) -> tuple[Session, Root]:
+    def admit(self, account: int, execution: str, request: dict, credit: int) -> tuple[ReadSession, Root]:
         """在访问索引之前预留峰值、速率和根任务额度。"""
         with self.lock:
             if self.maintaining:
@@ -431,7 +429,7 @@ class Readers:
             owner.step_buckets[slot] = owner.step_buckets.get(slot, 0) + reserve_steps
             return session, root
 
-    def check(self, session: Session, root: Root, attempt: int) -> None:
+    def check(self, session: ReadSession, root: Root, attempt: int) -> None:
         """在有界读取步骤间检查取消和期限。"""
         with self.lock:
             if (
@@ -443,7 +441,7 @@ class Readers:
                 raise ReadError("REPLAY_READ_CANCELED")
 
     def release(
-        self, session: Session, root: Root, credit: int, actual: int, steps: int, raw_bytes=0, index_bytes=0
+        self, session: ReadSession, root: Root, credit: int, actual: int, steps: int, raw_bytes=0, index_bytes=0
     ) -> None:
         """实际工作停止后替换预留；累计原始读取和索引工作分开记录。"""
         with self.lock:
@@ -483,8 +481,10 @@ def index(root: str | Path, account: int, cancel):
     if not path.exists():
         yield None, directory, steps
         return
-    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=0.1)
-    db.row_factory = sqlite3.Row
+    from axile.server._native import _core
+    from axile.server.execution_replay.raw_store import RawIndex
+
+    db = None
     started = time.monotonic()
     interrupted = None
 
@@ -502,16 +502,17 @@ def index(root: str | Path, account: int, cancel):
             return 1
         return 0
 
-    db.set_progress_handler(progress, 100)
     try:
-        db.execute("BEGIN")
+        cancel()
+        db = RawIndex(path, progress)
         yield db, directory, steps
-    except sqlite3.Error as error:
+    except _core.NativeError as error:
         if interrupted is not None:
             raise interrupted from error
-        raise
+        raise ReadError("REPLAY_INDEX_READ", 503) from error
     finally:
-        db.close()
+        if db is not None:
+            db.close()
 
 
 def metadata(db, request: dict, work=lambda amount, read_bytes=0: None) -> dict:
@@ -520,37 +521,20 @@ def metadata(db, request: dict, work=lambda amount, read_bytes=0: None) -> dict:
         if request.get("operation") == "manifest":
             return {"schema_version": 2, "index_generation": "unrecorded", "recordings": []}
         raise ReadError("REPLAY_SOURCE_VIEW")
-    layout = db.execute("SELECT value FROM meta WHERE key='layout'").fetchone()
+    layout = db.one("layout", [])
     if layout is None or layout[0] != "7":
         raise ReadError("REPLAY_INDEX_REBUILD_REQUIRED")
-    generation = db.execute("SELECT value FROM meta WHERE key='generation'").fetchone()[0]
+    generation = db.one("generation", [])[0]
     if request.get("operation") == "manifest":
-        rows = db.execute(
-            "SELECT r.id,r.seq,r.watermark,r.state,r.commit_id FROM recordings r JOIN executions e ON e.recording=r.id WHERE e.id=? ORDER BY r.id LIMIT 65",
-            [request["execution_id"]],
-        ).fetchall()
+        rows = db.rows("execution_recordings", [request["execution_id"]])
         if len(rows) > 64:
             raise ReadError("REPLAY_MANIFEST_BUDGET", 413)
         recordings = []
         catalog_bytes = 256
         for row in rows:
-            start = db.execute(
-                "SELECT first_time FROM location_pages WHERE recording=? ORDER BY first_seq LIMIT 1", [row["id"]]
-            ).fetchone()
-            streams = [
-                dict(s)
-                for s in db.execute(
-                    "SELECT s.id,s.topic,s.symbol FROM streams s WHERE s.recording=? AND (SELECT b.first_seq FROM blocks b WHERE b.recording=s.recording AND b.stream=s.id ORDER BY b.first_seq LIMIT 1)<=? ORDER BY s.id LIMIT 129",
-                    [row["id"], row["seq"]],
-                )
-            ]
-            symbols = [
-                s[0]
-                for s in db.execute(
-                    "SELECT symbol FROM symbols WHERE recording=? AND symbol<>'' AND first_seq<=? ORDER BY symbol LIMIT 129",
-                    [row["id"], row["seq"]],
-                )
-            ]
+            start = db.one("recording_start", [row["id"]])
+            streams = [dict(s) for s in db.rows("recording_streams", [row["id"], row["seq"]])]
+            symbols = [s[0] for s in db.rows("recording_symbols", [row["id"], row["seq"]])]
             recordings.append(
                 {
                     **dict(row),
@@ -573,16 +557,13 @@ def metadata(db, request: dict, work=lambda amount, read_bytes=0: None) -> dict:
         or not all(c in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for c in recording)
     ):
         raise ReadError("REPLAY_SOURCE_VIEW", 422)
-    row = db.execute(
-        "SELECT seq,watermark FROM recordings WHERE id=? AND EXISTS(SELECT 1 FROM executions WHERE recording=? AND id=?)",
-        [recording, recording, request["execution_id"]],
-    ).fetchone()
+    row = db.one("execution_recording", [recording, recording, request["execution_id"]])
     if row is None or type(through) is not int or not 0 <= through <= row["seq"]:
         raise ReadError("REPLAY_SOURCE_VIEW")
     commit = request.get("commit_id")
     if not isinstance(commit, str) or len(commit) != 64:
         raise ReadError("REPLAY_SOURCE_COMMIT", 422)
-    frozen = db.execute("SELECT seq,watermark FROM commits WHERE recording=? AND id=?", [recording, commit]).fetchone()
+    frozen = db.one("committed_view", [recording, commit])
     if frozen is None or through != frozen["seq"]:
         raise ReadError("REPLAY_SOURCE_COMMIT")
     row = frozen
@@ -643,14 +624,7 @@ def metadata(db, request: dict, work=lambda amount, read_bytes=0: None) -> dict:
 
         selected, evidence = locate(db, recording, through, target, cutoff, stream, work)
         ids = sorted({r["block"] for r in evidence} | ({selected["block"]} if selected else set()))
-        blocks = [
-            dict(
-                db.execute(
-                    f"SELECT {BLOCK_COLUMNS} FROM blocks WHERE recording=? AND id=?", [recording, bid]
-                ).fetchone()
-            )
-            for bid in ids
-        ]
+        blocks = [dict(db.one("block", [recording, bid])) for bid in ids]
         cutoff_seq = evidence[0]["seq"] if evidence else 0
         previous_seq = cutoff_seq - 1 if evidence and evidence[0]["time"] == target else cutoff_seq
         previous = at_sequence(db, recording, through, previous_seq, work)
@@ -684,14 +658,8 @@ def metadata(db, request: dict, work=lambda amount, read_bytes=0: None) -> dict:
             integer(identity, minimum=1, maximum=0xFFFFFFFF)
         if len(set(ids)) != len(ids):
             raise ReadError("REPLAY_BLOCK_BATCH", 422)
-        placeholders = ",".join("?" for _ in ids)
-        rows = [
-            dict(row)
-            for row in db.execute(
-                f"SELECT {BLOCK_COLUMNS} FROM blocks WHERE recording=? AND id IN ({placeholders}) AND first_seq<=?",
-                [recording, *ids, through],
-            )
-        ]
+
+        rows = [dict(row) for row in db.rows("frozen_blocks", [recording, *ids, through])]
         if len(rows) != len(ids):
             raise ReadError("REPLAY_BLOCK_INVALID")
         by_id = {row["id"]: row for row in rows}
@@ -702,10 +670,7 @@ def metadata(db, request: dict, work=lambda amount, read_bytes=0: None) -> dict:
     block_id = request.get("block")
     if type(block_id) is not int or not 1 <= block_id <= 9_007_199_254_740_991:
         raise ReadError("REPLAY_BLOCK_INVALID", 422)
-    block = db.execute(
-        f"SELECT {BLOCK_COLUMNS} FROM blocks WHERE recording=? AND id=? AND first_seq<=?",
-        [recording, block_id, through],
-    ).fetchone()
+    block = db.one("frozen_block", [recording, block_id, through])
     if block is None:
         raise ReadError("REPLAY_BLOCK_INVALID")
     return dict(block)

@@ -33,6 +33,9 @@ mod execution_replay_raw_index;
 mod execution_replay_raw_locations;
 mod execution_replay_raw_market;
 mod execution_replay_raw_rebuild;
+mod execution_replay_raw_queries;
+#[cfg(feature = "python")]
+mod execution_replay_raw_read;
 pub(crate) mod execution_replay_block;
 pub(crate) mod execution_replay_fragments;
 pub(crate) mod execution_replay_index;
