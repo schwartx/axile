@@ -233,14 +233,13 @@ button.replay-ladder-row:focus-visible { outline: 2px solid var(--color-accent);
 .replay-depth-fit-slot > * { grid-area: 1 / 1; }
 
 /* 同价行与引导线共享时序；连续行情由浏览器从当前显示位置续接。 */
-.replay-ladder-row { transition: top 200ms cubic-bezier(.4, 0, .2, 1); }
 .replay-ladder-guide { transition: d 200ms cubic-bezier(.4, 0, .2, 1); }
 .replay-ladder-amount > i { transition: width 200ms cubic-bezier(.4, 0, .2, 1); }
 .replay-depth-ladder [data-leaving] { transition: opacity 200ms cubic-bezier(.4, 0, .2, 1); }
 .replay-depth-ladder [data-leaving="true"] { opacity: 0; pointer-events: none; }
 .replay-depth-ladder[data-snap="true"] * { transition: none; animation: none; }
 @media (prefers-reduced-motion: reduce) {
-  .replay-depth-ladder * { transition: none; animation: none; }
+  .replay-depth-ladder *, .replay-depth-ladder .replay-ladder-amount > i { transition: none; animation: none; }
   .replay-depth-ladder [data-leaving="true"] { display: none; }
 }
 

@@ -1,5 +1,77 @@
 import { expect, test } from '@playwright/test'
 
+test('depth rows, guide lines and quantities animate together and interrupted moves continue from the visible position', async ({ page }, testInfo) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+  await page.goto('/tests/replay-depth.fixture.html')
+  await page.getByRole('button', { name: '验收场景' }).click()
+  await page.getByRole('option', { name: '盘口动效', exact: true }).click()
+  await page.getByRole('button', { name: '行情帧 1', exact: true }).click()
+  const row = page.locator('[data-price="99.98:99.98"]')
+  const initial = (await row.boundingBox())!.y
+  await page.evaluate(() => {
+    const state = window as Window & { depthMotion: { holdAt: number; row: Element; transitions: string[] } }
+    state.depthMotion = { holdAt: 100, row: document.querySelector('[data-price="99.98:99.98"]')!, transitions: [] }
+    document.querySelector('.replay-depth-ladder')!.addEventListener('transitionrun', event => state.depthMotion.transitions.push((event as TransitionEvent).propertyName))
+    const animate = Element.prototype.animate
+    Element.prototype.animate = function(...args) {
+      const animation = animate.apply(this, args)
+      if (this.matches('.replay-ladder-list [data-price]')) { animation.pause(); animation.currentTime = state.depthMotion.holdAt }
+      return animation
+    }
+  })
+  await page.getByRole('button', { name: '行情帧 2', exact: true }).click()
+  const moved = await row.evaluate(element => {
+    const offset = new DOMMatrixReadOnly(getComputedStyle(element).transform).m42
+    return { y: element.getBoundingClientRect().y, offset, active: element.getAnimations().length }
+  })
+  expect(moved.active).toBe(1)
+  expect(moved.y).toBeGreaterThan(initial)
+  expect(moved.y).toBeLessThan(initial + 20)
+  expect(moved.offset).toBeLessThan(0)
+  await expect.poll(() => page.evaluate(() => (window as Window & { depthMotion: { transitions: string[] } }).depthMotion.transitions)).toEqual(expect.arrayContaining(['width', 'd']))
+  await page.evaluate(() => document.querySelector('.replay-depth-ladder')!.getAnimations({ subtree: true }).forEach(animation => { animation.pause(); animation.currentTime = 100 }))
+  await page.screenshot({ path: testInfo.outputPath('depth-motion-midpoint.png'), animations: 'allow' })
+  const continued = await page.evaluate(async () => {
+    const state = window as Window & { depthMotion: { holdAt: number; row: Element } }
+    state.depthMotion.holdAt = 0
+    const before = state.depthMotion.row.getBoundingClientRect().y
+    ;[...document.querySelectorAll('button')].find(button => button.textContent === '行情帧 3')!.click()
+    await new Promise(requestAnimationFrame)
+    const row = document.querySelector('[data-price="99.98:99.98"]')!
+    return { sameNode: row === state.depthMotion.row, before, after: row.getBoundingClientRect().y }
+  })
+  expect(continued.sameNode).toBe(true)
+  expect(Math.abs(continued.after - continued.before)).toBeLessThan(.5)
+  const sameMove = await page.evaluate(async () => {
+    const row = document.querySelector('[data-price="99.98:99.98"]')!, animation = row.getAnimations()[0]
+    ;[...document.querySelectorAll('button')].find(button => button.textContent === '行情帧 1')!.click()
+    await new Promise(requestAnimationFrame)
+    return animation === row.getAnimations()[0]
+  })
+  expect(sameMove).toBe(true)
+  await expect(page.locator('[data-price="99.99:99.99"]')).toHaveCount(0)
+  await page.setViewportSize({ width: 1100, height: 800 })
+  await expect.poll(() => row.evaluate(element => element.getAnimations().length)).toBe(0)
+})
+
+test('reduced motion cancels a running depth move and keeps rows and guides aligned immediately', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+  await page.goto('/tests/replay-depth.fixture.html')
+  await page.getByRole('button', { name: '验收场景' }).click()
+  await page.getByRole('option', { name: '盘口动效', exact: true }).click()
+  await page.getByRole('button', { name: '行情帧 1', exact: true }).click()
+  await page.getByRole('button', { name: '行情帧 2', exact: true }).click()
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  const row = page.locator('[data-price="99.98:99.98"]')
+  await expect.poll(() => row.evaluate(element => getComputedStyle(element).transform)).toBe('none')
+  await page.getByRole('button', { name: '行情帧 3', exact: true }).click()
+  await expect.poll(() => row.evaluate(element => element.getAnimations().length)).toBe(0)
+  const state = await row.evaluate(element => ({ transform: getComputedStyle(element).transform,
+    barDuration: getComputedStyle(element.querySelector('.replay-ladder-amount > i')!).transitionDuration,
+    guideDuration: getComputedStyle(document.querySelector('.replay-ladder-guide')!).transitionDuration }))
+  expect(state).toEqual({ transform: 'none', barDuration: '0s', guideDuration: '0s' })
+})
+
 test('own orders show separate buy and sell tags beside price in the compact ladder', async ({ page }, testInfo) => {
   await page.goto('/tests/replay-depth.fixture.html')
   await page.getByRole('button', { name: '验收场景' }).click()
