@@ -18,6 +18,6 @@ Web。操作者通过浏览器管理账户、组合及交易执行。
 
 ## Stack
 
-React、TypeScript、Tailwind CSS 和 Canvas。设计语义沿用 `src/styles/theme.css` 与仓库 `axon-frontend-language` 技能；不添加另一套颜色或动效系统。
+React、TypeScript、Tailwind CSS 和 Canvas。组织与变化沿用仓库 `axon-frontend-language` 技能，配色与颜色语义沿用 `axon-frontend-color`；token / keyframes 仍以 `src/styles/theme.css` 和现有组件为准，不添加另一套颜色或动效系统。
 
 回放的页头和控件复用现有 `AccountPageTitle`、`Select`、`ValueSlider`；品种在图表工具栏内切换，单一品种不显示无作用的下拉。
