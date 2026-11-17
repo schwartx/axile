@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 
 from axile.executor import replay as recording
 from axile.executor.ctp.converters import _time, stable_order_id
-from axile.executor.ctp.quote_time import resolve_quote_time
+from axile.executor.ctp.quote_time import resolve_quote_time, resolve_quote_trading_day
 from axile.executor.ctp_product_sessions import get_ctp_product_sessions
 from axile.executor.market_data_validation import DEFAULT_QUOTE_MAX_AGE_SECONDS
 from axile.executor.quote_quality import quote_observation
@@ -201,9 +201,15 @@ def _quote_time(owner: object, f: Fields) -> dict[str, object]:
         native["clock"] or "",
         int(native["millisecond"]) if native["millisecond"] is not None else -1,
     )
+    trading_day = resolve_quote_trading_day(
+        value,
+        f.text("TradingDay") or "",
+        sessions,
+        lambda day: calendar.is_open(calendar_id, day) if calendar is not None else None,
+    )
     value, status, reason = resolve_quote_time(
         value,
-        getattr(owner, "_trading_day", ""),
+        trading_day,
         sessions,
         lambda day: calendar.is_open(calendar_id, day) if calendar is not None else None,
     )
