@@ -14,7 +14,7 @@ from axile.server.db.models.base import now_str
 def _validate_custom_calc_py_code(value: str) -> str:
     """拒绝空白的组合计算函数，同时保留源码原始格式."""
     if not value.strip():
-        raise ValueError("自定义组合计算函数不能为空")
+        raise ValueError("自定义组合计算函数不能为空 - at `$.custom_calc_py_code`")
     return value
 
 
@@ -82,7 +82,7 @@ class PortfolioUpdate:
     def validate_custom_calc_py_code(cls, value: str | None) -> str | None:
         """更新函数时拒绝空值和空白源码."""
         if value is None:
-            raise ValueError("自定义组合计算函数不可清空")
+            raise ValueError("自定义组合计算函数不可清空 - at `$.custom_calc_py_code`")
         return _validate_custom_calc_py_code(value)
 
     __forbid_unknown__ = True

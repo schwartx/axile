@@ -19,8 +19,11 @@ def _parse(cls: type, value: Any, source: str):
         missing = re.search(r"missing required field `([^`]+)`", str(error))
         path = match.group(1) if match else missing.group(1) if missing else ""
         location = (source, *(int(part) if part.isdecimal() else part for part in re.findall(r"[^.\[\]]+", path)))
+        error_type = (
+            "missing" if missing else "extra_forbidden" if str(error).startswith("extra_forbidden:") else "value_error"
+        )
         raise RequestValidationError(
-            [{"type": "missing" if missing else "value_error", "loc": location, "msg": str(error), "input": None}]
+            [{"type": error_type, "loc": location, "msg": str(error), "input": None}]
         ) from error
 
 

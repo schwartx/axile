@@ -10,8 +10,6 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from axile.common.serialization import to_payload
-
 
 def _guard_first_party_imports() -> None:
     import builtins
@@ -227,6 +225,7 @@ def _assert_api_contract() -> None:
     from fastapi.testclient import TestClient
 
     from axile.channels import get_channel
+    from axile.common.serialization import to_payload
     from axile.server._native import _core
     from axile.server.app import _app
     from axile.server.core.db import analysis_store, initialize_database
@@ -291,7 +290,7 @@ def _assert_api_contract() -> None:
         expected_fields = set(
             "backtest_weight_type backtest_fee_rate id copied_from_account_id copied_from_account_name name market "
             "trade_channel account_control_preset account_control_override account_configured connection_values "
-            "is_started cron_expr gm_sessions replay_recording_enabled supplement has_pending_supplement remark brokerage weight_precision long_leverage "
+            "is_started cron_expr channel_options replay_recording_enabled supplement has_pending_supplement remark brokerage weight_precision long_leverage "
             "short_leverage algorithm algorithm_schedule product_algorithms empty_positions_algorithm trade_rules futures_close_policy forbidden_symbols "
             "risk_symbols feishu_configured execution_notification_code portfolio_id write_empty_record execution_timeout "
             "updated_at created_at archived_at runtime_sync notification_state connection execution_notification_status".split()
