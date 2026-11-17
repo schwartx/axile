@@ -61,7 +61,7 @@
   ],
   "narrative": {
     "northStar": "交易驾驶舱",
-    "overview": "这是现有管理界面的代码扫描记录，继承 [axon-frontend-language](../../.claude/skills/axon-frontend-language/SKILL.md)。结构保持紧凑、安静，颜色与动效服务于状态判读和信息连续性。\n\n[theme.css](src/styles/theme.css) 是颜色、字体、圆角与 keyframes 的代码真源。上面的变量引用随明暗主题、增强对比度与行情偏好解析；本文和侧车不提供另一份可独立编辑的配色表。修改视觉规则时先修改真源，再更新记录。",
+    "overview": "这是现有管理界面的代码扫描记录。组织与变化遵循 [axon-frontend-language](../../.claude/skills/axon-frontend-language/SKILL.md)，配色与颜色语义遵循 [axon-frontend-color](../../.claude/skills/axon-frontend-color/SKILL.md)。以对齐与归属建立层级，以稳定锚点承托变化；配色保持中性承托、信号明确。\n\n[theme.css](src/styles/theme.css) 是颜色、字体、圆角与 keyframes 的代码真源。上面的变量引用随明暗主题、增强对比度与行情偏好解析；本文和侧车不提供另一份可独立编辑的配色表。修改视觉规则时先修改真源，再更新记录。",
     "keyCharacteristics": [
       "中性面板、细分隔线和小圆角组织信息。",
       "行情方向、操作与质量各自使用语义通道。",
