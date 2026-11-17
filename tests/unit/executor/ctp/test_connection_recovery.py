@@ -432,11 +432,14 @@ def test_recovery_rejects_snapshot_from_different_trading_day(broker):
     assert not broker.executor._verify_connection()
 
 
-def test_market_login_day_mismatch_blocks_startup(broker):
-    broker.day = "20260910"
-    with pytest.raises(CtpSessionRecoveryRequired, match="行情登录交易日"):
-        broker.start()
-    assert not broker.executor._verify_connection()
+@pytest.mark.parametrize("day", ["", "20260910"])
+def test_market_login_day_does_not_block_startup(broker, day):
+    def login(_request, rid):
+        broker.market_spi.OnRspUserLogin(SimpleNamespace(TradingDay=day), None, rid, True)
+        return 0
+
+    broker.market.ReqUserLogin.side_effect = login
+    assert broker.start()._verify_connection()
 
 
 def test_quote_timeout_can_recover_with_fresh_quote_without_disconnect(broker):
