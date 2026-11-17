@@ -71,6 +71,7 @@ def summarize_outcome(
     explicit_error: str | None = None,
     explicit_blocked_error: str | None = None,
     *,
+    target_reached: bool = True,
     error_reason_code: str | None = None,
     error_reason_family: ExecutionReasonFamily | None = None,
     blocked_reason_code: str | None = None,
@@ -93,7 +94,9 @@ def summarize_outcome(
     position_confirmed = (
         isfinite(final) and isclose(final, expected, rel_tol=0, abs_tol=1e-9) if expected is not None else None
     )
-    completed = isfinite(execution_final) and isclose(execution_final, target, rel_tol=0, abs_tol=1e-9)
+    completed = (
+        target_reached and isfinite(execution_final) and isclose(execution_final, target, rel_tol=0, abs_tol=1e-9)
+    )
     error = explicit_error or (position_error if expected is None else None)
     reason_code = error_reason_code if error else None
     reason_family = error_reason_family if error else None

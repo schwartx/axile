@@ -32,8 +32,9 @@ def _account_data():
     }
 
 
-def test_account_policy_survives_json_settings_public_and_worker_snapshot(native_database):
-    policy = parse_input(FuturesClosePolicy, {"overrides": {"ag": "today_first"}})
+@pytest.mark.parametrize("products", [[], ["IF", "IC"]])
+def test_account_policy_survives_json_settings_public_and_worker_snapshot(native_database, products):
+    policy = parse_input(FuturesClosePolicy, {"overrides": {"ag": "today_first"}, "avoid_close_today": products})
     data = _account_data() | {"futures_close_policy": policy}
     data.pop("id")
     created = native_store_call(

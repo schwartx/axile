@@ -626,7 +626,7 @@ class AbstractExecutorFacadeMixin:
             feishu_key=feishu_key_raw if isinstance(feishu_key_raw, str) else None,
             execution_notification_code=notification_code_raw if isinstance(notification_code_raw, str) else None,
             feishu_account=_coerce_object_dict(kwargs.get("feishu_account", {})),
-            extra=_coerce_object_dict(kwargs.get("extra", {})),
+            extra={**_coerce_object_dict(kwargs.get("extra", {})), "close_all_positions": True},
             execution_timeout=as_timeout_int(timeout_raw, DEFAULT_CLEAR_TIMEOUT),
             channel_type=executor.channel_type,
             account_config=account_config,
@@ -649,9 +649,10 @@ class AbstractExecutorFacadeMixin:
         dict[str, float]
             以 ``0`` 为目标权重的清仓目标映射。
         """
+        futures = _executor(self).channel_type in (TradeChannel("ctp"), TradeChannel("tq"))
         curr_target: dict[str, float] = {}
         for position in positions:
-            if position.volume > 0 and position.available_volume > 0:
+            if position.volume > 0 and (futures or position.available_volume > 0):
                 curr_target[position.symbol] = 0.0
         return curr_target
 

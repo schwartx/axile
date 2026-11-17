@@ -84,3 +84,34 @@ def test_execution_session_forwards_close_plan():
         (2, {"offset_flag": "close_today"}),
     ]
     owner.plan_close_orders.assert_called_once_with("rb2610", OrderDirection.SELL, 3, assets)
+
+
+@pytest.mark.parametrize(
+    "volume,offset,protect,error",
+    [
+        (2, "close", False, None),
+        (3, "close", False, "可用"),
+        (2, "close", True, "出现今仓"),
+        (2, "open", False, "冻结"),
+    ],
+)
+def test_frozen_close_checks_available_lots_and_preserves_today_protection(volume, offset, protect, error):
+    from axile.executor.futures_order_intent import validate_futures_order
+
+    assets = _assets("IF2612", "LONG", 6, 0)
+    assets.positions[0].available_volume = 2
+    if error:
+        with pytest.raises(ValueError, match=error):
+            validate_futures_order("IF2612", OrderDirection.SELL, volume, assets, offset=offset, protect_today=protect)
+    else:
+        validate_futures_order("IF2612", OrderDirection.SELL, volume, assets, offset=offset, protect_today=protect)
+
+
+@pytest.mark.parametrize("available", [-1, 7, float("nan")])
+def test_clear_still_rejects_invalid_available_position(available):
+    from axile.executor.futures_order_intent import validate_futures_order
+
+    assets = _assets("IF2612", "LONG", 6, 0)
+    assets.positions[0].available_volume = available
+    with pytest.raises(ValueError, match="可用持仓数量无效"):
+        validate_futures_order("IF2612", OrderDirection.SELL, 1, assets, offset="close", protect_today=False)

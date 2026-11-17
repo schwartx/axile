@@ -36,6 +36,18 @@ class FuturesClosePolicy:
     fallback: ClosePriority = "yesterday_first"
     overrides: Annotated[dict[str, ClosePriority], Meta(max_length=200)] = field(default_factory=dict)
 
+    avoid_close_today: Annotated[list[Literal["IF", "IH", "IC", "IM"]], Meta(max_length=4)] = field(
+        default_factory=lambda: ["IC", "IF", "IH", "IM"]
+    )
+
+    @classmethod
+    def prepare(cls, value: dict) -> dict:
+        """锁今品种统一大写去重，空列表保留为显式关闭。"""
+        products = value.get("avoid_close_today")
+        if isinstance(products, list) and all(isinstance(product, str) for product in products):
+            return {**value, "avoid_close_today": sorted({product.upper() for product in products})}
+        return value
+
     @classmethod
     def normalize_products(cls, value: object) -> object:
         """拒绝月份合约键，并拒绝大小写别名产生的冲突。"""
@@ -92,6 +104,7 @@ class FuturesCloseCapability:
     preset_version: str = PRESET_VERSION
     notice: str = _PRESET_DATA["notice"]
     presets: list[FuturesClosePreset]
+    avoid_close_today_products: list[str] = field(default_factory=list)
 
 
 def close_capability(*, automatic: bool) -> FuturesCloseCapability:
@@ -99,6 +112,7 @@ def close_capability(*, automatic: bool) -> FuturesCloseCapability:
     return FuturesCloseCapability(
         modes=["rules", "fee"] if automatic else ["rules"],
         presets=[copy_data(preset, deep=True) for preset in _PRESETS.values()],
+        avoid_close_today_products=["IF", "IH", "IC", "IM"],
     )
 
 
