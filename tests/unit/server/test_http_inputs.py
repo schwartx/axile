@@ -6,7 +6,40 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from axile.server.api.inputs import json_body
 from axile.server.api.routes import portfolio
+from axile.server.db.models.portfolio import PortfolioCreate, PortfolioUpdate
+
+
+@pytest.mark.parametrize(
+    "model,payload,error_type,location",
+    [
+        (
+            PortfolioCreate,
+            {"name": "contract", "market": "ctp", "custom_calc_py_code": " \n"},
+            "value_error",
+            ["body", "custom_calc_py_code"],
+        ),
+        (PortfolioUpdate, {"custom_calc_py_code": " \n"}, "value_error", ["body", "custom_calc_py_code"]),
+        (PortfolioUpdate, {"custom_calc_py_code": None}, "value_error", ["body", "custom_calc_py_code"]),
+        (PortfolioUpdate, {"unknown": True}, "extra_forbidden", ["body"]),
+        (PortfolioCreate, {"name": "contract", "market": "ctp"}, "missing", ["body", "custom_calc_py_code"]),
+    ],
+)
+def test_portfolio_validation_preserves_error_contract(model, payload, error_type, location):
+    from fastapi import Depends
+
+    app = FastAPI()
+
+    @app.post("/portfolio")
+    def save_portfolio(body=Depends(json_body(model))):
+        pytest.fail("无效源码不应进入写入处理")
+
+    with TestClient(app) as client:
+        response = client.post("/portfolio", json=payload)
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"][0]["loc"] == location
+    assert response.json()["detail"][0]["type"] == error_type
 
 
 @pytest.mark.parametrize(
