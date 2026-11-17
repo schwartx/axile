@@ -138,6 +138,10 @@ export function HoldingsView({
   const ordinaryAligned = plan.rows.length - plan.off - quantizedAligned
   const heldCount = positions.filter((position) => Math.abs(signedPositionQuantity(position) ?? 0) > QTY_EPS).length
 
+  if (executablePlan?.off_symbol_count == null) {
+    return <p className="text-[14px] text-ink-3">可执行目标或实际数量尚未就绪，暂无法判断是否需要调整。</p>
+  }
+
   if (plan.rows.length === 0) {
     return <p className="text-[14px] text-ink-2">当前空仓，且无目标持仓。</p>
   }

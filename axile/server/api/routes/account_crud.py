@@ -65,6 +65,7 @@ from axile.server.repositories import (
     get_recent_account_asset_snapshots_for_accounts,
     get_recent_execute_records_for_accounts,
 )
+from axile.server.target_sizing import read_account_target_snapshots
 from axile.server.target_weight_snapshots import get_latest_account_target_snapshots_for_accounts
 from axile.server.trading_calendar import CalendarDecisionStatus, evaluate_channel_calendar_moment, schedule_windows
 
@@ -517,6 +518,11 @@ async def account_dashboard(session: SessionDep, sched: SchedDep) -> AccountDash
         (account_id, portfolio_id) for account_id, portfolio_id in bindings.items() if portfolio_id is not None
     ]
     targets_by_account = await get_latest_account_target_snapshots_for_accounts(session, target_pairs)
+    resolved_targets = await read_account_target_snapshots(
+        session,
+        targets_by_account,
+        {cast("int", account.id): get_channel(str(account.trade_channel)).canonicalize_symbol for account in accounts},
+    )
     items: list[AccountDashboardItemPublic] = []
     for account in accounts:
         account_id = cast("int", account.id)
@@ -586,16 +592,15 @@ async def account_dashboard(session: SessionDep, sched: SchedDep) -> AccountDash
             if latest_snapshot is not None
             else None
         )
-        target_snapshot = targets_by_account.get(account_id)
-        target_weights = None if target_snapshot is None else target_snapshot.normalized_weights
+        target = resolved_targets.get(account_id)
         off_symbol_count = None
-        if latest_snapshot is not None and valuation_complete and isinstance(target_weights, dict):
+        if latest_snapshot is not None and valuation_complete and target is not None and target.quantities is not None:
             off_symbol_count = plan_executable_target(
                 positions,
-                target_weights,
+                target.weights,
+                target.quantities,
                 _safe_total_asset(assets),
                 canonicalize_symbol=plugin.canonicalize_symbol,
-                quantize_target_quantity=plugin.quantize_target_quantity,
             ).off_symbol_count
 
         items.append(

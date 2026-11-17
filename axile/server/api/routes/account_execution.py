@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import math
-from collections.abc import Callable
-from dataclasses import dataclass, field
 from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Response, status
@@ -33,8 +30,6 @@ from axile.server.db.models import (
     ExecutionTerminateResponse,
     ExecutionTriggerResponse,
     Portfolio,
-    TargetSizingPublic,
-    TargetSizingRowPublic,
     TargetWeightSnapshot,
     TargetWeightSnapshotPublic,
 )
@@ -55,11 +50,10 @@ from axile.server.execution.registry import (
 from axile.server.execution.scheduler import delete_job
 from axile.server.integrity import plan_executable_target
 from axile.server.repositories import get_latest_portfolio_id_by_account_id
+from axile.server.target_sizing import read_account_target_snapshots
 from axile.server.target_weight_snapshots import (
     append_target_weight_snapshot,
     get_latest_account_target_snapshot,
-    get_previous_account_target_snapshots,
-    target_snapshot_public,
 )
 
 router = APIRouter()
@@ -94,13 +88,19 @@ async def account_rebalance_plan(session: SessionDep, account_id: int) -> Accoun
             observed_at=assets_snapshot.created_at,
             target_calculated_at=snapshot.calculated_at,
         )
+    target = await _account_target_public(session, account, snapshot)
+    if target.quantities is None:
+        return AccountRebalancePlanPublic(
+            observed_at=assets_snapshot.created_at,
+            target_calculated_at=snapshot.calculated_at,
+        )
     plugin = get_channel(account.trade_channel)
     plan = plan_executable_target(
         positions,
-        snapshot.normalized_weights,
+        target.weights,
+        target.quantities,
         float(assets.get("total_asset") or 0.0),
         canonicalize_symbol=plugin.canonicalize_symbol,
-        quantize_target_quantity=plugin.quantize_target_quantity,
     )
     return AccountRebalancePlanPublic(
         rows=[
@@ -122,227 +122,20 @@ async def account_rebalance_plan(session: SessionDep, account_id: int) -> Accoun
     )
 
 
-type _Canonicalize = Callable[[str], str]
-
-
-@dataclass
-class _SizingEvidence:
-    status: str
-    rows: dict[str, TargetSizingRowPublic] = field(default_factory=dict)
-    quantities: dict[str, float] | None = None
-    sizing_execution_id: str | None = None
-    sizing_calculated_at: str | None = None
-    null_target_quantity: bool = False
-    inflight: bool = False
-
-
-def _canonical_weight_map(
-    weights: dict[str, float] | None,
-    canonicalize: _Canonicalize,
-) -> dict[str, float]:
-    if not weights:
-        return {}
-    return {canonicalize(symbol): float(weight) for symbol, weight in weights.items() if isinstance(symbol, str)}
-
-
-def _canonical_weights_equal(
-    left: dict[str, float] | None,
-    right: dict[str, float] | None,
-    canonicalize: _Canonicalize,
-) -> bool:
-    mapped_left = _canonical_weight_map(left, canonicalize)
-    mapped_right = _canonical_weight_map(right, canonicalize)
-    if not mapped_left or set(mapped_left) != set(mapped_right):
-        return False
-    return all(
-        math.isclose(mapped_left[symbol], mapped_right[symbol], rel_tol=1e-9, abs_tol=1e-12) for symbol in mapped_left
-    )
-
-
-def _complete_quantities(
-    rows: dict[str, TargetSizingRowPublic],
-    account_weights: dict[str, float],
-) -> dict[str, float] | None:
-    if not rows or not set(account_weights).issubset(rows):
-        return None
-    quantities = {symbol: float(row.target_quantity) for symbol, row in rows.items() if row.target_quantity is not None}
-    if not set(account_weights).issubset(quantities):
-        return None
-    return quantities
-
-
-def _sizing_rows_from_summary(
-    summary_artifact: ExecutionArtifact,
-    *,
-    canonicalize: _Canonicalize,
-    strategy_weights: dict[str, float],
-    account_weights: dict[str, float],
-    target_context: dict[str, object],
-) -> dict[str, TargetSizingRowPublic]:
-    reconciliation = summary_artifact.content.get("reconciliation")
-    symbols = reconciliation.get("symbols") if isinstance(reconciliation, dict) else None
-    if not isinstance(symbols, list):
-        return {}
-    rows: dict[str, TargetSizingRowPublic] = {}
-    for item in symbols:
-        if not isinstance(item, dict) or not isinstance(item.get("symbol"), str):
-            continue
-        raw_sizing = item.get("sizing")
-        if not isinstance(raw_sizing, dict):
-            continue
-        symbol = canonicalize(item["symbol"])
-        row = cast("dict[str, object]", dict(raw_sizing))
-        row["symbol"] = symbol
-        row["strategy_weight"] = strategy_weights.get(symbol)
-        row["account_weight"] = account_weights.get(symbol, row.get("account_weight"))
-        raw_weight = strategy_weights.get(symbol)
-        account_weight = account_weights.get(symbol)
-        row["account_multiplier"] = (
-            account_weight / raw_weight if raw_weight not in (None, 0.0) and account_weight is not None else None
-        )
-        row["weight_precision"] = target_context.get("weight_precision")
-        rows[symbol] = TargetSizingRowPublic.model_validate(row)
-    return rows
-
-
-async def _load_execution_artifacts(session: SessionDep, execution_id: str) -> dict[str, ExecutionArtifact]:
-    artifacts = (
-        (
-            await session.execute(
-                select(ExecutionArtifact).where(
-                    ExecutionArtifact.execution_id == execution_id,
-                    col(ExecutionArtifact.artifact_type).in_(
-                        [ExecutionArtifactType.TARGET_SNAPSHOT, ExecutionArtifactType.EXECUTION_SUMMARY]
-                    ),
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return {artifact.artifact_type: artifact for artifact in artifacts if artifact.execution_id == execution_id}
-
-
-async def _sizing_evidence_for_snapshot(
-    session: SessionDep,
-    snapshot: TargetWeightSnapshot,
-    *,
-    canonicalize: _Canonicalize,
-    strategy_weights: dict[str, float],
-    account_weights: dict[str, float],
-) -> _SizingEvidence:
-    status = "pending_execution" if snapshot.source == "manual" or not snapshot.execution_id else "unavailable"
-    rows: dict[str, TargetSizingRowPublic] = {}
-    null_target_quantity = False
-    inflight = False
-    if snapshot.execution_id:
-        by_type = await _load_execution_artifacts(session, snapshot.execution_id)
-        target_artifact = by_type.get(ExecutionArtifactType.TARGET_SNAPSHOT)
-        summary_artifact = by_type.get(ExecutionArtifactType.EXECUTION_SUMMARY)
-        target_context: dict[str, object] = {}
-        if target_artifact is not None:
-            raw_context = target_artifact.content.get("sizing_context")
-            if isinstance(raw_context, dict):
-                target_context = cast("dict[str, object]", raw_context)
-        if summary_artifact is not None and summary_artifact.schema_version >= 2:
-            rows = _sizing_rows_from_summary(
-                summary_artifact,
-                canonicalize=canonicalize,
-                strategy_weights=strategy_weights,
-                account_weights=account_weights,
-                target_context=target_context,
-            )
-            status = "available" if rows and set(account_weights).issubset(rows) else "unavailable"
-        elif summary_artifact is not None:
-            status = "legacy"
-        elif target_artifact is not None and target_artifact.schema_version >= 2:
-            status = "pending_execution"
-            inflight = True
-        else:
-            status = "legacy"
-
-    quantities: dict[str, float] | None = None
-    if status == "available":
-        quantities = _complete_quantities(rows, account_weights)
-        if quantities is None:
-            status = "unavailable"
-            null_target_quantity = True
-    elif rows:
-        null_target_quantity = any(
-            symbol in rows and rows[symbol].target_quantity is None for symbol in account_weights
-        )
-
-    return _SizingEvidence(
-        status=status,
-        rows=rows,
-        quantities=quantities,
-        sizing_execution_id=snapshot.execution_id,
-        sizing_calculated_at=snapshot.calculated_at,
-        null_target_quantity=null_target_quantity,
-        inflight=inflight,
-    )
-
-
 async def _account_target_public(
     session: SessionDep,
     account: object,
     snapshot: TargetWeightSnapshot | None,
 ) -> TargetWeightSnapshotPublic:
-    """返回账户权重与同权重最近一次完整数量换算证据."""
+    """读取账户目标及其完整换算证据。"""
     if snapshot is None:
         return TargetWeightSnapshotPublic()
+    account_id = getattr(account, "id")
     plugin = get_channel(getattr(account, "trade_channel"))
-    strategy_weights = _canonical_weight_map(snapshot.raw_weights, plugin.canonicalize_symbol)
-    account_weights = _canonical_weight_map(snapshot.normalized_weights, plugin.canonicalize_symbol)
-    evidence = await _sizing_evidence_for_snapshot(
-        session,
-        snapshot,
-        canonicalize=plugin.canonicalize_symbol,
-        strategy_weights=strategy_weights,
-        account_weights=account_weights,
+    targets = await read_account_target_snapshots(
+        session, {account_id: snapshot}, {account_id: plugin.canonicalize_symbol}
     )
-    if evidence.status != "available" and not evidence.inflight and snapshot.id is not None and snapshot.account_id:
-        previous_snapshots = await get_previous_account_target_snapshots(
-            session,
-            snapshot.account_id,
-            snapshot.portfolio_id,
-            before_id=snapshot.id,
-        )
-        for previous in previous_snapshots:
-            if not _canonical_weights_equal(
-                previous.normalized_weights,
-                snapshot.normalized_weights,
-                plugin.canonicalize_symbol,
-            ):
-                continue
-            previous_evidence = await _sizing_evidence_for_snapshot(
-                session,
-                previous,
-                canonicalize=plugin.canonicalize_symbol,
-                strategy_weights=strategy_weights,
-                account_weights=account_weights,
-            )
-            if previous_evidence.status == "available" and previous_evidence.quantities is not None:
-                evidence = previous_evidence
-                break
-        else:
-            if evidence.status == "unavailable" and not evidence.null_target_quantity:
-                evidence.status = "pending_execution"
-
-    return target_snapshot_public(
-        snapshot,
-        weight_kind="normalized",
-        weights=account_weights,
-        quantities=evidence.quantities,
-        strategy_weights=strategy_weights,
-        account_weights=account_weights,
-        sizing=TargetSizingPublic(
-            status=cast("Any", evidence.status),
-            execution_id=evidence.sizing_execution_id,
-            calculated_at=evidence.sizing_calculated_at,
-            rows=evidence.rows,
-        ),
-    )
+    return targets[account_id]
 
 
 def _account_route_module() -> Any:

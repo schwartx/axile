@@ -10,9 +10,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from axile.domain.execution import ExecutionArtifactType
 from axile.server.api.deps import get_db, get_scheduler
 from axile.server.api.routes import account as account_routes
 from axile.server.api.routes import account_crud
+from axile.server.db.models import ExecutionArtifact, TargetWeightSnapshot
 from tests.unit.server._execution_test_support import build_account
 
 
@@ -28,10 +30,13 @@ class _Result:
 
 
 class _Session:
-    def __init__(self, accounts: list[object]) -> None:
+    def __init__(self, accounts: list[object], artifacts: list[ExecutionArtifact]) -> None:
         self._accounts = accounts
+        self._artifacts = artifacts
 
     async def execute(self, _stmt: object) -> _Result:
+        if _stmt.column_descriptions[0]["entity"] is ExecutionArtifact:
+            return _Result(self._artifacts)
         return _Result(self._accounts)
 
 
@@ -134,7 +139,12 @@ def test_dashboard_counts_off_symbols_zero_when_lots_already_match(monkeypatch: 
 
     async def _targets(_session: object, _pairs: object) -> dict[int, object]:
         return {
-            1: SimpleNamespace(
+            1: TargetWeightSnapshot(
+                id=1,
+                account_id=1,
+                portfolio_id=7,
+                source="execution",
+                execution_id="exec-sized",
                 normalized_weights={"TA2701": -0.08, "c2611": 0.03, "m2701": -0.06, "rb2610": 0.13},
             )
         }
@@ -145,6 +155,24 @@ def test_dashboard_counts_off_symbols_zero_when_lots_already_match(monkeypatch: 
     monkeypatch.setattr(account_crud, "read_performance_summaries", _no_baseline_records)
     monkeypatch.setattr(account_crud, "get_latest_account_target_snapshots_for_accounts", _targets)
 
-    app = _build_app(_Session([account]), _Scheduler(_Job(None)))
+    artifacts = [
+        ExecutionArtifact(
+            execution_id="exec-sized",
+            artifact_type=ExecutionArtifactType.EXECUTION_SUMMARY,
+            schema_version=2,
+            content={
+                "reconciliation": {
+                    "symbols": [
+                        {
+                            "symbol": symbol,
+                            "sizing": {"reason_code": "COMMON.SIZING.QUANTIZED", "target_quantity": quantity},
+                        }
+                        for symbol, quantity in {"TA701": -2, "c2611": 1, "m2701": -1, "rb2610": 4}.items()
+                    ]
+                }
+            },
+        )
+    ]
+    app = _build_app(_Session([account], artifacts), _Scheduler(_Job(None)))
     item = TestClient(app).get("/account/dashboard").json()["data"][0]
     assert item["off_symbol_count"] == 0

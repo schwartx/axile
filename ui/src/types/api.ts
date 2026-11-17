@@ -576,7 +576,7 @@ export interface TargetSizing {
 /** 最近一次成功计算的目标权重快照；`calculated_at=null` 表示从未计算。 */
 export interface TargetWeightSnapshot {
   weights: LatestWeights
-  /** 渠道量化后的目标数量（与 weights 同 key）；渠道未提供时为 null。 */
+  /** 完整换算证据中记录的目标数量；证据未就绪时为 null。 */
   quantities?: LatestWeights | null
   /** 组合脚本直接给出的策略权重。 */
   strategy_weights?: LatestWeights | null

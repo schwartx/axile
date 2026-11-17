@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionArtifactType
+from axile.server import target_sizing
 from axile.server.api.deps import get_db
 from axile.server.api.routes import account as account_routes
 from axile.server.api.routes import account_execution as account_execution_routes
@@ -143,10 +144,10 @@ def _patch_resolution(
         fake_append_target_weight_snapshot,
     )
 
-    async def fake_previous(*_args: object, **_kwargs: object) -> list[TargetWeightSnapshot]:
-        return []
+    async def fake_previous(*_args: object, **_kwargs: object) -> dict[int, list[TargetWeightSnapshot]]:
+        return {}
 
-    monkeypatch.setattr(account_execution_routes, "get_previous_account_target_snapshots", fake_previous)
+    monkeypatch.setattr(target_sizing, "get_previous_account_target_snapshots_for_accounts", fake_previous)
 
     return saved
 
@@ -514,22 +515,24 @@ def test_account_target_snapshot_falls_back_to_same_weight_complete_sizing(monke
             calculated_at="2026-09-17T11:34:00",
         )
 
-    async def fake_previous(*_args: object, **_kwargs: object) -> list[TargetWeightSnapshot]:
-        return [
-            TargetWeightSnapshot(
-                id=19,
-                portfolio_id=7,
-                account_id=1,
-                raw_weights={"TA2701": -0.1067},
-                normalized_weights={"TA2701": -0.32},
-                source="execution",
-                execution_id="exec-sized",
-                calculated_at="2026-09-17T11:19:00",
-            )
-        ]
+    async def fake_previous(*_args: object, **_kwargs: object) -> dict[int, list[TargetWeightSnapshot]]:
+        return {
+            1: [
+                TargetWeightSnapshot(
+                    id=19,
+                    portfolio_id=7,
+                    account_id=1,
+                    raw_weights={"TA2701": -0.1067},
+                    normalized_weights={"TA2701": -0.32},
+                    source="execution",
+                    execution_id="exec-sized",
+                    calculated_at="2026-09-17T11:19:00",
+                )
+            ]
+        }
 
     monkeypatch.setattr(account_execution_routes, "get_latest_account_target_snapshot", fake_latest)
-    monkeypatch.setattr(account_execution_routes, "get_previous_account_target_snapshots", fake_previous)
+    monkeypatch.setattr(target_sizing, "get_previous_account_target_snapshots_for_accounts", fake_previous)
 
     body = TestClient(_build_app(session)).get("/account/1/target_snapshot").json()
     assert body["weights"] == {"TA701": -0.32}
@@ -558,22 +561,24 @@ def test_account_target_snapshot_does_not_reuse_lots_when_weights_changed(monkey
             calculated_at="2026-09-17T11:34:00",
         )
 
-    async def fake_previous(*_args: object, **_kwargs: object) -> list[TargetWeightSnapshot]:
-        return [
-            TargetWeightSnapshot(
-                id=19,
-                portfolio_id=7,
-                account_id=1,
-                raw_weights={"TA2701": -0.1067},
-                normalized_weights={"TA2701": -0.32},
-                source="execution",
-                execution_id="exec-sized",
-                calculated_at="2026-09-17T11:19:00",
-            )
-        ]
+    async def fake_previous(*_args: object, **_kwargs: object) -> dict[int, list[TargetWeightSnapshot]]:
+        return {
+            1: [
+                TargetWeightSnapshot(
+                    id=19,
+                    portfolio_id=7,
+                    account_id=1,
+                    raw_weights={"TA2701": -0.1067},
+                    normalized_weights={"TA2701": -0.32},
+                    source="execution",
+                    execution_id="exec-sized",
+                    calculated_at="2026-09-17T11:19:00",
+                )
+            ]
+        }
 
     monkeypatch.setattr(account_execution_routes, "get_latest_account_target_snapshot", fake_latest)
-    monkeypatch.setattr(account_execution_routes, "get_previous_account_target_snapshots", fake_previous)
+    monkeypatch.setattr(target_sizing, "get_previous_account_target_snapshots_for_accounts", fake_previous)
 
     body = TestClient(_build_app(session)).get("/account/1/target_snapshot").json()
     assert body["quantities"] is None
@@ -598,22 +603,24 @@ def test_account_target_snapshot_falls_back_when_current_quantities_are_null(mon
             calculated_at="2026-09-17T11:34:00",
         )
 
-    async def fake_previous(*_args: object, **_kwargs: object) -> list[TargetWeightSnapshot]:
-        return [
-            TargetWeightSnapshot(
-                id=19,
-                portfolio_id=7,
-                account_id=1,
-                raw_weights={"TA2701": -0.1067},
-                normalized_weights={"TA2701": -0.32},
-                source="execution",
-                execution_id="exec-sized",
-                calculated_at="2026-09-17T11:19:00",
-            )
-        ]
+    async def fake_previous(*_args: object, **_kwargs: object) -> dict[int, list[TargetWeightSnapshot]]:
+        return {
+            1: [
+                TargetWeightSnapshot(
+                    id=19,
+                    portfolio_id=7,
+                    account_id=1,
+                    raw_weights={"TA2701": -0.1067},
+                    normalized_weights={"TA2701": -0.32},
+                    source="execution",
+                    execution_id="exec-sized",
+                    calculated_at="2026-09-17T11:19:00",
+                )
+            ]
+        }
 
     monkeypatch.setattr(account_execution_routes, "get_latest_account_target_snapshot", fake_latest)
-    monkeypatch.setattr(account_execution_routes, "get_previous_account_target_snapshots", fake_previous)
+    monkeypatch.setattr(target_sizing, "get_previous_account_target_snapshots_for_accounts", fake_previous)
 
     body = TestClient(_build_app(session)).get("/account/1/target_snapshot").json()
     assert body["quantities"] == {"TA701": -1.0}
@@ -665,32 +672,34 @@ def test_account_target_snapshot_does_not_union_partial_histories(monkeypatch) -
             calculated_at="2026-09-17T11:34:00",
         )
 
-    async def fake_previous(*_args: object, **_kwargs: object) -> list[TargetWeightSnapshot]:
-        return [
-            TargetWeightSnapshot(
-                id=29,
-                portfolio_id=7,
-                account_id=1,
-                raw_weights={"TA2701": -0.1067},
-                normalized_weights={"TA2701": -0.32},
-                source="execution",
-                execution_id="exec-a",
-                calculated_at="2026-09-17T11:19:00",
-            ),
-            TargetWeightSnapshot(
-                id=28,
-                portfolio_id=7,
-                account_id=1,
-                raw_weights={"rb2610": 0.1},
-                normalized_weights={"rb2610": 0.3},
-                source="execution",
-                execution_id="exec-b",
-                calculated_at="2026-09-17T11:18:00",
-            ),
-        ]
+    async def fake_previous(*_args: object, **_kwargs: object) -> dict[int, list[TargetWeightSnapshot]]:
+        return {
+            1: [
+                TargetWeightSnapshot(
+                    id=29,
+                    portfolio_id=7,
+                    account_id=1,
+                    raw_weights={"TA2701": -0.1067},
+                    normalized_weights={"TA2701": -0.32},
+                    source="execution",
+                    execution_id="exec-a",
+                    calculated_at="2026-09-17T11:19:00",
+                ),
+                TargetWeightSnapshot(
+                    id=28,
+                    portfolio_id=7,
+                    account_id=1,
+                    raw_weights={"rb2610": 0.1},
+                    normalized_weights={"rb2610": 0.3},
+                    source="execution",
+                    execution_id="exec-b",
+                    calculated_at="2026-09-17T11:18:00",
+                ),
+            ]
+        }
 
     monkeypatch.setattr(account_execution_routes, "get_latest_account_target_snapshot", fake_latest)
-    monkeypatch.setattr(account_execution_routes, "get_previous_account_target_snapshots", fake_previous)
+    monkeypatch.setattr(target_sizing, "get_previous_account_target_snapshots_for_accounts", fake_previous)
 
     body = TestClient(_build_app(session)).get("/account/1/target_snapshot").json()
     assert body["quantities"] is None
@@ -702,21 +711,23 @@ def test_account_target_refresh_reuses_same_weight_lots(monkeypatch) -> None:
     session = _RouteSession(_build_account(), _build_portfolio(), artifacts)
     _patch_resolution(monkeypatch, portfolio_id=7, raw_target={"TA2701": -0.1067})
 
-    async def fake_previous(*_args: object, **_kwargs: object) -> list[TargetWeightSnapshot]:
-        return [
-            TargetWeightSnapshot(
-                id=19,
-                portfolio_id=7,
-                account_id=1,
-                raw_weights={"TA2701": -0.1067},
-                normalized_weights={"TA2701": -0.32},
-                source="execution",
-                execution_id="exec-sized",
-                calculated_at="2026-09-17T11:19:00",
-            )
-        ]
+    async def fake_previous(*_args: object, **_kwargs: object) -> dict[int, list[TargetWeightSnapshot]]:
+        return {
+            1: [
+                TargetWeightSnapshot(
+                    id=19,
+                    portfolio_id=7,
+                    account_id=1,
+                    raw_weights={"TA2701": -0.1067},
+                    normalized_weights={"TA2701": -0.32},
+                    source="execution",
+                    execution_id="exec-sized",
+                    calculated_at="2026-09-17T11:19:00",
+                )
+            ]
+        }
 
-    monkeypatch.setattr(account_execution_routes, "get_previous_account_target_snapshots", fake_previous)
+    monkeypatch.setattr(target_sizing, "get_previous_account_target_snapshots_for_accounts", fake_previous)
 
     body = TestClient(_build_app(session)).post("/account/1/target_snapshot/refresh").json()
     assert body["source"] == "manual"

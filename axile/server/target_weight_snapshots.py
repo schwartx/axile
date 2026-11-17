@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, cast
 
 from sqlalchemy import union_all
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -75,28 +75,39 @@ async def get_latest_account_target_snapshot(
     )
 
 
-async def get_previous_account_target_snapshots(
+async def get_previous_account_target_snapshots_for_accounts(
     session: AsyncSession,
-    account_id: int,
-    portfolio_id: int,
+    snapshots: list[TargetWeightSnapshot],
     *,
-    before_id: int,
     limit: int = 50,
-) -> list[TargetWeightSnapshot]:
-    """读取同一账户组合下、早于指定快照的近期归一化权重快照."""
-    result = await session.execute(
-        select(TargetWeightSnapshot)
-        .where(
-            TargetWeightSnapshot.account_id == account_id,
-            TargetWeightSnapshot.portfolio_id == portfolio_id,
-            col(TargetWeightSnapshot.normalized_weights).is_not(None),
-            col(TargetWeightSnapshot.execution_id).is_not(None),
-            col(TargetWeightSnapshot.id) < before_id,
+) -> dict[int, list[TargetWeightSnapshot]]:
+    """批量读取各账户当前目标之前的近期执行快照，按新到旧排列。"""
+    previous: dict[int, list[TargetWeightSnapshot]] = {}
+    for start in range(0, len(snapshots), 100):
+        candidates = [
+            select(TargetWeightSnapshot.id)
+            .where(
+                TargetWeightSnapshot.account_id == snapshot.account_id,
+                TargetWeightSnapshot.portfolio_id == snapshot.portfolio_id,
+                col(TargetWeightSnapshot.normalized_weights).is_not(None),
+                col(TargetWeightSnapshot.execution_id).is_not(None),
+                col(TargetWeightSnapshot.id) < snapshot.id,
+            )
+            .order_by(desc(TargetWeightSnapshot.id))
+            .limit(limit)
+            .subquery()
+            for snapshot in snapshots[start : start + 100]
+        ]
+        selected = union_all(*(select(candidate.c.id) for candidate in candidates))
+        stmt = (
+            select(TargetWeightSnapshot)
+            .where(col(TargetWeightSnapshot.id).in_(selected))
+            .order_by(desc(TargetWeightSnapshot.id))
         )
-        .order_by(desc(TargetWeightSnapshot.id))
-        .limit(limit)
-    )
-    return list(result.scalars().all())
+        for snapshot in (await session.execute(stmt)).scalars().all():
+            if snapshot.account_id is not None:
+                previous.setdefault(snapshot.account_id, []).append(snapshot)
+    return previous
 
 
 async def get_latest_account_target_snapshots_for_accounts(
@@ -170,7 +181,7 @@ def target_snapshot_public(
         account_weights=account_weights,
         sizing=sizing,
         calculated_at=snapshot.calculated_at,
-        source=snapshot.source,
+        source=cast("Literal['manual', 'execution']", snapshot.source),
         execution_id=snapshot.execution_id,
         context_account_id=snapshot.account_id,
     )
