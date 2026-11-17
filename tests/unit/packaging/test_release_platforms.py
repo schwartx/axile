@@ -39,6 +39,10 @@ def test_release_requires_both_platforms_and_reuses_shared_ui():
         assert windows["container"] == ""
         assert job["container"] == "${{ matrix.container }}"
         assert any("/opt/python/cp312-cp312/bin" in step.get("run", "") for step in job["steps"])
+    verification = next(
+        step for step in wheel_steps if step.get("name") == "Verify installed wheel in a clean environment"
+    )
+    assert verification["env"]["PYTHONIOENCODING"] == "utf-8"
     lookup = next(step for step in wheel_steps if step.get("id") == "quality")
     assert "head_sha: context.sha" in lookup["with"]["script"]
     assert "run.conclusion !== 'success'" in lookup["with"]["script"]

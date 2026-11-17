@@ -97,6 +97,8 @@ jobs:
       run: uv run --no-project --with delvewheel==1.11.2 delvewheel repair --wheel-dir wheelhouse dist/*.whl
 
     - name: Verify installed wheel in a clean environment
+      env:
+        PYTHONIOENCODING: utf-8
       run: |
         uv venv "$RUNNER_TEMP/axile-release-verify" --python 3.12
         if [ "$RUNNER_OS" = "Windows" ]; then
