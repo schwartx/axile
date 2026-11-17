@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Annotated, Literal, Protocol
 import pandas as pd
 from msgspec import Meta
 
+from axile.channels.simulation import SimulationAccount
 from axile.common.order_param_model import OrderParamModel
 from axile.executor.connection_progress import ConnectionStepDefinition as ConnectionStepDefinition
 from axile.executor.futures_close_policy import FuturesCloseCapability
@@ -459,6 +460,7 @@ class ChannelDescriptor:
     connection_steps: tuple[ConnectionStepDefinition, ...] = ()
     connection_validation: ChannelConnectionValidation | None = None
     portfolio: ChannelPortfolioPreset
+    simulation_account: SimulationAccount | None = None
 
 
 @dataclass(frozen=True, slots=True)

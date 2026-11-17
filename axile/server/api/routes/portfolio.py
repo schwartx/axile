@@ -7,7 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from loguru import logger
 
 from axile.channels import get_channel
-from axile.common.serialization import from_payload, to_payload
+from axile.channels.simulation import SimulationAccount, validate_leverage
+from axile.common.serialization import copy_data, from_payload, to_payload
 from axile.executor.models.portfolio_target import PortfolioTarget
 from axile.server._native import _core
 from axile.server.api.inputs import json_body
@@ -150,7 +151,7 @@ async def resolve_portfolio_target(portfolio: Portfolio, account: AccountContext
     """执行组合函数并返回未经账户杠杆和精度处理的目标权重."""
     try:
         if account is None:
-            return await asyncio.to_thread(calculate_sample_portfolio, portfolio.custom_calc_py_code)
+            raise HTTPException(status_code=422, detail="保存或刷新生效目标需要真实账户，请先绑定或选择账户")
         return await calculate_portfolio_for_account(account, portfolio.custom_calc_py_code)
     except HTTPException:
         raise
@@ -211,6 +212,7 @@ async def _run_custom_calc_validation(
     custom_calc_py_code: str,
     *,
     leverage_overrides: dict[str, float] | None = None,
+    simulation_account: SimulationAccount | None = None,
 ) -> dict[str, Any]:
     """在给定上下文中试跑自定义组合函数并返回结构化结果."""
     try:
@@ -219,6 +221,7 @@ async def _run_custom_calc_validation(
                 calculate_sample_portfolio,
                 custom_calc_py_code,
                 leverage_overrides=leverage_overrides,
+                simulation_account=simulation_account,
             )
         else:
             result = await calculate_portfolio_for_account(
@@ -257,25 +260,37 @@ async def _run_custom_calc_validation(
 async def validate_custom_calc(
     payload: Annotated[ValidateCustomCalcRequest, Depends(json_body(ValidateCustomCalcRequest))],
 ) -> dict[str, Any]:
-    """使用无账户或真实账户上下文试跑自定义组合函数。"""
+    """使用显式模拟账户或真实账户上下文试跑自定义组合函数。"""
+    try:
+        payload.validate()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     account = None
     overrides = to_payload(payload.leverage_overrides, exclude_none=True) if payload.leverage_overrides else {}
-    if payload.account_id is not None:
-        value = await _portfolio_native(
-            "portfolio_operation", {"op": "validation_context", "account_id": payload.account_id}
-        )
-        account = from_payload(AccountSnapshot, value)
-        limits = get_channel(account.trade_channel).descriptor.leverage
-        for name, leverage in overrides.items():
-            steps = (leverage - limits.min) / limits.step
-            if not limits.min <= leverage <= limits.max or abs(steps - round(steps)) > 1e-9:
-                raise HTTPException(
-                    status_code=422, detail=f"{name} 需在 {limits.min:g}..{limits.max:g} 之间，步进 {limits.step:g}"
-                )
     if payload.account_id is None:
+        try:
+            descriptor = get_channel(payload.simulation_channel or "").descriptor
+            simulation = copy_data(payload.simulation_account or descriptor.simulation_account, deep=True)
+            if simulation is None:
+                raise ValueError("该渠道未提供模拟账户预设")
+            simulation.validate_channel(descriptor)
+            validate_leverage(descriptor, overrides)
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return await _run_custom_calc_validation(
-            account, payload.custom_calc_py_code, leverage_overrides=overrides or None
+            None,
+            payload.custom_calc_py_code,
+            leverage_overrides=overrides or None,
+            simulation_account=simulation,
         )
+    value = await _portfolio_native(
+        "portfolio_operation", {"op": "validation_context", "account_id": payload.account_id}
+    )
+    account = from_payload(AccountSnapshot, value)
+    try:
+        validate_leverage(get_channel(account.trade_channel).descriptor, overrides)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not try_register_account_asset_refresh(payload.account_id):
         raise HTTPException(409, detail="账户正在执行或刷新，请稍后再试")
     try:
@@ -299,6 +314,8 @@ async def run_and_save_portfolio(
             "portfolio_operation", {"op": "context", "portfolio_id": portfolio_id, "account_id": payload.account_id}
         )
         account = from_payload(AccountSnapshot, context["account"]) if context["account"] is not None else None
+        if account is None:
+            raise HTTPException(status_code=422, detail="保存生效目标需要真实账户，请先绑定或选择账户")
         result = await _run_custom_calc_validation(account, payload.custom_calc_py_code)
         if result["valid"]:
             now = now_str()

@@ -65,7 +65,7 @@ def test_trial_rejects_invalid_leverages_before_running(monkeypatch, value, acco
     runner.assert_not_awaited()
 
 
-def test_accountless_trial_uses_temporary_leverage_without_database(monkeypatch):
+def test_simulation_trial_uses_temporary_leverage_without_database(monkeypatch):
     client, _, native, runner = _client(monkeypatch)
     code = (
         "def calculate_portfolio(context):\n"
@@ -75,13 +75,16 @@ def test_accountless_trial_uses_temporary_leverage_without_database(monkeypatch)
         "/portfolio/validate_custom_calc",
         json={
             "custom_calc_py_code": code,
+            "simulation_channel": "ctp",
             "leverage_overrides": {"long_leverage": 2.5, "short_leverage": 0},
         },
     )
     assert response.status_code == 200, response.text
     assert response.json()["valid"] is True
     assert response.json()["target"] == {"long": 2.5, "short": 0}
-    restored = client.post("/portfolio/validate_custom_calc", json={"custom_calc_py_code": code})
+    restored = client.post(
+        "/portfolio/validate_custom_calc", json={"custom_calc_py_code": code, "simulation_channel": "ctp"}
+    )
     assert restored.status_code == 200, restored.text
     assert restored.json()["target"] == {"long": 1, "short": 1}
     native.assert_not_awaited()
@@ -89,17 +92,14 @@ def test_accountless_trial_uses_temporary_leverage_without_database(monkeypatch)
 
 
 @pytest.mark.parametrize("expression", ["context.account.total_asset", "context.get_quote('FG701')"])
-def test_accountless_trial_returns_actionable_error_at_the_data_access(monkeypatch, expression):
+def test_accountless_trial_requires_explicit_account_before_execution(monkeypatch, expression):
     client, _, native, runner = _client(monkeypatch)
     response = client.post(
         "/portfolio/validate_custom_calc",
         json={"custom_calc_py_code": f"def calculate_portfolio(context):\n    data = {expression}\n    return {{}}\n"},
     )
-    assert response.status_code == 200, response.text
-    result = response.json()
-    assert result["valid"] is False and result["target"] is None
-    assert result["error_type"] == "ValueError" and result["error_line"] == 2
-    assert "先选择账户" in result["error_message"]
+    assert response.status_code == 422, response.text
+    assert "请选择真实账户或模拟渠道" in response.text
     native.assert_not_awaited()
     runner.assert_not_awaited()
 

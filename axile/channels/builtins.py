@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import cast
 
 import pandas as pd
@@ -50,6 +51,7 @@ from axile.channels.schedule_clock import (
     overnight_windows,
     rhythm_hhmm,
 )
+from axile.channels.simulation import simulation_account_preset
 from axile.common.order_param_model import OrderParamModel
 from axile.common.trade_channel import TradeChannel
 from axile.executor.futures_close_policy import close_capability
@@ -778,4 +780,21 @@ def builtin_channel_plugins() -> tuple[ChannelPlugin, ...]:
     tuple[ChannelPlugin, ...]
         依次为 CTP、掘金与天勤渠道插件。
     """
-    return (_ctp_plugin(), _gm_plugin(), _tq_plugin())
+    plugins = (_ctp_plugin(), _gm_plugin(), _tq_plugin())
+    futures = (("rb2610", 3500, 2, 10, 1), ("ag2612", 8000, 1, 15, 1))
+    stocks = (("600000.SH", 10, 1000, 1, 0.01), ("000001.SZ", 12, 1000, 1, 0.01))
+    return tuple(
+        replace(
+            plugin,
+            descriptor=replace(
+                plugin.descriptor,
+                simulation_account=simulation_account_preset(
+                    plugin.descriptor.currency,
+                    stocks if plugin.descriptor.channel == "gm" else futures,
+                    long_leverage=plugin.descriptor.defaults.long_leverage,
+                    short_leverage=plugin.descriptor.defaults.short_leverage,
+                ),
+            ),
+        )
+        for plugin in plugins
+    )

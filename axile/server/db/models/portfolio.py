@@ -6,6 +6,7 @@ from typing import Annotated, Optional
 
 from msgspec import UNSET, Meta, UnsetType
 
+from axile.channels.simulation import SimulationAccount
 from axile.common.serialization import provided_fields
 from axile.server.db.models.base import now_str
 
@@ -143,6 +144,19 @@ class ValidateCustomCalcRequest:
     custom_calc_py_code: str
     account_id: Optional[int] = None
     leverage_overrides: TrialLeverageOverrides | None = None
+    simulation_channel: str | None = None
+    simulation_account: SimulationAccount | None = None
+
+    __forbid_unknown__ = True
+
+    def validate(self) -> None:
+        """真实账户与模拟输入互斥，模拟快照必须指定渠道。"""
+        if self.account_id is not None:
+            if self.simulation_channel is not None or self.simulation_account is not None:
+                raise ValueError("真实账户与模拟账户不能同时指定")
+            return
+        if self.simulation_channel is None or not self.simulation_channel.strip():
+            raise ValueError("请选择真实账户或模拟渠道")
 
 
 @dataclass(kw_only=True)

@@ -1,3 +1,4 @@
+import { Settings } from 'lucide-react'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { Chip } from '@/components/ui/Card'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
@@ -15,12 +16,14 @@ import { channelLabel } from '@/features/dashboard/display'
 import { updateAccount } from '@/lib/api/accounts'
 import { useChannelCatalogStore, useChannelDescriptor } from '@/stores/channels'
 import { useDomainStore } from '@/stores/domain'
+import { useSimulationAccounts } from '@/stores/simulationAccounts'
+import { SimulationAccountModal } from '@/features/portfolio/SimulationAccountModal'
 import { useLiveConnection } from '@/stores/liveConnection'
-import type { AccountDashboardItem, TrialLeverageOverrides } from '@/types/api'
+import type { AccountDashboardItem, ChannelCapability, SimulationAccount, TrialLeverageOverrides } from '@/types/api'
 
 const textAction = 'min-w-0 cursor-pointer rounded px-1.5 py-1 text-left text-[12.5px] text-ink-2 hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default disabled:opacity-45'
 
-/** 原位编辑试跑杠杆；真实账户可显式保存，无账户只允许还原。 */
+/** 原位编辑真实账户的试跑杠杆，只有显式保存才修改账户。 */
 export function AccountLeverageControl({ account, disabled, onLeverageChange }: {
   account: AccountDashboardItem | null
   disabled: boolean
@@ -122,7 +125,7 @@ export function AccountLeverageControl({ account, disabled, onLeverageChange }: 
 }
 
 /** 页面只显示当前账户；全部候选收在有搜索和滚动上限的选择浮层中。 */
-export function PortfolioTrialAccounts({ accounts, accountId, portfolioId, onSelect, onLeverageChange, disabled, leverageEditing = false }: {
+export function PortfolioTrialAccounts({ accounts, accountId, portfolioId, onSelect, onLeverageChange, disabled, leverageEditing = false, simulationChannels = [], simulationChannel, simulationAccount = null, onSimulationSelect }: {
   accounts: AccountDashboardItem[]
   accountId: number | null
   portfolioId: number
@@ -130,7 +133,13 @@ export function PortfolioTrialAccounts({ accounts, accountId, portfolioId, onSel
   onLeverageChange: (id: number | null, overrides: TrialLeverageOverrides | null, invalid: boolean) => void
   disabled: boolean
   leverageEditing?: boolean
+  simulationChannels?: ChannelCapability[]
+  simulationChannel?: ChannelCapability
+  simulationAccount?: SimulationAccount | null
+  onSimulationSelect?: (channel: string) => void
 }) {
+  const [configOpen, setConfigOpen] = useState(false)
+  const saveSimulation = useSimulationAccounts((state) => state.save)
   const selected = accounts.find((account) => account.account_id === accountId)
   const channels = useChannelCatalogStore((state) => state.channels)
   const frames = useLiveConnection((state) => state.frames)
@@ -140,7 +149,7 @@ export function PortfolioTrialAccounts({ accounts, accountId, portfolioId, onSel
   const loaded = useDomainStore((state) => state.accounts !== null)
   const refresh = useDomainStore((state) => state.refreshAccounts)
   const options = [
-    { value: null, label: '无账户试跑' },
+    ...simulationChannels.map((channel) => ({ value: `simulation:${channel.channel}`, label: `模拟 · ${channel.label}`, groupLabel: '模拟' })),
     ...accounts.map((account) => ({
       value: account.account_id,
       label: `${account.name} · ${describeLeverage(account.long_leverage ?? null, account.short_leverage ?? null,
@@ -152,19 +161,24 @@ export function PortfolioTrialAccounts({ accounts, accountId, portfolioId, onSel
   return <section aria-label="试跑账户" className="mt-4 min-w-0">
     <div className="flex min-w-0 flex-wrap items-center gap-2">
       <div className="flex min-w-0 max-w-full items-center gap-1.5">
-        <Select<number | null> value={accountId} options={options} onChange={onSelect} searchable disabled={disabled || leverageEditing}
+        <Select<number | string> value={selected?.account_id ?? `simulation:${simulationChannel?.channel ?? ''}`} options={options}
+          onChange={(value) => typeof value === 'number' ? onSelect(value) : onSimulationSelect?.(value.slice('simulation:'.length))} searchable disabled={disabled || leverageEditing}
           ariaLabel="试跑账户" appearance="inline" className="min-w-0 max-w-full px-1.5 py-1 text-[14px]"
-          selectedValue={<OverflowText text={selected?.name ?? '无账户试跑'} />} />
+          selectedValue={<OverflowText text={selected?.name ?? (simulationChannel ? `模拟 · ${simulationChannel.label}` : '正在加载模拟账户…')} />} />
         {selected && <Chip className="max-w-48 shrink-0"><OverflowText text={channelLabel(selected.trade_channel, '')} /></Chip>}
       </div>
       {selected && <fieldset disabled={disabled} className="ml-auto min-w-0 max-w-full">
         <AccountConnectionStatus accountId={selected.account_id} />
       </fieldset>}
+      {!selected && simulationChannel && simulationAccount && <button type="button" disabled={disabled} className={`${textAction} ml-auto inline-flex shrink-0 items-center gap-1.5`} onClick={() => setConfigOpen(true)}><Settings size={14} aria-hidden />配置</button>}
     </div>
-    <div className="mt-1 flex min-h-8 min-w-0 items-start">
-      <AccountLeverageControl key={selected?.account_id ?? 'sample'} account={selected ?? null} disabled={disabled} onLeverageChange={onLeverageChange} />
-    </div>
-    {!selected && <p className="px-1.5 text-[12px] leading-5 text-ink-3">读取账户或行情数据时，请选择账户</p>}
+    {selected ? <div className="mt-1 flex min-h-8 min-w-0 items-start">
+      <AccountLeverageControl key={selected.account_id} account={selected} disabled={disabled} onLeverageChange={onLeverageChange} />
+    </div> : simulationChannel && simulationAccount && <div className="mt-1 flex min-h-8 flex-wrap items-center gap-2 px-1.5 text-xs text-ink-3">
+      <span className="tabular-nums">权益 {simulationAccount.account.total_asset.toLocaleString()} {simulationAccount.account.currency} · 持仓 {simulationAccount.account.positions.length} · 行情 {simulationAccount.quotes.length}</span>
+    </div>}
+    {configOpen && simulationChannel && simulationAccount && <SimulationAccountModal channel={simulationChannel} value={simulationAccount}
+      onSave={(value) => saveSimulation(simulationChannel.channel, value)} onClose={() => setConfigOpen(false)} />}
     <ErrorNotice title="账户列表加载失败" intent="read" error={error} hasData={loaded} variant="compact" onRetry={refresh} />
     <ErrorNotice title="连接操作失败" intent="mutation" error={selected ? feedback.error : null} contextKey={accountId ?? 'sample'} variant="compact" networkFeedback="global-only" />
   </section>

@@ -36,6 +36,7 @@ from axile.channels.registry import (
     list_channels,
     register_channel,
 )
+from axile.channels.simulation import SimulationAccount
 
 __all__ = [
     "ENTRY_POINT_GROUP",
@@ -67,6 +68,7 @@ __all__ = [
     "ExecutionBackend",
     "ReplayDisplayField",
     "ScheduleKind",
+    "SimulationAccount",
     "get_channel",
     "list_channels",
     "register_channel",

@@ -14,7 +14,6 @@ from msgspec import Meta
 from typing_extensions import override
 
 from axile.common.serialization import copy_data, to_payload
-from axile.executor.quote_quality import valid_book
 
 # ExtraData用于存储渠道特有的数据，使用Any是合理的
 # 因为不同渠道可能有不同类型的数据需要存储
@@ -61,6 +60,8 @@ class UnifiedPriceData:
     @property
     def book_valid(self) -> bool:
         """盘口结构事实，不含时钟、新鲜度或连接状态。"""
+        from axile.executor.quote_quality import valid_book
+
         return valid_book(self.bids, self.asks)
 
     # 渠道特有数据

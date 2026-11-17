@@ -8,6 +8,7 @@ import type {
   TargetWeightSnapshot,
   ValidateCustomCalcResult,
   TrialLeverageOverrides,
+  SimulationAccount,
 } from '@/types/api'
 
 /** 组合列表（不含策略）。 */
@@ -39,12 +40,14 @@ export function refreshPortfolioTargetSnapshot(id: number): Promise<TargetWeight
  * 校验一段自定义组合脚本（不落库、不自动调仓；脚本主动调用 executor 除外）。
  *
  * 执行用户脚本里的 `calculate_portfolio(context)` 一次并返回目标权重或错误信息。
- * 不传 `account_id` 走无账户试跑；传则借该账户构造真实上下文执行。
+ * 不传 `account_id` 时指定模拟渠道及快照；传则借该账户构造真实上下文执行。
  * 脚本错误以 `{ valid: false }` 结构化返回（HTTP 200）；仅账户不存在等调用错误会抛 `ApiError`。
  */
 export function validateCustomCalc(body: {
   custom_calc_py_code: string
   account_id?: number | null
+  simulation_channel?: string | null
+  simulation_account?: SimulationAccount | null
   leverage_overrides?: TrialLeverageOverrides | null
 }): Promise<ValidateCustomCalcResult> {
   return apiSend<ValidateCustomCalcResult>('POST', '/portfolio/validate_custom_calc', body)
