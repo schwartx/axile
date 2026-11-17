@@ -313,3 +313,18 @@ def test_fee_cache_uses_account_snapshot_trading_day_after_day_rollover():
         owner._plan_futures_close("ag2611", OrderDirection.SELL, 4, snapshot, "SHFE")
     assert owner._query_commission_rates.call_count == 2
     assert owner._trading_day == "20261016"
+
+
+def test_avoid_close_today_defaults_on_and_can_be_disabled():
+    assert FuturesClosePolicy().avoid_close_today == ["IC", "IF", "IH", "IM"]
+    assert FuturesClosePolicy(avoid_close_today=[]).avoid_close_today == []
+    FuturesClosePolicy().validate_channel(TradeChannel("gm"))
+    policy = parse_input(FuturesClosePolicy, {"avoid_close_today": ["if", "IF", "ic"]})
+    assert policy.avoid_close_today == ["IC", "IF"]
+    policy.validate_channel(TradeChannel("ctp"))
+    policy.validate_channel(TradeChannel("tq"))
+    for products in (["IF2612"], ["RB"], [True]):
+        with pytest.raises(ValueError):
+            parse_input(FuturesClosePolicy, {"avoid_close_today": products})
+    assert close_capability(automatic=True).avoid_close_today_products == ["IF", "IH", "IC", "IM"]
+    assert close_capability(automatic=False).avoid_close_today_products == ["IF", "IH", "IC", "IM"]

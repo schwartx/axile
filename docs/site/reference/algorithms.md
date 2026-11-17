@@ -116,3 +116,14 @@ algorithm = {
 5. 使用 Clock 与执行会话的等待方法，保持可测试性。
 
 接口定义见[算法注册与协议](https://github.com/zengbin93/axile/blob/main/axile/executor/algorithms/core/base.py)，加载过程见[加载器](https://github.com/zengbin93/axile/blob/main/axile/executor/algorithms/core/loader.py)。这里列出的是接口和现有实现，尚无完整的自定义算法开发案例。
+
+## 股指平今转锁仓
+
+CTP 与天勤的平仓规则支持 IF、IH、IC、IM，默认开启「平今转锁仓」，适用于各算法的常规调仓。
+有今仓的方向保留全部持仓，通过反向开仓达到净仓目标；下一交易日的调仓会清理多余旧仓。
+每条腿确认实际多空持仓后才继续，部分成交、持仓未知或未收敛时停止后续开仓。
+清仓入口及风险品种直接平仓，不转锁仓；即使净仓为零，也核对并清理两边的实际持仓。
+
+配置使用 `futures_close_policy.avoid_close_today` 品种列表。旧配置缺少字段时默认开启四个股指品种，
+显式保存 `[]` 表示关闭。弹窗完成后仍需保存账户，设置只影响后续执行。
+锁仓继续占用资金；没有下一次调仓不会主动解锁。关闭开关前应先解锁，或使用清仓入口处理已有双向仓。
