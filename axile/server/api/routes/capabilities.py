@@ -69,6 +69,7 @@ def list_channel_capabilities() -> list[dict[str, Any]]:
                 "calendar",
                 "schedule",
                 "portfolio",
+                "simulation_account",
                 "connection_steps",
                 "connection_validation",
             },

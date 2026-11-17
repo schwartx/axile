@@ -105,6 +105,19 @@ def test_run_and_save_persists_only_successful_trial(monkeypatch, account_id, va
     monkeypatch.setattr(routes, "try_register_target_refresh", Mock(return_value=True))
     monkeypatch.setattr(routes, "clear_target_refresh", clear)
 
+    if account_id is None:
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as caught:
+            asyncio.run(
+                routes.run_and_save_portfolio(3, RunAndSavePortfolioRequest(name="after", custom_calc_py_code=CODE))
+            )
+        assert caught.value.status_code == 422
+        assert stages == ["context"]
+        run.assert_not_awaited()
+        clear.assert_called_once_with(3, None)
+        return
+
     result = asyncio.run(
         routes.run_and_save_portfolio(
             3, RunAndSavePortfolioRequest(name="after", custom_calc_py_code=CODE, account_id=account_id)
@@ -125,7 +138,7 @@ def test_run_and_save_releases_refresh_reservation_when_native_save_fails(monkey
     from axile.server.api.routes import portfolio as routes
     from axile.server.db.models.portfolio import RunAndSavePortfolioRequest
 
-    native = AsyncMock(side_effect=[{"account": None}, RuntimeError("write failed")])
+    native = AsyncMock(side_effect=[{"account": _account_payload(7)}, RuntimeError("write failed")])
     clear = Mock()
     monkeypatch.setattr(routes, "native_operation", native)
     monkeypatch.setattr(
@@ -149,9 +162,11 @@ def test_run_and_save_releases_refresh_reservation_when_native_save_fails(monkey
     monkeypatch.setattr(routes, "clear_target_refresh", clear)
     with pytest.raises(RuntimeError, match="write failed"):
         asyncio.run(
-            routes.run_and_save_portfolio(3, RunAndSavePortfolioRequest(name="after", custom_calc_py_code=CODE))
+            routes.run_and_save_portfolio(
+                3, RunAndSavePortfolioRequest(name="after", custom_calc_py_code=CODE, account_id=7)
+            )
         )
-    clear.assert_called_once_with(3, None)
+    clear.assert_called_once_with(3, 7)
 
 
 def test_portfolio_native_errors_keep_http_status_and_details(monkeypatch):

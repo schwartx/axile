@@ -115,7 +115,7 @@ export function LeverageInput({
       >
         −
       </button>
-      <div className={`relative cursor-text ${compact ? 'min-w-[52px] px-1' : 'min-w-[78px] px-2'}`}>
+      <div className={`relative cursor-text ${compact ? 'min-w-[52px] px-1' : 'min-w-[78px] flex-1 px-2'}`}>
         <div
           aria-hidden="true"
           className={`pointer-events-none absolute inset-0 flex items-center justify-center gap-1 ${

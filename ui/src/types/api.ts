@@ -87,7 +87,47 @@ export interface FuturesCloseCapability {
   avoid_close_today_products?: string[]
 }
 
+export interface SimulationPosition {
+  symbol: string
+  volume: number
+  available_volume: number
+  market_value: number | null
+  direction: '多头' | '空头' | '净'
+  avg_price?: number | null
+  extra?: Record<string, unknown>
+}
+
+export interface SimulationQuote {
+  symbol: string
+  last_price: number
+  bids: [number, number][]
+  asks: [number, number][]
+  volume: number
+  turnover?: number
+  timestamp: number
+  update_time: string
+  extra?: Record<string, unknown>
+}
+
+/** 渠道模拟账户的固定输入快照，不包含连接凭据。 */
+export interface SimulationAccount {
+  account: {
+    available_cash: number
+    total_asset: number
+    market_value: number | null
+    positions: SimulationPosition[]
+    currency: string
+    source?: string
+    update_time?: string
+    extra?: Record<string, unknown>
+  }
+  quotes: SimulationQuote[]
+  long_leverage: number
+  short_leverage: number
+}
+
 export interface ChannelCapability {
+  simulation_account?: SimulationAccount | null
   algorithm_scope?: { pattern: string; example: string; description: string } | null
   futures_close?: FuturesCloseCapability | null
   connection_steps?: Array<{ id: string; label: string }>

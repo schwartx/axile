@@ -233,7 +233,7 @@ test('保存中的新修改保留为未保存，还原到提交版本', async ({
 })
 
 test('组合接入公共保存、还原和分栏记忆', async ({ page }) => {
-  let portfolio = { id: 1, name: '测试组合', custom_calc_py_code: 'def calculate_portfolio(context):\n    return {}\n' }
+  let portfolio = { id: 1, name: '测试组合', market: '期货', custom_calc_py_code: 'def calculate_portfolio(context):\n    return {}\n' }
   const patches: Record<string, unknown>[] = []
   const trials: Record<string, unknown>[] = []
   await page.route('**/api/v1/**', async (route) => {

@@ -11,6 +11,7 @@ from axile.server.api.routes import portfolio as routes
 from axile.server.db.models import Portfolio
 from axile.server.execution.worker_backend import manager as worker_manager
 from axile.server.execution.worker_backend.manager import WorkerBackendExecutionError
+from axile.server.portfolio_function import _error_from_exception
 from tests.unit.server._execution_test_support import build_account
 
 GOOD = "def calculate_portfolio(context):\n    return {'x': 0.25}\n"
@@ -43,7 +44,7 @@ def _client(monkeypatch, *, code=BAD, account=None):
 @pytest.mark.parametrize("code,valid", [(GOOD, True), (BAD, False)])
 def test_sample_validation_http_keeps_success_and_structured_failure(monkeypatch, code, valid):
     with _client(monkeypatch) as client:
-        response = client.post(VALIDATE, json={"custom_calc_py_code": code})
+        response = client.post(VALIDATE, json={"custom_calc_py_code": code, "simulation_channel": "ctp"})
     assert response.status_code == 200
     body = response.json()
     assert body["valid"] is valid
@@ -59,7 +60,9 @@ def test_sample_validation_http_keeps_success_and_structured_failure(monkeypatch
 def test_refresh_script_failure_keeps_400_and_does_not_write_snapshot(monkeypatch):
     save = AsyncMock(side_effect=AssertionError("failed script cannot overwrite snapshot"))
     monkeypatch.setattr(routes, "append_target_weight_snapshot", save)
-    with _client(monkeypatch) as client:
+    runner = AsyncMock(side_effect=_error_from_exception(SyntaxError("invalid syntax")))
+    monkeypatch.setattr(routes, "calculate_portfolio_for_account", runner)
+    with _client(monkeypatch, account=build_account(id=7)) as client:
         response = client.post(REFRESH)
     assert response.status_code == 400
     detail = response.json()["detail"]
@@ -67,18 +70,24 @@ def test_refresh_script_failure_keeps_400_and_does_not_write_snapshot(monkeypatc
     assert "SyntaxError" in detail["traceback"]
     assert detail["message"].startswith("自定义组合函数执行失败：")
     save.assert_not_awaited()
-    assert routes.try_register_target_refresh(991, None)
-    routes.clear_target_refresh(991, None)
+    assert routes.try_register_target_refresh(991, 7)
+    routes.clear_target_refresh(991, 7)
 
 
 @pytest.mark.parametrize("validation", [False, True])
 def test_sample_start_failure_preserves_500_vs_validation_response(monkeypatch, validation):
-    def failed_start(code, *, leverage_overrides=None):
+    def failed_start(code, **kwargs):
         raise RuntimeError("spawn start failed")
 
     monkeypatch.setattr(routes, "calculate_sample_portfolio", failed_start)
-    with _client(monkeypatch) as client:
-        response = client.post(VALIDATE if validation else REFRESH, json={"custom_calc_py_code": GOOD})
+    monkeypatch.setattr(
+        routes, "calculate_portfolio_for_account", AsyncMock(side_effect=RuntimeError("spawn start failed"))
+    )
+    with _client(monkeypatch, account=build_account(id=7)) as client:
+        response = client.post(
+            VALIDATE if validation else REFRESH,
+            json={"custom_calc_py_code": GOOD, "simulation_channel": "ctp"},
+        )
     if validation:
         assert response.status_code == 200 and response.json()["valid"] is False
         assert response.json()["error_type"] == "RuntimeError"

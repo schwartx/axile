@@ -396,6 +396,10 @@ export function PortfolioEditPage() {
                   accountId={calc.accountId}
                   portfolioId={portfolioId}
                   onSelect={calc.setAccountId}
+                  simulationChannels={calc.simulationChannels}
+                  simulationChannel={calc.simulationChannel}
+                  simulationAccount={calc.simulationAccount}
+                  onSimulationSelect={calc.setSimulationChannel}
                   onLeverageChange={calc.setLeverageDraft}
                   leverageEditing={calc.leverageEditing}
                   disabled={calc.validating || saving}
@@ -457,7 +461,7 @@ export function PortfolioEditPage() {
             )}
             statusOverride={targetTab === 'effective' ? snapshotStatus : undefined}
             contentOverride={targetTab === 'effective' ? <SnapshotResult contextKey={portfolioId} weights={weights} quantityUnit={quantityUnitForAccount(weights.data?.context_account_id)} /> : undefined}
-            resultContent={calc.result?.valid && calc.result.target ? <WeightResult target={calc.result.target} mode={calc.result.target_mode} quantityUnit={quantityUnitForAccount(calc.accountId)} /> : null}
+            resultContent={calc.result?.valid && calc.result.target ? <WeightResult target={calc.result.target} mode={calc.result.target_mode} quantityUnit={calc.accountId == null ? portfolioQuantityUnit(channels ?? [], head?.market, calc.simulationChannel?.channel) : quantityUnitForAccount(calc.accountId)} /> : null}
           />
 
           <ResizeHandle

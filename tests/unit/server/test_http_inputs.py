@@ -30,7 +30,7 @@ def test_portfolio_code_requires_json_content_type(monkeypatch, content_type, ex
     with TestClient(app) as client:
         response = client.post(
             "/portfolio/validate_custom_calc",
-            content=json.dumps({"custom_calc_py_code": code}),
+            content=json.dumps({"custom_calc_py_code": code, "simulation_channel": "ctp"}),
             headers=headers,
         )
     assert response.status_code == expected_status, response.text
