@@ -9,6 +9,7 @@ import pytest
 from axile.common.serialization import to_payload
 from axile.executor.models.portfolio_target import PortfolioTarget
 from axile.executor.models.unified_input import UnifiedStandardInput
+from axile.server import target_sizing
 from axile.server._native import _core
 from axile.server.api.routes import account_execution
 from axile.server.context import Context
@@ -74,12 +75,12 @@ def test_quantity_bypasses_leverage_and_survives_standard_input_roundtrip():
 @pytest.mark.parametrize("equity", [0.0, -100.0, 1_000_000.0])
 def test_quantity_alignment_needs_positions_and_not_equity(equity):
     positions = [{"symbol": "XAUUSD", "volume": 0.01, "direction": "多头"}]
-    plan = plan_executable_target(positions, {"XAUUSD": 0.015}, equity, target_mode="quantity")
+    plan = plan_executable_target(positions, {}, {"XAUUSD": 0.015}, equity, target_mode="quantity")
     assert plan.off_symbol_count == 1
     assert plan.rows[0].current_quantity == 0.01 and plan.rows[0].target_quantity == 0.015
     assert plan.rows[0].action == "increase" and plan.rows[0].target_weight is None
-    assert plan_executable_target(positions, {"XAUUSD": 0.01}, equity, target_mode="quantity").off_symbol_count == 0
-    assert plan_executable_target(positions, {}, equity, target_mode="quantity").rows[0].action == "close"
+    assert plan_executable_target(positions, {}, {"XAUUSD": 0.01}, equity, target_mode="quantity").off_symbol_count == 0
+    assert plan_executable_target(positions, {}, {}, equity, target_mode="quantity").rows[0].action == "close"
 
 
 def test_quantity_snapshot_roundtrip_and_downgrade_guard(native_database):
@@ -166,12 +167,14 @@ def test_history_sizing_does_not_cross_target_modes(monkeypatch):
         calculated_at="2026-11-06T00:00:00Z",
     )
     previous = {**current, "id": 1, "target_mode": "weight", "source": "execution", "execution_id": "old"}
-    monkeypatch.setattr(account_execution, "get_previous_account_target_snapshots", AsyncMock(return_value=[previous]))
-    native = AsyncMock(side_effect=AssertionError("不能复用相同数字的旧权重证据"))
-    monkeypatch.setattr(account_execution, "native_operation", native)
+    native = AsyncMock(return_value={"1": {"snapshot": current, "previous": [previous], "executions": {}}})
+    monkeypatch.setattr(target_sizing, "native_operation", native)
     public = asyncio.run(account_execution._account_target_public(account, current))
     assert public["target_mode"] == "quantity" and public["weights"] == {} and (public["quantities"] is None)
-    native.assert_not_awaited()
+    native.assert_awaited_once_with(
+        "target_operation",
+        {"op": "account_evidence", "pairs": [{"account_id": 1, "portfolio_id": 7, "snapshot_id": 2}]},
+    )
 
 
 @pytest.mark.parametrize("value", [True, "0.015", float("nan"), float("inf")])

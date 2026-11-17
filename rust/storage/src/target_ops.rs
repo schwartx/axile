@@ -318,6 +318,185 @@ pub(crate) fn previous_account_target_snapshots(
     views(connection, heads)
 }
 
+fn sizing_row_ready(row: &Value, mode: &str) -> bool {
+    if row["status"] != "SIZED"
+        || row
+            .get("sizing_mode")
+            .and_then(Value::as_str)
+            .unwrap_or("weight")
+            != mode
+        || !row["reason_code"].is_string()
+        || !row["target_quantity"].as_f64().is_some_and(f64::is_finite)
+    {
+        return false;
+    }
+    let numeric_fields = [
+        "account_weight",
+        "equity",
+        "reference_price",
+        "unit_multiplier",
+        "unit_notional",
+        "target_notional",
+        "raw_quantity",
+        "current_quantity",
+        "quantity_step",
+        "min_quantity",
+        "min_notional",
+    ];
+    let finite = numeric_fields.iter().all(|field| {
+        row.get(*field)
+            .is_none_or(|value| value.is_null() || value.as_f64().is_some_and(f64::is_finite))
+    });
+    // Python validates conversion payloads; ambiguous shapes must retain fallback history.
+    let conversion_ready = row.get("value_conversion").is_none_or(|value| {
+        value.is_null()
+            || (value.is_object()
+                && ["price_currency", "value_currency"]
+                    .iter()
+                    .all(|key| value[*key].as_str().is_some_and(|s| !s.is_empty()))
+                && value["rate"]
+                    .as_f64()
+                    .is_some_and(|rate| rate.is_finite() && rate > 0.0)
+                && value.get("reference").is_none_or(Value::is_object))
+    });
+    finite && conversion_ready
+}
+
+fn sizing_complete(snapshot: &Value, evidence: &Value) -> bool {
+    if snapshot["source"] != "execution" || evidence["record_id"].is_null() {
+        return false;
+    }
+    let Some(weights) = snapshot["normalized_weights"].as_object() else {
+        return false;
+    };
+    let Some(rows) = evidence["sizings"].as_object() else {
+        return false;
+    };
+    if rows.is_empty() && !weights.is_empty() {
+        return false;
+    }
+    let mode = snapshot["target_mode"].as_str().unwrap_or("weight");
+    weights
+        .iter()
+        .all(|(key, value)| value.as_f64().is_some_and(f64::is_finite) && rows.contains_key(key))
+        && rows.values().all(|row| sizing_row_ready(row, mode))
+        && snapshot.get("audit_evidence").is_none()
+}
+
+fn account_bundle(connection: &Connection, snapshot: Value) -> Result<Value, AnalysisError> {
+    if snapshot.is_null() {
+        return Ok(json!({"snapshot":null,"previous":[],"executions":{}}));
+    }
+    let account_id = integer(&snapshot, "account_id")?;
+    let mut executions = Map::new();
+    let mut load_history = snapshot["normalized_weights"]
+        .as_object()
+        .is_some_and(|weights| !weights.is_empty());
+    if let Some(execution_id) = snapshot["execution_id"].as_str() {
+        let evidence =
+            crate::execution_reads::target_sizing_on(connection, execution_id, Some(account_id))?;
+        let inflight = evidence["record_id"].is_null()
+            && (!evidence["input_id"].is_null()
+                || evidence["artifact_versions"]["target_snapshot"]
+                    .as_i64()
+                    .is_some_and(|version| version >= 2));
+        load_history = !inflight && !sizing_complete(&snapshot, &evidence);
+        executions.insert(execution_id.into(), evidence);
+    }
+    let previous = if load_history {
+        let query = format!(
+            "SELECT {HEAD_COLUMNS} FROM target_weight_snapshot
+            WHERE account_id=?1 AND portfolio_id=?2 AND id<?3 AND target_mode=?4
+                AND normalized_weights_kind NOT IN ('null','missing') AND execution_id IS NOT NULL
+            ORDER BY id DESC LIMIT 50"
+        );
+        let mut statement = connection.prepare(&query).map_err(sql)?;
+        let heads = statement
+            .query_map(
+                params![
+                    account_id,
+                    integer(&snapshot, "portfolio_id")?,
+                    integer(&snapshot, "id")?,
+                    text(&snapshot, "target_mode")?
+                ],
+                head,
+            )
+            .map_err(sql)?
+            .collect::<Result<_, _>>()
+            .map_err(sql)?;
+        views(connection, heads)?
+    } else {
+        Vec::new()
+    };
+    for prior in &previous {
+        let execution_id = text(prior, "execution_id")?;
+        executions.insert(
+            execution_id.into(),
+            crate::execution_reads::target_sizing_on(connection, execution_id, Some(account_id))?,
+        );
+    }
+    Ok(json!({"snapshot":snapshot,"previous":previous,"executions":executions}))
+}
+
+/// 调用方在同一读事务内批量获取目标及冻结换算证据，不重建执行结果。
+pub(crate) fn account_evidence_on(
+    connection: &Connection,
+    pairs: &Value,
+) -> Result<Value, AnalysisError> {
+    let pairs = pairs
+        .as_array()
+        .ok_or_else(|| invalid("pairs 必须是数组"))?;
+    let mut seen = std::collections::HashSet::new();
+    for pair in pairs {
+        let account_id = integer(pair, "account_id")?;
+        integer(pair, "portfolio_id")?;
+        optional_integer(pair, "snapshot_id")?;
+        if !seen.insert(account_id) {
+            return Err(invalid("pairs 包含重复账户"));
+        }
+    }
+    if pairs.is_empty() {
+        return Ok(json!({}));
+    }
+    let query = format!("WITH pairs AS (SELECT json_extract(value,'$.account_id') AS account_id,
+            json_extract(value,'$.portfolio_id') AS portfolio_id,json_extract(value,'$.snapshot_id') AS snapshot_id FROM json_each(?1))
+        SELECT {HEAD_COLUMNS} FROM target_weight_snapshot WHERE id IN (
+            SELECT COALESCE(p.snapshot_id,(SELECT id FROM target_weight_snapshot
+                WHERE account_id=p.account_id AND portfolio_id=p.portfolio_id
+                    AND normalized_weights_kind NOT IN ('null','missing') ORDER BY id DESC LIMIT 1)) FROM pairs p)");
+    let mut statement = connection.prepare(&query).map_err(sql)?;
+    let heads = statement
+        .query_map([json!(pairs).to_string()], head)
+        .map_err(sql)?
+        .collect::<Result<_, _>>()
+        .map_err(sql)?;
+    let snapshots = views(connection, heads)?;
+    let mut result = Map::new();
+    for pair in pairs {
+        let selected = match optional_integer(pair, "snapshot_id")? {
+            Some(id) => Some(
+                snapshots
+                    .iter()
+                    .find(|snapshot| snapshot["id"] == id)
+                    .filter(|snapshot| {
+                        snapshot["account_id"] == pair["account_id"]
+                            && snapshot["portfolio_id"] == pair["portfolio_id"]
+                    })
+                    .ok_or_else(|| invalid("目标快照不存在或不属于请求账户及组合"))?,
+            ),
+            None => snapshots.iter().find(|snapshot| {
+                snapshot["account_id"] == pair["account_id"]
+                    && snapshot["portfolio_id"] == pair["portfolio_id"]
+            }),
+        };
+        result.insert(
+            integer(pair, "account_id")?.to_string(),
+            account_bundle(connection, selected.cloned().unwrap_or(Value::Null))?,
+        );
+    }
+    Ok(Value::Object(result))
+}
+
 /// 独立追加拥有一次写事务；读取在同一个只读快照内加载头和明细。
 pub fn target_operation(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let operation = text(request, "op")?;
@@ -330,6 +509,7 @@ pub fn target_operation(path: &str, request: &Value) -> Result<Value, AnalysisEr
     let connection = crate::storage_connection::open_reader(Path::new(path))?;
     connection.execute_batch("BEGIN DEFERRED;").map_err(sql)?;
     match operation {
+        "account_evidence" => account_evidence_on(&connection, &request["pairs"]),
         "execution" => Ok(
             execution_target_snapshot(&connection, text(request, "execution_id")?)?
                 .unwrap_or(Value::Null),
@@ -357,6 +537,194 @@ mod tests {
 
     fn schema(connection: &Connection) {
         connection.execute_batch("CREATE TABLE target_weight_snapshot(target_mode TEXT NOT NULL DEFAULT 'weight',id INTEGER PRIMARY KEY,portfolio_id INTEGER NOT NULL,account_id INTEGER,raw_weights_kind TEXT NOT NULL,normalized_weights_kind TEXT NOT NULL,weights_metadata TEXT NOT NULL,source TEXT NOT NULL,execution_id TEXT UNIQUE,calculated_at_us INTEGER NOT NULL); CREATE TABLE target_weight_snapshot_weight(snapshot_id INTEGER,role TEXT,map_key TEXT,value REAL,audit_evidence TEXT NOT NULL,PRIMARY KEY(snapshot_id,role,map_key)) WITHOUT ROWID;").unwrap();
+    }
+
+    fn evidence_schema(connection: &Connection) {
+        schema(connection);
+        connection
+            .execute_batch("DROP TABLE target_weight_snapshot_weight;")
+            .unwrap();
+        connection
+            .execute_batch(include_str!("migrations/structured/business.sql"))
+            .unwrap();
+        connection.execute_batch("CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,
+            execution_id TEXT,input_id TEXT,unrelated_json JSON);
+            CREATE TABLE execution_artifact(execution_id TEXT,artifact_type TEXT,schema_version INTEGER,content JSON);").unwrap();
+    }
+
+    fn evidence_snapshot(
+        connection: &Connection,
+        account: i64,
+        portfolio: i64,
+        mode: &str,
+        execution: Option<&str>,
+    ) -> Value {
+        append_target_snapshot(
+            connection,
+            &json!({"account_id":account,"portfolio_id":portfolio,
+            "target_mode":mode,"normalized_weights":{"native":1},"raw_weights":{"native":1},
+            "source":if execution.is_some() {"execution"} else {"manual"},"execution_id":execution,
+            "calculated_at":"2026-10-23T09:00:00Z"}),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn evidence_bundle_is_bounded_and_isolated_by_account_portfolio_and_mode() {
+        let connection = Connection::open_in_memory().unwrap();
+        evidence_schema(&connection);
+        for index in 0..53 {
+            evidence_snapshot(&connection, 2, 7, "weight", Some(&format!("e{index}")));
+        }
+        evidence_snapshot(&connection, 2, 8, "weight", Some("other-portfolio"));
+        evidence_snapshot(&connection, 3, 7, "weight", Some("other-account"));
+        evidence_snapshot(&connection, 2, 7, "quantity", Some("other-mode"));
+        let latest = evidence_snapshot(&connection, 2, 7, "weight", None);
+        let result = account_evidence_on(
+            &connection,
+            &json!([
+            {"account_id":2,"portfolio_id":7},{"account_id":99,"portfolio_id":7}]),
+        )
+        .unwrap();
+        let bundle = &result["2"];
+        assert_eq!(bundle["snapshot"], latest);
+        let previous = bundle["previous"].as_array().unwrap();
+        assert_eq!(previous.len(), 50);
+        assert_eq!(previous[0]["execution_id"], "e52");
+        assert_eq!(previous[49]["execution_id"], "e3");
+        assert!(previous.iter().all(|snapshot| snapshot["account_id"] == 2
+            && snapshot["portfolio_id"] == 7
+            && snapshot["target_mode"] == "weight"));
+        assert_eq!(bundle["executions"].as_object().unwrap().len(), 50);
+        assert_eq!(
+            bundle["executions"]["e52"],
+            json!({"artifact_versions":{},"record_id":null,
+            "input_id":null,"target_context":{},"sizings":{}})
+        );
+        assert_eq!(
+            result["99"],
+            json!({"snapshot":null,"previous":[],"executions":{}})
+        );
+        assert_eq!(
+            account_evidence_on(&connection, &json!([])).unwrap(),
+            json!({})
+        );
+        for pairs in [
+            json!(null),
+            json!([{"account_id":true,"portfolio_id":7}]),
+            json!([{"account_id":2,"portfolio_id":7,"snapshot_id":"1"}]),
+            json!([{"account_id":2,"portfolio_id":7},{"account_id":2,"portfolio_id":8}]),
+        ] {
+            assert!(account_evidence_on(&connection, &pairs).is_err());
+        }
+    }
+
+    #[test]
+    fn evidence_pins_snapshot_and_skips_history_only_for_complete_or_inflight_sizing() {
+        let connection = Connection::open_in_memory().unwrap();
+        evidence_schema(&connection);
+        evidence_snapshot(&connection, 2, 7, "weight", Some("older"));
+        let frozen = evidence_snapshot(&connection, 2, 7, "weight", Some("ready"));
+        let later = evidence_snapshot(&connection, 2, 7, "quantity", None);
+        connection
+            .execute_batch("INSERT INTO executerecord VALUES(10,2,'ready',NULL,'not-json');")
+            .unwrap();
+        crate::business_facts_ops::result_symbols::write_result_symbols(
+            &connection,
+            10,
+            &json!({"symbol_results":{"native":{"sizing":{"sizing_mode":"weight","status":"SIZED",
+                "reason_code":"COMMON.SIZING.EXACT","target_quantity":2}}}}),
+        )
+        .unwrap();
+        let pairs = json!([{"account_id":2,"portfolio_id":7,"snapshot_id":frozen["id"]}]);
+        let ready = account_evidence_on(&connection, &pairs).unwrap();
+        assert_eq!(ready["2"]["snapshot"], frozen);
+        assert_eq!(ready["2"]["previous"], json!([]));
+        assert_eq!(
+            ready["2"]["executions"]["ready"]["sizings"]["native"]["target_quantity"],
+            2.0
+        );
+        connection
+            .execute_batch("UPDATE execution_symbol_sizing SET target_quantity=NULL;")
+            .unwrap();
+        assert_eq!(
+            account_evidence_on(&connection, &pairs).unwrap()["2"]["previous"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        connection
+            .execute_batch(
+                "UPDATE execution_symbol_sizing SET target_quantity=2,status='UNAVAILABLE';",
+            )
+            .unwrap();
+        assert_eq!(
+            account_evidence_on(&connection, &pairs).unwrap()["2"]["previous"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        connection
+            .execute_batch("UPDATE execution_symbol_sizing SET status='SIZED',map_key='alias';")
+            .unwrap();
+        assert_eq!(
+            account_evidence_on(&connection, &pairs).unwrap()["2"]["previous"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            account_evidence_on(&connection, &json!([{"account_id":2,"portfolio_id":7}])).unwrap()
+                ["2"]["snapshot"],
+            later
+        );
+        for (account_id, portfolio_id) in [(3, 7), (2, 8), (2, 7)] {
+            let id = if account_id == 2 && portfolio_id == 7 {
+                999
+            } else {
+                frozen["id"].as_i64().unwrap()
+            };
+            assert!(account_evidence_on(
+                &connection,
+                &json!([{"account_id":account_id,"portfolio_id":portfolio_id,"snapshot_id":id}])
+            )
+            .is_err());
+        }
+        let inflight = evidence_snapshot(&connection, 2, 7, "weight", Some("inflight"));
+        connection
+            .execute_batch(
+                "INSERT INTO execution_artifact VALUES('inflight','target_snapshot',2,'{}');",
+            )
+            .unwrap();
+        let bundle =
+            account_evidence_on(&connection, &json!([{"account_id":2,"portfolio_id":7}])).unwrap();
+        assert_eq!(bundle["2"]["snapshot"], inflight);
+        assert_eq!(bundle["2"]["previous"], json!([]));
+        assert!(bundle["2"]["executions"]["inflight"]["record_id"].is_null());
+    }
+
+    #[test]
+    fn sizing_readiness_rejects_invalid_numbers_and_conversion() {
+        let mut snapshot =
+            json!({"source":"execution","target_mode":"weight","normalized_weights":{"native":1}});
+        let mut evidence = json!({"record_id":1,"sizings":{"native":{"status":"SIZED","reason_code":"exact","target_quantity":0}}});
+        assert!(sizing_complete(&snapshot, &evidence));
+        evidence["sizings"]["native"]["equity"] = json!("invalid");
+        assert!(!sizing_complete(&snapshot, &evidence));
+        evidence["sizings"]["native"]["equity"] = Value::Null;
+        evidence["sizings"]["native"]["value_conversion"] = json!({"rate":0});
+        assert!(!sizing_complete(&snapshot, &evidence));
+        evidence["sizings"]["native"]["value_conversion"] = Value::Null;
+        snapshot["normalized_weights"]["missing"] = json!(1);
+        assert!(!sizing_complete(&snapshot, &evidence));
+        snapshot["normalized_weights"] = json!({});
+        evidence["sizings"] = json!({});
+        assert!(sizing_complete(&snapshot, &evidence));
+        evidence["sizings"] = json!({"leftover":{"status":"UNAVAILABLE","reason_code":"missing","target_quantity":null}});
+        assert!(!sizing_complete(&snapshot, &evidence));
     }
 
     #[test]

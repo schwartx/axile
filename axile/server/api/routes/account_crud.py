@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, fields
 from datetime import datetime, time, timedelta
 from hashlib import sha256
@@ -47,6 +46,7 @@ from axile.server.execution.scheduler import delete_job
 from axile.server.integrity import plan_executable_target
 from axile.server.native_store import native_operation
 from axile.server.performance import close_before, local_time
+from axile.server.target_sizing import resolve_account_target
 from axile.server.trading_calendar import CalendarDecisionStatus, evaluate_channel_calendar_moment, schedule_windows
 
 router = APIRouter()
@@ -489,34 +489,22 @@ async def account_dashboard(sched: SchedDep, archived: bool = False, include_arc
             if latest_snapshot is not None
             else None
         )
-        target_mode = persisted.get("target_mode", "weight")
-        target_weights = (
-            persisted.get("target_quantities") if target_mode == "quantity" else persisted["target_weights"]
-        )
-        if target_mode == "quantity" and isinstance(target_weights, dict):
-            sized = persisted.get("sizing_quantities")
-            if isinstance(sized, dict) and sized:
-                requested = {plugin.canonicalize_symbol(key) for key in target_weights}
-                sized = {plugin.canonicalize_symbol(key): value for key, value in sized.items()}
-                if requested.issubset(sized):
-                    target_weights = (
-                        sized
-                        if all(isinstance(value, (int, float)) and math.isfinite(value) for value in sized.values())
-                        else None
-                    )
+        target = resolve_account_target(persisted["target_evidence"], plugin.canonicalize_symbol)
+        target_mode = target["target_mode"]
         off_symbol_count = None
         if (
             latest_snapshot is not None
+            and isinstance(raw_positions, list)
             and (valuation_complete or target_mode == "quantity")
-            and isinstance(target_weights, dict)
+            and target["quantities"] is not None
         ):
             off_symbol_count = plan_executable_target(
                 positions,
-                target_weights,
+                target["weights"],
+                target["quantities"],
                 _safe_total_asset(assets),
                 target_mode=target_mode,
                 canonicalize_symbol=plugin.canonicalize_symbol,
-                quantize_target_quantity=plugin.quantize_target_quantity,
             ).off_symbol_count
 
         items.append(

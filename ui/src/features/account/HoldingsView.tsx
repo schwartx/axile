@@ -158,6 +158,10 @@ export function HoldingsView({
     : positions.filter((position) => Math.abs(signedPositionQuantity(position) ?? 0) > QTY_EPS).length
   const holdingsUnknown = quantityMode && rows.some(row => row.cur == null)
 
+  if (executablePlan?.off_symbol_count == null) {
+    return <p className="text-[14px] text-ink-2">持仓与目标数量尚未就绪，暂不判断调仓状态。</p>
+  }
+
   if (rows.length === 0) {
     return <p className="text-[14px] text-ink-2">当前空仓，且无目标持仓。</p>
   }
