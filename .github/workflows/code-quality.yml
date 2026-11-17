@@ -11,8 +11,19 @@ on:
 
 jobs:
   native:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - os: ubuntu-latest
+          platform: linux-x86_64
+        - os: windows-latest
+          platform: windows-x86_64
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
     env:
       CARGO_INCREMENTAL: '0'
     steps:
@@ -22,6 +33,16 @@ jobs:
         python-version: '3.12'
     - uses: astral-sh/setup-uv@v6
     - uses: dtolnay/rust-toolchain@1.99.1
+    - name: Cache native Cargo build
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          ${{ runner.temp }}/axile-storage-target
+        key: native-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-python-3.12-${{ hashFiles('rust/**/Cargo.lock') }}-${{ github.sha }}
+        restore-keys: |
+          native-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-python-3.12-${{ hashFiles('rust/**/Cargo.lock') }}-
     - name: Build native extension
       run: |
         export CARGO_TARGET_DIR="$RUNNER_TEMP/axile-storage-target"
@@ -31,8 +52,8 @@ jobs:
       run: uv run --no-project --with hatchling --with packaging python scripts/build_native_analysis.py --no-build --target-dir "$CARGO_TARGET_DIR"
     - uses: actions/upload-artifact@v4
       with:
-        name: axile-native-core
-        path: axile/server/_native/_core.abi3.so
+        name: axile-native-core-${{ matrix.platform }}
+        path: axile/server/_native/_core.*
         if-no-files-found: error
 
   editor-ui:
@@ -43,7 +64,7 @@ jobs:
     - uses: actions/checkout@v4
     - uses: actions/download-artifact@v4
       with:
-        name: axile-native-core
+        name: axile-native-core-linux-x86_64
         path: axile/server/_native
     - uses: actions/setup-python@v5
       with:
@@ -58,7 +79,29 @@ jobs:
     - uses: dtolnay/rust-toolchain@1.99.1
       with:
         targets: wasm32-unknown-unknown
-    - run: cargo install wasm-bindgen-cli --version 0.2.130 --locked
+    - name: Cache wasm-bindgen CLI
+      id: wasm-bindgen
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/wasm-bindgen-cli
+        key: wasm-bindgen-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-0.2.130
+    - name: Install wasm-bindgen CLI
+      if: steps.wasm-bindgen.outputs.cache-hit != 'true'
+      run: cargo install wasm-bindgen-cli --version 0.2.130 --locked --root "$RUNNER_TEMP/wasm-bindgen-cli"
+    - name: Add wasm-bindgen to PATH
+      run: echo "$RUNNER_TEMP/wasm-bindgen-cli/bin" >> "$GITHUB_PATH"
+    - name: Cache WASM builds
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          /tmp/axile-editor-*
+          /tmp/axile-replay-heat-*
+          ui/src/features/editor/wasm
+        key: wasm-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-bindgen-0.2.130-${{ hashFiles('rust/**/Cargo.lock', 'rust/editor-wasm/axile.rs', 'ui/scripts/build-editor.ts', 'ui/scripts/build-replay-heat.ts') }}-${{ github.sha }}
+        restore-keys: |
+          wasm-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-bindgen-0.2.130-${{ hashFiles('rust/**/Cargo.lock', 'rust/editor-wasm/axile.rs', 'ui/scripts/build-editor.ts', 'ui/scripts/build-replay-heat.ts') }}-
     - run: bun run lint && bun run build
       working-directory: ui
     - uses: actions/upload-artifact@v4
@@ -68,17 +111,11 @@ jobs:
         include-hidden-files: true
         if-no-files-found: error
   lint:
-    needs: native
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-
-    - uses: actions/download-artifact@v4
-      with:
-        name: axile-native-core
-        path: axile/server/_native
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -90,23 +127,22 @@ jobs:
         curl -LsSf https://astral.sh/uv/install.sh | sh
         echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-    - name: Sync test dependencies
-      run: |
-        uv sync --locked --group dev --extra ctp
+    - name: Sync lint dependencies without the native project
+      run: uv sync --locked --only-group dev
 
     - name: Run Ruff formatter check
       run: |
-        uv run ruff format --check axile tests
+        uv run --no-sync ruff format --check axile tests
       continue-on-error: false
 
     - name: Run Ruff lint
       run: |
-        uv run ruff check axile tests
+        uv run --no-sync ruff check axile tests
       continue-on-error: false
 
     - name: Run Ruff complexity gate
       run: |
-        uv run ruff check axile/executor/algorithms --select C901
+        uv run --no-sync ruff check axile/executor/algorithms --select C901
       continue-on-error: false
 
   type-check:
@@ -119,7 +155,7 @@ jobs:
 
     - uses: actions/download-artifact@v4
       with:
-        name: axile-native-core
+        name: axile-native-core-linux-x86_64
         path: axile/server/_native
 
     - name: Set up Python
@@ -144,13 +180,21 @@ jobs:
 
   smoke:
     needs: native
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - os: ubuntu-latest
+          platform: linux-x86_64
+        - os: windows-latest
+          platform: windows-x86_64
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     steps:
     - uses: actions/checkout@v4
     - uses: actions/download-artifact@v4
       with:
-        name: axile-native-core
+        name: axile-native-core-${{ matrix.platform }}
         path: axile/server/_native
     - uses: actions/setup-python@v5
       with:
@@ -158,4 +202,4 @@ jobs:
     - uses: astral-sh/setup-uv@v6
     - run: uv sync --locked --group dev
     - name: Check native startup, migrations and public API
-      run: timeout 60s uv run pytest tests/contract/test_native_storage_runtime.py -q
+      run: python -c "import subprocess; subprocess.run(['uv', 'run', 'pytest', 'tests/contract/test_native_storage_runtime.py', 'tests/unit/packaging/test_release_platforms.py', '-q'], check=True, timeout=60)"

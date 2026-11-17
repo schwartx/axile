@@ -8,7 +8,17 @@ import re
 import tempfile
 import tomllib
 from importlib.metadata import version
-from pathlib import Path
+from pathlib import Path, PurePath
+
+
+def runtime_config(runtime: PurePath) -> str:
+    """使用 TOML 兼容的转义保留 Windows 路径。"""
+    database_uri = f"sqlite+aiosqlite:///{(runtime / 'axile.db').as_posix()}"
+    return (
+        f"sqlalchemy_database_uri = {json.dumps(database_uri)}\n"
+        f"app_log_dir = {json.dumps(str(runtime / 'logs'))}\n"
+        'environment = "local"\n'
+    )
 
 
 def main() -> None:
@@ -48,12 +58,7 @@ def main() -> None:
         runtime = Path(directory)
         database = str(runtime / "axile.db")
         config = runtime / "config.toml"
-        config.write_text(
-            f'sqlalchemy_database_uri = "sqlite+aiosqlite:///{database}"\n'
-            f'app_log_dir = "{runtime / "logs"}"\n'
-            'environment = "local"\n',
-            encoding="utf-8",
-        )
+        config.write_text(runtime_config(runtime), encoding="utf-8")
         os.environ["AXILE_CONFIG_TOML"] = str(config)
         _core.migration_upgrade(database, "{}")
         assert _core.migration_current(database, "{}")["public"] == "0037"
