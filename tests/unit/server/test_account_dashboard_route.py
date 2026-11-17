@@ -17,7 +17,44 @@ class _Scheduler:
         return None
 
 
-def _client(monkeypatch, assets, *, target=None):
+def _client(monkeypatch, assets, *, target=None, quantities=None, target_mode="weight"):
+    snapshot = (
+        {
+            "id": 1,
+            "account_id": 1,
+            "portfolio_id": 7,
+            "raw_weights": target,
+            "normalized_weights": target,
+            "target_mode": target_mode,
+            "execution_id": "frozen",
+            "source": "execution",
+            "calculated_at": "2026-08-26T21:35:10",
+        }
+        if target is not None
+        else None
+    )
+    evidence = {
+        "snapshot": snapshot,
+        "previous": [],
+        "executions": {
+            "frozen": {
+                "artifact_versions": {"target_snapshot": 2},
+                "record_id": 1 if quantities is not None else None,
+                "input_id": "input:frozen",
+                "target_context": {},
+                "sizings": {
+                    symbol: {
+                        "sizing_mode": target_mode,
+                        "reason_code": "COMMON.SIZING.QUANTIZED",
+                        "target_quantity": quantity,
+                    }
+                    for symbol, quantity in (quantities or {}).items()
+                },
+            }
+        }
+        if snapshot is not None
+        else {},
+    }
     context = {
         "accounts": [to_payload(_build_account(), mode="json") | {"connection": {"status": "uninitialized"}}],
         "inputs": {
@@ -33,7 +70,7 @@ def _client(monkeypatch, assets, *, target=None):
                     "account_daily_return": None,
                     "points": [],
                 },
-                "target_weights": target,
+                "target_evidence": evidence,
                 "portfolio_id": 7,
             }
         },
@@ -82,6 +119,7 @@ def test_dashboard_counts_off_symbols_zero_when_lots_already_match(monkeypatch):
         monkeypatch,
         {"total_asset": equity, "positions": positions},
         target={"TA2701": -0.08, "c2611": 0.03, "m2701": -0.06, "rb2610": 0.13},
+        quantities={"TA2701": -2, "c2611": 1, "m2701": -1, "rb2610": 4},
     )
     response = client.get("/account/dashboard")
     assert response.status_code == 200, response.text
@@ -147,6 +185,8 @@ def test_dashboard_empty_zero_and_top_twelve(monkeypatch, assets):
     assert "assets" not in item and "target_weights" not in item
 
 
+@pytest.mark.parametrize("target_mode", ["weight", "quantity"])
+@pytest.mark.parametrize("available", [False, True])
 @pytest.mark.parametrize("target", [{}, {"rb2610": 0.1}], ids=["flat-target", "open-target"])
 @pytest.mark.parametrize(
     "assets, known",
@@ -158,12 +198,33 @@ def test_dashboard_empty_zero_and_top_twelve(monkeypatch, assets):
     ],
     ids=["missing", "null", "invalid", "flat"],
 )
-def test_dashboard_distinguishes_unknown_positions_from_flat(monkeypatch, target, assets, known):
-    client, _ = _client(monkeypatch, assets, target=target)
+def test_dashboard_distinguishes_unknown_positions_from_flat(
+    monkeypatch, target, assets, known, available, target_mode
+):
+    client, _ = _client(
+        monkeypatch,
+        assets,
+        target=target,
+        quantities={symbol: 1 for symbol in target} if available else None,
+        target_mode=target_mode,
+    )
     response = client.get("/account/dashboard")
     assert response.status_code == 200, response.text
     item = response.json()["data"][0]
     assert item["holdings_count"] == (0 if known else None)
-    assert item["off_symbol_count"] == (len(target) if known else None)
+    assert item["off_symbol_count"] == (len(target) if known and available else None)
     assert item["position_weights"] == []
     assert item["asset_observed_at"] == "2026-08-26T21:35:11"
+
+
+def test_quantity_dashboard_uses_frozen_rounded_quantity(monkeypatch):
+    client, _ = _client(
+        monkeypatch,
+        {"positions": [{"symbol": "XAUUSD", "volume": 0.02, "direction": "多头"}]},
+        target={"XAUUSD": 0.015},
+        quantities={"XAUUSD": 0.02},
+        target_mode="quantity",
+    )
+    response = client.get("/account/dashboard")
+    assert response.status_code == 200, response.text
+    assert response.json()["data"][0]["off_symbol_count"] == 0

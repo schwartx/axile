@@ -3,19 +3,16 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
-from dataclasses import dataclass, field
 from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from loguru import logger
 
 from axile.channels import get_channel
-from axile.common.serialization import from_payload, to_payload
+from axile.common.serialization import from_payload
 from axile.common.trade_channel import TradeChannel
-from axile.domain.execution import ExecutionArtifactType, ExecutionTaskStatus
+from axile.domain.execution import ExecutionTaskStatus
 from axile.executor.models.portfolio_target import PortfolioTarget, TargetMode
-from axile.executor.models.value_conversion import PriceValueConversion
 from axile.server._native import _core
 from axile.server.api.deps import HistoryPaginationDep, SchedDep
 from axile.server.api.inputs import json_body
@@ -44,10 +41,10 @@ from axile.server.execution.scheduler import delete_job
 from axile.server.integrity import plan_executable_target
 from axile.server.native_store import native_operation
 from axile.server.repositories import get_latest_portfolio_id_by_account_id, stop_account_for_clear_positions
+from axile.server.target_sizing import read_account_target as _account_target_public
 from axile.server.target_weight_snapshots import (
     append_target_weight_snapshot,
     get_latest_account_target_snapshot,
-    get_previous_account_target_snapshots,
     target_snapshot_public,
 )
 
@@ -93,23 +90,28 @@ async def account_rebalance_plan(account_id: int) -> dict[str, Any]:
     ):
         return {
             "rows": [],
-            "target_mode": "weight",
+            "target_mode": mode,
             "off_symbol_count": None,
             "observed_at": assets_snapshot["created_at"],
             "target_calculated_at": snapshot["calculated_at"],
         }
     plugin = get_channel(account.trade_channel)
-    if mode == "quantity":
-        public_target = await _account_target_public(account, snapshot)
-        if public_target["quantities"] is not None:
-            target = public_target["quantities"]
+    public_target = await _account_target_public(account, snapshot)
+    if public_target["quantities"] is None:
+        return {
+            "rows": [],
+            "target_mode": mode,
+            "off_symbol_count": None,
+            "observed_at": assets_snapshot["created_at"],
+            "target_calculated_at": snapshot["calculated_at"],
+        }
     plan = plan_executable_target(
         positions,
-        target,
+        public_target["weights"],
+        public_target["quantities"],
         float(total_asset) if isinstance(total_asset, (int, float)) else 0.0,
         target_mode=mode,
         canonicalize_symbol=plugin.canonicalize_symbol,
-        quantize_target_quantity=plugin.quantize_target_quantity,
     )
     return {
         "rows": [
@@ -130,248 +132,6 @@ async def account_rebalance_plan(account_id: int) -> dict[str, Any]:
         "observed_at": assets_snapshot["created_at"],
         "target_calculated_at": snapshot["calculated_at"],
     }
-
-
-type _Canonicalize = Callable[[str], str]
-
-
-@dataclass
-class _SizingEvidence:
-    status: str
-    rows: dict[str, dict[str, Any]] = field(default_factory=dict)
-    quantities: dict[str, float] | None = None
-    sizing_execution_id: str | None = None
-    sizing_calculated_at: str | None = None
-    null_target_quantity: bool = False
-    inflight: bool = False
-
-
-def _canonical_weight_map(
-    weights: dict[str, float] | None,
-    canonicalize: _Canonicalize,
-) -> dict[str, float]:
-    if not weights:
-        return {}
-    return {canonicalize(symbol): float(weight) for symbol, weight in weights.items() if isinstance(symbol, str)}
-
-
-def _canonical_weights_equal(
-    left: dict[str, float] | None,
-    right: dict[str, float] | None,
-    canonicalize: _Canonicalize,
-) -> bool:
-    mapped_left = _canonical_weight_map(left, canonicalize)
-    mapped_right = _canonical_weight_map(right, canonicalize)
-    if not mapped_left or set(mapped_left) != set(mapped_right):
-        return False
-    return all(
-        math.isclose(mapped_left[symbol], mapped_right[symbol], rel_tol=1e-9, abs_tol=1e-12) for symbol in mapped_left
-    )
-
-
-def _complete_quantities(
-    rows: dict[str, dict[str, Any]],
-    account_weights: dict[str, float],
-) -> dict[str, float] | None:
-    if not rows or not set(account_weights).issubset(rows):
-        return None
-    quantities = {
-        symbol: float(row["target_quantity"]) for symbol, row in rows.items() if row["target_quantity"] is not None
-    }
-    if not set(account_weights).issubset(quantities):
-        return None
-    return quantities
-
-
-def _sizing_rows_from_facts(
-    sizings: dict[str, dict[str, object]],
-    *,
-    canonicalize: _Canonicalize,
-    strategy_weights: dict[str, float],
-    account_weights: dict[str, float],
-    target_context: dict[str, object],
-    target_mode: TargetMode = "weight",
-) -> dict[str, dict[str, Any]]:
-    """从冻结换算列构造展示，不读取审计附件内重复保存的结果。"""
-    rows: dict[str, dict[str, Any]] = {}
-    for map_key, raw_sizing in sizings.items():
-        symbol = canonicalize(map_key)
-        row = cast("dict[str, object]", dict(raw_sizing))
-        row["symbol"] = symbol
-        if (row.get("sizing_mode", "weight") == "quantity") != (target_mode == "quantity"):
-            continue
-        row["strategy_weight"] = strategy_weights.get(symbol)
-        row["account_weight"] = account_weights.get(symbol, row.get("account_weight"))
-        raw_weight = strategy_weights.get(symbol)
-        account_weight = account_weights.get(symbol)
-        row["account_multiplier"] = (
-            account_weight / raw_weight if raw_weight not in (None, 0.0) and account_weight is not None else None
-        )
-        row["weight_precision"] = target_context.get("weight_precision")
-        if target_mode == "quantity":
-            row.update(strategy_weight=None, account_weight=None, account_multiplier=None, weight_precision=None)
-        try:
-            if not isinstance(row.get("reason_code"), str):
-                continue
-            sizing_mode = row.get("sizing_mode", "weight")
-            status = row.get("status", "SIZED")
-            if not isinstance(sizing_mode, str) or not isinstance(status, str):
-                continue
-            public = {
-                "symbol": symbol,
-                "sizing_mode": sizing_mode,
-                "status": status,
-                "reason_code": row["reason_code"],
-                **{
-                    name: None if row.get(name) is None else float(cast(Any, row[name]))
-                    for name in (
-                        "strategy_weight",
-                        "account_weight",
-                        "account_multiplier",
-                        "weight_precision",
-                        "equity",
-                        "reference_price",
-                        "unit_multiplier",
-                        "unit_notional",
-                        "target_notional",
-                        "raw_quantity",
-                        "target_quantity",
-                        "current_quantity",
-                        "quantity_step",
-                        "min_quantity",
-                        "min_notional",
-                    )
-                },
-                "value_conversion": None
-                if row.get("value_conversion") is None
-                else to_payload(from_payload(PriceValueConversion, row["value_conversion"]), mode="json"),
-            }
-        except (TypeError, ValueError, OverflowError):
-            # 不完整历史证据保持不可用；不得套用当前规则补填历史换算。
-            continue
-        rows[symbol] = public
-    return rows
-
-
-async def _sizing_evidence_for_snapshot(
-    snapshot: dict[str, Any],
-    *,
-    canonicalize: _Canonicalize,
-    strategy_weights: dict[str, float],
-    account_weights: dict[str, float],
-) -> _SizingEvidence:
-    status = "pending_execution" if snapshot["source"] == "manual" or not snapshot["execution_id"] else "unavailable"
-    rows: dict[str, dict[str, Any]] = {}
-    null_target_quantity = False
-    inflight = False
-    if snapshot["execution_id"]:
-        evidence = await native_operation(
-            "execution_read",
-            {"op": "target_sizing", "execution_id": snapshot["execution_id"], "account_id": snapshot["account_id"]},
-        )
-        versions = evidence["artifact_versions"]
-        input_id = evidence["input_id"]
-        if evidence["record_id"] is not None:
-            rows = _sizing_rows_from_facts(
-                evidence["sizings"],
-                canonicalize=canonicalize,
-                strategy_weights=strategy_weights,
-                account_weights=account_weights,
-                target_context=evidence["target_context"],
-                target_mode=snapshot.get("target_mode", "weight"),
-            )
-            status = "available" if rows and set(account_weights).issubset(rows) else "unavailable"
-        elif input_id is not None or versions.get(ExecutionArtifactType.TARGET_SNAPSHOT, 0) >= 2:
-            status = "pending_execution"
-            inflight = True
-        else:
-            status = "legacy"
-
-    quantities: dict[str, float] | None = None
-    if status == "available":
-        quantities = _complete_quantities(rows, account_weights)
-        if quantities is None:
-            status = "unavailable"
-            null_target_quantity = True
-    elif rows:
-        null_target_quantity = any(
-            symbol in rows and rows[symbol]["target_quantity"] is None for symbol in account_weights
-        )
-
-    return _SizingEvidence(
-        status=status,
-        rows=rows,
-        quantities=quantities,
-        sizing_execution_id=snapshot["execution_id"],
-        sizing_calculated_at=snapshot["calculated_at"],
-        null_target_quantity=null_target_quantity,
-        inflight=inflight,
-    )
-
-
-async def _account_target_public(
-    account: object,
-    snapshot: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """返回账户权重与同权重最近一次完整数量换算证据."""
-    if snapshot is None:
-        return target_snapshot_public(None, weight_kind="normalized")
-    plugin = get_channel(getattr(account, "trade_channel"))
-    strategy_weights = _canonical_weight_map(snapshot.get("raw_weights"), plugin.canonicalize_symbol)
-    account_weights = _canonical_weight_map(snapshot.get("normalized_weights"), plugin.canonicalize_symbol)
-    evidence = await _sizing_evidence_for_snapshot(
-        snapshot,
-        canonicalize=plugin.canonicalize_symbol,
-        strategy_weights=strategy_weights,
-        account_weights=account_weights,
-    )
-    if (
-        evidence.status != "available"
-        and not evidence.inflight
-        and snapshot["id"] is not None
-        and snapshot["account_id"]
-    ):
-        previous_snapshots = await get_previous_account_target_snapshots(
-            snapshot["account_id"],
-            snapshot["portfolio_id"],
-            before_id=snapshot["id"],
-        )
-        for previous in previous_snapshots:
-            if previous.get("target_mode", "weight") != snapshot.get("target_mode", "weight"):
-                continue
-            if not _canonical_weights_equal(
-                previous.get("normalized_weights"),
-                snapshot.get("normalized_weights"),
-                plugin.canonicalize_symbol,
-            ):
-                continue
-            previous_evidence = await _sizing_evidence_for_snapshot(
-                previous,
-                canonicalize=plugin.canonicalize_symbol,
-                strategy_weights=strategy_weights,
-                account_weights=account_weights,
-            )
-            if previous_evidence.status == "available" and previous_evidence.quantities is not None:
-                evidence = previous_evidence
-                break
-        else:
-            if evidence.status == "unavailable" and not evidence.null_target_quantity:
-                evidence.status = "pending_execution"
-
-    return target_snapshot_public(
-        snapshot,
-        weight_kind="normalized",
-        weights=account_weights,
-        quantities=evidence.quantities,
-        strategy_weights=strategy_weights,
-        account_weights=account_weights,
-        sizing={
-            "status": cast("Any", evidence.status),
-            "execution_id": evidence.sizing_execution_id,
-            "calculated_at": evidence.sizing_calculated_at,
-            "rows": evidence.rows,
-        },
-    )
 
 
 @router.post("/execute/{account_id}", response_model=None)

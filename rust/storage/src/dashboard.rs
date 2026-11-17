@@ -168,8 +168,12 @@ pub fn dashboard_inputs(connection: &Connection, account_ids: &[i64]) -> Result<
         .map_err(database)?;
     let mut rows = statement.query([&ids]).map_err(database)?;
     let mut result = Map::new();
+    let mut pairs = Vec::new();
     while let Some(row) = rows.next().map_err(database)? {
         let id: i64 = row.get(0).map_err(database)?;
+        if let Some(portfolio_id) = row.get::<_, Option<i64>>(1).map_err(database)? {
+            pairs.push(json!({"account_id":id,"portfolio_id":portfolio_id}));
+        }
         let latest = if row.get::<_, Option<i64>>(2).map_err(database)?.is_some() {
             let status: Option<String> = row.get(5).map_err(database)?;
             json!({"created_at":crate::time_us::read(row, 3).map_err(database)?,
@@ -201,6 +205,14 @@ pub fn dashboard_inputs(connection: &Connection, account_ids: &[i64]) -> Result<
                 }))
             }),
         );
+    }
+    let mut evidence = crate::target_ops::account_evidence_on(connection, &json!(pairs))
+        .map_err(|error| error.to_string())?;
+    for (id, account) in &mut result {
+        account["target_evidence"] = evidence
+            .as_object_mut()
+            .and_then(|values| values.remove(id))
+            .unwrap_or_else(|| json!({"snapshot":null,"previous":[],"executions":{}}));
     }
     Ok(Value::Object(result))
 }
@@ -344,8 +356,8 @@ mod tests {
             CREATE TABLE business_asset_binding(asset_id TEXT,record_id INTEGER,path TEXT);
             CREATE TABLE executerecord(id INTEGER,account_id INTEGER,execution_id TEXT,input_id TEXT,result_input_id TEXT,created_at_us INTEGER,is_success INTEGER,display_status TEXT,result_staged INTEGER DEFAULT 0);
             CREATE TABLE execution_input(id TEXT,account_id INTEGER,owner_execution_id TEXT,execution_id TEXT);
-            CREATE TABLE target_weight_snapshot(target_mode TEXT NOT NULL DEFAULT 'weight',id INTEGER,account_id INTEGER,portfolio_id INTEGER,normalized_weights_kind TEXT,weights_metadata TEXT);
-            CREATE TABLE target_weight_snapshot_weight(snapshot_id INTEGER,role TEXT,map_key TEXT,value REAL);
+            CREATE TABLE target_weight_snapshot(target_mode TEXT NOT NULL DEFAULT 'weight',id INTEGER,account_id INTEGER,portfolio_id INTEGER,normalized_weights_kind TEXT,weights_metadata TEXT,raw_weights_kind TEXT DEFAULT 'missing',source TEXT DEFAULT 'manual',execution_id TEXT,calculated_at_us INTEGER DEFAULT 1793091600000000);
+            CREATE TABLE target_weight_snapshot_weight(snapshot_id INTEGER,role TEXT,map_key TEXT,value REAL,audit_evidence TEXT DEFAULT '{}');
             CREATE TABLE account(id INTEGER); INSERT INTO account VALUES(1),(2); CREATE TABLE account_analysis(account_id INTEGER,source_version INTEGER,requested INTEGER,running_version INTEGER,error TEXT,retry_at_us INTEGER);
             INSERT INTO portfolioaccount VALUES(1,1,7);
             INSERT INTO target_weight_snapshot(id,account_id,portfolio_id,normalized_weights_kind,weights_metadata) VALUES(1,1,7,'mapping','{}');
@@ -368,10 +380,16 @@ mod tests {
         let old = dashboard_inputs(&reader, &[1]).unwrap();
         assert_eq!(old["1"]["portfolio_id"], 7);
         assert_eq!(old["1"]["target_weights"], json!({}));
+        assert_eq!(old["1"]["target_evidence"]["snapshot"]["portfolio_id"], 7);
+        assert_eq!(old["1"]["target_evidence"]["snapshot"]["id"], 1);
         reader.execute_batch("COMMIT").unwrap();
         let new = dashboard_inputs(&reader, &[1]).unwrap();
         assert_eq!(new["1"]["portfolio_id"], Value::Null);
         assert_eq!(new["1"]["target_weights"], Value::Null);
+        assert_eq!(
+            new["1"]["target_evidence"],
+            json!({"snapshot":null,"previous":[],"executions":{}})
+        );
         let subset = dashboard_inputs(&reader, &[2]).unwrap();
         assert_eq!(subset.as_object().unwrap().len(), 1);
         assert_eq!(subset["2"]["portfolio_id"], 8);

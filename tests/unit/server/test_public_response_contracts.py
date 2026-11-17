@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from axile.server.api.routes import account_execution
+from axile.server.target_sizing import _sizing_rows
 from axile.server.target_weight_snapshots import target_snapshot_public
 
 
@@ -24,17 +25,18 @@ def test_empty_target_is_unknown_with_explicit_nulls():
 
 
 def test_sizing_filters_internal_fields_and_preserves_zero_and_bad_history():
-    rows = account_execution._sizing_rows_from_facts(
+    rows = _sizing_rows(
         {
-            "zero": {"reason_code": "COMMON.SIZING.EXACT", "target_quantity": 0, "internal_secret": "hidden"},
-            "missing": {"target_quantity": 1},
-            "bad": {"reason_code": "COMMON.SIZING.EXACT", "target_quantity": "invalid"},
-            "overflow": {"reason_code": "COMMON.SIZING.EXACT", "target_quantity": 10**1000},
+            "sizings": {
+                "zero": {"reason_code": "COMMON.SIZING.EXACT", "target_quantity": 0, "internal_secret": "hidden"},
+                "missing": {"target_quantity": 1},
+                "bad": {"reason_code": "COMMON.SIZING.EXACT", "target_quantity": "invalid"},
+                "overflow": {"reason_code": "COMMON.SIZING.EXACT", "target_quantity": 10**1000},
+            },
+            "target_context": {},
         },
-        canonicalize=str,
-        strategy_weights={"zero": 0.0},
-        account_weights={"zero": 0.0},
-        target_context={},
+        {"raw_weights": {"zero": 0.0}, "normalized_weights": {"zero": 0.0}},
+        str,
     )
     assert rows == {
         "zero": {

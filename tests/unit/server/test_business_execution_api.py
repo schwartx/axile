@@ -12,9 +12,10 @@ from fastapi import HTTPException
 from axile.common.serialization import to_payload
 from axile.domain.execution import ExecutionArtifactType
 from axile.server._native import _core
-from axile.server.api.routes import account_crud, account_execution, account_schedule
+from axile.server.api.routes import account_crud, account_schedule
 from axile.server.business_facts.artifacts import make_artifact_reference
 from axile.server.core import db
+from axile.server.target_sizing import resolve_account_target
 from tests.conftest import native_store_call
 from tests.fixtures.rust_store.execution_rows import ExecuteRecord
 from tests.unit.server._business_facts_test_support import (
@@ -189,16 +190,15 @@ def test_target_sizing_uses_immutable_audit_input_context(database):
         execution_id=record["execution_id"],
         calculated_at=record["created_at"],
     )
-    evidence = asyncio.run(
-        account_execution._sizing_evidence_for_snapshot(
-            snapshot,
-            canonicalize=lambda symbol: symbol,
-            strategy_weights={"rb2610": 1},
-            account_weights={"rb2610": 1},
-        )
+    facts = native_store_call(
+        database, "execution_read", {"op": "target_sizing", "account_id": 1, "execution_id": record["execution_id"]}
     )
-    assert evidence.status == "available"
-    assert evidence.rows["rb2610"]["weight_precision"] == 0.01
+    evidence = resolve_account_target(
+        {"snapshot": snapshot, "previous": [], "executions": {record["execution_id"]: facts}},
+        str,
+    )
+    assert evidence["sizing"]["status"] == "available"
+    assert evidence["sizing"]["rows"]["rb2610"]["weight_precision"] == 0.01
     assert asyncio.run(read_execution_input(record["input_id"])) == terminal_input
 
 

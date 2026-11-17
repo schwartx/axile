@@ -216,14 +216,21 @@ fn last_target(connection: &Connection, request: &Value) -> Result<Value, Analys
     }
 }
 
-fn target_sizing(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {
-    let execution_id = text(request, "execution_id")?;
-    let account_id = match request.get("account_id") {
-        None | Some(Value::Null) => None,
-        Some(_) => Some(integer(request, "account_id")?),
-    };
-    let record = if account_id.is_some() {
-        record_on(connection, execution_id, account_id)?
+pub(crate) fn target_sizing_on(
+    connection: &Connection,
+    execution_id: &str,
+    account_id: Option<i64>,
+) -> Result<Value, AnalysisError> {
+    let record: Option<(i64, Option<String>)> = if account_id.is_some() {
+        connection
+            .query_row(
+                "SELECT id,input_id FROM executerecord WHERE execution_id=?1 AND account_id=?2
+                 ORDER BY id DESC LIMIT 1",
+                params![execution_id, account_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(sql)?
     } else {
         None
     };
@@ -243,11 +250,7 @@ fn target_sizing(connection: &Connection, request: &Value) -> Result<Value, Anal
     let mut input_id =
         summary_refs::read_artifact_input_id(connection, execution_id, "targets", account_id)?;
     if input_id.is_none() {
-        input_id = record
-            .as_ref()
-            .and_then(|row| row.get("input_id"))
-            .and_then(Value::as_str)
-            .map(str::to_owned);
+        input_id = record.as_ref().and_then(|(_, input_id)| input_id.clone());
     }
     if input_id.is_none() {
         if let Some(account_id) = account_id {
@@ -258,10 +261,7 @@ fn target_sizing(connection: &Connection, request: &Value) -> Result<Value, Anal
         Some(input_id) => sizing_context(connection, input_id)?,
         None => json!({}),
     };
-    let record_id = record
-        .as_ref()
-        .and_then(|row| row.get("id"))
-        .and_then(Value::as_i64);
+    let record_id = record.as_ref().map(|(id, _)| *id);
     let sizings = match record_id {
         Some(record_id) => result_symbols::read_sizing_rows(connection, record_id)?,
         None => json!({}),
@@ -330,7 +330,14 @@ fn read_on(connection: &Connection, request: &Value) -> Result<Value, AnalysisEr
             Ok(detail)
         }
         "status" => persisted_status(connection, request),
-        "target_sizing" => target_sizing(connection, request),
+        "target_sizing" => target_sizing_on(
+            connection,
+            text(request, "execution_id")?,
+            match request.get("account_id") {
+                None | Some(Value::Null) => None,
+                Some(_) => Some(integer(request, "account_id")?),
+            },
+        ),
         "last_target" => last_target(connection, request),
         _ => Err(invalid("未知执行读取阶段")),
     }
