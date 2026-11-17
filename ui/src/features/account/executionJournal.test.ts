@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { activityWindowQuery, journalExecutions, journalWindow, loadJournal, matchesJournalStatus } from '@/features/account/executionJournal'
+import { activityWindowQuery, groupJournalExecutions, journalExecutions, journalWindow, loadJournal, matchesJournalStatus } from '@/features/account/executionJournal'
 import { summarizeCosts } from '@/features/history/costs'
 import type { AccountActivity, ActivityExecutionRecord } from '@/lib/api/accounts'
 
@@ -90,6 +90,42 @@ it('uses today for relative ranges and rejects reversed custom dates', () => {
   expect(new Date(w.start).toISOString()).toBe('2026-08-31T16:00:00.000Z')
   expect(new Date(w.end).toISOString()).toBe('2026-09-07T16:00:00.000Z')
   expect(journalWindow('custom', '2026-09-08', '2026-09-07')).toBeNull()
+})
+
+describe('折叠重复记录', () => {
+  it('只折叠连续同原因的正常空操作，保留每条原始记录', () => {
+    const rows = journalExecutions([
+      execution(1, { status: 'NOOP' }), execution(2, { status: 'NOOP' }),
+      execution(3, { status: 'FAILED', is_success: 0 }), execution(4, { status: 'NOOP' }),
+      execution(5, { status: 'NOOP', reason_code: 'COMMON.SESSION.CLOSED' }),
+      execution(6, { status: 'NOOP', reason_code: 'COMMON.SESSION.CLOSED' }),
+      execution(7, { status: 'NOOP', execution_kind: 'clear_positions' }),
+    ])
+    expect(groupJournalExecutions(rows).map(group => group.map(row => row.recordId))).toEqual([[1, 2], [3], [4], [5, 6], [7]])
+    expect(groupJournalExecutions(rows).flat()).toEqual(rows)
+    const selected = [rows[0], rows[1], rows[3]]
+    expect(groupJournalExecutions(selected, rows).map(group => group.length)).toEqual([2, 1])
+  })
+  it('无成交不等于正常空操作；未知、部分完成、终止及有委托记录均不合并', () => {
+    const unsafe: Partial<ActivityExecutionRecord>[] = [
+      { status: 'SUCCEEDED' }, { status: 'FAILED' }, { status: 'PARTIAL' }, { status: null },
+      { status: 'NOOP', task_status: 'TERMINATED' }, { status: 'NOOP', trade_count: null },
+      { status: 'NOOP', trade_count: 1 }, { status: 'NOOP', summary: null },
+      { status: 'NOOP', error: 'unresolved' },
+      { status: 'NOOP', symbol_results: { A: { status: 'FAILED' } } },
+    ]
+    for (const extra of unsafe) {
+      const rows = journalExecutions([execution(1, extra), execution(2, extra)])
+      expect(groupJournalExecutions(rows)).toHaveLength(2)
+    }
+  })
+  it('日历跳过按原因分段，BUSY 保持逐条可见', () => {
+    const skip = (id: number, reason_code: 'CALENDAR.CLOSED' | 'CALENDAR.SESSION_CLOSED' | 'BUSY'): AccountActivity => ({
+      kind: 'schedule_skip', id, reason_code, occurred_at: '2026-09-07T10:00:00', channel: 'tq', calendar_day: '2026-09-07', calendar_id: '', calendar_label: '',
+    })
+    const rows = journalExecutions([skip(1, 'CALENDAR.CLOSED'), skip(2, 'CALENDAR.CLOSED'), skip(3, 'CALENDAR.SESSION_CLOSED'), skip(4, 'BUSY'), skip(5, 'BUSY')])
+    expect(groupJournalExecutions(rows).map(group => group.length)).toEqual([2, 1, 1, 1])
+  })
 })
 
 it('rejects overflow calendar dates', () => {

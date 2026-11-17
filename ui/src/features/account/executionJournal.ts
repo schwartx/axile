@@ -14,6 +14,7 @@ export interface JournalExecution {
   record?: ExecuteRecord
   key: string; recordId: number | null; time: string; executionId: string | null
   status: string; warning: boolean; description: string; symbols: string[]
+  repeatKey?: string | null
   trades: JournalTrade[]; summary: CostSummary | null; durationSec: number | null
 }
 export interface JournalSymbol extends Quality { symbol: string; lastTime: number; trades: JournalTrade[]; summary: CostSummary }
@@ -45,7 +46,36 @@ export function journalWindow(range: JournalRange, from: string, to: string, now
   return start < end ? { start, end } : null
 }
 
-/** 每次执行独占一行；复用现有状态归因，但不沿用近期摘要的连续折叠。 */
+/** 仅明确无成交的正常 NOOP 可折叠；异常、委托和未知成交保持逐条可见。 */
+export function journalRepeatKey(record: unknown, tradeCount: number | null, summary: CostSummary | null): string | null {
+  const view = executionOutcome(record)
+  const head = dict(record), raw = dict(head.raw_result ?? head.result ?? record)
+  const results = Object.values(dict(raw.symbol_results)).map(dict)
+  if (view.state !== 'NOOP' || view.warning || tradeCount !== 0 || summary?.count !== 0 || view.sessionScope === 'partial'
+    || head.error || raw.error || results.some(result => result.error || !['NOOP', 'SUCCEEDED'].includes(String(result.status))
+      || (Array.isArray(result.orders) && result.orders.length) || (Array.isArray(result.trades) && result.trades.length))) return null
+  return JSON.stringify([raw.execution_kind ?? head.execution_kind ?? 'rebalance', view.sessionScope, raw.reason_code ?? head.reason_code ?? null, raw.outcome_reason ?? head.outcome_reason ?? null])
+}
+
+/** 在完整时间线识别连续段，避免筛选或其他排序把被异常隔开的记录拼在一起。 */
+export function groupJournalExecutions(rows: JournalExecution[], timeline: JournalExecution[] = rows): JournalExecution[][] {
+  const runs = new Map<string, string>()
+  let previous: JournalExecution | undefined, run = ''
+  for (const row of timeline) {
+    if (!row.repeatKey || row.repeatKey !== previous?.repeatKey) run = row.key
+    runs.set(row.key, run)
+    previous = row
+  }
+  const groups: JournalExecution[][] = []
+  for (const row of rows) {
+    const last = groups.at(-1)
+    if (row.repeatKey && last && runs.get(last[0].key) === runs.get(row.key)) last.push(row)
+    else groups.push([row])
+  }
+  return groups
+}
+
+/** 每次执行保留原始身份；重复段仅在展示层折叠。 */
 export function journalExecutions(activity: AccountActivity[]): JournalExecution[] {
   return activity.map((a) => {
     const recent = buildRecentActivity([a], { fetchLimit: 2 }).rows[0]
@@ -57,6 +87,8 @@ export function journalExecutions(activity: AccountActivity[]): JournalExecution
       key: a.kind === 'execution' ? `execution:${record?.id ?? record?.execution_id}` : `skip:${a.id}`,
       time: a.occurred_at, executionId: record?.execution_id ?? null, status,
       warning: view?.warning ?? false,
+      repeatKey: record ? journalRepeatKey(record, record.trade_count, record.summary)
+        : a.kind === 'schedule_skip' && a.reason_code.startsWith('CALENDAR.') ? `skip:${a.reason_code}` : null,
       description: record ? executionRecordSummary(record, record.trade_count) : recentRowText(recent),
       symbols, trades: [], summary: record ? record.summary : summarizeCosts([]), recordId: record?.id ?? null, durationSec: record?.duration_sec ?? null,
     }

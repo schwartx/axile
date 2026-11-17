@@ -1,7 +1,7 @@
 import { displayCurrencyUnit } from '@/lib/format'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useParams, useSearchParams } from 'react-router'
-import { RefreshCw, Search, ExternalLink } from 'lucide-react'
+import { RefreshCw, Search, ExternalLink, Check } from 'lucide-react'
 import { Link } from '@/components/ui/nav'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { Skeleton } from '@/components/ui/Skeleton'
@@ -11,8 +11,8 @@ import { DatePicker } from '@/components/ui/DatePicker'
 import { AccountPageTitle } from '@/features/account/pageHead'
 import { EvidenceExportButton } from '@/features/account/EvidenceExportButton'
 import { evidenceDatesFromSnapshot, evidenceDatesFromWindow } from '@/features/account/evidenceExport'
-import { journalWindow, matchesJournalStatus, type JournalRange } from '@/features/account/executionJournal'
-import { ExecutionGroup, SymbolGroup, EXEC_COLS, SYMBOL_COLS, type Expansion } from '@/features/account/JournalRows'
+import { groupJournalExecutions, journalWindow, matchesJournalStatus, type JournalRange } from '@/features/account/executionJournal'
+import { ExecutionGroup, RepeatedExecutionGroup, SymbolGroup, EXEC_COLS, SYMBOL_COLS, type Expansion } from '@/features/account/JournalRows'
 import { parseJournalScope, scopeLabel, SNAPSHOT_PARAMS, loadSnapshotJournal, loadLiveJournal, filterLiveExecutions, compareJournal, journalTotals, activityWindowQuery } from '@/features/account/journalSource'
 import { amount, coverageText, shanghaiLabel, lossClass } from '@/features/history/costs'
 import { usePolling } from '@/lib/hooks/usePolling'
@@ -47,6 +47,7 @@ function ExecutionJournal({ accountId }: { accountId: number }) {
   const keyword = params.get('symbol') ?? ''
   const status = STATUSES.find(s => s.value === params.get('status'))?.value ?? '全部状态'
   const sort = SORTS.find(s => s.value === params.get('sort'))?.value ?? (view === 'executions' ? 'time' : 'value')
+  const folded = params.get('fold') !== 'off'
   const parsed = parseJournalScope(params)
   const scopeKey = JSON.stringify(parsed.scope)
   const scope = useMemo(() => JSON.parse(scopeKey) as typeof parsed.scope, [scopeKey])
@@ -65,6 +66,7 @@ function ExecutionJournal({ accountId }: { accountId: number }) {
     const rows = poll.data?.executions ?? []
     return (scope ? rows : filterLiveExecutions(rows, keyword)).filter(row => matchesJournalStatus(row, status)).toSorted((a, b) => compareJournal(a, b, sort))
   }, [poll.data, scope, keyword, status, sort])
+  const groups = useMemo(() => groupJournalExecutions(filtered, (poll.data?.executions ?? []).toSorted((a, b) => compareJournal(a, b, 'time'))), [filtered, poll.data])
   const symbols = useMemo(() => (poll.data?.symbols ?? []).filter(row => scope || row.symbol.toLowerCase().includes(keyword.trim().toLowerCase())).toSorted((a, b) => compareJournal(a, b, sort)), [poll.data, scope, keyword, sort])
   const summary = useMemo(() => journalTotals(view === 'executions' ? filtered : symbols), [view, filtered, symbols])
   const fade = useRemountFade(view)
@@ -117,7 +119,7 @@ function ExecutionJournal({ accountId }: { accountId: number }) {
     next.set(key, value)
     if (key === 'range' || key === 'from' || key === 'to') SNAPSHOT_PARAMS.forEach(k => next.delete(k))
     setParams(next, { replace: true, preventScrollReset: true })
-    setCount(50)
+    if (key !== 'fold') setCount(50)
     if (key === 'symbol' || key === 'range' || key === 'from' || key === 'to') setExpanded(previous => Object.fromEntries(Object.entries(previous).map(([id, state]) => [id, { ...state, cursors: [undefined], count: 20 }])))
   }
   const updateExpansion = (key: string, next: Expansion) => setExpanded(previous => ({ ...previous, [key]: next }))
@@ -162,17 +164,28 @@ function ExecutionJournal({ accountId }: { accountId: number }) {
         <span>{coverageText(summary)}</span>{!!summary.estimated && <span>{summary.estimated} 笔使用执行时间</span>}
         </>}
         <span title="按有效成交额加权；参考价优先到达中间价，其次到达最新价。">正值为损耗，负值为改善</span>
+        {view === 'executions' && <label className="ml-auto inline-flex min-h-9 shrink-0 cursor-pointer items-center gap-2 text-xs text-ink-2" title="将连续的无需调仓、非交易时段记录收为一行，展开可查看明细。异常记录不折叠。">
+          <span className="relative inline-flex shrink-0 items-center justify-center">
+            <input type="checkbox" checked={folded} onChange={event => update('fold', event.target.checked ? 'on' : 'off')} className="peer size-3.5 cursor-pointer appearance-none rounded-[3px] border border-ink-3 bg-transparent checked:border-accent checked:bg-accent-soft focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent forced-colors:appearance-auto" />
+            <Check size={11} aria-hidden className="pointer-events-none absolute text-accent opacity-0 peer-checked:opacity-100 forced-colors:hidden" />
+          </span>
+          折叠重复记录
+        </label>}
       </div>
       {view === 'executions' ? <>
         <div className={`${EXEC_COLS} hidden border-y border-line px-3 py-2 text-xs text-ink-3 xl:grid`}><span>执行时间</span><span>执行摘要</span><span>状态</span><span className="text-right">成交额 {displayCurrencyUnit(currency)}</span><span className="text-right">滑点损耗 BP</span><span className="text-right">滑点成本 {displayCurrencyUnit(currency)}</span><span className="text-right">耗时</span></div>
-        {filtered.slice(0, count).map(row => <ExecutionGroup key={`${row.key}:${scopeKey}:${keyword}`} row={row} accountId={accountId} scope={scopedQuery} expansion={expanded[row.key] ?? closedExpansion()} update={next => updateExpansion(row.key, next)} detailLink={detailLink} currency={currency} units={descriptor?.units} liveWindow={liveWindow} />)}
+        {groups.slice(0, count).map(rows => {
+          const children = rows.map(row => <ExecutionGroup key={`${row.key}:${scopeKey}:${keyword}`} row={row} accountId={accountId} scope={scopedQuery} expansion={expanded[row.key] ?? closedExpansion()} update={next => updateExpansion(row.key, next)} detailLink={detailLink} currency={currency} units={descriptor?.units} liveWindow={liveWindow} />)
+          const key = `repeat:${rows[0].key}`
+          return rows.length < 2 ? children : <RepeatedExecutionGroup key={`${key}:${scopeKey}:${keyword}`} rows={rows} folded={folded} open={expanded[key]?.open ?? false} onToggle={() => updateExpansion(key, { ...closedExpansion(), open: !expanded[key]?.open })}>{children}</RepeatedExecutionGroup>
+        })}
         {filtered.length === 0 && <p className="py-16 text-center text-sm text-ink-3">所选范围内无匹配记录</p>}
       </> : <>
         <div className={`${SYMBOL_COLS} hidden border-y border-line px-3 py-2 text-xs text-ink-3 xl:grid`}><span>品种</span><span className="text-right">成交额 {displayCurrencyUnit(currency)}</span><span className="text-right">滑点损耗 BP</span><span className="text-right">滑点成本 {displayCurrencyUnit(currency)}</span><span className="text-right">成交笔数</span><span className="text-right">最近成交</span><span /></div>
         {symbols.slice(0, count).map(row => <SymbolGroup key={`${row.symbol}:${scopeKey}:${keyword}`} row={row} accountId={accountId} scope={scopedQuery} expansion={expanded[`symbol:${row.symbol}`] ?? closedExpansion()} update={next => updateExpansion(`symbol:${row.symbol}`, next)} detailLink={detailLink} currency={currency} units={descriptor?.units} liveWindow={liveWindow} />)}
         {symbols.length === 0 && <p className="py-16 text-center text-sm text-ink-3">所选范围内无匹配成交</p>}
       </>}
-      {(view === 'executions' ? filtered.length : symbols.length) > count && <button className="min-h-9 py-3 text-xs text-accent" onClick={() => setCount(count + 50)}>加载更多记录</button>}
+      {(view === 'executions' ? groups.length : symbols.length) > count && <button className="min-h-9 py-3 text-xs text-accent" onClick={() => setCount(count + 50)}>加载更多记录</button>}
     </div>}
   </section>
 }
