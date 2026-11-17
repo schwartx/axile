@@ -222,6 +222,7 @@ def _assert_api_contract() -> None:
     import json
     from unittest.mock import AsyncMock, patch
 
+    from anyio.from_thread import start_blocking_portal
     from fastapi.testclient import TestClient
 
     from axile.channels import get_channel
@@ -280,45 +281,49 @@ def _assert_api_contract() -> None:
         "feishu_key": None,
         "portfolio_id": portfolio_id,
     }
-    with (
-        patch("socket.socket.connect", side_effect=AssertionError("contract test attempted network access")),
-        patch("axile.server.execution.account_runtime_sync.reconcile_china_channel_account", new=AsyncMock()),
-    ):
-        created = client.post("/api/v1/account/", json=payload, headers={"Idempotency-Key": "contract-create"})
-        assert created.status_code == 201, created.text
-        account = created.json()
-        expected_fields = set(
-            "backtest_weight_type backtest_fee_rate id copied_from_account_id copied_from_account_name name market "
-            "trade_channel account_control_preset account_control_override account_configured connection_values "
-            "is_started cron_expr channel_options replay_recording_enabled supplement has_pending_supplement remark brokerage weight_precision long_leverage "
-            "short_leverage algorithm algorithm_schedule product_algorithms empty_positions_algorithm trade_rules futures_close_policy forbidden_symbols "
-            "risk_symbols feishu_configured execution_notification_code portfolio_id write_empty_record execution_timeout "
-            "updated_at created_at archived_at runtime_sync notification_state connection execution_notification_status".split()
-        )
-        assert set(account) == expected_fields, set(account) ^ expected_fields
-        assert account["account_configured"] and not account["feishu_configured"]
-        assert account["connection_values"]["tq_password"] == credentials["tq_password"]
-        account_id = account["id"]
-        repeated = client.post("/api/v1/account/", json=payload, headers={"Idempotency-Key": "contract-create"})
-        assert repeated.status_code == 201 and repeated.json()["id"] == account_id
-        updated = client.patch(
-            f"/api/v1/account/{account_id}", json={"account_config": {**credentials, "tq_password": "replacement"}}
-        )
-        assert updated.status_code == 200, updated.text
-        fetched = client.get(f"/api/v1/account/{account_id}")
-        assert fetched.status_code == 200 and set(fetched.json()) == expected_fields
-        assert fetched.json()["connection_values"]["tq_password"] == "replacement"
-        assert "contract-secret" not in fetched.text
-        assert "account_config" not in fetched.json() and "feishu_key" not in fetched.json()
-        accounts = client.get("/api/v1/account/")
-        assert accounts.status_code == 200 and len(accounts.json()["data"]) == 1
-        missing = client.get("/api/v1/account/2147483647")
-        assert missing.status_code == 404 and missing.json() == {"detail": "账户不存在"}
-        unknown = client.patch(f"/api/v1/account/{account_id}", json={"unknown": True})
-        assert unknown.status_code == 422 and unknown.json()["detail"][0]["type"] == "extra_forbidden"
-        for query in (_core.execution_records, _core.asset_snapshots):
-            result = query(analysis_store(), account_id, 0, 1)
-            assert isinstance(result, bytes) and json.loads(result)["data"] == []
+    # Windows 创建事件循环需要本机 socketpair，先建立 portal 再禁止业务联网。
+    with start_blocking_portal() as portal:
+        client.portal = portal
+        with (
+            patch("socket.socket.connect", side_effect=AssertionError("contract test attempted network access")),
+            patch("axile.server.execution.account_runtime_sync.reconcile_china_channel_account", new=AsyncMock()),
+        ):
+            created = client.post("/api/v1/account/", json=payload, headers={"Idempotency-Key": "contract-create"})
+            assert created.status_code == 201, created.text
+            account = created.json()
+            expected_fields = set(
+                "backtest_weight_type backtest_fee_rate id copied_from_account_id copied_from_account_name name market "
+                "trade_channel account_control_preset account_control_override account_configured connection_values "
+                "is_started cron_expr channel_options replay_recording_enabled supplement has_pending_supplement remark brokerage weight_precision long_leverage "
+                "short_leverage algorithm algorithm_schedule product_algorithms empty_positions_algorithm trade_rules futures_close_policy forbidden_symbols "
+                "risk_symbols feishu_configured execution_notification_code portfolio_id write_empty_record execution_timeout "
+                "updated_at created_at archived_at runtime_sync notification_state connection execution_notification_status".split()
+            )
+            assert set(account) == expected_fields, set(account) ^ expected_fields
+            assert account["account_configured"] and not account["feishu_configured"]
+            assert account["connection_values"]["tq_password"] == credentials["tq_password"]
+            account_id = account["id"]
+            repeated = client.post("/api/v1/account/", json=payload, headers={"Idempotency-Key": "contract-create"})
+            assert repeated.status_code == 201 and repeated.json()["id"] == account_id
+            updated = client.patch(
+                f"/api/v1/account/{account_id}", json={"account_config": {**credentials, "tq_password": "replacement"}}
+            )
+            assert updated.status_code == 200, updated.text
+            fetched = client.get(f"/api/v1/account/{account_id}")
+            assert fetched.status_code == 200 and set(fetched.json()) == expected_fields
+            assert fetched.json()["connection_values"]["tq_password"] == "replacement"
+            assert "contract-secret" not in fetched.text
+            assert "account_config" not in fetched.json() and "feishu_key" not in fetched.json()
+            accounts = client.get("/api/v1/account/")
+            assert accounts.status_code == 200 and len(accounts.json()["data"]) == 1
+            missing = client.get("/api/v1/account/2147483647")
+            assert missing.status_code == 404 and missing.json() == {"detail": "账户不存在"}
+            unknown = client.patch(f"/api/v1/account/{account_id}", json={"unknown": True})
+            assert unknown.status_code == 422 and unknown.json()["detail"][0]["type"] == "extra_forbidden"
+            for query in (_core.execution_records, _core.asset_snapshots):
+                result = query(analysis_store(), account_id, 0, 1)
+                assert isinstance(result, bytes) and json.loads(result)["data"] == []
+        client.portal = None
     client.close()
 
 
