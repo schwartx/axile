@@ -1,7 +1,7 @@
 import { FuturesClosePolicyEditor } from '@/features/account/FuturesClosePolicyEditor'
 import { defaultClosePolicy } from '@/features/account/futuresClosePolicy'
 import { useEffect, useRef, useState } from 'react'
-import { Bitcoin, ChartCandlestick, CircleHelp, Landmark, Monitor, RadioTower, type LucideIcon } from 'lucide-react'
+import { Bitcoin, ChartCandlestick, Check, CircleHelp, Landmark, Monitor, RadioTower, type LucideIcon } from 'lucide-react'
 import { useNavigate } from '@/components/ui/nav'
 import { ConnectionValidationAside } from '@/features/account/connectionValidation/ConnectionValidationAside'
 import { ExecutionTimeoutInput } from '@/features/account/ExecutionTimeoutInput'
@@ -476,7 +476,14 @@ export function AcctPortfolio() {
   return (
     <div className="flex h-full flex-col">
       <div className="flex-1 overflow-y-auto">
-        <WizardPage kicker="账户设置 · 3 / 6" title="用哪个组合？" lead="选择账户跟随的组合，可查看目标持仓和策略代码。">
+        <WizardPage kicker="账户设置 · 3 / 6" title="用哪个组合？" lead="选择账户跟随的组合，也可以先跳过，创建账户后再绑定。">
+          <div className="mb-3 flex justify-end">
+            <button type="button" aria-pressed={acct.portfolioId == null}
+              onClick={() => setAcct({ portfolioId: null })}
+              className="inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[13px] text-ink-2 hover:bg-fill focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+              {acct.portfolioId == null && <Check size={14} aria-hidden />}不绑定组合
+            </button>
+          </div>
           <div className="grid grid-cols-1 gap-3">
             <PortfolioChoiceList selectedId={acct.portfolioId} onSelect={(portfolioId) => setAcct({ portfolioId })} />
             <button
@@ -493,7 +500,7 @@ export function AcctPortfolio() {
           </div>
         </WizardPage>
       </div>
-      <WizardNav prevTo="/setup/acct/connect" nextTo="/setup/acct/trade" nextDisabled={!list.some((p) => p.id != null && p.id === acct.portfolioId)} />
+      <WizardNav prevTo="/setup/acct/connect" nextTo="/setup/acct/trade" nextDisabled={acct.portfolioId != null && !list.some((p) => p.id === acct.portfolioId)} />
       <CreatePortfolioModal
         open={createOpen}
         onClose={() => setCreateOpen(false)}
@@ -798,10 +805,10 @@ export function AcctConfirm() {
   return (
     <div className="flex h-full flex-col">
       <div className="flex-1 overflow-y-auto">
-        <WizardPage kicker="账户设置 · 6 / 6" title="确认无误就开跑">
+        <WizardPage kicker="账户设置 · 6 / 6" title={acct.portfolioId == null ? '确认并创建账户' : '确认无误就开跑'}>
           <div className="rounded-2xl bg-ok-soft px-7 py-6 text-[20px] leading-loose">
             这个账户 <b className="font-[680]">{acct.name || '（未命名）'}</b> 在 <b className="font-[680]">{descriptor?.label ?? acct.channel}</b> 上，
-            绑定组合 <b className="font-[680]">#{acct.portfolioId ?? '—'}</b>，用 <b className="font-[680]">{intentText}</b> 的方式，
+            {acct.portfolioId == null ? '暂不绑定组合' : <>绑定组合 <b className="font-[680]">#{acct.portfolioId}</b></>}，用 <b className="font-[680]">{intentText}</b> 的方式，
             {acct.autoOn ? '自动' : '手动'}调仓，杠杆 <b className="font-[680]">{levText}</b>。
           </div>
           <div className="mt-2 text-xs text-ink-3">
@@ -814,11 +821,11 @@ export function AcctConfirm() {
           )}
 
           <div className="mt-5">
-            <button disabled={previewState.status === 'loading'} className="cursor-pointer rounded-[11px] border-0 bg-ink-1 px-[22px] py-2.5 text-[15px] font-[550] text-surface disabled:cursor-not-allowed disabled:opacity-45" onClick={preview}>
+            <button disabled={acct.portfolioId == null || previewState.status === 'loading'} className="cursor-pointer rounded-[11px] border-0 bg-ink-1 px-[22px] py-2.5 text-[15px] font-[550] text-surface disabled:cursor-not-allowed disabled:opacity-45" onClick={preview}>
               {previewState.status === 'loading' ? '计算中…' : '▶ 计算目标'}
             </button>
             <div className="mt-[18px] max-w-[460px] rounded-[14px] border border-dashed border-line bg-surface p-5">
-              {previewState.status === 'idle' && <div className="py-5 text-center text-[15px] text-ink-3">试跑看这套组合此刻会调成什么样</div>}
+              {previewState.status === 'idle' && <div className="py-5 text-center text-[15px] text-ink-3">{acct.portfolioId == null ? '绑定组合后可计算目标持仓' : '试跑看这套组合此刻会调成什么样'}</div>}
               {previewState.status === 'loading' && <div aria-busy="true"><Skeleton className="h-4 w-full" /><Skeleton className="mt-3 h-4 w-4/5" /><Skeleton className="mt-3 h-4 w-3/5" /></div>}
               <ErrorNotice intent="mutation" title="试跑失败" error={previewState.status === 'error' ? previewState.message : null} onRetry={preview} />
               {previewState.status === 'success' && previewState.rows.length === 0 && <div className="py-5 text-center text-[15px] text-ink-3">无目标持仓。</div>}
@@ -828,7 +835,7 @@ export function AcctConfirm() {
           <ErrorNotice intent="mutation" title="创建账户失败" error={createError} variant="mutation" onRetry={submit} />
         </WizardPage>
       </div>
-      <WizardNav prevTo="/setup/acct/timer" nextLabel="创建并开跑" onNext={submit} nextDisabled={acct.portfolioId == null || !acct.name.trim()} />
+      <WizardNav prevTo="/setup/acct/timer" nextLabel={acct.portfolioId == null ? '创建账户' : '创建并开跑'} onNext={submit} nextDisabled={!acct.name.trim()} />
     </div>
   )
 }

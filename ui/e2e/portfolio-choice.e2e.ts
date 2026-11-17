@@ -73,6 +73,36 @@ test('改绑复用卡片，设置在前，选择与解绑只在保存时提交�
   expect(methods.every((method) => method === 'GET')).toBe(true)
 })
 
+for (const scenario of ['初始未绑定', '没有组合', '跳过已选组合', '重新选择组合']) {
+  test(`开户${scenario}，可继续并提交正确绑定`, async ({ page }) => {
+    await mockSnapshots(page)
+    const payloads: Record<string, unknown>[] = []
+    await page.route('**/api/v1/account/', async (route) => {
+      payloads.push(route.request().postDataJSON())
+      await route.fulfill({ json: { id: 7, name: '新建测试账户' } })
+    })
+    await page.route('**/api/v1/account/dashboard*', (route) => route.fulfill({ json: { data: [] } }))
+    const query = scenario === '初始未绑定' ? '?unbound' : scenario === '没有组合' ? '?empty' : ''
+    await page.goto(`/e2e/portfolio-choice.html${query}`)
+    const unbound = page.getByRole('button', { name: '不绑定组合', exact: true })
+    if (!query) await unbound.click()
+    await expect(unbound).toHaveAttribute('aria-pressed', 'true')
+    const rebound = scenario === '重新选择组合'
+    if (rebound) await page.getByRole('button', { name: '选择组合：商品趋势', exact: true }).click()
+    await page.getByRole('button', { name: '下一步', exact: true }).click()
+    await page.getByRole('button', { name: '上一步', exact: true }).click()
+    await expect(unbound).toHaveAttribute('aria-pressed', String(!rebound))
+    await page.getByRole('button', { name: '下一步', exact: true }).click()
+    await page.getByRole('button', { name: '下一步', exact: true }).click()
+    await expect(page.getByRole('button', { name: '▶ 计算目标', exact: true })).toBeEnabled({ enabled: rebound })
+    if (!rebound) await expect(page.getByText('绑定组合后可计算目标持仓', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: rebound ? '创建并开跑' : '创建账户', exact: true }).click()
+    await expect(page.getByText('账户详情', { exact: true })).toBeVisible()
+    expect(payloads).toHaveLength(1)
+    expect(payloads[0]?.portfolio_id).toBe(rebound ? 1 : null)
+  })
+}
+
 test('预览不改变选择，关闭归还焦点，弹窗内可以确认新选择', async ({ page }) => {
   const methods = await mockSnapshots(page)
   await page.goto('/e2e/portfolio-choice.html')
