@@ -935,18 +935,6 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 request_id = self._md_login.request_id
             if not self._accept_stage(self._md_login, request_id):
                 return
-            if not self._error(info, "行情登录") and str(getattr(row, "TradingDay", "")) != self._trading_day:
-                self._invalidate_connection(
-                    "行情登录交易日与交易会话不一致",
-                    connection_failure=True,
-                    label="会话交易日异常",
-                    presentation=lambda: self._session_problem(
-                        "会话交易日异常",
-                        "行情登录交易日与交易会话不一致。",
-                        {"交易会话交易日": self._trading_day, "行情交易日": str(getattr(row, "TradingDay", ""))},
-                    ),
-                )
-                return
             if (
                 self._finish_stage(self._md_login, info, "行情登录", request_id)
                 and self._auth.done.is_set()

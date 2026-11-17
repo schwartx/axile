@@ -77,17 +77,26 @@ def broker(monkeypatch):
     driver.executor.close()
 
 
-@pytest.mark.parametrize("error,day", [(True, "20260915"), (False, "20260916")])
-def test_zero_login_rejects_error_and_day_mismatch(broker, error, day):
+def test_zero_login_rejects_error(broker):
     def login(_request, _rid):
         broker.market_spi.OnRspUserLogin(
-            SimpleNamespace(TradingDay=day), SimpleNamespace(ErrorID=3, ErrorMsg="denied") if error else None, 0, True
+            SimpleNamespace(TradingDay=""), SimpleNamespace(ErrorID=3, ErrorMsg="denied"), 0, True
         )
         return 0
 
     broker.market.ReqUserLogin.side_effect = login
-    with pytest.raises(CtpSessionRecoveryRequired, match="denied" if error else "交易日"):
+    with pytest.raises(CtpSessionRecoveryRequired, match="denied"):
         broker.start()
+
+
+@pytest.mark.parametrize("day", ["", "20260916"])
+def test_zero_login_day_does_not_block_startup(broker, day):
+    def login(_request, _rid):
+        broker.market_spi.OnRspUserLogin(SimpleNamespace(TradingDay=day), None, 0, True)
+        return 0
+
+    broker.market.ReqUserLogin.side_effect = login
+    assert broker.start()._verify_connection()
 
 
 def test_zero_login_unsent_wrong_duplicate_and_invalid(broker):
