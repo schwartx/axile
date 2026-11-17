@@ -15,6 +15,48 @@ async function visit(page: Page, entry = '/accounts/7/executions/A') {
 }
 test.beforeEach(async ({ page }) => { page.on('pageerror', error => { throw error }) })
 
+for (const width of [1280, 360]) test(`折叠重复记录保留异常与明细，${width}px布局与动效`, async ({ page }, info) => {
+  await defaults(page)
+  await page.setViewportSize({ width, height: 900 })
+  const summary = { value: 0, cost: 0, lossBp: null, coverage: null, covered: 0, count: 0, amountComplete: true, fees: {}, feeCovered: 0 }
+  const records = ['NOOP', 'NOOP', 'FAILED', 'NOOP', 'NOOP'].map((status, i) => {
+    const created_at = `2026-10-15T10:0${5 - i}:00`
+    return { kind: 'execution', occurred_at: created_at, record: { id: 5 - i, execution_id: null, created_at,
+      status, is_success: status === 'FAILED' ? 0 : 1, trade_count: 0, summary, duration_sec: 1, symbol_results: {} } }
+  })
+  await page.route('**/api/v1/account/7/activity?**', route => route.fulfill({ json: { count: records.length, data: records } }))
+  await visit(page, '/accounts/7/executions?range=custom&from=2026-10-15&to=2026-10-15')
+  const toggle = page.getByRole('checkbox', { name: '折叠重复记录' })
+  const group = page.getByRole('button', { name: '展开重复记录 5', exact: true })
+  const first = page.getByRole('button', { name: '展开执行 5', exact: true })
+  await expect(toggle).toBeChecked()
+  await expect(group).toContainText('无需调仓 · 2 次')
+  await expect(first).toBeHidden()
+  await expect(page.getByRole('button', { name: '展开执行 3', exact: true })).toContainText('执行失败')
+  await expect(page.getByTestId('journal-summary')).toContainText('5 条记录')
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  const position = (await group.boundingBox())!.y
+  await group.focus()
+  await page.keyboard.press('Enter')
+  await expect(first).toBeVisible()
+  const closer = page.getByRole('button', { name: '收起重复记录 5', exact: true })
+  expect(Math.abs((await closer.boundingBox())!.y - position)).toBeLessThan(1)
+  await expect(closer).toBeFocused()
+  await page.screenshot({ path: info.outputPath(`journal-repeats-${width}.png`), fullPage: true })
+  await closer.click()
+  await expect(first).toBeHidden()
+  await toggle.click()
+  await expect(first).toBeVisible()
+  await expect(group).toBeHidden()
+  await expect(page.getByRole('button', { name: '展开执行 1', exact: true })).toBeVisible()
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await toggle.click()
+  await expect(group).toBeVisible()
+  await expect(first).toBeHidden()
+  const panel = page.locator('[data-journal-repeat="execution:5"] > div').last()
+  expect(await panel.evaluate(element => getComputedStyle(element).transitionDuration)).toBe('0s')
+})
+
 test('执行记录中的持仓视图与成交方向切换不触发整页过渡', async ({ page }, info) => {
   await defaults(page)
   const created = '2026-10-15T10:00:00'

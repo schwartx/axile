@@ -1,6 +1,6 @@
 import { getActivitySymbols } from '@/lib/api/accounts'
 import { getPerformanceCosts, selectionQuery, type CostQuery, type CostExecutionRow, type CostSymbolRow, type CostPage, type PerformanceRange } from '@/lib/api/performance'
-import { journalExecutions, type JournalExecution, type JournalSymbol } from '@/features/account/executionJournal'
+import { journalExecutions, journalRepeatKey, type JournalExecution, type JournalSymbol } from '@/features/account/executionJournal'
 import { activityWindowQuery, loadJournal, type TimeWindow } from '@/features/account/journalActivity'
 export { activityWindowQuery }
 import { combineCosts, shanghaiTime, shanghaiLabel, type CostSummary } from '@/features/history/costs'
@@ -79,6 +79,7 @@ export function snapshotExecution(row: CostExecutionRow): JournalExecution {
   const view = executionRecordView(row.record)
   return { key: `execution:${row.record.id}`, recordId: row.record.id, executionId: row.record.execution_id,
     time: row.record.created_at, status: view.title, warning: view.warning,
+    repeatKey: journalRepeatKey(row.record, row.tradeCount ?? view.tradeCount, row.summary),
     description: executionRecordSummary(row.record, row.tradeCount ?? (view.tradeCount || row.summary.count)),
     symbols: row.symbols ?? [],
     trades: [], summary: row.summary, durationSec: row.durationSec ?? null }

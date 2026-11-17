@@ -134,6 +134,25 @@ export function ExecutionGroup(props: RowProps) {
   </div>
 }
 
+export function RepeatedExecutionGroup({ rows, folded, open, onToggle, children }: {
+  rows: JournalExecution[]; folded: boolean; open: boolean; onToggle: () => void; children: ReactNode
+}) {
+  const row = rows[0], last = rows.at(-1)!
+  const panel = `repeated-${row.key}`
+  return <div data-journal-repeat={row.key}>
+    <div inert={!folded} className={`grid transition-[grid-template-rows,visibility] duration-200 motion-reduce:transition-none ${folded ? 'grid-rows-[1fr]' : 'invisible grid-rows-[0fr]'}`}><div className="min-h-0 overflow-hidden">
+      <button type="button" aria-expanded={open} aria-controls={panel} aria-label={`${open ? '收起' : '展开'}重复记录 ${row.recordId ?? row.key}`} onClick={onToggle}
+        className={`${EXEC_COLS} w-full items-baseline border-b border-line px-3 py-4 text-left text-[13px] hover:bg-bg-subtle`}>
+        <span className="flex min-w-0 items-start gap-1 num text-xs text-ink-3"><ChevronDown size={14} aria-hidden className={`mt-0.5 shrink-0 transition-transform duration-200 motion-reduce:transition-none ${open ? 'rotate-180' : ''}`} /><span>{shanghaiLabel(row.time)}<span className="block">至 {shanghaiLabel(last.time)}</span></span></span>
+        <span className="col-span-2 min-w-0 text-ink-2 xl:col-span-1">{row.status} · {rows.length} 次<span className="block text-xs text-ink-3">{open ? '收起明细' : '展开查看明细'}</span></span>
+        <span className="text-ink-2">{row.recordId == null ? row.description : row.status}</span>
+        <Field label="成交额">—</Field><Field label="滑点损耗 BP">—</Field><Field label="滑点成本">—</Field><Field label="耗时">—</Field>
+      </button>
+    </div></div>
+    <div id={panel} inert={folded && !open} className={`grid transition-[grid-template-rows,visibility] duration-200 motion-reduce:transition-none ${!folded || open ? 'grid-rows-[1fr]' : 'invisible grid-rows-[0fr]'}`}><div className="min-h-0 overflow-hidden">{children}</div></div>
+  </div>
+}
+
 export function SymbolGroup({ row, accountId, scope, expansion, update, detailLink, currency, units, liveWindow }: Omit<RowProps, 'row'> & { row: JournalSymbol }) {
   const panel = `symbol-${encodeURIComponent(row.symbol)}`
   const fills = usePolling(useCallback((signal: AbortSignal) => getActivitySymbols(accountId, { ...liveWindow!, symbol: row.symbol }, signal), [accountId, liveWindow, row.symbol]), {
