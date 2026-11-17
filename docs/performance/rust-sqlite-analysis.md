@@ -35,7 +35,7 @@ uv build --wheel
 
 构建钩子要求扩展通过加载、入口和版本检查：`PUBLIC_HEAD=0034`、`ANALYSIS_FACT_SCHEMA=40`。两者分别是迁移修订号与分析事实版本。wheel 标签为 `cp312-abi3-<本机平台>`；本地构建不自动声明 manylinux 或 musllinux 兼容，需要在目标系统和架构分别构建、验证。
 
-tag 发布流程复用同一提交已通过 Code Quality 的 Linux x86_64 / Windows x86_64 原生扩展及共享前端产物，分别构建 wheel。Linux 使用 auditwheel、Windows 使用 delvewheel 审核并修复动态库依赖；两端实际 wheel 均通过隔离安装验证后，才汇总上传 PyPI。不上传包含本机扩展的源码发行包。
+tag 发布流程复用同一提交已通过 Code Quality 的 Linux x86_64 / Windows x86_64 原生扩展及共享前端产物，分别构建 wheel。Linux 原生构建、冒烟测试及 wheel 隔离安装均使用固定 digest 的 manylinux_2_28 x86_64 容器，auditwheel 显式要求 `manylinux_2_28_x86_64`，不接受更高的 glibc 基线；Windows 使用 delvewheel 审核并修复动态库依赖。两端实际 wheel 均通过隔离安装验证后，才汇总上传 PyPI。不上传包含本机扩展的源码发行包。
 
 ## 验证与测量
 

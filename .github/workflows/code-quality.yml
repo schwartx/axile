@@ -17,9 +17,12 @@ jobs:
         include:
         - os: ubuntu-latest
           platform: linux-x86_64
+          container: quay.io/pypa/manylinux_2_28_x86_64@sha256:d086f64cddcace250ef0f0073583c51b8298159303290a730c9f59bd91edfd2c
         - os: windows-latest
           platform: windows-x86_64
+          container: ''
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
     timeout-minutes: 10
     defaults:
       run:
@@ -28,7 +31,11 @@ jobs:
       CARGO_INCREMENTAL: '0'
     steps:
     - uses: actions/checkout@v4
+    - name: Use manylinux CPython
+      if: runner.os == 'Linux'
+      run: echo /opt/python/cp312-cp312/bin >> "$GITHUB_PATH"
     - uses: actions/setup-python@v5
+      if: runner.os == 'Windows'
       with:
         python-version: '3.12'
     - uses: astral-sh/setup-uv@v6
@@ -40,9 +47,9 @@ jobs:
           ~/.cargo/registry
           ~/.cargo/git
           ${{ runner.temp }}/axile-storage-target
-        key: native-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-python-3.12-${{ hashFiles('rust/**/Cargo.lock') }}-${{ github.sha }}
+        key: native-manylinux228-v1-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-python-3.12-${{ hashFiles('rust/**/Cargo.lock') }}-${{ github.sha }}
         restore-keys: |
-          native-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-python-3.12-${{ hashFiles('rust/**/Cargo.lock') }}-
+          native-manylinux228-v1-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-python-3.12-${{ hashFiles('rust/**/Cargo.lock') }}-
     - name: Build native extension
       run: |
         export CARGO_TARGET_DIR="$RUNNER_TEMP/axile-storage-target"
@@ -186,9 +193,12 @@ jobs:
         include:
         - os: ubuntu-latest
           platform: linux-x86_64
+          container: quay.io/pypa/manylinux_2_28_x86_64@sha256:d086f64cddcace250ef0f0073583c51b8298159303290a730c9f59bd91edfd2c
         - os: windows-latest
           platform: windows-x86_64
+          container: ''
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
     timeout-minutes: 5
     steps:
     - uses: actions/checkout@v4
@@ -196,7 +206,12 @@ jobs:
       with:
         name: axile-native-core-${{ matrix.platform }}
         path: axile/server/_native
+    - name: Use manylinux CPython
+      if: runner.os == 'Linux'
+      shell: bash
+      run: echo /opt/python/cp312-cp312/bin >> "$GITHUB_PATH"
     - uses: actions/setup-python@v5
+      if: runner.os == 'Windows'
       with:
         python-version: '3.12'
     - uses: astral-sh/setup-uv@v6
