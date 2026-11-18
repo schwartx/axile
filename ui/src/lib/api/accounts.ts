@@ -25,6 +25,12 @@ export function getAccountConnection(id: number, signal?: AbortSignal): Promise<
   return apiGet(`/account/${id}/connection`, signal)
 }
 
+export type MarketDataStatus = 'uninitialized' | 'connecting' | 'ready' | 'unavailable' | 'disconnected'
+
+export function getAccountMarketDataStatus(id: number, signal?: AbortSignal): Promise<{ status: MarketDataStatus }> {
+  return apiGet(`/market-data/accounts/${id}/status`, signal)
+}
+
 /** 明确操作账户连接；写请求不自动重试。 */
 export function operateAccountConnection(id: number, action: 'reconnect' | 'disconnect' | 'connect-account'): Promise<AccountConnectionDetail> {
   return apiSend('POST', `/account/${id}/connection/${action}`)

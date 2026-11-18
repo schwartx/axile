@@ -9,7 +9,7 @@ import { RuntimeSyncStatus } from '@/features/account/RuntimeSyncStatus'
 import { AssetObservationTime } from '@/features/account/AssetObservationTime'
 import { AssetRefreshFeedback } from '@/features/account/AssetRefreshFeedback'
 import { AssetRefreshStatus } from '@/features/account/AssetRefreshStatus'
-import { AccountConnectionStatus } from '@/features/account/AccountConnectionStatus'
+import { AccountConnectionStatus, AccountMarketDataStatus } from '@/features/account/AccountConnectionStatus'
 import { AccountConnectionContext } from '@/lib/accountConnection'
 import { runtimeSyncMessage, useAccountRuntimeSync } from '@/features/account/useAccountRuntimeSync'
 import { AccountControlSummary } from '@/features/account/ControlMonitor'
@@ -440,7 +440,8 @@ export function AccountDetail({
             </Chip>
           </div>
           {gate.gate === 'paused' && <Chip>{gate.label}</Chip>}
-          <AccountConnectionStatus accountId={accountId} />
+          <AccountConnectionStatus accountId={accountId} tradeOnly={channelDescriptor?.independent_market_data} />
+          {channelDescriptor?.independent_market_data && <AccountMarketDataStatus accountId={accountId} />}
           <AccountActions
             archiveAction={(className) => <ArchiveAction kind="account" id={accountId} name={item.name} className={className}
               onChanged={async () => { await onDashboardRefresh?.(); await account.refresh() }} />}

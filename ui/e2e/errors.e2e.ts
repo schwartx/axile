@@ -992,6 +992,30 @@ test('a comparison-only failure has its own error and retry without hiding succe
 })
 
 
+test('独立行情状态随行情查询更新，交易状态随交易连接更新', async ({ page }) => {
+  await defaults(page)
+  await page.clock.install()
+  await mockConnectionSnapshot(page, { status: 'disconnected', observed_at: null, message: null, error: null })
+  await page.route('**/api/v1/capabilities/channels', route => route.fulfill({ json: [
+    { channel: 'paper', label: '模拟', units: { quantity_kind: 'contract' }, ui: { show_short_leverage: true }, independent_market_data: true },
+  ] }))
+  let market = 'ready'
+  await page.route('**/api/v1/market-data/accounts/7/status', route => {
+    expect(route.request().method()).toBe('GET')
+    return route.fulfill({ json: { status: market } })
+  })
+  await page.goto('/e2e/errors.html?mode=account&global')
+  const trading = page.getByRole('switch', { name: '交易连接' })
+  await expect(trading).toHaveAttribute('aria-checked', 'false')
+  await expect(page.getByText('行情查询 · 就绪', { exact: true })).toBeVisible()
+  await pushConnection(page, { status: 'ready', observed_at: null, message: null, error: null })
+  await expect(trading).toHaveAttribute('aria-checked', 'true')
+  market = 'disconnected'
+  await page.clock.runFor(5100)
+  await expect(page.getByText('行情查询 · 已断开', { exact: true })).toBeVisible()
+  await expect(trading).toHaveAttribute('aria-checked', 'true')
+})
+
 test('账户连接标识读取后端三态，连接错误归连接入口，资产业务错误归资产入口', async ({ page }) => {
   await defaults(page)
   let state: 'unknown' | 'ready' | 'unavailable' = 'unknown'

@@ -1,6 +1,10 @@
 import { ConnectionProgressBar } from '@/features/account/connectionProgress/ConnectionProgressView'
 import { Info } from 'lucide-react'
 import { InkRewrite } from '@/components/ui/InkRewrite'
+import { Chip } from '@/components/ui/Card'
+import { useCallback } from 'react'
+import { getAccountMarketDataStatus, type MarketDataStatus } from '@/lib/api/accounts'
+import { usePolling } from '@/lib/hooks/usePolling'
 import { useConnectionAlerts } from '@/stores/connectionAlerts'
 import { useConnectionFeedback } from '@/features/account/useConnectionFeedback'
 import { connectionLabel, connectionPresentation } from '@/features/account/connectionProblem'
@@ -18,7 +22,7 @@ function ConnectionIcon({ connected, busy, phase }: { connected: boolean; busy: 
 }
 
 /** 连接开关与详情入口独立，共享 SSE 状态和在途操作。 */
-export function AccountConnectionStatus({ accountId }: { accountId: number }) {
+export function AccountConnectionStatus({ accountId, tradeOnly = false }: { accountId: number; tradeOnly?: boolean }) {
   const connection = useAccountConnectionSnapshot(accountId)
   const operation = useConnectionOperation(accountId)
   const synced = useLiveConnection(state => state.connected)
@@ -38,10 +42,10 @@ export function AccountConnectionStatus({ accountId }: { accountId: number }) {
 
   const action = connected ? '断开连接' : '连接账户'
   const stateName = { uninitialized: '未建立', unknown: '待确认', ready: '就绪', unavailable: '暂不可用', connecting: '准备中', recovering: '恢复中', disconnected: '已断开' }[status]
-  const accessible = `账户连通状态：${stateName}${status === 'unavailable' && connection.label?.trim() ? `，${label}` : ''}`
+  const accessible = `${tradeOnly ? '交易' : '账户'}连通状态：${stateName}${status === 'unavailable' && connection.label?.trim() ? `，${label}` : ''}`
   const buttonClass = 'inline-flex min-w-0 items-center gap-1.5 rounded-chip px-2.5 py-1 text-xs hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
   return <div className="inline-flex min-w-0 max-w-full items-center gap-1" onClick={event => event.stopPropagation()}>
-    <button type="button" role="switch" aria-checked={connected} aria-label="账户连接" aria-describedby={`connection-state-${accountId}`} aria-busy={busy}
+    <button type="button" role="switch" aria-checked={connected} aria-label={tradeOnly ? '交易连接' : '账户连接'} aria-describedby={`connection-state-${accountId}`} aria-busy={busy}
       data-tone={busy ? 'busy' : warning ? 'warning' : connected ? 'ready' : 'idle'}
       title={busy ? switchLabel : !synced ? '连接状态待同步' : action} disabled={!synced || busy}
       onClick={() => {
@@ -50,6 +54,7 @@ export function AccountConnectionStatus({ accountId }: { accountId: number }) {
       }}
       className={`${buttonClass} connection-toggle max-w-full cursor-pointer border active:bg-ink-3/10 disabled:cursor-default`}>
       <ConnectionIcon connected={connected} busy={busy} phase={phase} />
+      {tradeOnly && <span className="shrink-0">交易</span>}
       <span id={`connection-state-${accountId}`} className="flex min-w-0 flex-col gap-1"><InkRewrite text={switchLabel} tone="prose" fluid overflow className="min-w-[4em]" />
         {progressing && progress && <ConnectionProgressBar progress={progress} compact />}
       </span>
@@ -60,4 +65,19 @@ export function AccountConnectionStatus({ accountId }: { accountId: number }) {
       <Info size={14} className="shrink-0" aria-hidden />
     </button>
   </div>
+}
+
+const marketDataLabels: Record<MarketDataStatus, string> = {
+  uninitialized: '未使用',
+  connecting: '连接中',
+  ready: '就绪',
+  unavailable: '暂不可用',
+  disconnected: '已断开',
+}
+
+export function AccountMarketDataStatus({ accountId }: { accountId: number }) {
+  const fetchStatus = useCallback((signal: AbortSignal) => getAccountMarketDataStatus(accountId, signal), [accountId])
+  const { data, error } = usePolling(fetchStatus, { queryKey: `market-data-status:${accountId}` })
+  const label = error || !data ? '待确认' : marketDataLabels[data.status]
+  return <Chip>行情查询 · {label}</Chip>
 }
