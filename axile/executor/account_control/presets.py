@@ -191,7 +191,7 @@ ACCOUNT_CONTROL_PRESETS: dict[str, AccountControlPresetDefinition] = {
                     },
                     "query_depth_market_data": {
                         "priority": 100,
-                        "account": {"per_minute": _rule(60, "wait"), "per_day": _rule(2000, "block")},
+                        "account": {"per_minute": _rule(60, "wait"), "per_day": _rule(20_000, "block")},
                     },
                     "query_orders": {
                         "priority": 100,
