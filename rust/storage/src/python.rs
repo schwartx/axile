@@ -301,6 +301,7 @@ business_operations! { register_business_operations, business_operation, PyAny;
     notifications_recover => crate::notifications::recover,
     notifications_record_account => crate::notifications::record_account,
     notifications_record_system => crate::notifications::record_system,
+    notifications_context_data => crate::notifications::context_data,
     notifications_preview => crate::notifications::preview,
     intent_get => crate::intents::intent_get,
     intent_active => crate::intents::intent_active,

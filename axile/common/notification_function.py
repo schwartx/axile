@@ -10,12 +10,13 @@ import os
 import subprocess
 import sys
 import traceback
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from axile.common.function_contract import accepts_context, has_generator_yield
 
 NOTIFICATION_FUNCTION_TIMEOUT_SECONDS = 15
+_REQUIREMENTS = frozenset({"daily_return", "supplement_history"})
 
 
 @dataclass(frozen=True)
@@ -28,8 +29,8 @@ class NotificationFunctionResult:
     traceback: str | None = None
 
 
-def validate_notification_function(code: str) -> None:
-    """校验通知源码定义了 ``notify(context)``。"""
+def validate_notification_function(code: str) -> tuple[str, ...]:
+    """校验通知入口并返回静态声明的附加数据需求。"""
     if not code.strip():
         raise ValueError("通知函数不能为空")
     try:
@@ -54,6 +55,29 @@ def validate_notification_function(code: str) -> None:
     ):
         raise ValueError("notify 必须且只能接收一个 context 参数")
 
+    declarations = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+        and any(
+            isinstance(target, ast.Name) and target.id == "NOTIFICATION_REQUIRES"
+            for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        )
+    ]
+    if not declarations:
+        return ()
+    if len(declarations) != 1:
+        raise ValueError("NOTIFICATION_REQUIRES 只能声明一次")
+    try:
+        requirements = ast.literal_eval(declarations[0].value)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("NOTIFICATION_REQUIRES 必须是字符串列表或元组字面量") from exc
+    if not isinstance(requirements, (tuple, list)) or any(
+        not isinstance(name, str) or name not in _REQUIREMENTS for name in requirements
+    ):
+        raise ValueError("NOTIFICATION_REQUIRES 仅支持 daily_return 和 supplement_history")
+    return tuple(dict.fromkeys(requirements))
+
 
 def run_notification_function(
     code: str,
@@ -61,10 +85,13 @@ def run_notification_function(
     *,
     feishu_key: str | None = None,
     system_feishu_key: str | None = None,
+    load_context: Callable[[tuple[str, ...]], dict[str, object]] | None = None,
 ) -> NotificationFunctionResult:
     """运行通知函数并强制限制墙钟时间。"""
     try:
-        validate_notification_function(code)
+        requirements = validate_notification_function(code)
+        if requirements and load_context is not None:
+            context = context | load_context(requirements)
         process = subprocess.run(
             [sys.executable, "-m", "axile.common.notification_function", "--child"],
             input=json.dumps({"code": code, "context": context}, ensure_ascii=False),

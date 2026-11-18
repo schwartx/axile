@@ -12,7 +12,6 @@ from loguru import logger
 
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.feishu import push_feishu_card
-from axile.common.notification_function import run_notification_function
 from axile.common.serialization import provided_fields
 from axile.executor.algorithms.utils import clock_now
 from axile.executor.feishu_notifications import (
@@ -30,6 +29,7 @@ from axile.server.api.inputs import json_body
 from axile.server.api.routes.account_support import _get_account_or_404
 from axile.server.db.models.account import AccountContext
 from axile.server.error_details import exception_details
+from axile.server.execution.notification_data import run_account_notification
 from axile.server.execution.registry import clear_account_asset_refresh, try_register_account_asset_refresh
 from axile.server.native_store import native_operation
 from axile.server.target_weight_snapshots import get_latest_account_target_snapshot
@@ -354,7 +354,9 @@ async def test_account_notification_function(
             "last_execution": context,
             "last_execution_at": (context.get("execution") or {}).get("notified_at"),
         }
-    result = await asyncio.to_thread(run_notification_function, payload.code, context, feishu_key=key)
+    result = await asyncio.to_thread(
+        run_account_notification, payload.code, context, account_id=account_id, feishu_key=key
+    )
     return {
         "ok": result.ok,
         "message": "已使用最近一次执行快照试跑成功" if result.ok else result.error or "运行失败",

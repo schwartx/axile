@@ -422,6 +422,167 @@ pub(crate) fn execution_detail(
     Ok(Value::Object(detail))
 }
 
+/// Read only the data requested by the server-side notification runner.
+pub fn context_data(path: &str, request: &Value) -> Result<Value, AnalysisError> {
+    let account = id(request, "account_id")?;
+    let execution = text(request, "execution_id")?;
+    crate::with_read_snapshot(Path::new(path), |connection| {
+        let mut data = Map::new();
+        if request["assets"].is_object() {
+            let daily_return =
+                notification_daily_return(connection, account, execution, &request["assets"])?;
+            data.insert("performance".into(), json!({"daily_return": daily_return}));
+        }
+        if let Some(groups) = request["groups"]
+            .as_array()
+            .filter(|groups| !groups.is_empty())
+        {
+            let history = supplement_history(connection, account, execution, groups)?;
+            data.insert("supplement_history".into(), Value::Array(history));
+        }
+        Ok(Value::Object(data))
+    })
+}
+
+fn notification_daily_return(
+    connection: &Connection,
+    account: i64,
+    execution: &str,
+    assets: &Value,
+) -> Result<Option<f64>, AnalysisError> {
+    let (Some(equity), Some(observed_at)) = (
+        assets["total_assets"].as_f64(),
+        assets["update_time"].as_str(),
+    ) else {
+        return Ok(None);
+    };
+    let observation: Option<(i64, i64, f64)> = connection
+        .query_row(
+            "SELECT s.created_at_us,a.update_time_us,a.total_asset
+             FROM account_asset_snapshot s JOIN business_asset_snapshot a ON a.asset_id=s.asset_fact_id
+             WHERE s.account_id=?1 AND s.execution_id=?2 AND a.observation_valid IS TRUE
+               AND a.total_asset IS NOT NULL AND a.update_time_us IS NOT NULL",
+            params![account, execution],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(database)?;
+    let Some((end, time, after)) = observation else {
+        return Ok(None);
+    };
+    if equity != after || crate::time_us::parse(observed_at).ok() != Some(time) {
+        return Ok(None);
+    }
+    let Some(state) = crate::analysis::state(connection, account, "all")? else {
+        return Ok(None);
+    };
+    if state.logic_version != crate::analysis::LOGIC_VERSION
+        || state.engine_version != crate::replay::ENGINE_VERSION
+    {
+        return Ok(None);
+    }
+    let day = crate::time_us::local_datetime(end).map_err(invalid)?.date();
+    let previous: Option<(i64, Option<f64>)> = connection
+        .query_row(
+            "SELECT observed_at_us,account_equity FROM analysis_day
+             WHERE account_id=?1 AND range_key='all' AND day<?2 AND observed_at_us<?3
+             ORDER BY day DESC LIMIT 1",
+            params![account, day.to_string(), end],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(database)?;
+    let baseline = state.baseline_time.zip(state.baseline_asset);
+    let basis = match (previous, baseline) {
+        (Some(point), _) => Some(point),
+        (None, Some((time, equity)))
+            if crate::time_us::local_datetime(time)
+                .map_err(invalid)?
+                .date()
+                < day =>
+        {
+            Some((time, Some(equity)))
+        }
+        _ => None,
+    };
+    let Some((start, Some(before))) = basis else {
+        return Ok(None);
+    };
+    let flows = crate::cash_flows::load(connection, account)?;
+    Ok(crate::cash_flows::interval(
+        &flows, start, end, before, after,
+    ))
+}
+
+fn supplement_history(
+    connection: &Connection,
+    account: i64,
+    execution: &str,
+    groups: &[Value],
+) -> Result<Vec<Value>, AnalysisError> {
+    let incomplete = || invalid("补发组汇总不完整：缺少步骤或已完成的通知快照");
+    let mut statement = connection
+        .prepare(
+            "SELECT s.\"index\",s.status,s.execution_id,n.sequence,n.context
+             FROM supplement_step s JOIN supplement_group g ON g.id=s.group_id
+             LEFT JOIN notification_event n ON n.id='execution:'||s.execution_id
+                 AND n.account_id=g.account_id AND n.event_type='execution.finished'
+             WHERE g.account_id=?1 AND g.id=?2 ORDER BY s.\"index\"",
+        )
+        .map_err(database)?;
+    let mut history = std::collections::BTreeMap::new();
+    for group in groups {
+        let last = group["effective_count"]
+            .as_i64()
+            .filter(|count| *count >= 0)
+            .ok_or_else(incomplete)?;
+        let mut rows = statement
+            .query(params![account, text(group, "group_id")?])
+            .map_err(database)?;
+        let mut count = 0;
+        while let Some(row) = rows.next().map_err(database)? {
+            let index: i64 = row.get(0).map_err(database)?;
+            let status: String = row.get(1).map_err(database)?;
+            let execution_id: Option<String> = row.get(2).map_err(database)?;
+            if index != count
+                || index > last
+                || (index == last
+                    && (status != "finished" || execution_id.as_deref() != Some(execution)))
+            {
+                return Err(incomplete());
+            }
+            count += 1;
+            if status == "cancelled" || execution_id.as_deref() == Some(execution) {
+                continue;
+            }
+            if status != "finished" {
+                return Err(incomplete());
+            }
+            let sequence: Option<i64> = row.get(3).map_err(database)?;
+            let Some(sequence) = sequence else {
+                return Err(incomplete());
+            };
+            if let std::collections::btree_map::Entry::Vacant(entry) = history.entry(sequence) {
+                let raw: String = row.get(4).map_err(database)?;
+                let context = crate::json_codec::parse(&raw).map_err(invalid)?;
+                if context["execution"]["id"].as_str() != execution_id.as_deref() {
+                    return Err(incomplete());
+                }
+                entry.insert(json!({
+                    "execution": context["execution"],
+                    "orders": context["orders"],
+                    "trades": context["trades"],
+                    "default_feishu_variables": {"trades": context["default_feishu_variables"]["trades"]},
+                }));
+            }
+        }
+        if count <= last {
+            return Err(incomplete());
+        }
+    }
+    Ok(history.into_values().collect())
+}
+
 pub fn preview(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let account_id = id(request, "account_id")?;
     crate::with_read_snapshot(Path::new(path), |connection| {

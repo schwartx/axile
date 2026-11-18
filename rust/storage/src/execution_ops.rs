@@ -94,6 +94,7 @@ pub fn persist_execution_state(path: &str, request: &Value) -> Result<Value, Ana
                 &json!({
                     "execution_id": execution_id, "account_id": record["account_id"],
                     "status": status, "error": record["display_error"], "finished_at": finished, "now": finished,
+                    "server_notification": request["raw_result"]["extra"]["server_notification_context"].is_object(),
                 }),
             )?;
         }

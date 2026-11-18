@@ -30,6 +30,7 @@ from axile.server.execution.execution_algorithms import (
 )
 from axile.server.execution.input_persistence import sanitize_execution_input
 from axile.server.execution.notification_assets import load_notification_snapshot
+from axile.server.execution.notification_data import requires_notification_data
 from axile.server.execution.records import append_error_execute_record, append_execute_record_from_output
 from axile.server.execution.worker_backend.manager import get_worker_backend_manager
 from axile.server.native_store import native_operation
@@ -454,7 +455,7 @@ async def trade(
             "execution_read", {"op": "pending_positions", "account_id": account.id}
         ),
     }
-    if is_supplement_step:
+    if is_supplement_step or (execution_id and requires_notification_data(account.execution_notification_code)):
         standard_input.execution_notification_code = None
         standard_input.extra = {**standard_input.extra, "server_notification": True}
     long_leverage, short_leverage = resolve_account_leverages(account)

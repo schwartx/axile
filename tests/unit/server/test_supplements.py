@@ -230,7 +230,7 @@ def test_postcommit_failure_keeps_execution_success_and_future_supplements(datab
         )
         monkeypatch.setattr(
             notification_outbox,
-            "run_notification_function",
+            "run_account_notification",
             lambda *_a, **_k: NotificationFunctionResult(False, "delivery failed"),
         )
     monkeypatch.setattr(lifecycle, "sync_account_live", lambda _id: None)
@@ -587,7 +587,7 @@ def test_outbox_silent_success_failure_and_unknown_are_not_retried(monkeypatch, 
         calls.append(context)
         return NotificationFunctionResult(len(calls) == 1, None if len(calls) == 1 else "test failure")
 
-    monkeypatch.setattr(notification_outbox, "run_notification_function", invoke)
+    monkeypatch.setattr(notification_outbox, "run_account_notification", invoke)
 
     async def run():
         await notification_outbox.recover_notifications()
@@ -682,3 +682,130 @@ def test_preview_paginates_supplements_from_same_base(monkeypatch):
         assert second["items"][0]["is_last"]
 
     asyncio.run(run())
+
+
+def test_notification_history_uses_finished_groups_and_deduplicates_executions(database):
+    """末轮脚本取得独立于当前上下文的历史，缺失历史明确失败。"""
+    from axile.server.execution.notification_data import run_account_notification
+
+    path, now = database
+
+    async def persist(execution_id):
+        return await records._persist_execute_record(
+            account_id=1, execution_id=execution_id, raw_input={}, raw_result={"status": "NOOP"}, is_success=1
+        )
+
+    async def finish():
+        _, steps = await seed(path)
+        for index, current in enumerate(steps[:2]):
+            now[0] = BASE + timedelta(minutes=index)
+            await supplements.fire_step(current.id)
+        first = step(path, steps[0].id)["execution_id"]
+        assert step(path, steps[1].id)["execution_id"] == first
+        running(path, first)
+        await persist(first)
+        now[0] = BASE + timedelta(minutes=2)
+        await supplements.fire_step(steps[2].id)
+        last = step(path, steps[2].id)["execution_id"]
+        assert last is not None and last != first
+        running(path, last)
+        await persist(last)
+        return first, last
+
+    first, last = asyncio.run(finish())
+    before, final = (event["context"] for event in events(path))
+    script = f"""
+NOTIFICATION_REQUIRES = ("supplement_history",)
+def notify(context):
+    assert "performance" not in context
+    history = context["supplement_history"]
+    if context["execution"]["id"] == {last!r}:
+        assert [entry["execution"]["id"] for entry in history] == [{first!r}]
+        assert set(history[0]) == {{"execution", "orders", "trades", "default_feishu_variables"}}
+    else:
+        assert history == []
+"""
+    for context in (before, final, final | {"is_test": True}):
+        result = run_account_notification(script, context, account_id=1, feishu_key=None)
+        assert result.ok, result.traceback
+    assert "supplement_history" not in events(path)[-1]["context"]
+
+    execute(path, "DELETE FROM notification_event WHERE id=?", (f"execution:{first}",))
+    result = run_account_notification(script, final, account_id=1, feishu_key=None)
+    assert not result.ok
+    assert "补发组汇总不完整" in result.error
+
+
+def test_notification_daily_return_uses_matching_execution_and_cash_flows(database):
+    """试跑使用本次执行的资产以及前日基准，后续资产观测不会覆盖它。"""
+    from axile.server._native import _core
+
+    path, _ = database
+    previous = "2026-10-08T12:00:00+08:00"
+    observed = "2026-10-09T12:00:00+08:00"
+    later = "2026-10-09T13:00:00+08:00"
+    for execution_id, when, total in (("prior", previous, 100), ("current", observed, 115), ("later", later, 900)):
+        persist_record_fixture(
+            path,
+            {
+                "account_id": 1,
+                "execution_id": execution_id,
+                "created_at": when,
+                "is_success": 1,
+                "raw_result": {
+                    "status": "SUCCEEDED",
+                    "account_assets": {"total_asset": total, "source": "real", "update_time": when},
+                },
+            },
+        )
+    moment = to_us(observed)
+    execute(
+        path,
+        "INSERT INTO account_cash_flow(account_id,direction,amount,occurred_at_us,source,status,created_at_us,updated_at_us)"
+        " VALUES(1,'deposit',10,?,'manual','active',?,?)",
+        (moment, moment, moment),
+    )
+    claim = _core.queue_claim(str(path), to_us(later) / 1_000_000, "notification-test")
+    receipt = call(
+        path,
+        "analysis_update",
+        {
+            "account_id": 1,
+            "expected_source_version": claim["source_version"],
+            "claim_token": claim["running_token"],
+            "computed_at": later,
+        },
+    )
+    assert receipt["updated"] is True
+    request = {
+        "account_id": 1,
+        "execution_id": "current",
+        "assets": {"total_assets": 115, "update_time": observed},
+    }
+    assert call(path, "notifications_context_data", request) == {"performance": {"daily_return": 0.05}}
+    request["assets"]["total_assets"] = 900
+    assert call(path, "notifications_context_data", request) == {"performance": {"daily_return": None}}
+
+
+@pytest.mark.parametrize("requested", [False, True])
+def test_independent_execution_only_queues_a_server_notification_when_requested(database, requested):
+    """普通通知保留现有发送路径，按需脚本等执行记录入库后才派发。"""
+    path, _ = database
+
+    async def finish():
+        submitted = await intents.submit_intent(1, ExecutionKind.REBALANCE, "manual")
+        running(path, submitted.execution_id)
+        raw_result = {"status": "SUCCEEDED"}
+        if requested:
+            raw_result["extra"] = {"server_notification_context": {}}
+        await records._persist_execute_record(
+            account_id=1, execution_id=submitted.execution_id, raw_input={}, raw_result=raw_result, is_success=1
+        )
+        return submitted.execution_id
+
+    execution_id = asyncio.run(finish())
+    rows = events(path)
+    assert len(rows) == int(requested)
+    if requested:
+        assert rows[0]["context"]["execution"]["id"] == execution_id
+        assert "supplements" not in rows[0]["context"]["execution"]

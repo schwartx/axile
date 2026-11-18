@@ -70,3 +70,22 @@ def test_notification_error_preserves_long_original_and_child_traceback():
     assert result.error_line == 2
     assert 'File "<notification>", line 2' in result.traceback
     assert raw in result.traceback
+
+
+def test_optional_notification_context_is_loaded_only_for_static_requirements():
+    """仅静态声明触发加载，子进程取得合并后的上下文。"""
+    calls = []
+
+    def load(requirements):
+        calls.append(requirements)
+        return {"performance": {"daily_return": 0.01}}
+
+    body = 'def notify(context): assert context["performance"]["daily_return"] == 0.01'
+    assert run_notification_function("def notify(context): pass", {}, load_context=load).ok
+    invalid = run_notification_function("NOTIFICATION_REQUIRES = tuple()\n" + body, {}, load_context=load)
+    assert not invalid.ok and "字面量" in invalid.error
+    unknown = run_notification_function('NOTIFICATION_REQUIRES = ["unknown"]\n' + body, {}, load_context=load)
+    assert not unknown.ok and "仅支持" in unknown.error
+    result = run_notification_function('NOTIFICATION_REQUIRES = ["daily_return"]\n' + body, {}, load_context=load)
+    assert result.ok, result.traceback
+    assert calls == [("daily_return",)]

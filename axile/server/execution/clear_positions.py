@@ -14,6 +14,7 @@ from axile.server.error_details import exception_details, json_error_value
 from axile.server.execution.execution_algorithms import resolve_empty_positions_algorithm
 from axile.server.execution.input_persistence import sanitize_execution_input
 from axile.server.execution.notification_assets import load_notification_snapshot
+from axile.server.execution.notification_data import requires_notification_data
 from axile.server.execution.records import append_error_execute_record, append_execute_record_from_output
 from axile.server.execution.worker_backend.manager import get_worker_backend_manager
 from axile.server.execution_audit import append_execution_event
@@ -88,6 +89,9 @@ async def _run_clear_positions(
                 },
             },
         }
+        if execution_id and requires_notification_data(account.execution_notification_code):
+            empty_kwargs["execution_notification_code"] = None
+            empty_kwargs["extra"]["server_notification"] = True
         audit_input = sanitize_execution_input(empty_kwargs)
         if execution_id:
             from axile.server.execution.intents import promote_intent_to_running
