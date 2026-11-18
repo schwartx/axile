@@ -37,7 +37,12 @@ def run_account_notification(
             additions["performance"] = {"daily_return": None}
             observation = context.get("assets") or {}
             total, when = observation.get("total_assets"), observation.get("update_time")
-            if type(total) in (float, int) and isfinite(total) and isinstance(when, str):
+            if (
+                isinstance(total, (float, int))
+                and not isinstance(total, bool)
+                and isfinite(total)
+                and isinstance(when, str)
+            ):
                 assets = {"total_assets": total, "update_time": when}
         history = []
         if "supplement_history" in requirements:

@@ -68,8 +68,11 @@ def validate_notification_function(code: str) -> tuple[str, ...]:
         return ()
     if len(declarations) != 1:
         raise ValueError("NOTIFICATION_REQUIRES 只能声明一次")
+    value = declarations[0].value
+    if value is None:
+        raise ValueError("NOTIFICATION_REQUIRES 必须是字符串列表或元组字面量")
     try:
-        requirements = ast.literal_eval(declarations[0].value)
+        requirements = ast.literal_eval(value)
     except (ValueError, TypeError) as exc:
         raise ValueError("NOTIFICATION_REQUIRES 必须是字符串列表或元组字面量") from exc
     if not isinstance(requirements, (tuple, list)) or any(
