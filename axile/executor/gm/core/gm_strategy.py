@@ -34,9 +34,10 @@ from axile.executor.gm.connection import (
     report_gm_failure,
     report_runtime_failure,
 )
-from axile.executor.gm.core.api_bridge import GMApiBridge, GMBridgeOperation
+from axile.executor.gm.core.api_bridge import GM_MARKET_OPERATIONS, GMApiBridge, GMBridgeOperation
 from axile.executor.gm.core.bridge_context import GMStrategyRuntimeContext, get_gm_strategy_runtime_context
 from axile.executor.gm.core.callback_dispatcher import GMRuntimeLogLevel
+from axile.executor.market_data_validation import MarketDataUnavailableError
 from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
 
@@ -575,10 +576,12 @@ def on_trade_data_disconnected(_context: Context) -> None:
     _observe_replay_connection(receipt, "trade_transport_disconnected", False)
     _emit_runtime_log("warning", "交易通道已断开")
     context = _get_bridge_context()
-    if context is not None and context.connection_monitor is not None:
-        if context.ready_event.is_set():
-            context.stats["connection_revision"] = context.stats.get("connection_revision", 0) + 1
-        context.ready_event.clear()
+    if context is None:
+        return
+    if context.ready_event.is_set():
+        context.stats["connection_revision"] = context.stats.get("connection_revision", 0) + 1
+    context.ready_event.clear()
+    if context.connection_monitor is not None:
         report_gm_failure(
             context.connection_monitor,
             ConnectionError("交易通道已断开"),
@@ -595,6 +598,9 @@ def on_market_data_connected(_context: Context) -> None:
     """行情通道恢复只确认连接，不补造未观察的盘口。"""
     _, receipt = _capture_replay_receipt()
     if not _is_stopped():
+        context = _get_bridge_context()
+        if context is not None:
+            context.stats["market_connected"] = 1
         _observe_replay_connection(receipt, "market_transport_connected", True)
 
 
@@ -602,6 +608,9 @@ def on_market_data_disconnected(_context: Context) -> None:
     """行情断流使回放覆盖失效，不触发额外订阅或查询。"""
     _, receipt = _capture_replay_receipt()
     if not _is_stopped():
+        context = _get_bridge_context()
+        if context is not None:
+            context.stats["market_connected"] = 0
         _observe_replay_connection(receipt, "market_transport_disconnected", False)
 
 
@@ -615,7 +624,8 @@ def _process_bridge_requests(_context: Context) -> None:
     context = _get_bridge_context()
     if context is None:
         return
-    if not _check_account_startup(context):
+    trade_ready = _check_account_startup(context)
+    if not trade_ready and context.startup_failed:
         return
     request_queue = context.request_queue
 
@@ -637,6 +647,18 @@ def _process_bridge_requests(_context: Context) -> None:
         # 风险远大于少执行一笔。
         if request.is_expired():
             request.future.set_exception(TimeoutError(f"GM bridge 请求已过期，跳过执行: operation={request.operation}"))
+            continue
+
+        operation = request.operation
+        if operation not in GM_MARKET_OPERATIONS and (
+            not trade_ready or getattr(context, "account_id", "") and not context.ready_event.is_set()
+        ):
+            request.future.set_exception(ConnectionError("掘金交易会话尚未就绪"))
+            continue
+        if operation in {"order_volume", "current"} and getattr(context, "stats", {}).get("market_connected") == 0:
+            request.future.set_exception(
+                MarketDataUnavailableError(str(request.kwargs.get("symbol", "")), "掘金行情通道已断开")
+            )
             continue
 
         try:

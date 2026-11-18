@@ -20,7 +20,9 @@ def _executor(*, closed: bool) -> CTPExecutor:
     executor._timeout = 0.01
     executor._instruments = {"rb2610": SimpleNamespace(ExchangeID="SHFE", VolumeMultiple=10)}
     executor._valuation_quotes = {}
-    executor.initialize_websocket = Mock()
+    executor._verify_connection = Mock(return_value=True)
+    executor._market_status = "ready"
+    executor._subscribe_market = Mock()
     executor._get_ctp_session_block_reason = Mock(return_value="CTP.SESSION.CLOSED" if closed else None)
     executor._query_valuation_snapshot = Mock(return_value=None)
     executor._fresh_valuation_quote_error = Mock(return_value="stale_exchange_time")
@@ -41,7 +43,7 @@ def test_closed_contract_uses_cached_last_price_without_waiting_or_querying() ->
     assert errors == {}
     assert assets.market_value == 60720
     assert assets.positions[0].extra["valuation_reference"] is True
-    executor.initialize_websocket.assert_not_called()
+    executor._subscribe_market.assert_not_called()
     executor._query_valuation_snapshot.assert_not_called()
 
 
@@ -53,7 +55,7 @@ def test_closed_contract_queries_snapshot_when_no_cached_price() -> None:
 
     assert errors == {}
     assert quotes["rb2610"].last_price == 3036
-    executor.initialize_websocket.assert_not_called()
+    executor._subscribe_market.assert_not_called()
     executor._query_valuation_snapshot.assert_called_once_with("rb2610")
 
 
@@ -65,7 +67,7 @@ def test_open_contract_queries_snapshot_after_tick_wait_expires() -> None:
 
     assert errors == {}
     assert quotes["rb2610"].last_price == 3036
-    executor.initialize_websocket.assert_called_once_with(["rb2610"])
+    executor._subscribe_market.assert_called_once_with(["rb2610"])
     executor._query_valuation_snapshot.assert_called_once_with("rb2610")
 
 
@@ -84,6 +86,7 @@ def test_open_contract_preserves_cached_price_when_snapshot_fails() -> None:
 def test_one_sided_tick_updates_valuation_without_replacing_order_quote() -> None:
     executor = CTPExecutor(TradeChannel("ctp"))
     executor._trading_day = "20260909"
+    executor._market_status = "ready"
     executor._subscriptions.add("rb2610")
     previous = fresh_quote("rb2610", "20260909")
     previous.timestamp = 1

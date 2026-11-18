@@ -1,32 +1,54 @@
 import { ConnectionProgressView } from '@/features/account/connectionProgress/ConnectionProgressView'
 import { useLiveConnection } from '@/stores/liveConnection'
 import { useId, useState, type ReactNode } from 'react'
+import { Activity, Check } from 'lucide-react'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { CenteredModal } from '@/components/ui/CenteredModal'
 import { ErrorCopyButton, ErrorDetailsContent } from '@/components/ui/ErrorDetailsContent'
 import { Link } from '@/components/ui/nav'
 import type { AccountConnectionDetail } from '@/types/api'
-import { connectionProblem } from '@/features/account/connectionProblem'
+import { connectionLabel, connectionProblem } from '@/features/account/connectionProblem'
 import { ConnectionTechnicalContent } from '@/features/account/ConnectionTechnicalContent'
 import { AccountConnectionActions } from '@/features/account/AccountConnectionActions'
+import { ConnectionIcon } from '@/features/account/AccountConnectionStatus'
 
 import { useConnectionFeedback } from '@/features/account/useConnectionFeedback'
+import { independentMarketDataLabels, useIndependentMarketData } from '@/features/account/useIndependentMarketData'
 import { errorInfo } from '@/lib/errorInfo'
+import { useChannelDescriptor } from '@/stores/channels'
+import { useDomainStore } from '@/stores/domain'
+import { useConnectionOperation } from '@/stores/connectionOperations'
 
 export type ConnectionSelection = { accountId: number; requestId: number; detail: AccountConnectionDetail }
 
-function TechnicalDetails({ children, label = '技术详情', preview }: { children: ReactNode; label?: string; preview?: ReactNode }) {
+function TechnicalDetails({ children, label = '技术详情', preview, compact = false }: {
+  children: ReactNode; label?: string; preview?: ReactNode; compact?: boolean
+}) {
   const [open, setOpen] = useState(false)
   const id = useId()
-  return <section className="min-w-0 border-t border-line py-3">
+  return <section className={`min-w-0 border-t border-line ${compact ? '' : 'py-3'}`}>
     <button type="button" aria-expanded={open} aria-controls={id} onClick={() => setOpen(value => !value)}
-      className="flex w-full cursor-pointer items-baseline gap-2 text-left text-[13px] text-ink-2 focus-visible:outline-2 focus-visible:outline-accent">
+      className={`flex w-full cursor-pointer items-baseline gap-2 text-left text-[13px] text-ink-2 focus-visible:outline-2 focus-visible:outline-accent ${compact ? 'min-h-9 py-2' : ''}`}>
       <span aria-hidden="true">{open ? '▾' : '▸'}</span> <span className="shrink-0">{label}</span>{preview}
     </button>
     <div id={id} inert={!open} aria-hidden={!open} className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${open ? 'visible grid-rows-[1fr]' : 'invisible grid-rows-[0fr]'}`}>
-      <div className="min-h-0 overflow-hidden"><div role="region" aria-label={label === '技术详情' ? '完整技术详情' : label} className="mt-3">{children}</div></div>
+      <div className="min-h-0 overflow-hidden"><div role="region" aria-label={label === '技术详情' ? '完整技术详情' : label}
+        className={compact ? 'pb-2' : 'mt-3'}>{children}</div></div>
     </div>
   </section>
+}
+
+function ConnectionStatusRow({ label, value, icon, tone }: {
+  label: string; value: string; icon: ReactNode; tone?: 'ready' | 'busy' | 'warning'
+}) {
+  const iconTone = tone === 'ready' || tone === 'busy' ? 'text-accent' : tone === 'warning' ? 'text-warn' : 'text-ink-2'
+  return <div className="grid min-h-[34px] grid-cols-[auto_minmax(0,1fr)] items-center gap-3 py-1.5">
+    <dt className="flex items-center gap-2 font-medium text-ink-1">
+      <span aria-hidden="true" className={`relative size-4 shrink-0 ${iconTone}`}>{icon}</span>
+      {label}
+    </dt>
+    <dd className={`text-right ${tone === 'ready' ? 'font-medium text-accent' : tone === 'warning' ? 'text-warn' : 'text-ink-2'}`}>{value}</dd>
+  </div>
 }
 
 /** 展示共享实时状态；渠道提供内容，公共 UI 只解析通用导航意图。 */
@@ -34,29 +56,63 @@ export function AccountConnectionDetailModal({ selection, onClose }: {
   selection: ConnectionSelection | null; onClose: () => void
 }) {
   const synced = useLiveConnection(state => state.connected)
+  const accountChannel = useDomainStore(state => state.accounts?.find(account => account.account_id === selection?.accountId)?.trade_channel)
+  const channel = useChannelDescriptor(accountChannel ?? selection?.detail.progress?.channel)
+  const independent = selection !== null && channel?.independent_market_data === true
+  const market = useIndependentMarketData(selection?.accountId ?? -1, independent)
+  const { pending } = useConnectionOperation(selection?.accountId ?? -1)
   const feedback = useConnectionFeedback(selection?.accountId ?? -1)
   const view = selection ? connectionProblem(selection.accountId, selection.detail) : null
   const operationInfo = feedback.error ? errorInfo(feedback.error) : null
   if (operationInfo) operationInfo.evidence = operationInfo.evidence.filter(field => field.label !== 'HTTP')
   const messages = [...new Set([view?.title, view?.summary].map(message => message?.trim()))].filter(Boolean)
-  const copy = [view?.copy, operationInfo?.text].filter(Boolean).join('\n\n')
+  const progress = selection?.detail.progress
+  const trade = synced ? selection?.detail.status : 'unknown'
+  const progressActive = !!trade && !['unknown', 'disconnected'].includes(trade)
+  const tradeBusy = trade === 'connecting' || trade === 'recovering' || pending === 'reconnect' || pending === 'connect-account'
+  const tradeWarning = trade === 'unavailable'
+  const liveProgress = progressActive && (progress?.status === 'running' || (tradeWarning && progress?.status === 'failed'))
+  const marketLabel = market ? independentMarketDataLabels[market] : '待确认'
+  const facts = view && <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-5 gap-y-2 text-ink-2">{view.facts.map(field => <div key={field.label} className="contents">
+    <dt className="text-[12px] text-ink-3">{field.label}</dt><dd className="min-w-0 tabular-nums">{field.value}</dd>
+  </div>)}</dl>
+  const progressView = selection && progress && <ConnectionProgressView key={progress.run_id} progress={progress} active={progressActive} compactSummary={independent}
+    source={{ kind: 'account', accountId: selection.accountId, runId: progress.run_id }} />
+  const copy = [view?.copy, independent ? `行情：${marketLabel}` : null, operationInfo?.text].filter(Boolean).join('\n\n')
   const footerActions = <>
     {copy && <ErrorCopyButton text={copy} label="复制连接详情" variant="text" />}
     <button type="button" aria-label="关闭详情" onClick={onClose} className="cursor-pointer rounded-lg border border-line px-3 py-2 text-[13px] text-ink-2">关闭</button>
   </>
-  return <CenteredModal open={selection !== null} title={selection?.detail.status === 'unavailable' ? '账户连接告警' : '账户连接详情'} onClose={onClose} widthClassName="w-[640px]"
+  return <CenteredModal open={selection !== null} title={selection?.detail.status === 'unavailable' ? '账户连接告警' : '账户连接详情'} onClose={onClose}
+    widthClassName={independent ? 'w-[440px]' : 'w-[640px]'}
     footer={selection
       ? <AccountConnectionActions key={selection.accountId} accountId={selection.accountId} detail={selection.detail}>{footerActions}</AccountConnectionActions>
       : <div className="flex flex-wrap items-center justify-end gap-2 border-t border-line px-[22px] py-3">{footerActions}</div>}>
-    <div className="min-w-0 space-y-4 text-[13px] leading-relaxed [overflow-wrap:anywhere]">
+    <div className={`min-w-0 text-[13px] leading-relaxed [overflow-wrap:anywhere] ${independent ? 'space-y-1.5' : 'space-y-4'}`}>
       {view && <>
-        <p className="whitespace-pre-wrap text-[14px] text-ink-2">{messages.join('\n')}</p>
-        {selection?.detail.progress && <ConnectionProgressView key={selection.detail.progress.run_id}
-          progress={selection.detail.progress} active={synced && !['unknown', 'disconnected'].includes(selection.detail.status)}
-          source={{ kind: 'account', accountId: selection.accountId, runId: selection.detail.progress.run_id }} /> }
-        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-5 gap-y-2 text-ink-2">{view.facts.map(field => <div key={field.label} className="contents">
-          <dt className="text-[12px] text-ink-3">{field.label}</dt><dd className="min-w-0 tabular-nums">{field.value}</dd>
-        </div>)}</dl>
+        {independent && selection && <dl aria-label="当前连接状态" className="divide-y divide-line">
+          <ConnectionStatusRow label="交易"
+            value={tradeBusy && trade !== 'recovering' ? '连接中…' : tradeWarning ? '连接异常' : synced ? connectionLabel(selection.detail) : '待确认'}
+            icon={<ConnectionIcon connected={trade === 'ready'} busy={tradeBusy} className="connection-link-detail"
+              phase={tradeBusy ? 'connecting' : trade === 'ready' ? 'closed' : 'open'} />}
+            tone={tradeBusy ? 'busy' : tradeWarning ? 'warning' : trade === 'ready' ? 'ready' : undefined} />
+          <ConnectionStatusRow label="行情" value={marketLabel} icon={<>
+            <Activity size={16} />
+            {market === 'connecting' && <Activity size={16} className="connection-market-sweep absolute inset-0 text-accent motion-reduce:hidden" />}
+          </>} tone={market === 'ready' ? 'ready' : market === 'unavailable' ? 'warning' : undefined} />
+        </dl>}
+        {(!independent || tradeWarning) && <p className="whitespace-pre-wrap text-[14px] text-ink-2">{messages.join('\n')}</p>}
+        {independent && progressView && (liveProgress ? <section className="border-t border-line pt-2">
+          <h3 className="font-medium text-ink-1">交易连接进度</h3>
+          {progressView}
+        </section> : <TechnicalDetails compact key={`trade:${selection?.requestId}:${progress?.run_id}`} label="上次交易连接"
+          preview={<span className="ml-auto flex items-center gap-1.5 text-xs tabular-nums">
+            {progress?.finished_at && <time dateTime={progress.finished_at}>{progress.finished_at.replace('T', ' ').slice(5, 16)}</time>}
+            {progress?.status === 'succeeded' && <><Check size={14} aria-hidden className="text-accent" />成功</>}
+            {progress?.status === 'failed' && <span className="text-warn">失败</span>}
+            {progress?.status === 'cancelled' && <span>已取消</span>}
+          </span>}>{progressView}</TechnicalDetails>)}
+        {!independent && <>{progressView}{facts}</>}
         {view.sections.map((section, i) => <section key={i} className="space-y-2 border-t border-line pt-4">
           {section.title && <h3 className="font-medium text-ink-2">{section.title}</h3>}
           {section.text && <p className="whitespace-pre-wrap">{section.text}</p>}
@@ -68,15 +124,18 @@ export function AccountConnectionDetailModal({ selection, onClose }: {
         {!!view.actions.length && <div className="flex flex-wrap gap-3">{view.actions.filter(action => action.intent === 'open_connection_settings').map((action, i) =>
           <Link key={i} to={`/accounts/${selection!.accountId}/edit/connection`} onClick={onClose}
             className="rounded-lg border border-line px-3 py-2 text-accent focus-visible:outline-2 focus-visible:outline-accent">{action.label}</Link>)}</div>}
-        {operationInfo && <TechnicalDetails label="连接操作结果"><ErrorDetailsContent info={operationInfo} /></TechnicalDetails>}
-        {view.history && <TechnicalDetails label="历史连接失败" preview={<><OverflowText className="min-w-0 flex-1 text-ink-3" text={view.history.message ?? ''} /><time className="ml-auto shrink-0 text-[12px] tabular-nums text-ink-3">{view.history.observed_at.replace('T', ' ').slice(5, 16)}</time></>}>
+        {operationInfo && <TechnicalDetails compact={independent} label="连接操作结果"><ErrorDetailsContent info={operationInfo} /></TechnicalDetails>}
+        {view.history && <TechnicalDetails compact={independent} label="历史连接失败" preview={<><OverflowText className="min-w-0 flex-1 text-ink-3" text={view.history.message ?? ''} /><time className="ml-auto shrink-0 text-[12px] tabular-nums text-ink-3">{view.history.observed_at.replace('T', ' ').slice(5, 16)}</time></>}>
           <p className="mb-2 text-ink-2">{view.history.observed_at.replace('T', ' ').replace(/(\d{2}:\d{2}:\d{2})\.\d+/, '$1')}</p>
           <p className="text-ink-3">这条记录保留用于排查，不代表当前会话仍在故障。</p>
           <p className="whitespace-pre-wrap">{view.history.message}</p>
          {view.history.technicalInfo && <TechnicalDetails><ConnectionTechnicalContent info={view.history.technicalInfo} /></TechnicalDetails>}
         </TechnicalDetails>}
-        {view.technicalInfo && <TechnicalDetails key={selection!.requestId}><ConnectionTechnicalContent info={view.technicalInfo} /></TechnicalDetails>}
-        <p className="pb-2 text-[12px] text-ink-3">连接后会核对资产和委托，交易任务需另行执行。</p>
+        {(independent || view.technicalInfo) && <TechnicalDetails compact={independent} key={selection!.requestId}>
+          {independent && facts}
+          {view.technicalInfo && <ConnectionTechnicalContent info={view.technicalInfo} />}
+        </TechnicalDetails>}
+        {!independent && <p className="pb-2 text-[12px] text-ink-3">连接后会核对资产和委托，交易任务需另行执行。</p>}
       </>}
     </div>
   </CenteredModal>

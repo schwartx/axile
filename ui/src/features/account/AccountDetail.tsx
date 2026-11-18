@@ -440,7 +440,7 @@ export function AccountDetail({
             </Chip>
           </div>
           {gate.gate === 'paused' && <Chip>{gate.label}</Chip>}
-          <AccountConnectionStatus accountId={accountId} />
+          <AccountConnectionStatus accountId={accountId} independentMarketData={channelDescriptor?.independent_market_data} />
           <AccountActions
             archiveAction={(className) => <ArchiveAction kind="account" id={accountId} name={item.name} className={className}
               onChanged={async () => { await onDashboardRefresh?.(); await account.refresh() }} />}

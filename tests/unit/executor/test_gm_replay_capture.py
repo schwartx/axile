@@ -253,6 +253,33 @@ def test_market_transport_disconnect_is_a_recorded_gap(instance, callback_contex
     assert received[0][1]["reason"] == "market_transport_disconnected"
 
 
+def test_bridge_checks_trade_and_market_requests_independently(monkeypatch):
+    context = SimpleNamespace(request_queue=queue.Queue(), startup_failed=False, stats={})
+    monkeypatch.setattr(gm_strategy, "_is_stopped", lambda: False)
+    monkeypatch.setattr(gm_strategy, "_get_bridge_context", lambda: context)
+    readiness = Mock(return_value=True)
+    monkeypatch.setattr(gm_strategy, "_check_account_startup", readiness)
+    sdk = Mock(return_value="sent")
+    monkeypatch.setattr(gm_strategy, "_dispatch_bridge_request", sdk)
+
+    def dispatch(operation):
+        request = GMBridgeRequest(operation=operation, kwargs={}, future=Future())
+        context.request_queue.put(request)
+        gm_strategy._process_bridge_requests(None)
+        return request.future.result()
+
+    gm_strategy.on_market_data_disconnected(None)
+    with pytest.raises(ValueError, match="行情通道已断开"):
+        dispatch("order_volume")
+    assert dispatch("order_cancel") == "sent"
+    readiness.return_value = False
+    gm_strategy.on_market_data_connected(None)
+    assert dispatch("current") == "sent"
+    with pytest.raises(ConnectionError, match="交易会话尚未就绪"):
+        dispatch("order_cancel")
+    assert [call.args[0] for call in sdk.call_args_list] == ["order_cancel", "current"]
+
+
 def test_real_sdk_dictlike_reports_reach_capture_and_business_dispatch(instance, callback_context):
     from gm.model import DictLikeExecRpt, DictLikeOrder
 

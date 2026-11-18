@@ -179,7 +179,7 @@ def test_real_account_always_delegates_to_worker(monkeypatch: pytest.MonkeyPatch
     expected = {"x": 1.0}
 
     class _Manager:
-        async def calculate_portfolio(self, actual_account, code: str, *, execution_id: str | None = None):
+        async def calculate_portfolio(self, actual_account, code: str, *, execution_id: str | None = None, **kwargs):
             assert actual_account is account
             assert code == "code"
             assert execution_id == "exec-1"

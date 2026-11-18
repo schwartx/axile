@@ -61,7 +61,6 @@ def test_connection_progress_matches_real_startup(monkeypatch):
                 "authenticate",
                 "trader_login",
                 "settlement",
-                "market_login",
                 "query_orders",
                 "query_trades",
                 "query_positions",

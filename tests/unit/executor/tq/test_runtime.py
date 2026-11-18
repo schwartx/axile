@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import threading
 import time
 from collections import UserDict
 from collections.abc import Coroutine
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from axile.channels import get_channel
+from axile.executor.tq.market_data import TQMarketData
 from axile.executor.tq.runtime import TQRuntime
 from tests.unit.executor.tq._catalog_test_support import CatalogApiMixin
 
@@ -54,6 +58,95 @@ class FakeApi(CatalogApiMixin):
         self.closed = True
 
 
+def test_independent_tq_market_data_uses_only_tq_auth_and_recovers_fresh_quotes(monkeypatch):
+    logged_in = threading.Event()
+    auth_calls = []
+    trade_reads = []
+
+    class QuoteApi(FakeApi):
+        def __init__(self):
+            super().__init__()
+            self._data = {}
+            self.quote = {
+                "instrument_id": "rb2610",
+                "exchange_id": "SHFE",
+                "datetime": "2026-10-08 10:00:00.000000",
+                "last_price": 3200,
+                "bid_price1": 3199,
+                "bid_volume1": 10,
+                "price_tick": 1,
+                "volume_multiple": 10,
+            }
+            self.changed = False
+
+        async def get_quote(self, symbol):
+            assert symbol == "SHFE.rb2610"
+            return self.quote
+
+        def is_changing(self, entity):
+            changed, self.changed = self.changed, False
+            return changed and entity is self.quote
+
+        def get_order(self):
+            trade_reads.append("orders")
+            return {}
+
+        def get_trade(self):
+            trade_reads.append("trades")
+            return {}
+
+    created_apis = []
+
+    def create_api(*, account, auth):
+        auth_calls.append((account, auth))
+        assert logged_in.wait(2)
+        sdk = QuoteApi()
+        created_apis.append(sdk)
+        return sdk
+
+    sim = object()
+    monkeypatch.setitem(
+        sys.modules, "tqsdk", SimpleNamespace(TqApi=create_api, TqSim=lambda: sim, TqAuth=lambda *args: args)
+    )
+    registered = get_channel("tq").configure_market_data
+    assert registered is not None
+    source = registered({"tq_username": "fixture", "tq_password": "unused"}).open()
+    assert isinstance(source, TQMarketData)
+    try:
+        assert source.status() == "uninitialized"
+        with pytest.raises(TimeoutError):
+            source.snapshot(["rb2610"], timeout=0.05)
+        assert source.status() == "connecting"
+        logged_in.set()
+        quote = source.snapshot(["rb2610"], timeout=2)["rb2610"]
+        assert auth_calls == [(sim, ("fixture", "unused"))]
+        assert quote.last_price == 3200 and quote.bids == [(3199, 10)]
+        assert quote.extra["volume_multiple"] == 10 and quote.extra["price_tick"] == 1
+        runtime = source._runtime
+        assert runtime is not None
+        condition = threading.Event()
+        runtime.add_listener(lambda kind, _row: condition.set() if kind == "market_connection" else None)
+        api = created_apis[0]
+        runtime.call(lambda _api: api._data.update(notify={"down": {"code": 2019112911, "conn_id": "md"}}))
+        assert condition.wait(1)
+        assert source.status() == "disconnected"
+        with pytest.raises(TimeoutError):
+            source.snapshot(["SHFE.rb2610"], timeout=0.05)
+
+        def reconnect(_api):
+            api._data.update(notify={"up": {"code": 2019112902, "conn_id": "md"}})
+            api.quote.update(last_price=3202, datetime="2026-10-08 10:00:01.000000")
+            api.changed = True
+
+        runtime.call(reconnect)
+        assert source.snapshot(["SHFE.rb2610"], timeout=2)["SHFE.rb2610"].last_price == 3202
+        assert source.status() == "ready" and trade_reads == []
+    finally:
+        logged_in.set()
+        source.close()
+    assert created_apis[0].closed
+
+
 def test_runtime_owns_api_and_queries_catalog_only_on_demand() -> None:
     api: FakeApi | None = None
 
@@ -81,7 +174,7 @@ def test_runtime_owns_api_and_queries_catalog_only_on_demand() -> None:
     assert api is not None and api.closed is True
 
 
-def test_reconnect_requires_all_connections_and_replaces_complete_order_snapshot():
+def test_market_and_trade_reconnect_independently_and_trade_replaces_complete_orders():
     api = FakeApi()
     api._data = {"notify": {}}
     rows = {"old": {"order_id": "old", "status": "ALIVE"}}
@@ -100,22 +193,22 @@ def test_reconnect_requires_all_connections_and_replaces_complete_order_snapshot
         runtime.call(update)
 
     try:
-        pump(
-            {"md-down": {"code": 2019112911, "conn_id": "md"}, "td-down": {"code": 2019112911, "conn_id": "td"}},
-            rows.copy(),
-        )
-        assert not runtime.synchronized and runtime.connection_revision == 2
-        pump({"md-back": {"code": 2019112902, "conn_id": "md"}}, rows.copy())
-        assert not runtime.synchronized
+        pump({"md-down": {"code": 2019112911, "conn_id": "md"}}, rows.copy())
+        assert runtime.synchronized and not runtime.market_synchronized and runtime.connection_revision == 0
+        pump({"td-down": {"code": 2019112911, "conn_id": "td_0"}}, rows.copy())
+        assert not runtime.synchronized and runtime.connection_revision == 1
         assert not any(kind == "orders.reset" for kind, _ in events)
-        pump({"td-back": {"code": 2019112902, "conn_id": "td"}}, {"new": {"order_id": "new", "status": "ALIVE"}})
-        assert runtime.synchronized
+        pump({"td-back": {"code": 2019112902, "conn_id": "td_0"}}, {"new": {"order_id": "new", "status": "ALIVE"}})
+        assert runtime.synchronized and not runtime.market_synchronized
         assert [payload for kind, payload in events if kind == "orders.reset"][-1] == {
             "rows": [{"order_id": "new", "status": "ALIVE"}]
         }
         # SDK 跨交易日移除记录时，同样同步完整集合而不捏造撤单终态。
         pump({}, {})
         assert [payload for kind, payload in events if kind == "orders.reset"][-1] == {"rows": []}
+        before = list(events)
+        pump({"md-back": {"code": 2019112902, "conn_id": "md"}}, {})
+        assert runtime.market_synchronized and events[len(before) :] == [("market_connection", {"ready": True})]
     finally:
         runtime.close()
 

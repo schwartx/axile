@@ -301,6 +301,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         from axile.server.connection_validation import service as validation_service
+        from axile.server.market_data import close_market_data
 
         account_recovery.cancel()
         await asyncio.gather(account_recovery, return_exceptions=True)
@@ -310,6 +311,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await monitor.close()
         scheduler.shutdown()
         await shutdown_dispatchers()
+        await asyncio.to_thread(close_market_data)
         await asyncio.to_thread(shutdown_worker_backend_manager)
         await native_call(_core.close_database, database_path())
         logger.warning("axile已经关闭!")

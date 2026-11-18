@@ -80,5 +80,6 @@ def list_channel_capabilities() -> list[dict[str, Any]]:
             ]
         missing = missing_packages(descriptor.channel)
         public.update(available=not missing, missing_packages=missing, install_extra=install_extra(descriptor.channel))
+        public["independent_market_data"] = not missing and plugin.configure_market_data is not None
         result.append(public)
     return result

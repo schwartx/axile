@@ -118,10 +118,13 @@ class TQRuntime:
         *,
         command_timeout: float = 30.0,
         connection: ConnectionMonitor | None = None,
+        market_only: bool = False,
+        wait_for_startup: bool = True,
     ) -> None:
         self._connection = connection or ConnectionMonitor()
         self._api_factory = api_factory
         self._command_timeout = command_timeout
+        self._market_only = market_only
         self._commands: queue.Queue[_Command | None] = queue.Queue()
         self._ready = threading.Event()
         self._stopped = threading.Event()
@@ -137,18 +140,33 @@ class TQRuntime:
         self._listeners: list[Callable[[str, dict[str, object]], None]] = []
         self.replay_owner: object | None = None
         self.synchronized = True
+        self.market_synchronized = True
         self.connection_revision = 0
         self._notifications: set[str] = set()
         self._disconnected_connections: set[str] = set()
+        self._disconnected_market_connections: set[str] = set()
         self._orders: dict[str, dict[str, object]] = {}
         self._trades: dict[str, dict[str, object]] = {}
         self._thread = threading.Thread(target=self._run, name="axile-tqsdk-runtime", daemon=True)
         self._thread.start()
-        if not self._ready.wait(command_timeout):
-            error = TimeoutError("TqSdk 运行时初始化超时")
-            report_tq_failure(self._connection, error, "天勤连接超时", "运行时初始化等待")
-            self._connection.close()
-            raise error
+        if wait_for_startup:
+            try:
+                self.wait_ready(command_timeout)
+            except TimeoutError as error:
+                self._commands.put(None)
+                report_tq_failure(self._connection, error, "天勤连接超时", "运行时初始化等待")
+                self._connection.close()
+                raise
+
+    @property
+    def startup_pending(self) -> bool:
+        """判断 SDK 初始化是否仍在进行。"""
+        return not self._ready.is_set()
+
+    def wait_ready(self, timeout: float) -> None:
+        """有界等待已启动的 SDK 初始化，等待超时不重建会话。"""
+        if not self._ready.wait(timeout):
+            raise TimeoutError("TqSdk 运行时初始化超时")
         if self._startup_error is not None:
             raise RuntimeError(f"TqSdk 运行时初始化失败: {self._startup_error}") from self._startup_error
 
@@ -200,7 +218,8 @@ class TQRuntime:
                 raise self._stopped_error()
             pending: list[tuple[str, _QuoteSubscription]] = []
             for symbol in dict.fromkeys(symbols):
-                if symbol in self._subscriptions:
+                existing = self._subscriptions.get(symbol)
+                if existing is not None and (not self._market_only or existing.error is None):
                     continue
                 state = _QuoteSubscription()
                 self._subscriptions[symbol] = state
@@ -238,6 +257,8 @@ class TQRuntime:
         self._logger.warning("TQ 行情订阅失败 %s，耗时 %.3fs: %s", symbol, time.monotonic() - state.started, error)
 
     def _publish_quote(self, state: _QuoteSubscription) -> None:
+        if not self.market_synchronized:
+            return
         receipt = recording.capture_receipt(self.replay_owner)
         snapshot = cast(dict[str, object], _quote_value_snapshot(snapshot_entity(state.entity)))
         with self._quote_condition:
@@ -382,22 +403,30 @@ class TQRuntime:
             except Exception:
                 continue
 
-    def _connection_changes(self, api: object) -> bool:
+    def _connection_changes(self, api: object) -> tuple[bool, bool]:
         """SDK 恢复通知在完整截面交付后到达；断线期间撤销就绪状态。"""
         data = getattr(api, "_data", {})
         notifications = data.get("notify", {}) if isinstance(data, Mapping) else {}
-        reset = False
+        reset = market_reset = False
         current_ids = {str(key) for key in notifications if not str(key).startswith("_")}
         for key, row in notifications.items():
             if str(key) not in current_ids or str(key) in self._notifications:
                 continue
             code, connection_id = row.get("code"), str(row.get("conn_id", row.get("url", "default")))
+            if (self._market_only or connection_id == "md") and code in {
+                2019112911,
+                2019112910,
+                2019112901,
+                2019112902,
+            }:
+                market_reset = self._update_market_connection(connection_id, code) or market_reset
+                continue
             if code in {2019112911, 2019112910}:
                 if connection_id not in self._disconnected_connections:
                     self.connection_revision += 1
                     self._disconnected_connections.add(connection_id)
                     self.synchronized = False
-                    self._connection.failed(ConnectionError("天勤连接已断开，等待交易数据补齐"))
+                    self._connection.failed(ConnectionError("天勤交易连接已断开，等待交易数据补齐"))
                     self._connection.begin_recovery()
                     self._emit("connection", {"ready": False})
             elif code in {2019112901, 2019112902}:
@@ -410,16 +439,37 @@ class TQRuntime:
             else:
                 self._emit("notification", {**snapshot_entity(row), "notification_id": str(key)})
         self._notifications = current_ids
-        return reset
+        return reset, market_reset
+
+    def _update_market_connection(self, connection_id: str, code: int) -> bool:
+        """只有行情链路故障才废弃行情快照；订单同步由交易链路单独控制。"""
+        if code in {2019112911, 2019112910}:
+            self._disconnected_market_connections.add(connection_id)
+            if self.market_synchronized:
+                with self._quote_condition:
+                    self.market_synchronized = False
+                    for state in self._subscriptions.values():
+                        state.snapshot = None
+                self._emit("market_connection", {"ready": False})
+            return False
+        self._disconnected_market_connections.discard(connection_id)
+        if self._disconnected_market_connections:
+            return False
+        if not self.market_synchronized:
+            self.market_synchronized = True
+            self._emit("market_connection", {"ready": True})
+        return code == 2019112902
 
     def _pump_changes(self, api: object) -> None:
-        reset = self._connection_changes(api)
+        reset, market_reset = self._connection_changes(api)
         is_changing = getattr(api, "is_changing", lambda _entity: False)
         with self._quote_condition:
             subscriptions = tuple(self._subscriptions.values())
         for state in subscriptions:
-            if state.entity is not None and is_changing(state.entity):
+            if state.entity is not None and (market_reset or is_changing(state.entity)):
                 self._publish_quote(state)
+        if self._market_only:
+            return
         for kind, getter_name, previous in (
             ("order", "get_order", self._orders),
             ("trade", "get_trade", self._trades),

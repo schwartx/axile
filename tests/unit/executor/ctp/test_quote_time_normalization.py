@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from openctp_ctp import thosttraderapi as td
 
-from axile.executor.ctp.ctp_execute import CtpSessionRecoveryRequired
+from axile.executor.ctp.ctp_execute import CtpRequestError
 from axile.executor.ctp.quote_time import resolve_quote_time
 from axile.executor.ctp_product_sessions import get_ctp_product_sessions
 from axile.executor.trading_calendar import ShinnyTradingCalendar
@@ -85,8 +85,10 @@ def test_zero_login_rejects_error(broker):
         return 0
 
     broker.market.ReqUserLogin.side_effect = login
-    with pytest.raises(CtpSessionRecoveryRequired, match="denied"):
-        broker.start()
+    executor = broker.start()
+    assert executor._verify_connection() and executor.market_data_status() == "unavailable"
+    with pytest.raises(CtpRequestError, match="denied"):
+        executor.initialize_websocket(["ag2612"])
 
 
 @pytest.mark.parametrize("day", ["", "20260916"])
@@ -112,7 +114,7 @@ def test_zero_login_unsent_wrong_duplicate_and_invalid(broker):
     assert executor._verify_connection()
     executor._disconnected("行情", 1)
     broker.market_spi.OnRspUserLogin(row, None, 0, True)
-    assert not executor._verify_connection()
+    assert executor._verify_connection() and executor.market_data_status() == "disconnected"
 
 
 def emit(broker, clock="21:01:02", day="20260915", trading_day="20260915", millisec=123):

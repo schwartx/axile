@@ -20,6 +20,7 @@ from openctp_ctp import thostmduserapi as md
 from openctp_ctp import thosttraderapi as td
 
 from axile.channels.cn_futures import canonicalize_cn_futures_symbol, czce_is_option_instrument
+from axile.channels.market_data import MarketDataStatus
 from axile.common.serialization import copy_data, parse_input
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
@@ -250,17 +251,19 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         self._trade_callbacks = []
         self._price_callbacks = []
         self._lock = threading.RLock()
+        self._market_start_lock = threading.Lock()
         self._query_lock = threading.Lock()
         self._request_id = 0
         self._order_ref = 0
         self._trading_day = ""
         self._front_id = self._session_id = 0
         self._trader_connected = self._market_connected = False
+        self._market_status: MarketDataStatus = "uninitialized"
         self._closed = False
         self._logout_in_progress = False
         self._logout_pending: dict[str, _Stage] = {}
         self._logout_disconnect_reason: int | None = None
-        # 一个实例只承载一轮连接；断线后由 worker 创建新实例，禁止原地复活。
+        # 交易会话失效后由 worker 重建。行情前置在同一执行器内独立登录和重订阅。
         self._ready = False
         self._invalid_reason = None
         self._connection_started = False
@@ -764,21 +767,15 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 connection_monitor(self).step("instruments", "running")
                 self._instruments = self._validation_catalog()
                 connection_monitor(self).step("instruments", "passed", step_details(self, "instruments"))
-            connection_monitor(self).step("market_login", "running")
-            path = self._flow_dir / "market"
-            path.mkdir()
-            with connection_monitor(self).connecting(
-                label="行情连接初始化失败",
-                presentation=lambda: self._initialization_problem("行情"),
-            ):
-                self._market_api = md.CThostFtdcMdApi.CreateFtdcMdApi(str(path) + "/")
-                self._market_spi = MarketSpi(self)
-                self._market_api.RegisterSpi(self._market_spi)
-                self._market_api.RegisterFront(account_config.md_front)
-                self._market_api.Init()
-            self._wait(self._md_login, "行情登录")
-            connection_monitor(self).step("market_login", "passed", step_details(self, "market_login"))
-            if not self._validation_catalog:
+                connection_monitor(self).step("market_login", "running")
+                with connection_monitor(self).connecting(
+                    label="行情连接初始化失败",
+                    presentation=lambda: self._initialization_problem("行情"),
+                ):
+                    self._start_market(account_config)
+                self._wait(self._md_login, "行情登录")
+                connection_monitor(self).step("market_login", "passed", step_details(self, "market_login"))
+            else:
                 self._instrument_provider.bind(self._query_catalog, channel="ctp")
             replay_receipt = capture_receipt(self)
             replay_query = replay_capture.begin_query(self, None)
@@ -821,9 +818,51 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             finally:
                 replay_capture.finish_query(self, replay_query)
             connection_monitor(self).step("channel_ready", "passed", step_details(self, "channel_ready"))
+            connection_monitor(self).succeeded()
         except Exception:
             self.close()
             raise
+
+    def _start_market(self, config=None):
+        """首次需要行情时启动行情前置。"""
+        with self._market_start_lock:
+            with self._lock:
+                self._require_active_connection()
+                if self._market_api is not None:
+                    return
+                config = self._config() if config is None else config
+                self._md_login = stage = _Stage(threading.Event())
+                self._market_status = "connecting"
+            api = None
+            try:
+                flow_dir = self._flow_dir
+                if flow_dir is None:
+                    raise CtpRequestError("CTP 行情流目录不可用")
+                path = flow_dir / "market"
+                path.mkdir(exist_ok=True)
+                api = md.CThostFtdcMdApi.CreateFtdcMdApi(str(path) + "/")
+                spi = MarketSpi(self)
+                with self._lock:
+                    self._market_api, self._market_spi = api, spi
+                api.RegisterSpi(spi)
+                api.RegisterFront(config.md_front)
+                api.Init()
+            except Exception as exc:
+                with self._lock:
+                    self._market_api = self._market_spi = None
+                    self._market_connected = False
+                    self._market_status = "unavailable"
+                    stage.error = CtpRequestError("CTP 行情前置初始化失败")
+                    stage.done.set()
+                if api is not None:
+                    try:
+                        api.RegisterSpi(None)
+                        api.Release()
+                    except Exception:
+                        self.logger.exception("释放失败的 CTP 行情 API")
+                if self._validation_catalog is not None:
+                    raise
+                self.logger.warning("CTP 行情前置初始化失败: {}", type(exc).__name__)
 
     def _trader_connected_cb(self):
         with self._lock:
@@ -914,6 +953,9 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             if self._closed or self._invalid_reason or self._logout_in_progress or self._market_connected:
                 return
             self._market_connected = True
+            self._market_status = "connecting"
+            if self._md_login.done.is_set():
+                self._md_login = _Stage(threading.Event())
         req = build_market_login(self._config())
         try:
             with self._lock:
@@ -921,8 +963,8 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 self._md_login.request_id = self._next_id()
                 self._check(self._market_api.ReqUserLogin(req, self._md_login.request_id), "行情登录")
         except Exception as e:
-            report_ctp_stage(connection_monitor(self), e, "行情登录")
-            self._invalidate_connection(e)
+            with self._lock:
+                self._market_login_failed(e)
 
     def _market_logged_in(self, row, info, request_id):
         with self._lock:
@@ -936,14 +978,33 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 request_id = self._md_login.request_id
             if not self._accept_stage(self._md_login, request_id):
                 return
-            if (
-                self._finish_stage(self._md_login, info, "行情登录", request_id)
-                and self._auth.done.is_set()
-                and self._auth.error is None
-                and self._login.done.is_set()
-                and self._login.error is None
-            ):
-                connection_monitor(self).succeeded()
+            if not self._market_connected:
+                return
+            error = self._error(info, "行情登录")
+            if error is not None:
+                self._market_login_failed(error)
+                return
+            self._market_status = "ready"
+            self._md_login.done.set()
+            self._capture_market_connection(True)
+            if self._subscriptions:
+                symbols = sorted(self._subscriptions)
+                self._subscriptions.clear()
+                try:
+                    self._subscribe_market(symbols)
+                except Exception as exc:
+                    self.logger.warning("CTP 行情恢复后重订阅失败: {}", type(exc).__name__)
+
+    def _market_login_failed(self, error):
+        if self._closed or self._invalid_reason or not self._market_connected:
+            return
+        self._market_status = "unavailable"
+        self._md_login.error = error
+        self._md_login.done.set()
+        if self._validation_catalog is not None:
+            report_ctp_stage(connection_monitor(self), error, "行情登录")
+        else:
+            self.logger.warning("CTP 行情登录失败: {}", type(error).__name__)
 
     def _user_logged_out(self, kind, row, info, request_id, is_last):
         """区分匹配的主动登出应答与活跃会话的非预期登出。"""
@@ -976,6 +1037,12 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 return
             if error_id:
                 self.logger.warning("登出失败应答: {}", detail)
+                return
+            if kind == "行情" and is_last:
+                self._lose_market("行情登出")
+                self._market_connected_cb()
+                return
+            if kind == "行情":
                 return
             self.logger.warning("会话意外登出: {}", detail)
             label = f"{kind}会话已登出"
@@ -1011,6 +1078,8 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 if not pending.done.is_set():
                     pending.error = error
                     pending.done.set()
+            elif kind == "行情" and self._accept_stage(self._md_login, request_id):
+                self._market_login_failed(error)
 
     def graceful_logout(self):
         """仅请求交易登出，保留原生回调证据，最多等待五秒后交给宿主释放。"""
@@ -1053,6 +1122,10 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                         self.logger.warning("主动登出超时: CTP 交易 request_id={}", pending.request_id)
 
     def _disconnected(self, kind, reason):
+        if kind == "行情":
+            with self._lock:
+                self._lose_market(reason)
+            return
         replay_capture.capture(
             self,
             "/connection",
@@ -1066,14 +1139,10 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             },
         )
         with self._lock:
-            if kind == "交易":
-                self._trader_connected = False
-            else:
-                self._market_connected = False
+            self._trader_connected = False
             if self._logout_in_progress and not self._closed:
                 self.logger.info("主动登出期间收到 CTP {} OnFrontDisconnected reason={}", kind, reason)
-                if kind == "交易":
-                    self._logout_disconnect_reason = reason
+                self._logout_disconnect_reason = reason
                 return
             self._connection_error = f"{kind}前置已断开"
             self._invalidate_connection(
@@ -1090,6 +1159,37 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                     {"断开对象": f"{kind}前置", "原生断线原因": reason},
                 ),
             )
+
+    def _lose_market(self, reason):
+        """断线后废弃全部行情证据，保留待重订阅列表及交易对账状态。"""
+        self._market_connected = False
+        self._market_status = "disconnected"
+        if self._closed or self._invalid_reason or self._logout_in_progress:
+            return
+        self.logger.warning("CTP 行情前置断开: reason={}", reason)
+        self._capture_market_connection(False, reason)
+        self._monitoring = False
+        self._subscription_acks.clear()
+        self._subscription_errors.clear()
+        self._quotes.clear()
+        self._valuation_quotes.clear()
+        self._quote_rejections.clear()
+        self._md_login.error = CtpRequestError(f"CTP 行情前置断开: {reason}")
+        self._md_login.done.set()
+        self._md_login = _Stage(threading.Event())
+
+    def _capture_market_connection(self, connected, native_reason=None):
+        replay_capture.capture(
+            self,
+            "/connection",
+            lambda: {
+                "source": "ctp.market_data",
+                "scope": "market_data",
+                "available": connected,
+                "reason": "market_transport_connected" if connected else "market_transport_disconnected",
+                "native_reason": native_reason,
+            },
+        )
 
     def _invalidate_connection(self, reason, *, connection_failure=False, label=None, presentation=None):
         """永久撤销就绪状态；保留首个失效原因及其可读错误契约。"""
@@ -1128,6 +1228,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 },
             )
             self._monitoring = False
+            self._market_status = "disconnected"
             self._quotes.clear()
             self._valuation_quotes.clear()
             self._fail_waiters(self._connection_failure)
@@ -1148,10 +1249,18 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         self._require_active_connection()
         if not self._verify_connection():
             raise CtpRequestError("CTP 会话尚未完成认证、登录、结算、元数据和对账")
-        if symbol and (
-            symbol not in self._quotes or symbol not in self._subscription_acks or symbol in self._subscription_errors
-        ):
-            raise CtpRequestError(f"CTP {symbol} 尚未收到本会话订阅的新行情")
+        if symbol:
+            self._require_market_ready()
+            if (
+                symbol not in self._quotes
+                or symbol not in self._subscription_acks
+                or symbol in self._subscription_errors
+            ):
+                raise CtpRequestError(f"CTP {symbol} 尚未收到本会话订阅的新行情")
+
+    def _require_market_ready(self):
+        if self._market_status != "ready":
+            raise CtpRequestError("CTP 行情会话未就绪")
 
     def _require_new_order_ready(self, symbol=None, *, require_quote=True):
         """未归属成交只阻止新增委托，不阻止健康会话撤销已知订单。"""
@@ -1334,13 +1443,12 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
     @override
     def _verify_connection(self):
         with self._lock:
-            return (
-                self._ready
-                and not self._closed
-                and not self._invalid_reason
-                and self._trader_connected
-                and self._market_connected
-            )
+            return self._ready and not self._closed and not self._invalid_reason and self._trader_connected
+
+    def market_data_status(self) -> MarketDataStatus:
+        """返回执行器行情会话的独立状态。"""
+        with self._lock:
+            return self._market_status
 
     def _reconcile_session(self, replay_query, *, receipt):
         """就绪前取得当前交易日完整查询快照，并恢复旧会话的订单关联。
@@ -1722,14 +1830,19 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         open_symbols = [
             symbol for symbol in symbols if self._get_ctp_session_block_reason(symbol) != "CTP.SESSION.CLOSED"
         ]
-        if open_symbols:
-            try:
-                self.initialize_websocket(open_symbols)
-            except (CtpRequestError, TimeoutError, ValueError) as exc:
-                self.logger.warning("CTP 持仓行情订阅不可用: %s", exc)
+        with self._lock:
+            can_subscribe = bool(open_symbols and self._verify_connection() and self._market_status == "ready")
+            if can_subscribe:
+                try:
+                    self._subscribe_market(open_symbols)
+                except (CtpRequestError, TimeoutError, ValueError) as exc:
+                    can_subscribe = False
+                    self.logger.warning("CTP 持仓行情订阅不可用: {}", exc)
         deadline = time.monotonic() + min(self._timeout, 3.0)
-        while open_symbols and time.monotonic() < deadline:
+        while can_subscribe and time.monotonic() < deadline:
             with self._lock:
+                if self._market_status != "ready":
+                    break
                 if all(
                     self._fresh_valuation_quote_error(self._valuation_quotes.get(symbol)) is None
                     for symbol in open_symbols
@@ -1822,11 +1935,14 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
     @override
     def get_market_data(self, symbols):
         """等待当前会话订阅确认及有效行情。"""
+        if not symbols:
+            return {}
         self.initialize_websocket(symbols)
         deadline = clock_monotonic() + self._timeout
         while clock_monotonic() < deadline:
             with self._lock:
                 self._require_session_ready()
+                self._require_market_ready()
                 errors = {x: self._subscription_errors[x] for x in symbols if x in self._subscription_errors}
                 if errors:
                     raise CtpRequestError(f"行情订阅失败: {errors}")
@@ -2430,7 +2546,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             self, f"/quote/{getattr(row, 'InstrumentID', '')}", lambda: replay_capture.quote(self, row)
         )
         with self._lock:
-            if self._closed or self._invalid_reason:
+            if self._closed or self._invalid_reason or self._market_status != "ready":
                 return
             received_at = clock_now().timestamp()
             q = quote_to_unified(row)
@@ -2540,16 +2656,14 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
     def _market_subscribed(self, row, info):
         """保留订阅失败，禁止以缓存行情掩盖异步拒绝。"""
         with self._lock:
-            if self._closed or self._invalid_reason:
+            if self._closed or self._invalid_reason or self._market_status != "ready":
                 return
             error = self._error(info, "行情订阅")
             symbol = str(getattr(row, "InstrumentID", ""))
             if error:
-                if not symbol:
-                    self._invalidate_connection(error)
-                    return
-                self._subscription_errors[symbol] = str(error)
-                self._quotes.pop(symbol, None)
+                for rejected in (symbol,) if symbol else self._subscriptions:
+                    self._subscription_errors[rejected] = str(error)
+                    self._quotes.pop(rejected, None)
             elif symbol in self._subscriptions:
                 self._subscription_acks.add(symbol)
 
@@ -2564,22 +2678,37 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         unknown = [x for x in symbols if x not in self._instruments]
         if unknown:
             raise ValueError(f"未知 CTP 合约: {unknown}")
+        self._start_market()
         with self._lock:
             self._require_session_ready()
-            new_symbols = [symbol for symbol in dict.fromkeys(symbols) if symbol not in self._subscriptions]
-            if not new_symbols:
-                return
-            encoded = [symbol.encode() for symbol in new_symbols]
-            self._subscriptions.update(new_symbols)
-            try:
-                self._check(self._market_api.SubscribeMarketData(encoded, len(encoded)), "行情订阅")
-            except Exception:
-                self._subscriptions.difference_update(new_symbols)
-                self._subscription_acks.difference_update(new_symbols)
-                for symbol in new_symbols:
-                    self._quotes.pop(symbol, None)
-                raise
-            self._monitoring = True
+            stage = self._md_login
+        if not stage.done.wait(self._timeout):
+            raise TimeoutError("等待 CTP 行情就绪超时")
+        with self._lock:
+            self._require_session_ready()
+            if stage.error is not None:
+                raise stage.error
+            self._require_market_ready()
+            self._subscribe_market(symbols)
+
+    def _subscribe_market(self, symbols):
+        new_symbols = [symbol for symbol in dict.fromkeys(symbols) if symbol not in self._subscriptions]
+        if not new_symbols:
+            return
+        api = self._market_api
+        if api is None:
+            raise CtpRequestError("CTP 行情前置未初始化")
+        encoded = [symbol.encode() for symbol in new_symbols]
+        self._subscriptions.update(new_symbols)
+        try:
+            self._check(api.SubscribeMarketData(encoded, len(encoded)), "行情订阅")
+        except Exception:
+            self._subscriptions.difference_update(new_symbols)
+            self._subscription_acks.difference_update(new_symbols)
+            for symbol in new_symbols:
+                self._quotes.pop(symbol, None)
+            raise
+        self._monitoring = True
 
     def _dispatch(self, callbacks, value):
         for cb in list(callbacks):
@@ -2628,6 +2757,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             return (
                 self._monitoring
                 and self._verify_connection()
+                and self._market_status == "ready"
                 and not self._subscription_errors
                 and all(symbol in self._quotes and symbol in self._subscription_acks for symbol in self._subscriptions)
             )
@@ -2739,11 +2869,12 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     def close(self):
         """按行情、交易顺序幂等释放 API。"""
-        with self._lock:
+        with self._market_start_lock, self._lock:
             if self._closed:
                 return
             self._closed = True
             self._ready = False
+            self._market_status = "disconnected"
             replay_capture.capture(
                 self,
                 "/connection",

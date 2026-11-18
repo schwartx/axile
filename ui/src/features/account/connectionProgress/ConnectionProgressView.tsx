@@ -51,7 +51,7 @@ function ConnectionStepRow({ step, busy, onDetails, onStepDetails }: {
             <Circle size={10} className={`${iconClass} ${idle ? 'opacity-100' : 'opacity-0'}`} />
             <Check size={14} className={`${iconClass} ${passed ? 'opacity-100' : 'opacity-0'}`} />
             <TriangleAlert size={14} className={`${iconClass} ${failed ? 'opacity-100' : 'opacity-0'}`} />
-            {running && <LoaderCircle size={14} className="absolute animate-spin motion-reduce:animate-none" />}
+            {running && <LoaderCircle size={14} className="absolute animate-spin text-accent motion-reduce:animate-none" />}
           </span>
           <span className="flex min-w-0 flex-wrap items-baseline gap-x-1">
             <span>{step.label}</span>
@@ -95,17 +95,24 @@ export function ConnectionProgressBar({ progress, compact = false }: {
 }
 
 /** 同一套步骤用于常驻连接和临时验证；数据源只影响表格的按需读取。 */
-export function ConnectionProgressView({ progress, source, active = true }: {
+export function ConnectionProgressView({ progress, source, active = true, compactSummary = false }: {
   progress: Pick<ConnectionRun, 'steps' | 'status'>
   source?: ConnectionProgressSource
   active?: boolean
+  compactSummary?: boolean
 }) {
   const [selectedError, setSelectedError] = useState<ConnectionErrorSelection | null>(null)
   const [selectedDetails, setSelectedDetails] = useState<ConnectionKeyValueDetails | null>(null)
   const [selectedTable, setSelectedTable] = useState<ConnectionTableSelection | null>(null)
   const busy = active && progress.status === 'running'
+  const { completed, total } = connectionCompletion(progress)
+  const activeStep = busy ? progress.steps.find(step => step.status === 'running')?.label : undefined
+  const statusText = activeStep ? ` · 当前步骤 ${activeStep}` : ''
   return <>
-    <ConnectionProgressBar progress={progress} />
+    {compactSummary ? <p role="progressbar" aria-label="账户连接进度" aria-valuemin={0} aria-valuemax={total || 1}
+      aria-valuenow={completed} aria-valuetext={`已完成 ${completed}/${total}${statusText}`}
+      className="py-1.5 text-xs tabular-nums text-ink-2">{completed}/{total}{statusText}</p>
+      : <ConnectionProgressBar progress={progress} />}
     <ol aria-label="连接检查步骤" aria-busy={busy} className="border-t border-line pt-1">
       {progress.steps.map(step => <ConnectionStepRow key={step.id} step={step} busy={busy}
         onDetails={() => { if (step.error) setSelectedError({ stage: step.label, error: step.error }) }}

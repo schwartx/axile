@@ -9,6 +9,7 @@ from msgspec import Meta
 from axile.common.serialization import provided_fields
 from axile.executor.instrument_catalog import CatalogError
 from axile.server.api.inputs import json_body
+from axile.server.api.routes.account_support import ensure_account_current
 from axile.server.execution.resident_connection import AccountConnectionUnavailable
 from axile.server.execution.worker_backend.manager import get_worker_backend_manager
 from axile.server.repositories import get_account_snapshot
@@ -45,10 +46,11 @@ class InstrumentQuery:
 
 @router.post("/query", response_model=None)
 async def query_instruments(query: Annotated[InstrumentQuery, Depends(json_body(InstrumentQuery))]) -> dict[str, Any]:
-    """通过已连接账户精确查询静态资料，负查询不回收健康交易会话。"""
+    """读取静态资料，只有需要向柜台补齐时才要求交易会话。"""
     account = await get_account_snapshot(query.account_id)
     if account is None:
         raise HTTPException(404, detail={"code": "ACCOUNT_NOT_FOUND", "message": "账户不存在"})
+    ensure_account_current(account)
     try:
         rows = await get_worker_backend_manager().query_instruments(
             account,

@@ -992,6 +992,78 @@ test('a comparison-only failure has its own error and retry without hiding succe
 })
 
 
+test('账户连接开关显示仅行情可用，详情独立呈现行情状态和交易进度', async ({ page }) => {
+  await defaults(page)
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+  await page.clock.install()
+  await mockConnectionSnapshot(page, { status: 'disconnected', observed_at: null, message: null, error: null })
+  await page.route('**/api/v1/capabilities/channels', route => route.fulfill({ json: [
+    { channel: 'paper', label: '模拟', units: { quantity_kind: 'contract' }, ui: { show_short_leverage: true }, independent_market_data: true },
+  ] }))
+  let market = 'ready'
+  await page.route('**/api/v1/market-data/accounts/7/status', route => {
+    expect(route.request().method()).toBe('GET')
+    return route.fulfill({ json: { status: market } })
+  })
+  await page.goto('/e2e/errors.html?mode=account&global')
+  const trading = page.getByRole('switch', { name: '账户连接' })
+  await expect(trading).toHaveAttribute('aria-checked', 'false')
+  await expect(trading).toContainText('仅行情可用')
+  await page.getByRole('button', { name: /连接详情.*仅行情可用/ }).click()
+  const dialog = page.getByRole('dialog', { name: /账户连接(?:详情|告警)/ })
+  await expect(dialog.getByText('行情', { exact: true })).toBeVisible()
+  await expect(dialog.getByText('可用', { exact: true })).toBeVisible()
+  await expect(dialog.getByRole('progressbar')).toHaveCount(0)
+
+  const progress = { run_id: 'trade-only-progress', channel: 'paper', purpose: 'connect', status: 'running',
+    steps: [{ id: 'ready', label: '账户就绪', status: 'running' }], created_at: '', finished_at: null, error: null }
+  await pushConnection(page, { status: 'connecting', observed_at: null, message: null, error: null, progress })
+  await expect(dialog.getByRole('heading', { name: '交易连接进度' })).toBeVisible()
+  await expect(dialog.getByRole('progressbar')).toHaveText('0/1 · 当前步骤 账户就绪')
+  await expect(dialog.getByText('可用', { exact: true })).toBeVisible()
+  const tradeLink = dialog.locator('.connection-link-detail')
+  const tradeRing = tradeLink.locator('.connection-link-start')
+  const marketSweep = dialog.locator('.connection-market-sweep')
+  await expect(tradeRing).toHaveCSS('animation-name', 'connection-link-approach')
+  await expect(marketSweep).toHaveCount(0)
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await expect(tradeRing).toHaveCSS('animation-name', 'none')
+  await expect(tradeLink).toHaveAttribute('data-phase', 'connecting')
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+  const finished = { ...progress, status: 'succeeded', steps: [{ ...progress.steps[0], status: 'passed' }] }
+  await pushConnection(page, { status: 'ready', observed_at: null, message: null, error: null, progress: finished })
+  await expect(trading).toHaveAttribute('aria-checked', 'true')
+  await expect(trading).toContainText('已连接')
+  await expect(tradeLink).toHaveAttribute('data-phase', 'closed')
+  await expect(tradeRing).toHaveCSS('animation-name', 'none')
+  const previous = dialog.getByRole('button', { name: /上次交易连接/ })
+  await expect(previous).toHaveAttribute('aria-expanded', 'false')
+  await expect(dialog.getByRole('progressbar')).toHaveCount(0)
+  await previous.click()
+  await expect(dialog.getByRole('progressbar')).toHaveAttribute('aria-valuemax', '1')
+  market = 'connecting'
+  await page.clock.runFor(5100)
+  await expect(dialog.getByText('连接中', { exact: true })).toBeVisible()
+  await expect(marketSweep).toHaveCSS('animation-name', 'connection-market-sweep')
+  await expect(tradeRing).toHaveCSS('animation-name', 'none')
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await expect(marketSweep).toBeHidden()
+  await expect(dialog.getByText('连接中', { exact: true })).toBeVisible()
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+  market = 'disconnected'
+  await page.clock.runFor(5100)
+  await expect(dialog.getByText('已断开', { exact: true })).toBeVisible()
+  await expect(trading).toHaveAttribute('aria-checked', 'true')
+  await expect(marketSweep).toHaveCount(0)
+
+  const failed = { ...progress, run_id: 'failed-progress', status: 'failed',
+    steps: [{ ...progress.steps[0], status: 'failed' }] }
+  await pushConnection(page, { status: 'unavailable', observed_at: null, message: null, error: null, progress: failed })
+  await expect(dialog.getByRole('heading', { name: '交易连接进度' })).toBeVisible()
+  await expect(dialog.getByRole('list', { name: '连接检查步骤' })).toContainText('失败')
+  await expect(tradeLink).toHaveAttribute('data-phase', 'open')
+})
+
 test('账户连接标识读取后端三态，连接错误归连接入口，资产业务错误归资产入口', async ({ page }) => {
   await defaults(page)
   let state: 'unknown' | 'ready' | 'unavailable' = 'unknown'

@@ -213,6 +213,7 @@ async def _run_custom_calc_validation(
     *,
     leverage_overrides: dict[str, float] | None = None,
     simulation_account: SimulationAccount | None = None,
+    allow_market_only: bool = False,
 ) -> dict[str, Any]:
     """在给定上下文中试跑自定义组合函数并返回结构化结果."""
     try:
@@ -228,6 +229,7 @@ async def _run_custom_calc_validation(
                 account,
                 custom_calc_py_code,
                 leverage_overrides=leverage_overrides,
+                allow_market_only=allow_market_only,
             )
     except BaseException as exc:  # noqa: BLE001 - 校验接口统一返回执行器与 IPC 错误
         error = exc if isinstance(exc, PortfolioFunctionError) else _error_from_exception(exc)
@@ -295,7 +297,7 @@ async def validate_custom_calc(
         raise HTTPException(409, detail="账户正在执行或刷新，请稍后再试")
     try:
         return await _run_custom_calc_validation(
-            account, payload.custom_calc_py_code, leverage_overrides=overrides or None
+            account, payload.custom_calc_py_code, leverage_overrides=overrides or None, allow_market_only=True
         )
     finally:
         clear_account_asset_refresh(payload.account_id)

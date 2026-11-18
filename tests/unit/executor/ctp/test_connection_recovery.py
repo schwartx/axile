@@ -138,12 +138,13 @@ class ScriptedBroker:
 
     def _market_login(self, _request, rid):
         self.events.append("MarketLogin")
-        assert not self.executor._verify_connection()
         self.market_spi.OnRspUserLogin(SimpleNamespace(TradingDay=self.day), None, rid, True)
         return 0
 
-    def start(self):
+    def start(self, *, market=True):
         self.executor._initialize_connection(self.executor.account_config)
+        if market:
+            self.executor._start_market()
         return self.executor
 
     def _subscribe(self, symbols, _count):
@@ -178,20 +179,21 @@ def broker(monkeypatch):
     driver.executor.close()
 
 
-def test_startup_waits_for_all_stages_and_recovers_old_session_trade(broker):
-    executor = broker.start()
+def test_startup_recovers_old_session_trade_without_opening_market_front(broker):
+    executor = broker.start(market=False)
 
     assert broker.events == [
         "ReqAuthenticate",
         "ReqUserLogin",
         "ReqQrySettlementInfoConfirm",
         "ReqSettlementInfoConfirm",
-        "MarketLogin",
         "ReqQryOrder",
         "ReqQryTrade",
         "ReqQryInvestorPosition",
         "ReqQryTradingAccount",
     ]
+    broker.market.Init.assert_not_called()
+    assert executor.market_data_status() == "uninitialized"
     assert executor._verify_connection()
     assert executor._recovery_snapshot["trades"][0].order_id == "20260909:7:1:10"
     assert executor._session_id == 2
@@ -230,13 +232,12 @@ def test_stage_failure_closes_instance_and_ignores_late_success(broker, stage):
     broker.trader.Release.assert_called_once()
 
 
-@pytest.mark.parametrize("kind", ["交易", "行情"])
-def test_disconnect_is_permanent_even_after_reconnect_and_late_callbacks(broker, kind):
+def test_trader_disconnect_is_permanent_even_after_reconnect_and_late_callbacks(broker):
     executor = broker.start()
     executor.initialize_websocket(["ag2612"])
     broker.quote()
     old_session = executor._session_id
-    executor._disconnected(kind, 4097)
+    executor._disconnected("交易", 4097)
 
     broker.trader_spi.OnFrontConnected()
     broker.market_spi.OnFrontConnected()
@@ -260,6 +261,63 @@ def test_disconnect_is_permanent_even_after_reconnect_and_late_callbacks(broker,
             SimpleNamespace(InstrumentID="ag2612", LimitPrice=9000, OrderPriceType=td.THOST_FTDC_OPT_LimitPrice),
         )
     broker.trader.ReqOrderInsert.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "problem,status", [("no_callback", "connecting"), ("rejected", "unavailable"), ("init", "unavailable")]
+)
+def test_trade_reconciles_without_market_login(broker, problem, status):
+    if problem == "no_callback":
+        broker.market.Init.side_effect = None
+    elif problem == "init":
+        broker.market.Init.side_effect = RuntimeError("行情初始化错误")
+    else:
+
+        def reject(_request, rid):
+            broker.market_spi.OnRspUserLogin(None, SimpleNamespace(ErrorID=3, ErrorMsg="行情认证失败"), rid, True)
+            return 0
+
+        broker.market.ReqUserLogin.side_effect = reject
+    executor = broker.start()
+    assert executor._verify_connection()
+    assert executor.market_data_status() == status
+    assert executor._recovery_snapshot["assets"].total_asset == 100000
+    assert "20260909:7:1:10" in executor._order_keys
+
+
+def test_market_disconnect_preserves_cancellable_orders_and_restarts_quotes(broker):
+    from axile.executor.connection_state import connection_monitor
+
+    broker.order.OrderStatus = td.THOST_FTDC_OST_NoTradeQueueing
+    broker.order.VolumeTraded = 0
+    broker.rows["ReqQryTrade"] = []
+    broker.trader.ReqOrderAction.return_value = 0
+    executor = broker.start()
+    observations = []
+    connection_monitor(executor).bind(observations.append)
+    executor.initialize_websocket(["ag2612"])
+    broker.quote()
+    assert executor.get_market_data(["ag2612"])["ag2612"].last_price == 9000
+    order_request = SimpleNamespace(InstrumentID="ag2612", LimitPrice=9000, OrderPriceType=td.THOST_FTDC_OPT_LimitPrice)
+    broker.market_spi.OnFrontDisconnected(4097)
+    broker.quote()
+    assert executor._verify_connection() and executor.market_data_status() == "disconnected"
+    assert executor._quotes == {} and not executor.is_monitoring()
+    assert executor.cancel_order("ag2612", "20260909:7:1:10")
+    broker.trader.ReqOrderAction.assert_called_once()
+    with pytest.raises(CtpRequestError, match="行情会话未就绪"):
+        executor._call_trader_request("ReqOrderInsert", order_request)
+    broker.market_spi.OnFrontConnected()
+    assert executor.market_data_status() == "ready"
+    assert broker.market.SubscribeMarketData.call_count == 2
+    with pytest.raises(CtpRequestError, match="新行情"):
+        executor._call_trader_request("ReqOrderInsert", order_request)
+    broker.trader.ReqOrderInsert.assert_not_called()
+    broker.quote()
+    executor._call_trader_request("ReqOrderInsert", order_request)
+    broker.trader.ReqOrderInsert.assert_called_once()
+    assert broker.trader.ReqAuthenticate.call_count == 1
+    assert all(event.status != "error" for event in observations)
 
 
 def test_wrong_and_duplicate_stage_responses_cannot_replace_session(broker):
@@ -713,16 +771,15 @@ def test_native_account_query_recovers_without_new_login_callback(broker):
     assert observations[-1].error is None
 
 
-@pytest.mark.parametrize("kind", ["交易", "行情"])
-def test_disconnect_presentation_preserves_native_reason_through_invalidation(broker, kind):
+def test_trader_disconnect_presentation_preserves_native_reason_through_invalidation(broker):
     from axile.executor.connection_state import connection_monitor
 
     observations = []
     connection_monitor(broker.executor).bind(observations.append)
     executor = broker.start()
-    executor._disconnected(kind, 4097)
+    executor._disconnected("交易", 4097)
     observation = observations[-1]
-    assert observation.label == f"{kind}前置断开"
+    assert observation.label == "交易前置断开"
     assert "4097" in str(observation.presentation)
     assert "已失效" in str(observation.presentation)
     assert observation.error["reason_code"] == "4097"
@@ -808,6 +865,8 @@ def test_native_api_initialization_failure_has_stage_content(broker, monkeypatch
         raise OSError("native API initialization original")
 
     api_type = td.CThostFtdcTraderApi if kind == "交易" else md.CThostFtdcMdApi
+    if kind == "行情":
+        broker.executor._validation_catalog = dict
     monkeypatch.setattr(api_type, "CreateFtdcTraderApi" if kind == "交易" else "CreateFtdcMdApi", fail)
     with pytest.raises(OSError):
         broker.start()
@@ -828,19 +887,18 @@ def test_missing_configuration_names_fields_without_values(broker):
     assert "test" not in str(observations[-1].presentation)
 
 
-@pytest.mark.parametrize("kind", ["交易", "行情"])
-def test_unexpected_logout_invalidates_session(broker, kind):
+def test_unexpected_trader_logout_invalidates_session(broker):
     from axile.executor.connection_state import connection_monitor
 
     executor = broker.start()
     observations = []
     connection_monitor(executor).bind(observations.append)
-    spi = broker.trader_spi if kind == "交易" else broker.market_spi
+    spi = broker.trader_spi
     waiting = SimpleNamespace(done=Event(), error=None)
     executor._pending_queries[999] = waiting
     spi.OnRspUserLogout(None, None, 0, True)
     assert not executor._verify_connection()
-    assert observations[-1].label == f"{kind}会话已登出"
+    assert observations[-1].label == "交易会话已登出"
     assert observations[-1].error["reason_code"] == "CTP_USER_LOGOUT"
     assert waiting.done.is_set()
     assert isinstance(waiting.error, CtpSessionRecoveryRequired)
@@ -853,6 +911,14 @@ def test_unexpected_logout_invalidates_session(broker, kind):
     broker.trader_spi.OnFrontConnected()
     broker.market_spi.OnFrontConnected()
     assert not executor._verify_connection()
+
+
+def test_market_logout_reauthenticates_without_retiring_trade_session(broker):
+    executor = broker.start()
+    broker.market_spi.OnRspUserLogout(None, None, 0, True)
+    assert executor._verify_connection() and executor.market_data_status() == "ready"
+    assert broker.trader.ReqAuthenticate.call_count == 1
+    assert broker.market.ReqUserLogin.call_count == 2
 
 
 def test_rejected_logout_does_not_invalidate_session(broker):

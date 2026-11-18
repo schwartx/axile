@@ -11,6 +11,7 @@ from axile.server.api.routes import (
     events,
     init,
     instrument_catalog,
+    market_data,
     portfolio,
     time_check,
     transfer,
@@ -26,6 +27,7 @@ api_router.include_router(connection_validation.account_router)
 api_router.include_router(algorithms.router)
 api_router.include_router(init.router)
 api_router.include_router(instrument_catalog.router)
+api_router.include_router(market_data.router)
 api_router.include_router(account.router)
 api_router.include_router(portfolio.router)
 api_router.include_router(editor.router)
