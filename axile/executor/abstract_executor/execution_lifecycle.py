@@ -111,6 +111,7 @@ class AbstractExecutorExecutionLifecycleMixin(AbstractExecutorExecutionRuntimeFa
                         cast("FeishuNotificationSource", executor), output, notification_snapshot
                     )
                 except Exception as exc:
+                    output.extra["server_notification_context"] = {}
                     executor.logger.error(f"保存服务端通知快照失败: {exc}")
             elif standard_input.execution_notification_code:
                 executor.logger.info("异步处理执行通知")

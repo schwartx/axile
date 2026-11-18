@@ -97,7 +97,7 @@ def test_notification_trial_key_matches_mode_without_saving(monkeypatch, supplie
     monkeypatch.setattr(account_feishu, "_load_notification_preview_context", AsyncMock(return_value={}))
     monkeypatch.setattr(
         account_feishu,
-        "run_notification_function",
+        "run_account_notification",
         lambda code, context, **kwargs: captured.append(kwargs) or SimpleNamespace(ok=True),
     )
     for key in (None, "saved-key") if custom else ("saved-key",):

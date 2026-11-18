@@ -146,11 +146,17 @@ def test_empty_positions_uses_account_level_algorithm_when_present(
     }
 
 
+@pytest.mark.parametrize("requested", [False, True])
 def test_empty_positions_routes_gm_account_to_worker_manager(
     monkeypatch: pytest.MonkeyPatch,
+    requested: bool,
 ) -> None:
     """GM 清仓应走 worker manager，而不是主进程内执行 empty_positions。"""
+    code = "def notify(context): pass"
+    if requested:
+        code = 'NOTIFICATION_REQUIRES = ("daily_return",)\n' + code
     account = build_account(
+        execution_notification_code=code,
         name="gm-live-account",
         market="A股",
         trade_channel=TradeChannel("gm"),
@@ -199,7 +205,10 @@ def test_empty_positions_routes_gm_account_to_worker_manager(
     assert len(manager.empty_calls) == 1
     empty_call = manager.empty_calls[0]
     assert empty_call["execution_id"] == "exec-gm-worker-empty-1"
-    assert cast(dict[str, object], empty_call["empty_kwargs"])["algorithm"] == {
+    empty_kwargs = cast(dict[str, object], empty_call["empty_kwargs"])
+    assert empty_kwargs["execution_notification_code"] == (None if requested else code)
+    assert bool(cast(dict[str, object], empty_kwargs["extra"]).get("server_notification")) is requested
+    assert empty_kwargs["algorithm"] == {
         "method": "SINGLE-MAKER",
         "params": {},
     }

@@ -6,8 +6,9 @@ import loguru
 
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.notification_context import SYSTEM_NOTIFICATION_EVENTS
-from axile.common.notification_function import NotificationFunctionResult, run_notification_function
+from axile.common.notification_function import NotificationFunctionResult
 from axile.executor.algorithms.utils.clock import clock_now
+from axile.server.execution.notification_data import run_account_notification
 from axile.server.native_store import native_operation
 
 _tasks: dict[int, asyncio.Task[None]] = {}
@@ -41,7 +42,9 @@ async def _dispatch(account_id: int) -> None:
                 result = (
                     NotificationFunctionResult(False, "未配置飞书 Webhook，无法发送通知")
                     if code == DEFAULT_ACCOUNT_NOTIFICATION_CODE and not key
-                    else await asyncio.to_thread(run_notification_function, code, context, feishu_key=key)
+                    else await asyncio.to_thread(
+                        run_account_notification, code, context, account_id=account_id, feishu_key=key
+                    )
                 )
             receipt = await native_operation(
                 "notifications_finish",

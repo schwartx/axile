@@ -12,6 +12,8 @@ export const NOTIFICATION_FIELDS: NotificationField[] = [
   { name: 'orders / trades', type: 'list[dict]', desc: '本次执行的订单和成交；列表可能为空。' },
   { name: 'symbols', type: 'list[dict]', desc: '各品种的状态、结论、原因、目标数量与订单成交计数。' },
   { name: 'summary', type: 'dict', desc: '品种、持仓、订单、成交、成功与失败品种的计数。' },
+  { name: 'performance.daily_return', type: 'float | None', desc: '声明 NOTIFICATION_REQUIRES = ("daily_return",) 后加载。本次资产观测对应的出入金调整后日收益；0.0036 表示 0.36%，缺少观测或前日基准时为 None。' },
+  { name: 'supplement_history', type: 'list[dict]', desc: '声明 NOTIFICATION_REQUIRES = ("supplement_history",) 后加载。补发末轮的先前执行摘要、订单及成交，按入队顺序去重；非末轮为空列表。' },
   { name: 'default_feishu_variables', type: 'dict', desc: '默认飞书卡片的模板变量，可直接修改后发送。' },
 ]
 

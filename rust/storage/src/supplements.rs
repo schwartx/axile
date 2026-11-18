@@ -704,13 +704,15 @@ fn enqueue_execution_finished(
         return Ok((Some(event), session_closed));
     }
     let mut context = crate::notification_context::execution_context(row, account, detail, now);
-    context["execution"]["supplements"] = json!(steps
-        .iter()
-        .filter(|step| step["status"] != "cancelled")
-        .filter_map(|step| groups
-            .get(step["group_id"].as_str().unwrap_or(""))
-            .map(|group| supplement_context(group, step)))
-        .collect::<Vec<_>>());
+    if !steps.is_empty() {
+        context["execution"]["supplements"] = json!(steps
+            .iter()
+            .filter(|step| step["status"] != "cancelled")
+            .filter_map(|step| groups
+                .get(step["group_id"].as_str().unwrap_or(""))
+                .map(|group| supplement_context(group, step)))
+            .collect::<Vec<_>>());
+    }
     let mut notification = json!({"id":event_id,"account_id":account_id,"event_type":"execution.finished","context":null,"created_at":now});
     notification["context"] = context;
     let event = crate::notifications::enqueue_in_connection(connection, &notification)?;
@@ -725,7 +727,7 @@ pub(crate) fn finish_supplement_execution(
 ) -> Result<(), AnalysisError> {
     let execution_id = text(row, "execution_id")?;
     let steps = linked_steps(connection, execution_id)?;
-    if steps.is_empty() {
+    if steps.is_empty() && request["server_notification"] != true {
         return Ok(());
     }
     let account_id = integer(row, "account_id")?;
@@ -745,6 +747,9 @@ pub(crate) fn finish_supplement_execution(
         .map_err(database)?;
     let (_, session_closed) =
         enqueue_execution_finished(connection, row, &account, &steps, &groups, record, now)?;
+    if steps.is_empty() {
+        return Ok(());
+    }
     if session_closed {
         for group_id in groups.keys() {
             cancel_groups_in_connection(

@@ -52,6 +52,21 @@ class AccountNotificationSummary(TypedDict):
     failed_symbol_count: int
 
 
+class NotificationPerformance(TypedDict):
+    """与通知资产观测对应的账户收益。"""
+
+    daily_return: float | None
+
+
+class SupplementHistoryItem(TypedDict):
+    """补发组中早于本次执行的脱敏通知数据。"""
+
+    execution: AccountNotificationExecution
+    orders: list[dict[str, object]]
+    trades: list[dict[str, object]]
+    default_feishu_variables: dict[str, object]
+
+
 class AccountNotificationContext(TypedDict):
     """账户执行结束时交给 ``notify`` 的脱敏快照。"""
 
@@ -73,6 +88,8 @@ class AccountNotificationContext(TypedDict):
     symbols: list[dict[str, object]]
     summary: AccountNotificationSummary
     default_feishu_variables: dict[str, object]
+    performance: NotRequired[NotificationPerformance]
+    supplement_history: NotRequired[list[SupplementHistoryItem]]
 
 
 class SystemNotificationError(TypedDict):

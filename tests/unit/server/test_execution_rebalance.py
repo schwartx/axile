@@ -346,13 +346,18 @@ def test_trade_uses_gm_channel_default_leverages_when_unset(
     }
 
 
-@pytest.mark.parametrize("auction", [False, True])
+@pytest.mark.parametrize(("auction", "requested"), [(False, False), (True, False), (False, True)])
 def test_trade_routes_gm_account_to_worker_manager(
     monkeypatch: pytest.MonkeyPatch,
     auction: bool,
+    requested: bool,
 ) -> None:
     """GM 调仓应走 worker manager，而不是主进程内创建执行器并写审计。"""
+    code = "def notify(context): pass"
+    if requested:
+        code = 'NOTIFICATION_REQUIRES = ("daily_return",)\n' + code
     account = build_account(
+        execution_notification_code=code,
         name="gm-live-account",
         market="A股",
         trade_channel=TradeChannel("gm"),
@@ -429,6 +434,8 @@ def test_trade_routes_gm_account_to_worker_manager(
         assert trade_call[key]["extra"]["audit"].get("gm_session") == context
     restored = UnifiedStandardInput.from_dict(trade_call["standard_input_dict"])
     assert restored.extra["audit"].get("gm_session") == context
+    assert restored.execution_notification_code == (None if requested else code)
+    assert bool(restored.extra.get("server_notification")) is requested
     assert captured["raw_input"] == cast(dict[str, object], trade_call["standard_input_dict"])
     assert captured["execution_id"] == "exec-gm-worker-trade-1"
 

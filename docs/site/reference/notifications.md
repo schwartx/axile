@@ -26,6 +26,27 @@
 
 取消补发事件可能只有账户、补发安排和上次执行信息，`summary` 等执行字段也可能缺失。读取 `execution`、资产金额、持仓和执行 ID 前，要检查是否有值。
 
+## 按需加载执行数据
+
+在源码顶层用列表或元组字面量声明所需的数据项，例如：
+
+```python
+NOTIFICATION_REQUIRES = ("daily_return", "supplement_history")
+
+
+def notify(context):
+    daily_return = context.get("performance", {}).get("daily_return")
+    previous_executions = context.get("supplement_history", [])
+    print(daily_return, len(previous_executions))
+```
+
+可只声明其中一项。服务端只为声明的项加载数据，适用于正式账户执行通知和试跑。
+
+| 声明项 | 新增字段 |
+| --- | --- |
+| `daily_return` | `performance.daily_return`，基于本次执行对应的资产观测，扣除出入金影响。小数 `0.0036` 表示 `0.36%`。没有匹配观测或前日基准时为 `None`。 |
+| `supplement_history` | `supplement_history`，补发末轮所属已完成组中的先前执行，按通知入队顺序去重。每项有 `execution`、`orders`、`trades` 及 `default_feishu_variables.trades`。当前执行仍取原有字段。非末轮为空列表，组内历史缺失时试跑或发送会报告错误。 |
+
 ## 试跑与保存
 
 账户已有执行记录后，点击“试跑函数”，使用最近一次执行的脱敏快照运行当前草稿，不用先保存，也不会为获取试跑数据连接渠道。可选择执行完成或取消补发事件；两类试跑的顶层 `is_test` 都为 `True`。执行完成事件还保留 `execution.is_test`，取消补发事件的 `execution` 为 `None`。

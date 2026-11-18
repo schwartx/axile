@@ -1,6 +1,7 @@
 """通知编排只跨业务阶段边界，不持有 Python 数据库事务。"""
 
 import asyncio
+from math import nan
 from unittest.mock import AsyncMock
 
 import pytest
@@ -8,7 +9,7 @@ import pytest
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.notification_context import ACCOUNT_CONTROL_WARNING_EVENT
 from axile.common.notification_function import NotificationFunctionResult
-from axile.server.execution import notification_outbox, notification_state
+from axile.server.execution import notification_data, notification_outbox, notification_state
 
 
 @pytest.fixture(autouse=True)
@@ -45,7 +46,7 @@ def test_user_function_starts_after_claim_and_summary_failure_keeps_dispatching(
         return NotificationFunctionResult(ok, None if ok else "send failed")
 
     monkeypatch.setattr(notification_outbox, "native_operation", operation)
-    monkeypatch.setattr(notification_outbox, "run_notification_function", invoke)
+    monkeypatch.setattr(notification_outbox, "run_account_notification", invoke)
     asyncio.run(notification_outbox._dispatch(1))
     assert stages == ["notifications_claim", "user_function", "notifications_finish"] * 2 + ["notifications_claim"]
 
@@ -71,7 +72,7 @@ def test_unconfigured_and_disabled_functions_finish_without_invoking_user_code(m
 
     monkeypatch.setattr(notification_outbox, "native_operation", operation)
     monkeypatch.setattr(
-        notification_outbox, "run_notification_function", lambda *_args, **_kwargs: pytest.fail("不应调用用户函数")
+        notification_outbox, "run_account_notification", lambda *_args, **_kwargs: pytest.fail("不应调用用户函数")
     )
     asyncio.run(notification_outbox._dispatch(1))
     assert receipts[0]["ok"] is ok
@@ -147,3 +148,23 @@ def test_summary_wrappers_preserve_models_and_reject_unfinished_system_results(m
                 "error": None,
             }
         )
+
+
+def test_unavailable_notification_data_needs_no_database_access(monkeypatch):
+    """缺失收益观测和非末轮都直接提供空值。"""
+    monkeypatch.setattr(
+        notification_data, "native_operation_sync", lambda *_: pytest.fail("不应读取无匹配条件的附加数据")
+    )
+    code = """
+NOTIFICATION_REQUIRES = ("daily_return", "supplement_history")
+def notify(context):
+    assert context["performance"]["daily_return"] is None
+    assert context["supplement_history"] == []
+"""
+    context = {
+        "event_type": "execution.finished",
+        "execution": {"id": "first", "supplements": [{"is_last": False}]},
+        "assets": {"total_assets": nan, "update_time": "2026-10-09T12:00:00+08:00"},
+    }
+    result = notification_data.run_account_notification(code, context, account_id=1, feishu_key=None)
+    assert result.ok, result.traceback
