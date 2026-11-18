@@ -19,8 +19,9 @@ async def calculate_portfolio_for_account(
     *,
     execution_id: str | None = None,
     leverage_overrides: dict[str, float] | None = None,
+    allow_market_only: bool = False,
 ) -> PortfolioTarget:
-    """通过账户常驻 worker 运行自定义组合函数."""
+    """运行自定义组合函数，试跑可在交易未就绪时只取行情。"""
     from axile.server.db.models import Account
     from axile.server.execution.worker_backend.manager import get_worker_backend_manager
 
@@ -30,7 +31,8 @@ async def calculate_portfolio_for_account(
             resolved_account,
             code,
             execution_id=execution_id,
-            **({"leverage_overrides": leverage_overrides} if leverage_overrides else {}),
+            leverage_overrides=leverage_overrides,
+            allow_market_only=allow_market_only,
         )
     except asyncio.CancelledError:
         # 任务取消必须原样上抛：在这里转成失败结果会截断终止协议，

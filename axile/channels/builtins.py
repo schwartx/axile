@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import cast
 
@@ -332,7 +333,6 @@ _CTP_STEPS = tuple(
         ("authenticate", "授权码认证"),
         ("trader_login", "交易账户登录"),
         ("settlement", "结算确认"),
-        ("market_login", "行情登录"),
         ("query_orders", "订单查询"),
         ("query_trades", "成交查询"),
         ("query_positions", "持仓查询"),
@@ -380,6 +380,27 @@ def _create_ctp_executor(config: BaseAccountConfig):
     executor = CTPExecutor(TradeChannel("ctp"))
     executor.account_config = config
     return executor
+
+
+def _configure_ctp_market_data(values: Mapping[str, object]):
+    """从账户设置读取行情字段，延迟加载行情 SDK。"""
+    from axile.executor.ctp.market_data import CtpMarketDataConfig
+
+    return CtpMarketDataConfig.from_account_config(values)
+
+
+def _configure_tq_market_data(values: Mapping[str, object]):
+    """从账户设置提取快期登录，与期货资金账户无关。"""
+    from axile.executor.tq.market_data import TQMarketDataConfig
+
+    return TQMarketDataConfig.from_account_config(values)
+
+
+def _configure_gm_market_data(values: Mapping[str, object]):
+    """配置隔离的掘金行情查询进程。"""
+    from axile.executor.gm_market_data import GMMarketDataConfig
+
+    return GMMarketDataConfig.from_account_config(values)
 
 
 def _validate_ctp_connection(config: BaseAccountConfig, report: ConnectionProgress) -> None:
@@ -511,6 +532,7 @@ def _ctp_plugin() -> ChannelPlugin:
         ),
         account_config_model=CTPAccountConfig,
         create_executor=_create_ctp_executor,
+        configure_market_data=_configure_ctp_market_data,
         validate_connection=_validate_ctp_connection,
         target_transform=_contribution_target,
         execution_backend="process",
@@ -638,6 +660,7 @@ def _gm_plugin() -> ChannelPlugin:
         ),
         account_config_model=GMAccountConfig,
         create_executor=_create_gm_executor,
+        configure_market_data=_configure_gm_market_data,
         target_transform=_gm_target,
         execution_backend="process",
         required_modules=("gm",),
@@ -760,6 +783,7 @@ def _tq_plugin() -> ChannelPlugin:
         ),
         account_config_model=TQAccountConfig,
         create_executor=_create_tq_executor,
+        configure_market_data=_configure_tq_market_data,
         target_transform=_tq_target,
         execution_backend="process",
         required_modules=("tqsdk",),

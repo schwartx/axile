@@ -10,7 +10,7 @@ const preset: SimulationAccount = {
 
 /** 仅浏览器验收使用的离线渠道，不访问交易凭据或生产账户。 */
 export const simulationChannels = ['ctp', 'tq'].map((channel) => ({
-  channel, label: channel.toUpperCase(), market: 'ctp', available: false,
+  channel, label: channel.toUpperCase(), market: 'ctp', available: false, independent_market_data: channel === 'ctp',
   portfolio: { market_label: '期货', example_symbols: ['SHFE.rb2701'] },
   units: { quantity_kind: 'contract', quantity_label: '手', quantity_max_decimals: 0 },
   currency: 'CNY', leverage: { min: 0, max: 10, step: 0.5 },

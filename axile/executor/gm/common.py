@@ -65,6 +65,26 @@ def from_gm_price(
     )
 
 
+def from_gm_current(tick: dict[str, Any]) -> UnifiedPriceData:
+    """将 current 快照转换为与订阅一致的价量和交易时段语义。"""
+    created = tick["created_at"]
+    quotes = tick.get("quotes", [])
+    data = {
+        "symbol": tick.get("symbol", "UNKNOWN"),
+        "dt": created.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+        "timestamp": int(created.timestamp() * 1000),
+        "price": tick["price"],
+        "volume": tick["last_volume"],
+    }
+    for side in ("bid", "ask"):
+        levels = [(quote[f"{side}_p"], quote.get(f"{side}_v", 0)) for quote in quotes if quote.get(f"{side}_p", 0) > 0]
+        data[f"{side}_price"] = [price for price, _ in levels]
+        data[f"{side}_volume"] = [volume for _, volume in levels]
+    result = from_gm_price(data)
+    result.extra.update(source="gm.current", time_basis="exchange")
+    return result
+
+
 def convert_gm_side_to_direction(side: int) -> OrderDirection:
     """将 GM 买卖方向转换为统一方向枚举."""
     if side == OrderSide_Buy:

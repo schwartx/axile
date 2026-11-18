@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Annotated, Literal, Protocol
 import pandas as pd
 from msgspec import Meta
 
+from axile.channels.market_data import MarketDataFactory
 from axile.channels.simulation import SimulationAccount
 from axile.common.order_param_model import OrderParamModel
 from axile.executor.connection_progress import ConnectionStepDefinition as ConnectionStepDefinition
@@ -519,6 +520,7 @@ class ChannelPlugin:
     connect_account: Callable[[BaseAccountConfig], None] | None = None
     validate_connection: ConnectionValidator | None = None
     schedule_settings_model: type | None = None
+    configure_market_data: MarketDataFactory | None = None
 
     def __post_init__(self) -> None:
         """校验插件运行时契约中的基本不变量."""

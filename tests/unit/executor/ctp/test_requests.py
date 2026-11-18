@@ -48,7 +48,9 @@ def test_position_valuation_subscribes_combination_legs_and_skips_zero(config):
     executor._lock = threading.RLock()
     executor._timeout = 0.01
     executor._instruments = {"rb2610": object(), "rb2701": object()}
-    executor.initialize_websocket = Mock()
+    executor._verify_connection = Mock(return_value=True)
+    executor._market_status = "ready"
+    executor._subscribe_market = Mock()
     executor._get_ctp_session_block_reason = Mock(return_value=None)
     executor._fresh_valuation_quote_error = Mock(return_value=None)
     executor._valuation_quotes = {symbol: fresh_quote(symbol, "") for symbol in executor._instruments}
@@ -58,7 +60,7 @@ def test_position_valuation_subscribes_combination_legs_and_skips_zero(config):
         SimpleNamespace(InstrumentID="rb2610", Position=0),
     ]
     quotes, errors = executor._position_valuation_quotes(rows)
-    executor.initialize_websocket.assert_called_once_with(["rb2610", "rb2701"])
+    executor._subscribe_market.assert_called_once_with(["rb2610", "rb2701"])
     assert set(quotes) == {"rb2610", "rb2701"}
     assert errors == {}
     executor._query_valuation_snapshot.assert_not_called()
@@ -281,6 +283,8 @@ def test_rejects_conflicting_czce_alias_values(config: CTPAccountConfig) -> None
 def test_market_subscription_encodes_instrument_ids() -> None:
     executor = CTPExecutor(TradeChannel("ctp"))
     executor._ready = executor._trader_connected = executor._market_connected = True
+    executor._market_status = "ready"
+    executor._md_login.done.set()
     executor._instruments = {"rb2610": object()}
     executor._ensure_instrument_symbols = Mock()
     executor._market_api = Mock()
@@ -378,6 +382,7 @@ def _submit_point_executor(config: CTPAccountConfig) -> CTPExecutor:
     executor = CTPExecutor(TradeChannel("ctp"))
     executor._ensure_instrument_symbols = Mock()
     executor._ready = executor._trader_connected = executor._market_connected = True
+    executor._market_status = "ready"
     executor._quotes = {symbol: fresh_quote(symbol, "20260824") for symbol in ("ag2612", "bu2612")}
     executor._subscription_acks = {"ag2612", "bu2612"}
     executor.account_config = config

@@ -105,7 +105,7 @@ def test_exact_lookup_uses_selected_paused_session_and_keeps_worker_on_not_found
     manager._workers[1] = handle
     monkeypatch.setattr(manager, "_check_read_session", lambda account: None)
     monkeypatch.setattr(manager, "_is_handle_healthy", lambda value: value is handle)
-    account = SimpleNamespace(id=1)
+    account = SimpleNamespace(id=1, trade_channel="ctp")
     try:
         with pytest.raises(CatalogError) as caught:
             asyncio.run(manager.query_instruments(account, ["SHFE.missing"]))

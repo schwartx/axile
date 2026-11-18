@@ -138,6 +138,19 @@ def event(
             },
             receipt=receipt,
         )
+    elif kind == "market_connection":
+        ready = row.get("ready") is True
+        capture(
+            owner,
+            "/connection",
+            lambda: {
+                "source": "tq.market_data",
+                "scope": "market_data",
+                "available": ready,
+                "reason": "market_transport_connected" if ready else "market_transport_disconnected",
+            },
+            receipt=receipt,
+        )
 
 
 def order(owner: object, row: Mapping[str, object], *, source: str = "tq.order_snapshot") -> dict[str, object]:

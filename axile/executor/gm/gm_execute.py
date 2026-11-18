@@ -40,6 +40,7 @@ from gm.api import (  # type: ignore
 from loguru import logger
 
 from axile.channels.gm_sessions import SHANGHAI, check_gm_operation, gm_phase
+from axile.channels.market_data import MarketDataStatus
 from axile.common.gm_symbols import GM_SYMBOL_RESOLVER, normalize_gm_standard_input
 from axile.common.trade_channel import TradeChannel
 from axile.executor import replay as recording
@@ -51,10 +52,11 @@ from axile.executor.gm import replay
 from axile.executor.gm.common import (
     convert_gm_order_to_unified,
     convert_gm_trade_to_trade_record,
+    from_gm_current,
     from_gm_price,
 )
 from axile.executor.gm.connection import report_gm_failure
-from axile.executor.gm.core.api_bridge import GMSdkOperation
+from axile.executor.gm.core.api_bridge import GM_MARKET_OPERATIONS, GMSdkOperation
 from axile.executor.gm.core.callback_dispatcher import GMCallbackDispatcher
 from axile.executor.gm.core.strategy_bridge import GMStrategyBridge, replay_bridge_call
 from axile.executor.models.execution_result import TargetSizingDecision, TargetSizingStatus
@@ -228,6 +230,16 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         """只读取运行时和交易账户就绪状态，不登录、不订阅、不重建连接。"""
         bridge = self._strategy_bridge
         return bridge is not None and bridge.is_running() and bridge.is_ready()
+
+    def market_data_status(self) -> MarketDataStatus:
+        """读取行情通道回调，不用交易账户状态推断行情。"""
+        bridge = getattr(self, "_strategy_bridge", None)
+        if bridge is None or not bridge.is_running():
+            return "uninitialized"
+        status = bridge.get_stats().get("market_connected")
+        if status is None:
+            return "connecting"
+        return "ready" if status else "disconnected"
 
     @property
     def connection_revision(self) -> int:
@@ -498,7 +510,9 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         if getattr(self, "_gm_config", None) is None:
             raise RuntimeError("GMExecutor 尚未初始化连接配置，无法调用 GM bridge")
         bridge = self._strategy_bridge
-        if bridge is None or not self._verify_connection():
+        if bridge is None or not (
+            bridge.is_running() if operation in GM_MARKET_OPERATIONS else self._verify_connection()
+        ):
             raise ConnectionError("GM 交易连接不可用，请通过账户连接入口恢复；本次请求未提交")
         # GM 对无效账户也可能返回空列表；空持仓/订单不能证明账户有效。
         if operation == "get_cash" and kwargs.get("account_id") in {None, self.account_id}:
@@ -662,6 +676,8 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
 
     def market_data_error(self, quote, *, purpose="order", now=None):
         """竞价行情必须来自本交易日、本阶段，再检查公共时效和所需价格。"""
+        if self.market_data_status() == "disconnected":
+            return "掘金行情通道已断开"
         now = self.market_data_now() if now is None else now
         error = super().market_data_error(quote, purpose=purpose, now=now)
         if error or quote is None:
@@ -696,29 +712,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             for tick in current_ticks:
                 tick_dict: dict[str, Any] = dict(tick)  # pyright: ignore
                 try:
-                    dt_str = tick_dict["created_at"].strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-                    timestamp_ms = int(tick_dict["created_at"].timestamp() * 1000)
-
-                    quotes: list[dict[str, Any]] = tick_dict.get("quotes", [])
-                    bid_price = [q.get("bid_p", 0.0) for q in quotes if q.get("bid_p", 0.0) > 0]
-                    ask_price = [q.get("ask_p", 0.0) for q in quotes if q.get("ask_p", 0.0) > 0]
-                    bid_volume = [q.get("bid_v", 0) for q in quotes if q.get("bid_p", 0.0) > 0]
-                    ask_volume = [q.get("ask_v", 0) for q in quotes if q.get("ask_p", 0.0) > 0]
-
-                    gm_tick = {
-                        "symbol": tick_dict.get("symbol", "UNKNOWN"),
-                        "dt": dt_str,
-                        "timestamp": timestamp_ms,
-                        "price": tick_dict["price"],
-                        "volume": tick_dict["last_volume"],
-                        "bid_price": bid_price,
-                        "ask_price": ask_price,
-                        "bid_volume": bid_volume,
-                        "ask_volume": ask_volume,
-                    }
-
-                    unified_price = from_gm_price(gm_tick, TradeChannel("gm"))
-                    unified_price.extra.update(source="gm.current", time_basis="exchange")
+                    unified_price = from_gm_current(tick_dict)
                     market_data[unified_price.symbol] = unified_price
                     logger.success(f"{unified_price.symbol} 的快照数据获取成功")
 

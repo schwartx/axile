@@ -10,6 +10,7 @@ from typing import Any, cast, override
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from axile.channels.market_data import MarketDataStatus
 from axile.common.trade_channel import TradeChannel
 from axile.executor import replay as recording
 from axile.executor.abstract_executor.base import AbstractExecutor
@@ -21,6 +22,7 @@ from axile.executor.execution_engine import ExecutionEngine
 from axile.executor.futures_order_intent import is_close_intent, single_close_offset
 from axile.executor.instrument_catalog import InstrumentCatalogProvider
 from axile.executor.instrument_catalog_records import normalize_catalog_symbol
+from axile.executor.market_data_validation import MarketDataUnavailableError
 from axile.executor.models.execution_result import (
     AlgorithmResult,
     ExecutionStatus,
@@ -280,6 +282,13 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
         """活着的 SDK 负责自身重连，宿主等待完整截面后再核对。"""
         return self._runtime is not None and self._runtime.is_alive() and not self._runtime.synchronized
 
+    def market_data_status(self) -> MarketDataStatus:
+        """读取天勤行情同步状态。"""
+        runtime = self._runtime
+        if runtime is None or not runtime.is_alive():
+            return "disconnected"
+        return "ready" if runtime.market_synchronized else "disconnected"
+
     @override
     def _check_trading_time(self) -> bool:
         # 日夜盘缝用钟整市场判断；盘中混合持仓仍按品种拦。
@@ -504,6 +513,8 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
     ) -> UnifiedOrder:
         receipt = recording.capture_command_receipt(self)
         command_id = recording.current_command_id() or (uuid4().hex if receipt is not None else None)
+        runtime = self._require_runtime()
+        self._require_order_transport(symbol, runtime)
         if not float(volume).is_integer() or volume <= 0:
             raise ValueError("TqSdk 委托数量必须为正整数手")
         _, maximum = self.get_order_volume_bounds(
@@ -512,7 +523,6 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
         if maximum is not None and volume > maximum:
             raise ValueError(f"TqSdk 委托数量 {volume} 超过单笔上限 {maximum}")
         self._ensure_instrument_symbols([symbol])
-        runtime = self._require_runtime()
         tq_symbol = runtime.resolver.to_tq(symbol, for_trade=True)
         sessions = self._trading_sessions(tq_symbol)
         offset_flag = kwargs.get("offset_flag")
@@ -533,6 +543,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
         validate = get_order_submission_validator()
 
         def submit(api: object) -> TQTradingTimeCheck | dict[str, object]:
+            self._require_order_transport(symbol, runtime)
             check = self._check_tq_symbol_trading_time(api, sessions, datetime.now(_SHANGHAI))
             if check.error is not None:
                 return check
@@ -584,14 +595,23 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
         self._terminal_audit.emit(order)
         return order
 
+    @staticmethod
+    def _require_order_transport(symbol: str, runtime: TQRuntime) -> None:
+        if not runtime.synchronized:
+            raise ConnectionError("天勤交易会话尚未同步")
+        if not runtime.market_synchronized:
+            raise MarketDataUnavailableError(symbol, "天勤行情会话尚未同步")
+
     @override
     def _cancel_order_impl(self, symbol: str, order_id: str) -> bool:
         receipt = recording.capture_command_receipt(self)
         command_id = recording.current_command_id() or (uuid4().hex if receipt is not None else None)
         runtime = self._require_runtime()
-        runtime.resolver.to_tq(symbol, for_trade=True)
-        runtime.call(
-            lambda api: replay.command(
+
+        def cancel(api):
+            if not runtime.synchronized:
+                raise ConnectionError("天勤交易会话尚未同步")
+            return replay.command(
                 self,
                 receipt,
                 command_id,
@@ -599,7 +619,8 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
                 {"symbol": symbol, "order_id": order_id},
                 lambda: getattr(api, "cancel_order")(order_id),
             )
-        )
+
+        runtime.call(cancel)
         return True
 
     def _query_order_rows(self) -> list[dict[str, object]]:
@@ -801,7 +822,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
 
     @override
     def is_monitoring(self) -> bool:
-        return self._monitoring and self._verify_connection()
+        return self._monitoring and self.market_data_status() == "ready"
 
     def _dispatch(self, callbacks: list[Any], value: object) -> None:
         for callback in tuple(callbacks):
@@ -823,6 +844,8 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
             self._dispatch(self._order_callbacks, order)
         elif kind == "connection" and row.get("ready") is not True:
             self.account_orders.invalidate("天勤连接已断开，委托状态待确认")
+        elif kind == "market_connection" and row.get("ready") is not True:
+            self._quotes.clear()
         elif kind == "orders.reset":
             watermark = self.account_orders.begin_sync()
             rows = cast(list[dict[str, object]], row["rows"])

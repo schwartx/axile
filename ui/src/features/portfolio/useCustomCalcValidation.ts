@@ -65,10 +65,11 @@ export function useCustomCalcValidation(code: string, market: string | null | un
   const operation = useConnectionOperation(contextAccountId ?? -1)
   const blockedReason = leverageDraft?.invalid ? '杠杆参数有误，请先修正'
     : contextAccountId === null ? simulationAccount ? null : '正在加载渠道模拟账户，请稍候'
-      : operation.pending !== null || connection.status === 'connecting' || connection.status === 'recovering' ? '账户连接操作中，请稍候'
-        : connection.status === 'ready' ? null
-          : connection.status === 'unknown' ? '正在确认账户连接状态'
-            : '请先连接账户，确认就绪后再试跑'
+      : channel?.independent_market_data ? null
+        : operation.pending !== null || connection.status === 'connecting' || connection.status === 'recovering' ? '账户连接操作中，请稍候'
+          : connection.status === 'ready' ? null
+            : connection.status === 'unknown' ? '正在确认账户连接状态'
+              : '请先连接账户，确认就绪后再试跑'
   const trial = usePythonRun<ValidateCustomCalcResult>({
     code, contextKey: JSON.stringify(contextAccountId === null ? [simulationChannel?.channel, simulationAccount] : [contextAccountId,
       overrides?.long_leverage ?? selected?.long_leverage ?? channel?.defaults.long_leverage ?? 1,

@@ -178,6 +178,7 @@ export function PortfolioTrialAccounts({ accounts, accountId, portfolioId, onSel
       <span className="tabular-nums">权益 {simulationAccount.account.total_asset.toLocaleString()} {simulationAccount.account.currency} · 持仓 {simulationAccount.account.positions.length} · 行情 {simulationAccount.quotes.length}</span>
     </div>}
     {configOpen && simulationChannel && simulationAccount && <SimulationAccountModal channel={simulationChannel} value={simulationAccount}
+      sources={simulationChannel.independent_market_data ? accounts.filter((account) => !account.archived_at && account.trade_channel === simulationChannel.channel) : []}
       onSave={(value) => saveSimulation(simulationChannel.channel, value)} onClose={() => setConfigOpen(false)} />}
     <ErrorNotice title="账户列表加载失败" intent="read" error={error} hasData={loaded} variant="compact" onRetry={refresh} />
     <ErrorNotice title="连接操作失败" intent="mutation" error={selected ? feedback.error : null} contextKey={accountId ?? 'sample'} variant="compact" networkFeedback="global-only" />

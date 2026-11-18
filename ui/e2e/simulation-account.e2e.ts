@@ -10,7 +10,7 @@ test('渠道模拟快照独立保存、取消不写入、试跑过期、恢复�
   await page.goto('/e2e/simulation-account.html')
   const configure = page.getByRole('button', { name: '配置', exact: true })
   const dialog = page.getByRole('dialog', { name: '模拟账户设置' })
-  await expect(page.getByText('模拟 ·CTP', { exact: true }).first()).toBeVisible()
+  await expect(page.getByRole('button', { name: '试跑账户' })).toContainText(/模拟\s*·\s*CTP/)
   await page.getByRole('button', { name: '试跑', exact: true }).click()
   await expect(page.getByRole('status')).toContainText('当前结果')
   expect(requests[0]?.simulation_channel).toBe('ctp')
@@ -25,12 +25,12 @@ test('渠道模拟快照独立保存、取消不写入、试跑过期、恢复�
   await expect(page.getByRole('status')).toContainText('旧结果')
   expect(requests).toHaveLength(1)
   await page.getByRole('button', { name: '试跑账户' }).click()
-  await page.getByRole('option', { name: /模拟 ·TQ/ }).click()
+  await page.getByRole('option', { name: /模拟\s*·\s*TQ/ }).click()
   await configure.click()
   await expect(page.getByRole('textbox', { name: '账户权益', exact: true })).toHaveValue('1000000')
   await page.keyboard.press('Escape')
   await page.getByRole('button', { name: '试跑账户' }).click()
-  await page.getByRole('option', { name: /模拟 ·CTP/ }).click()
+  await page.getByRole('option', { name: /模拟\s*·\s*CTP/ }).click()
   await page.reload()
   await configure.click()
   await expect(page.getByRole('textbox', { name: '账户权益', exact: true })).toHaveValue('2000000')
@@ -49,4 +49,47 @@ test('渠道模拟快照独立保存、取消不写入、试跑过期、恢复�
   await expect(dialog.getByRole('button', { name: '保存配置' })).toBeInViewport()
   await page.keyboard.press('Escape')
   await expect(configure).toBeFocused()
+})
+
+test('交易断开时可拉取报价，合约规格与盘口使用普通输入框', async ({ page }) => {
+  const symbol = 'SHFE.rb2701'
+  await page.route('**/market-data/accounts/41/quotes', async (route) => {
+    expect(route.request().postDataJSON()).toEqual({ symbols: [symbol] })
+    await route.fulfill({ json: { data: { [symbol]: {
+      symbol: 'rb2701', last_price: 3650, volume: 1200, bids: [[3649, 12]], asks: [[3651, 11]],
+      timestamp: 1794873600000, update_time: '2026-11-17T10:00:00+08:00',
+    } } } })
+  })
+  await page.goto('/e2e/simulation-account.html')
+  const configure = page.getByRole('button', { name: '配置', exact: true })
+  await configure.click()
+  const dialog = page.getByRole('dialog', { name: '模拟账户设置' })
+  await dialog.getByRole('tab', { name: /行情与合约/ }).click()
+  await dialog.getByRole('button', { name: '获取行情 1' }).click()
+  await expect(dialog.getByText(/行情已填入草稿/)).toBeVisible()
+  await expect(dialog.getByRole('textbox', { name: '行情 1 最新价 last_price' })).toHaveValue('3650')
+  await dialog.getByRole('button', { name: '行情 1 盘口与合约' }).click()
+  await expect(dialog.getByRole('textbox', { name: '合约乘数 1' })).toHaveValue('10')
+  await expect(dialog.getByRole('textbox', { name: '买盘 1 档价格' })).toHaveValue('3649')
+  await expect(dialog.locator('textarea')).toHaveCount(0)
+  await dialog.getByRole('button', { name: '保存配置' }).click()
+  await expect(dialog).toHaveCount(0)
+  await configure.click()
+  await dialog.getByRole('tab', { name: /行情与合约/ }).click()
+  await expect(dialog.getByRole('textbox', { name: '行情 1 最新价 last_price' })).toHaveValue('3650')
+})
+
+test('交易未连接时可以提交真实账户试跑', async ({ page }) => {
+  const requests: Record<string, unknown>[] = []
+  await page.route('**/portfolio/validate_custom_calc', async (route) => {
+    requests.push(route.request().postDataJSON())
+    await route.fulfill({ json: { valid: true, target: { rb2701: 1 } } })
+  })
+  await page.goto('/e2e/simulation-account.html')
+  await page.getByRole('button', { name: '试跑账户' }).click()
+  await page.getByRole('option', { name: /交易已断开的账户/ }).click()
+  await page.getByRole('button', { name: '试跑', exact: true }).click()
+  await expect(page.getByText(/当前结果.*rb2701/)).toBeVisible()
+  expect(requests).toHaveLength(1)
+  expect(requests[0]?.account_id).toBe(41)
 })

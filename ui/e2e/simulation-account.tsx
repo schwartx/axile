@@ -7,7 +7,12 @@ import { simulationChannels } from './simulationAccountFixture'
 import '../src/styles/theme.css'
 
 useChannelCatalogStore.setState({ channels: simulationChannels, loading: false })
-useDomainStore.setState({ accounts: [], accountsError: null })
+useDomainStore.setState({ accounts: [{
+  account_id: 41, name: '交易已断开的账户', remark: null, trade_channel: 'ctp', market: 'ctp', is_started: false,
+  connection: { status: 'disconnected', observed_at: null, message: null },
+  portfolio_id: null, is_scheduled: false, next_run_time: null, total_asset: 0, currency: 'CNY',
+  holdings_count: null, position_weights: [], last_is_success: null, last_exec_at: null,
+}], accountsError: null })
 export function Fixture() {
   const calc = useCustomCalcValidation('def calculate_portfolio(context):\n    return {"SHFE.rb2701": context.account.total_asset / 1000000}', '期货', 1)
   return <main className="mx-auto max-w-xl p-4">

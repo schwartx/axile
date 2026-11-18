@@ -29,6 +29,7 @@ GMSdkOperation: TypeAlias = Literal[
 ]
 
 GMBridgeOperation: TypeAlias = GMSdkOperation | Literal["subscribe_symbols"]
+GM_MARKET_OPERATIONS = frozenset({"current", "subscribe_symbols"})
 
 
 def _query_orders(*, unfinished: bool, account_id: str | None) -> list[dict[str, Any]]:

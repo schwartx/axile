@@ -13,7 +13,7 @@ from axile.server.portfolio_targets import PortfolioFunctionError, calculate_por
 class _CancellingManager:
     """模拟 worker manager 在任务取消时直接抛 CancelledError."""
 
-    async def calculate_portfolio(self, account: object, code: str, *, execution_id: str | None = None) -> object:
+    async def calculate_portfolio(self, account: object, code: str, **kwargs: object) -> object:
         raise asyncio.CancelledError
 
 

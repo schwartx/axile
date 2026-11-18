@@ -143,6 +143,11 @@ class InstrumentCatalog:
         with self._lock:
             return {key: row for key, row in self._rows.items() if not row.expired()}
 
+    def cached(self, symbol: str) -> Instrument | None:
+        """只读当前目录，缺失时不调度查询。"""
+        with self._lock:
+            return self._find(symbol)
+
     def _find(self, symbol: str) -> Instrument | None:
         symbol = normalize_catalog_symbol(symbol)
         if "." in symbol:

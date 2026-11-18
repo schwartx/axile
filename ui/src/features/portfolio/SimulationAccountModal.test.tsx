@@ -66,16 +66,11 @@ test('方向、同标的不同方向、杠杆范围和步进逐项验证', () =>
   expect(validateSimulationAccount(draft, offsetChannel).issues.some((issue) => issue.field === 'long_leverage')).toBe(true)
 })
 
-test('盘口形状、非负数量、JSON 对象及嵌套非有限数全面验证', () => {
-  for (const raw of ['{}', '[[1]]', '[[1, -2]]', '[["1", 2]]', '[[1e400, 2]]', '']) {
+test('盘口逐档验证价格、数量和非有限数', () => {
+  for (const [price, volume] of [['', '2'], ['0', '2'], ['1', '-2'], ['1e400', '2'], ['1', 'NaN']] as const) {
     const draft = simulationAccountDraft(account)
-    draft.quotes[0]!.bids = raw
-    expect(validateSimulationAccount(draft, channel).issues.some((issue) => issue.field.endsWith('.bids'))).toBe(true)
-  }
-  for (const raw of ['[]', 'null', '{', '{"nested":{"x":1e400}}']) {
-    const draft = simulationAccountDraft(account)
-    draft.positions[0]!.extra = raw
-    expect(validateSimulationAccount(draft, channel).issues.some((issue) => issue.field.endsWith('.extra'))).toBe(true)
+    draft.quotes[0]!.bids = [[price, volume]]
+    expect(validateSimulationAccount(draft, channel).issues.some((issue) => issue.field.includes('.bids.0.'))).toBe(true)
   }
   const draft = simulationAccountDraft(account)
   draft.quotes[0]!.update_time = ' '
@@ -91,9 +86,9 @@ test('保存前对齐渠道币种、资金、正价格、配套行情和期货�
   draft.positions[0]!.avg_price = '-1'
   draft.positions[0]!.symbol = 'missing'
   draft.quotes[0]!.last_price = '0'
-  draft.quotes[0]!.extra = '{}'
+  draft.quotes[0]!.volume_multiple = ''
   const issues = validateSimulationAccount(draft, { ...channel, currency: 'CNY', units: { quantity_kind: 'contract' } } as ChannelCapability).issues
-  for (const suffix of ['total_asset', 'currency', 'avg_price', 'symbol', 'last_price', 'extra']) {
+  for (const suffix of ['total_asset', 'currency', 'avg_price', 'symbol', 'last_price', 'volume_multiple', 'price_tick']) {
     expect(issues.some((issue) => issue.field.endsWith(suffix))).toBe(true)
   }
 })

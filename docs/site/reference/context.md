@@ -59,7 +59,9 @@ quote = context.get_quote("rb2701")
 ## 完整 executor
 
 ::: warning executor 可以下单
-`context.executor` 是实际的渠道执行器，调用 `execute`、`empty_positions` 或渠道下单方法会产生真实交易。在真实账户中试跑函数时，也一样可以下单。
+真实账户的交易会话就绪时，`context.executor` 是实际的渠道执行器。提交委托、执行调仓或清仓也会在试跑中产生真实交易。
+
+渠道支持独立行情时，交易会话断开后仍可试跑使用 `context.get_quote`、`context.get_price` 的函数。只有代码实际读取资产、持仓、委托或成交时，才会提示先连接交易账户。
 :::
 
 一次请求成功后，executor、回调和模块全局状态可能继续复用。修改属性、注册回调或启动永久线程时，要考虑对后续调用的影响。自行创建的资源应在 `finally` 中释放。脚本失败、超时或 Worker 异常后，系统会丢弃该 Worker，在下次调用时重建。

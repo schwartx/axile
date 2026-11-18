@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from loguru import logger
 
+from axile.channels import get_channel
 from axile.common.serialization import from_payload, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.clock import clock_monotonic
@@ -25,6 +26,7 @@ from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.termination import ExecutionTerminated, ExecutionTerminationController
 from axile.server.account_control.ipc import RemoteMonitor
 from axile.server.connection_state import ConnectionBinding
+from axile.server.context import ContextSettings
 from axile.server.db.models.account import AccountContext, AccountSnapshot
 from axile.server.db.models.base import now_str
 from axile.server.execution.worker_backend.catalog import CatalogSession
@@ -41,10 +43,12 @@ from axile.server.execution.worker_backend.protocol import (
 )
 from axile.server.execution.worker_backend.quota import QuotaMirror
 from axile.server.execution.worker_backend.worker import run_worker_backend_loop
+from axile.server.market_data import read_market_data
 from axile.server.portfolio_function import PortfolioFunctionError, _normalize_target
 from axile.server.portfolio_runner import (
     PORTFOLIO_FUNCTION_IPC_GRACE_SECONDS,
     PORTFOLIO_FUNCTION_TIMEOUT_SECONDS,
+    calculate_market_portfolio,
 )
 
 
@@ -1250,9 +1254,18 @@ class WorkerBackendManager:
         require_specs: bool = False,
         use_cache: bool = True,
     ) -> dict[str, dict[str, object]]:
-        """精确资料查询复用当前目录管道，不运行组合函数或创建交易 worker。"""
+        """优先读取公共缓存，缺失时复用所选账户的已就绪目录管道。"""
         from axile.server.execution.resident_connection import AccountConnectionUnavailable
 
+        if use_cache and account.trade_channel in {"ctp", "tq"}:
+            cached = {symbol: self.instrument_catalog.cached(symbol) for symbol in symbols}
+            rows = {
+                symbol: row.wire()
+                for symbol, row in cached.items()
+                if row is not None and (row.has_specs or not require_specs)
+            }
+            if len(rows) == len(symbols):
+                return rows
         self._check_read_session(account)
         with self._lock:
             handle = self._workers.get(_require_account_id(account))
@@ -1275,10 +1288,18 @@ class WorkerBackendManager:
         *,
         execution_id: str | None = None,
         leverage_overrides: dict[str, float] | None = None,
+        allow_market_only: bool = False,
     ) -> PortfolioTarget:
-        """通过账户常驻 worker 执行自定义组合函数，失败后丢弃 worker."""
+        """正式执行使用常驻 worker；交易未就绪时仍可试跑行情逻辑。"""
         if execution_id is None:
-            self._check_read_session(account)
+            from axile.server.execution.resident_connection import AccountConnectionUnavailable
+
+            try:
+                self._check_read_session(account)
+            except AccountConnectionUnavailable:
+                if not allow_market_only or get_channel(str(account.trade_channel)).configure_market_data is None:
+                    raise
+                return await self._calculate_market_trial(account, code, leverage_overrides)
         termination_controller = self._termination_controller(execution_id)
         request = WorkerBackendRequest(
             request_id=uuid4().hex,
@@ -1306,6 +1327,28 @@ class WorkerBackendManager:
         except Exception:
             await self.drop_account(_require_account_id(account))
             raise
+
+    @staticmethod
+    async def _calculate_market_trial(
+        account: AccountContext, code: str, leverage_overrides: dict[str, float] | None
+    ) -> PortfolioTarget:
+        from axile.server.execution.execution_algorithms import resolve_account_leverages
+
+        long, short = resolve_account_leverages(account)
+        overrides = leverage_overrides or {}
+        settings = ContextSettings(
+            long_leverage=overrides.get("long_leverage", long),
+            short_leverage=overrides.get("short_leverage", short),
+            weight_precision=account.weight_precision,
+        )
+        return await asyncio.to_thread(
+            calculate_market_portfolio,
+            code,
+            settings,
+            lambda symbols, timeout: read_market_data(
+                str(account.trade_channel), account.account_config, symbols, timeout=timeout
+            ),
+        )
 
     async def execute_trade(
         self,

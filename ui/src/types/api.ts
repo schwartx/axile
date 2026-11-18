@@ -127,6 +127,7 @@ export interface SimulationAccount {
 }
 
 export interface ChannelCapability {
+  independent_market_data?: boolean
   simulation_account?: SimulationAccount | null
   algorithm_scope?: { pattern: string; example: string; description: string } | null
   futures_close?: FuturesCloseCapability | null
