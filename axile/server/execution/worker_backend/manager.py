@@ -30,6 +30,7 @@ from axile.server.db.models.base import now_str
 from axile.server.execution.worker_backend.catalog import CatalogSession
 from axile.server.execution.worker_backend.orders import OrdersChannel
 from axile.server.execution.worker_backend.protocol import (
+    CtpAccountQuery,
     WorkerBackendErrorPayload,
     WorkerBackendRequest,
     WorkerBackendResponse,
@@ -1195,6 +1196,27 @@ class WorkerBackendManager:
         if response.kind != "result" or response.output_payload is None:
             raise WorkerBackendExecutionError.from_payload(response.error, "账户资产查询失败")
         return from_payload(UnifiedAccountAssets, response.output_payload)
+
+    async def query_ctp_account(
+        self, account: AccountContext, command: CtpAccountQuery, argument: str
+    ) -> dict[str, object]:
+        """使用账户常驻 worker 查 CTP 柜台。"""
+        self._check_read_session(account)
+        request = WorkerBackendRequest(
+            request_id=uuid4().hex,
+            command=command,
+            account_payload=to_payload(account, mode="json"),
+            execution_id=None,
+            payload={"argument": argument},
+        )
+        response = await asyncio.to_thread(
+            self._request_blocking, _require_account_id(account), request, self._query_timeout(account)
+        )
+        if response.kind != "result" or response.output_payload is None:
+            if response.error is not None and response.error.type == "timeout_error":
+                raise TimeoutError("CTP 柜台查询超时")
+            raise WorkerBackendExecutionError.from_payload(response.error, "CTP 柜台查询失败")
+        return response.output_payload
 
     async def get_account_cash_flows(self, account: AccountContext) -> list[dict]:
         """通过已有就绪会话读取渠道流水，不创建交易执行。"""

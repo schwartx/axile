@@ -43,10 +43,16 @@ class TraderSpi(td.CThostFtdcTraderSpi):
     def OnRspQrySettlementInfoConfirm(self, row, info, request_id, is_last):
         self.owner._query_response(row, info, request_id, is_last)
 
+    def OnRspQrySettlementInfo(self, row, info, request_id, is_last):
+        self.owner._query_response(row, info, request_id, is_last)
+
     def OnRspQryInstrument(self, row, info, request_id, is_last):
         self.owner._query_response(row, info, request_id, is_last)
 
     def OnRspQryInstrumentCommissionRate(self, row, info, request_id, is_last):
+        self.owner._query_response(row, info, request_id, is_last)
+
+    def OnRspQryInstrumentMarginRate(self, row, info, request_id, is_last):
         self.owner._query_response(row, info, request_id, is_last)
 
     def OnRspQryTradingAccount(self, row, info, request_id, is_last):

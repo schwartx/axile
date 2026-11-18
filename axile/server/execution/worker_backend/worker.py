@@ -165,11 +165,11 @@ def _capture_before_account_snapshot(executor: object) -> dict[str, object] | No
     return cast("dict[str, object]", to_payload(assets, mode="json"))
 
 
-def _handle_get_account_assets(
+def _handle_account_read(
     request: WorkerBackendRequest,
     state: _WorkerBackendState,
 ) -> WorkerBackendResponse:
-    """查询并返回账户资产或出入金流水，不进入交易执行生命周期."""
+    """通过已就绪的账户连接查询数据。"""
     account = from_payload(AccountSnapshot, request.account_payload)
     executor = None
     try:
@@ -185,7 +185,17 @@ def _handle_get_account_assets(
             allow_recovery=False,
             allow_connect=False,
         )
-        if request.command == "get_account_cash_flows":
+        if request.command in {"query_margin_rates", "query_commission_rates", "query_settlement_info"}:
+            from axile.executor.ctp.ctp_execute import CTPExecutor
+
+            ctp = cast(CTPExecutor, executor)
+            query = {
+                "query_margin_rates": ctp.query_margin_rates,
+                "query_commission_rates": ctp.query_commission_rates,
+                "query_settlement_info": ctp.query_settlement_info,
+            }[request.command]
+            output = query(str(request.payload["argument"]))
+        elif request.command == "get_account_cash_flows":
             flows = cast(AbstractExecutor, executor).get_account_cash_flows()
             output = {"rows": [to_payload(flow, mode="json") for flow in flows]}
         else:
@@ -562,8 +572,14 @@ def _handle_worker_request(
     """
     if request.command == "prepare":
         return _handle_prepare(request, state)
-    if request.command in {"get_account_assets", "get_account_cash_flows"}:
-        return _handle_get_account_assets(request, state)
+    if request.command in {
+        "get_account_assets",
+        "get_account_cash_flows",
+        "query_margin_rates",
+        "query_commission_rates",
+        "query_settlement_info",
+    }:
+        return _handle_account_read(request, state)
     if request.command == "calculate_portfolio":
         return _handle_calculate_portfolio(request, state)
     if request.command == "execute_trade":

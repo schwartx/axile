@@ -11,6 +11,7 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+from sys import float_info
 from types import SimpleNamespace
 from typing import TypeVar, cast, override
 from zoneinfo import ZoneInfo
@@ -1244,6 +1245,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             operation = {
                 "ReqQryInstrument": "query_instruments",
                 "ReqQryInstrumentCommissionRate": "query_commission_rates",
+                "ReqQryInstrumentMarginRate": "query_margin_rates",
                 "ReqQryTradingAccount": "query_account",
                 "ReqQryTransferSerial": "query_account",
                 "ReqQryInvestorPosition": "query_positions",
@@ -1251,6 +1253,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 "ReqQryOrder": "query_orders",
                 "ReqQryTrade": "ctp_query_trades",
                 "ReqQrySettlementInfoConfirm": "query_settlement_status",
+                "ReqQrySettlementInfo": "query_settlement_info",
             }[name]
             pending = _PendingQuery([], threading.Event())
             pending.timeout = wait_seconds
@@ -1562,12 +1565,39 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             return symbol
         return native_symbol
 
-    def _query_commission_rates(self, symbol):
-        """有界查询当前账户的实际合约费率；空响应不推断成零。"""
-        from axile.executor.algorithms.utils.clock import clock_now_iso
-        from axile.executor.futures_close_policy import CommissionRates
-
+    def query_margin_rates(self, symbol: str) -> dict[str, object]:
+        """查询当前账户单个期货合约的投机保证金参数。"""
         validate_instrument(symbol)
+        symbol = self._normalize_ctp_symbol(symbol)
+        config = self._config()
+        validate_config(config)
+        request = td.CThostFtdcQryInstrumentMarginRateField()
+        request.BrokerID = config.broker_id
+        request.InvestorID = config.investor_id
+        request.InstrumentID = symbol
+        request.ExchangeID = str(getattr(self._instruments.get(symbol), "ExchangeID", ""))
+        request.HedgeFlag = td.THOST_FTDC_HF_Speculation
+        rows = self._query("ReqQryInstrumentMarginRate", request, symbol=symbol, timeout=min(self._timeout, 5.0))
+        matches = [
+            row
+            for row in rows
+            if row.InstrumentID.casefold() == symbol.casefold() and row.HedgeFlag == request.HedgeFlag
+        ]
+        if len(matches) != 1:
+            raise ValueError("柜台未返回唯一的合约投机保证金参数")
+        row = matches[0]
+        rates = {
+            "long_ratio": row.LongMarginRatioByMoney,
+            "long_per_lot": row.LongMarginRatioByVolume,
+            "short_ratio": row.ShortMarginRatioByMoney,
+            "short_per_lot": row.ShortMarginRatioByVolume,
+        }
+        if row.IsRelative not in (0, 1) or not all(abs(rate) < float_info.max for rate in rates.values()):
+            raise ValueError("柜台返回了无效的保证金参数")
+        return {"instrument_id": row.InstrumentID, "is_relative": bool(row.IsRelative), **rates}
+
+    def _query_commission_row(self, symbol):
+        """匹配合约费率，兼容柜台只回品种级费率。"""
         config = self._config()
         validate_config(config)
         req = td.CThostFtdcQryInstrumentCommissionRateField()
@@ -1587,7 +1617,32 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         selected = exact or candidates
         if len(selected) != 1:
             raise ValueError("账户手续费率缺失或不唯一")
-        row = selected[0]
+        return selected[0]
+
+    def query_commission_rates(self, symbol: str) -> dict[str, object]:
+        """读取当前账户的期货开仓、平仓和平今手续费率。"""
+        validate_instrument(symbol)
+        symbol = self._normalize_ctp_symbol(symbol)
+        row = self._query_commission_row(symbol)
+        rates = {
+            "open_ratio": row.OpenRatioByMoney,
+            "open_per_lot": row.OpenRatioByVolume,
+            "close_ratio": row.CloseRatioByMoney,
+            "close_per_lot": row.CloseRatioByVolume,
+            "close_today_ratio": row.CloseTodayRatioByMoney,
+            "close_today_per_lot": row.CloseTodayRatioByVolume,
+        }
+        if not all(abs(rate) < float_info.max for rate in rates.values()):
+            raise ValueError("柜台返回了无效的手续费参数")
+        return {"instrument_id": symbol, **rates}
+
+    def _query_commission_rates(self, symbol):
+        """有界查询当前账户的实际合约费率；空响应不推断成零。"""
+        from axile.executor.algorithms.utils.clock import clock_now_iso
+        from axile.executor.futures_close_policy import CommissionRates
+
+        validate_instrument(symbol)
+        row = self._query_commission_row(symbol)
         return parse_input(
             CommissionRates,
             {
@@ -1598,6 +1653,30 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 "queried_at": clock_now_iso(),
             },
         )
+
+    def query_settlement_info(self, trading_day: str) -> dict[str, object]:
+        """按结算单身份重组柜台返回的原文分片。"""
+        config = self._config()
+        validate_config(config)
+        request = td.CThostFtdcQrySettlementInfoField()
+        request.BrokerID = config.broker_id
+        request.InvestorID = config.investor_id
+        request.TradingDay = trading_day
+        rows = self._query("ReqQrySettlementInfo", request, timeout=min(self._timeout, 10.0))
+        groups: dict[tuple[str, int, str, str], list[tuple[int, str]]] = {}
+        for row in rows:
+            if trading_day and row.TradingDay != trading_day:
+                continue
+            key = (row.TradingDay, row.SettlementID, row.CurrencyID, row.AccountID)
+            groups.setdefault(key, []).append((row.SequenceNo, row.Content))
+        documents = []
+        for (day, settlement_id, currency, _account_id), fragments in groups.items():
+            content = "".join(fragment for _, fragment in sorted(fragments, key=lambda item: item[0]))
+            if content.strip():
+                documents.append(
+                    {"trading_day": day, "settlement_id": settlement_id, "currency": currency, "content": content}
+                )
+        return {"documents": documents}
 
     @override
     def get_account_assets(self):
