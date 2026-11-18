@@ -35,6 +35,7 @@ _OPERATION_META = {
     "query_instruments": ("查询合约", "查询可交易合约信息", "查询操作"),
     "query_account": ("查询资金", "查询账户资金信息", "查询操作"),
     "query_positions": ("查询持仓", "查询账户持仓信息", "查询操作"),
+    "query_depth_market_data": ("查询行情", "向 CTP 柜台查询合约行情快照", "查询操作"),
     "query_orders": ("查询委托", "查询 CTP 委托记录", "查询操作"),
     "ctp_query_trades": ("查询 CTP 成交", "查询 CTP 柜台成交记录", "查询操作"),
     "query_settlement_info": ("查询结算单", "查询账户结算信息", "查询操作"),
