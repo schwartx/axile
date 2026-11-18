@@ -230,7 +230,7 @@ ACCOUNT_CONTROL_PRESETS: dict[str, AccountControlPresetDefinition] = {
                         "priority": 100,
                         "account": {
                             "per_minute": _rule(60, "wait"),
-                            "per_day": _rule(2000, "block"),
+                            "per_day": _rule(20_000, "block"),
                         },
                     },
                     "query_orders": {

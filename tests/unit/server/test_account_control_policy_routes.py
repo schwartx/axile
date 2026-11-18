@@ -58,6 +58,11 @@ def test_policy_route_previews_ctp_without_mutating_account(monkeypatch: pytest.
     assert result.effective_policy.operations["place_order"].account.per_day.limit == 12
     place_order = next(item for item in result.operations if item.key == "place_order")
     assert place_order.groups == ["ctp_td_global"]
+    daily_limit = result.effective_policy.operations["query_depth_market_data"].account.per_day
+    assert daily_limit is not None
+    assert daily_limit.limit == 20_000
+    snapshot = next(item for item in result.operations if item.key == "query_depth_market_data")
+    assert snapshot.display_name == "查询行情"
     assert account.account_control_preset == "default"
 
 
