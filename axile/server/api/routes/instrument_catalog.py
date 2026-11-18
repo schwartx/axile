@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from msgspec import Meta
 
 from axile.common.serialization import provided_fields
@@ -65,6 +65,24 @@ async def query_instruments(query: Annotated[InstrumentQuery, Depends(json_body(
     except AccountConnectionUnavailable as exc:
         raise HTTPException(503, detail={"code": "CHANNEL_NOT_READY", "message": str(exc)}) from exc
     return {"data": rows, "count": len(rows)}
+
+
+@router.get("/search")
+def search_cached_futures(
+    prefix: Annotated[str, Query(min_length=1, max_length=32, pattern=r"^[A-Za-z][A-Za-z0-9]*$")],
+) -> dict[str, Any]:
+    """从缓存按代码前缀查找期货，不向柜台发送请求。"""
+    needle = prefix.casefold()
+    rows = get_worker_backend_manager().instrument_catalog.snapshot()
+    futures = [row for row in rows.values() if row.kind == "FUTURE"]
+    matches = sorted(
+        (row for row in futures if row.symbol.casefold().startswith(needle)),
+        key=lambda row: (row.symbol.casefold(), row.exchange),
+    )
+    return {
+        "data": [{"symbol": row.symbol, "exchange": row.exchange} for row in matches[:8]],
+        "cache_ready": bool(futures),
+    }
 
 
 @router.get("", response_model=None)

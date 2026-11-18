@@ -1,3 +1,4 @@
+import { ToolsButton } from '@/features/tools/ToolsButton'
 import { TimeCheckButton } from '@/features/system/timeCheck/TimeCheckButton'
 import { type RefObject } from 'react'
 import { Link } from '@/components/ui/nav'
@@ -52,6 +53,7 @@ export function TopBar({
         </Link>
       )}
       <span className="flex-1" />
+      <ToolsButton />
       <TimeCheckButton />
       <ThemeToggle />
     </header>

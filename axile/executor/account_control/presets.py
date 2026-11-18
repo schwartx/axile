@@ -173,6 +173,10 @@ ACCOUNT_CONTROL_PRESETS: dict[str, AccountControlPresetDefinition] = {
                         },
                         "symbol": {"per_minute": _rule(10, "wait"), "min_interval_ms": _rule(300, "wait")},
                     },
+                    "query_margin_rates": {
+                        "priority": 100,
+                        "account": {"per_minute": _rule(30, "wait"), "per_day": _rule(2000, "block")},
+                    },
                     "query_commission_rates": {
                         "priority": 100,
                         "account": {"per_minute": _rule(30, "wait"), "per_day": _rule(2000, "block")},

@@ -13,10 +13,13 @@ from typing import Literal
 from axile.common.trade_channel import TradeChannel
 from axile.executor.termination import TERMINATION_TRIGGER_OPERATOR
 
+CtpAccountQuery = Literal["query_margin_rates", "query_commission_rates", "query_settlement_info"]
+
 WorkerBackendCommand = Literal[
     "prepare",
     "get_account_assets",
     "get_account_cash_flows",
+    CtpAccountQuery,
     "calculate_portfolio",
     "execute_trade",
     "empty_positions",

@@ -10,6 +10,7 @@ from axile.server.api.routes.account_control_audit_routes import router as accou
 from axile.server.api.routes.account_control_monitor_routes import router as account_control_monitor_router
 from axile.server.api.routes.account_control_policy_routes import router as account_control_policy_router
 from axile.server.api.routes.account_crud import router as account_crud_router
+from axile.server.api.routes.account_ctp_tools import router as account_ctp_tools_router
 from axile.server.api.routes.account_evidence import router as account_evidence_router
 from axile.server.api.routes.account_execution import router as account_execution_router
 from axile.server.api.routes.account_feishu import router as account_feishu_router
@@ -24,6 +25,7 @@ router.include_router(account_evidence_router)
 router.include_router(account_crud_router)
 router.include_router(account_connection_router)
 router.include_router(account_assets_router)
+router.include_router(account_ctp_tools_router)
 router.include_router(account_cash_flows_router)
 router.include_router(account_orders_router)
 router.include_router(account_performance_router)
