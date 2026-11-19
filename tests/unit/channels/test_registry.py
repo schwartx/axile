@@ -186,9 +186,12 @@ def test_entry_point_is_loaded_once_and_appended_after_builtins(monkeypatch: pyt
         def select(self, **kwargs: object) -> _EntryPoints:
             return self if kwargs == {"group": "axile.channels"} else _EntryPoints()
 
-    monkeypatch.setattr(registry.metadata, "entry_points", lambda: _EntryPoints([_EntryPoint()]))
+    entry_point = _EntryPoint()
+    monkeypatch.setattr(registry.metadata, "entry_points", lambda: _EntryPoints([entry_point]))
 
+    assert registry.get_registered_channel_entry_point("vendor-demo") is None
     assert get_channel("vendor-demo").descriptor.label == "Vendor Demo"
+    assert registry.get_registered_channel_entry_point(" VENDOR-DEMO ") is entry_point
     assert list_channels()[-1].descriptor.channel == "vendor-demo"
     assert loads == ["vendor"]
 

@@ -19,6 +19,7 @@ class ChannelPluginLoadError(RuntimeError):
 
 
 _registry: dict[str, ChannelPlugin] = {}
+_registered_entry_points: dict[str, metadata.EntryPoint] = {}
 _lock = RLock()
 _builtins_loaded = False
 _entry_points_loaded = False
@@ -82,18 +83,18 @@ def _load_builtins() -> None:
     _builtins_loaded = True
 
 
-def _consume_entry_point_result(result: object, *, source: str) -> None:
+def _consume_entry_point_result(result: object, *, source: str) -> ChannelPlugin | None:
     """消费入口点加载结果并按约定完成注册."""
     if isinstance(result, ChannelPlugin):
         _register_unchecked(result, source=source)
-        return
+        return result
     if callable(result):
         returned = result()
         if returned is None:
-            return
+            return None
         if isinstance(returned, ChannelPlugin):
             _register_unchecked(returned, source=source)
-            return
+            return returned
     raise TypeError("入口点必须导出 ChannelPlugin，或导出返回 ChannelPlugin/None 的无参函数")
 
 
@@ -106,11 +107,14 @@ def _load_entry_points() -> None:
     entry_points = metadata.entry_points().select(group=ENTRY_POINT_GROUP)
     ordered = sorted(entry_points, key=lambda item: (item.name, item.value))
     snapshot = dict(_registry)
+    origins: dict[str, metadata.EntryPoint] = {}
     try:
         for entry_point in ordered:
             source = f"entry point {entry_point.name}={entry_point.value}"
             try:
-                _consume_entry_point_result(entry_point.load(), source=source)
+                plugin = _consume_entry_point_result(entry_point.load(), source=source)
+                if plugin is not None:
+                    origins[plugin.descriptor.channel] = entry_point
             except DuplicateChannelError:
                 raise
             except Exception as exc:
@@ -119,6 +123,7 @@ def _load_entry_points() -> None:
         _registry.clear()
         _registry.update(snapshot)
         raise
+    _registered_entry_points.update(origins)
     _entry_points_loaded = True
 
 
@@ -169,10 +174,17 @@ def list_channels() -> tuple[ChannelPlugin, ...]:
     return tuple(_registry.values())
 
 
+def get_registered_channel_entry_point(channel: str) -> metadata.EntryPoint | None:
+    """查找已注册渠道的入口点，供执行环境归属核验。"""
+    with _lock:
+        return _registered_entry_points.get(channel.strip().lower())
+
+
 def _reset_registry_for_tests() -> None:
     """清空注册状态，供隔离入口点加载测试使用."""
     global _builtins_loaded, _entry_points_loaded
     with _lock:
         _registry.clear()
+        _registered_entry_points.clear()
         _builtins_loaded = False
         _entry_points_loaded = False
