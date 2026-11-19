@@ -11,13 +11,14 @@ from typing import Protocol, cast
 
 import loguru
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlmodel import col
 
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
 from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.session_closed import session_closed_scope
 from axile.executor.termination import TERMINATION_TRIGGER_OPERATOR
-from axile.server.asset_observations import is_asset_observation
+from axile.server.asset_observations import is_asset_observation, valid_asset_snapshot_condition
 from axile.server.core.db import SessionLocal
 from axile.server.db.models import AccountAssetSnapshot, ExecuteRecord
 from axile.server.db.models.account import AccountContext
@@ -58,6 +59,24 @@ def _sanitize_execute_record_input(raw_input: dict[str, object] | None) -> dict[
     return persisted_raw_input
 
 
+async def _previous_asset_snapshot(account_id: int, session_factory: SessionFactory) -> AccountAssetSnapshot | None:
+    """在独立读会话取上一笔可信资产快照，避免写事务升级 SQLite 读锁。"""
+    try:
+        async with session_factory() as session:
+            return cast(
+                "AccountAssetSnapshot | None",
+                await session.scalar(
+                    select(AccountAssetSnapshot)
+                    .where(AccountAssetSnapshot.account_id == account_id, valid_asset_snapshot_condition())
+                    .order_by(col(AccountAssetSnapshot.id).desc())
+                    .limit(1)
+                ),
+            )
+    except SQLAlchemyError as exc:
+        loguru.logger.warning("读取执行记录参考市值失败 | account_id={} error={}", account_id, exc)
+        return None
+
+
 async def _persist_execute_record(
     *,
     account_id: int,
@@ -68,6 +87,18 @@ async def _persist_execute_record(
     session_factory: SessionFactory,
 ) -> ExecuteRecord:
     """将执行记录写入数据库并返回刷新后的记录对象."""
+    assets = raw_result.get("account_assets")
+    observed_assets = assets if isinstance(assets, dict) and is_asset_observation(assets, raw_result) else None
+    if observed_assets is not None and observed_assets.get("market_value") is None:
+        previous = await _previous_asset_snapshot(account_id, session_factory)
+        value = previous.assets.get("market_value") if previous is not None else None
+        if previous is not None and type(value) in (int, float) and -float("inf") < value < float("inf"):
+            raw_result = {
+                **raw_result,
+                "account_assets": {**observed_assets, "market_value": value},
+                "market_value_reference": {"snapshot_id": previous.id, "created_at": previous.created_at},
+            }
+
     async with session_factory() as session:
         record = ExecuteRecord(
             account_id=account_id,
@@ -77,12 +108,11 @@ async def _persist_execute_record(
             is_success=is_success,
         )
         session.add(record)
-        assets = raw_result.get("account_assets")
-        if isinstance(assets, dict) and is_asset_observation(assets, raw_result):
+        if observed_assets is not None:
             session.add(
                 AccountAssetSnapshot(
                     account_id=account_id,
-                    assets=assets,
+                    assets=observed_assets,
                     source="execution",
                     execution_id=execution_id,
                     created_at=record.created_at,

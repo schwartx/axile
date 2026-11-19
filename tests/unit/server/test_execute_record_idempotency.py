@@ -7,9 +7,11 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import cast
 
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
+from sqlmodel import SQLModel, select
 
+from axile.server.db.models import AccountAssetSnapshot
 from axile.server.execution.records import SessionFactory, _persist_execute_record
 
 
@@ -78,4 +80,47 @@ def test_unique_id_conflict_without_execution_id_still_raises() -> None:
             )
 
     # execution_id 为 NULL 不触发唯一约束，两条都应成功落库（SQLite 允许多 NULL）。
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("current", "previous", "expected"),
+    [(None, 260.0, 260.0), (None, 0.0, 0.0), (0.0, 260.0, 0.0), (None, None, None)],
+)
+def test_execution_record_uses_previous_market_value_only_when_missing(current, previous, expected) -> None:
+    async def scenario() -> None:
+        async with _session_factory() as factory:
+            async with factory() as session:
+                session.add(
+                    AccountAssetSnapshot(account_id=1, assets={"total_asset": 500, "market_value": 50}, source="manual")
+                )
+                await session.flush()
+                snapshot = AccountAssetSnapshot(
+                    account_id=1, assets={"total_asset": 500, "market_value": previous}, source="manual"
+                )
+                session.add(snapshot)
+                await session.commit()
+            assets = {"total_asset": 900, "market_value": current, "positions": []}
+            record = await _persist_execute_record(
+                account_id=1,
+                execution_id="exec-market-value",
+                raw_input={},
+                raw_result={"account_assets": assets},
+                is_success=1,
+                session_factory=cast("SessionFactory", factory),
+            )
+            assert record.raw_result["account_assets"] == {**assets, "market_value": expected}
+            if current is None and previous is not None:
+                assert record.raw_result["market_value_reference"] == {
+                    "snapshot_id": snapshot.id,
+                    "created_at": snapshot.created_at,
+                }
+            else:
+                assert "market_value_reference" not in record.raw_result
+            async with factory() as session:
+                saved = await session.scalar(
+                    select(AccountAssetSnapshot).where(AccountAssetSnapshot.execution_id == record.execution_id)
+                )
+                assert saved is not None and saved.assets == assets
+
     asyncio.run(scenario())
