@@ -621,12 +621,16 @@ class ExecutionEngine:
             effective_curr_target=effective_curr_target,
         )
 
+    def _read_initial_planning_assets(self) -> UnifiedAccountAssets:
+        """读取本次规划采用的第一份账户快照。"""
+        return self._owner.get_account_assets()
+
     def _build_symbol_planning_context(
         self,
         standard_input: UnifiedStandardInput,
     ) -> tuple[UnifiedAccountAssets, dict[str, float], list[str]]:
         """取得通用 planning 使用的账户快照、目标权重与候选 symbol。"""
-        account_assets = self._owner.get_account_assets()
+        account_assets = self._read_initial_planning_assets()
         if self.on_planning_assets is not None:
             self.on_planning_assets(account_assets)
         effective_curr_target = self._build_effective_curr_target(standard_input, account_assets)

@@ -6,8 +6,9 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from openctp_ctp import thosttraderapi as td
 
-from axile.common.serialization import from_payload
+from axile.common.serialization import from_payload, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.guard import AccountControlGuard
 from axile.executor.account_control.models import AccountControlOverride
@@ -22,7 +23,10 @@ from axile.executor.instrument_catalog import (
     LocalInstrumentCatalogProvider,
     catalog_query_scope,
 )
+from axile.executor.instrument_catalog_records import Instrument
+from axile.executor.models.unified_input import CTPAccountConfig, UnifiedStandardInput
 from tests.unit.executor.test_account_control_guard import _AdvancingClock
+from tests.unit.server._execution_test_support import build_account
 
 
 def _row():
@@ -276,3 +280,92 @@ def test_continuous_native_callbacks_do_not_extend_the_batch_deadline(monkeypatc
     monkeypatch.setattr(clock, "event_wait", original_wait)
     assert executor._query_lock.acquire(blocking=False)
     executor._query_lock.release()
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["fixed", "shared_hit", "cold", "dependency_miss", "unavailable", "position_changes"],
+)
+def test_ctp_planning_only_refreshes_assets_after_waiting_for_catalog(monkeypatch, case):
+    """真实目录和规划流程只用最后一次读取写审计。"""
+    executor = CTPExecutor(TradeChannel("ctp"))
+    executor.account_config = from_payload(CTPAccountConfig, build_account().account_config)
+    standard_input = UnifiedStandardInput.from_dict(
+        {"account_config": to_payload(executor.account_config), "curr_target": {"rb2701": 2}, "last_target": {}},
+        channel_type=TradeChannel("ctp"),
+    )
+    option = "ag2701C8000"
+    records = {
+        "rb2701": Instrument("SHFE", "rb2701", "FUTURE", 10, 1),
+        "ag2701": Instrument("SHFE", "ag2701", "FUTURE", 15, 1),
+        option: Instrument("SHFE", option, "OPTION", 15, 1, extra={"UnderlyingInstrID": "ag2701"}),
+    }
+    trace = []
+
+    def query_instruments(symbols, _timeout):
+        trace.append(("catalog", tuple(symbols)))
+        return [records[symbol.split(".")[-1]] for symbol in symbols if symbol.split(".")[-1] in records]
+
+    provider = LocalInstrumentCatalogProvider(InstrumentCatalog())
+    provider.bind(query_instruments, channel="ctp")
+    executor.set_instrument_catalog_provider(provider)
+    seeded = ["rb2701"]
+    if case == "shared_hit":
+        seeded.append("ag2701")
+    if case == "dependency_miss":
+        seeded.append(option)
+    provider.ensure(seeded, require_specs=True)
+    trace.clear()
+
+    position_reads = 0
+
+    def query_account(name, _request):
+        nonlocal position_reads
+        trace.append(name)
+        if name == "ReqQryTradingAccount":
+            return [SimpleNamespace(Balance=10000 + 100 * position_reads)]
+        assert name == "ReqQryInvestorPosition"
+        position_reads += 1
+        symbol = {"fixed": "rb2701", "dependency_miss": option, "unavailable": "au2701"}.get(case, "ag2701")
+        if case == "position_changes" and position_reads == 2:
+            symbol = "au2701"
+        return [
+            SimpleNamespace(
+                InstrumentID=symbol,
+                Position=position_reads,
+                TodayPosition=position_reads,
+                PositionCost=1000,
+                PosiDirection=td.THOST_FTDC_PD_Long,
+            )
+        ]
+
+    monkeypatch.setattr(executor, "_query", query_account)
+    monkeypatch.setattr(executor, "_position_valuation_quotes", lambda positions: ({}, {}))
+    executor._prepare_instrument_catalog(standard_input, include_account_symbols=False)
+    assert trace == []
+    pinned = executor._catalog_record("rb2701")
+    observations = []
+    engine = executor._execution_engine()
+    engine.on_planning_assets = observations.append
+
+    if case in {"unavailable", "position_changes"}:
+        message = "合约查询返回空结果" if case == "unavailable" else "au2701"
+        with pytest.raises(CatalogError, match=message):
+            engine._build_symbol_planning_context(standard_input)
+        assert not observations
+    else:
+        assets, _, _ = engine._build_symbol_planning_context(standard_input)
+        assert observations == [assets] and observations[0] is assets
+        assert assets.total_asset == 10000 + 100 * (position_reads - 1)
+        assert assets.positions[0].volume == position_reads
+    assert executor._catalog_frozen and executor._catalog_record("rb2701") is pinned
+    account_reads = ["ReqQryTradingAccount", "ReqQryInvestorPosition"]
+    expected = {
+        "fixed": account_reads,
+        "shared_hit": account_reads,
+        "cold": [*account_reads, ("catalog", ("ag2701",)), *account_reads],
+        "dependency_miss": [*account_reads, ("catalog", ("SHFE.ag2701",)), *account_reads],
+        "unavailable": [*account_reads, ("catalog", ("au2701",))],
+        "position_changes": [*account_reads, ("catalog", ("ag2701",)), *account_reads],
+    }
+    assert trace == expected[case]

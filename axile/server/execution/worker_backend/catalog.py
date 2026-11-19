@@ -219,14 +219,17 @@ class CatalogSession(_CatalogPipe):
             self._disconnected()
             return None
         if op == "ensure":
-            rows = self.catalog.ensure(
+            rows, waited_for_fill = self.catalog.ensure_with_status(
                 message["symbols"],
                 self._check_alive,
                 catalog_remaining(catalog_deadline(None)),
                 require_specs=message.get("require_specs", False),
                 source_name=self.source,
             )
-            return {symbol: row.wire() for symbol, row in rows.items()}
+            return {
+                "rows": {symbol: row.wire() for symbol, row in rows.items()},
+                "waited_for_fill": waited_for_fill,
+            }
         raise CatalogError(f"未知目录操作: {op}")
 
     def _check_alive(self) -> None:
@@ -266,10 +269,25 @@ class RemoteCatalogProvider(_CatalogPipe):
         require_specs: bool = False,
     ) -> Mapping[str, Instrument]:
         """同步等待本次所需资料，取消不取消其他共享等待者。"""
+        rows, _ = self.ensure_with_status(symbols, checkpoint, timeout, require_specs=require_specs)
+        return rows
+
+    def ensure_with_status(
+        self,
+        symbols: list[str],
+        checkpoint: Callable[[], None] | None = None,
+        timeout: float | None = None,
+        *,
+        require_specs: bool = False,
+    ) -> tuple[Mapping[str, Instrument], bool]:
+        """读取资料及主进程观察到的缓存等待状态。"""
         if timeout is None and not require_specs:
             timeout = 15.0
-        rows = self._request("ensure", timeout, checkpoint, symbols=symbols, require_specs=require_specs)
-        return {symbol: Instrument.from_wire(row) for symbol, row in rows.items()}
+        result = self._request("ensure", timeout, checkpoint, symbols=symbols, require_specs=require_specs)
+        return (
+            {symbol: Instrument.from_wire(row) for symbol, row in result["rows"].items()},
+            result["waited_for_fill"],
+        )
 
     def begin(self) -> None:
         """标记当前请求进入初始化。"""

@@ -42,23 +42,52 @@ class CatalogExecutionMixin(FuturesCloseRuntimeMixin):
 
     def _ensure_instrument_symbols(self, symbols: list[str], timeout: float | None = None) -> None:
         """递归补齐期权标的及组合腿，并保留本次的独立引用。"""
+        if not symbols:
+            return
+        if self._catalog_frozen:
+            self._catalog_checkpoint()
+            missing = [symbol for symbol in symbols if self._catalog_record(symbol) is None]
+            if missing:
+                raise CatalogError(f"执行固定资料中缺少合约: {', '.join(dict.fromkeys(missing))}")
+            return
+        rows, _ = self._load_instrument_symbols(symbols, timeout)
+        self._catalog_records.update({row.key: row for row in rows.values()})
+        self._install_catalog(rows)
+
+    def _extend_planning_catalog(self, symbols: list[str]) -> bool:
+        """只为首次规划追加持仓合约；已经固定的记录保持同一份。"""
+        self._catalog_checkpoint()
+        missing = [symbol for symbol in symbols if self._catalog_record(symbol) is None]
+        if not missing:
+            return False
+        rows, waited_for_fill = self._load_instrument_symbols(missing, None, extending=True)
+        self._catalog_records = {**{row.key: row for row in rows.values()}, **self._catalog_records}
+        self._install_catalog(rows)
+        return waited_for_fill
+
+    def _load_instrument_symbols(
+        self, symbols: list[str], timeout: float | None, *, extending: bool = False
+    ) -> tuple[Mapping[str, Instrument], bool]:
+        """加载完整依赖链，供固定初始目录或补齐首次规划缺项。"""
         if timeout is None and not self._catalog_requires_specs:
             timeout = 15.0
         deadline = None if timeout is None else clock_monotonic() + timeout
         required = list(dict.fromkeys(symbols))
-        while required:
+        waited_for_fill = False
+        while True:
             self._catalog_checkpoint()
-            if self._catalog_frozen:
-                missing = [s for s in required if self._catalog_record(s) is None]
-                if missing:
-                    raise CatalogError(f"执行固定资料中缺少合约: {', '.join(missing)}")
-                return
             remaining = None if deadline is None else deadline - clock_monotonic()
             if remaining is not None and remaining <= 0:
                 raise CatalogError("等待合约资料超时", "CATALOG.TIMEOUT")
-            rows = self._instrument_provider.ensure(
-                required, self._catalog_checkpoint, remaining, require_specs=self._catalog_requires_specs
-            )
+            if extending:
+                rows, waited = self._instrument_provider.ensure_with_status(
+                    required, self._catalog_checkpoint, remaining, require_specs=self._catalog_requires_specs
+                )
+                waited_for_fill |= waited
+            else:
+                rows = self._instrument_provider.ensure(
+                    required, self._catalog_checkpoint, remaining, require_specs=self._catalog_requires_specs
+                )
             dependencies: list[str] = []
             for record in rows.values():
                 underlying = str(record.extra.get("UnderlyingInstrID", "") or "")
@@ -69,13 +98,14 @@ class CatalogExecutionMixin(FuturesCloseRuntimeMixin):
                         f"{record.exchange}.{leg}" for leg in parse_combination_legs(record.symbol) or ()
                     )
             available = {alias for row in rows.values() for alias in (row.key, row.symbol)}
-            missing = [s for s in dict.fromkeys(dependencies) if s not in available]
-            if missing:
-                required = list(dict.fromkeys([*required, *missing]))
-                continue
-            self._catalog_records.update({row.key: row for row in rows.values()})
-            self._install_catalog(rows)
-            return
+            missing = [
+                symbol
+                for symbol in dict.fromkeys(dependencies)
+                if symbol not in available and (not extending or self._catalog_record(symbol) is None)
+            ]
+            if not missing:
+                return rows, waited_for_fill
+            required = list(dict.fromkeys([*required, *missing]))
 
     def _catalog_record(self, symbol: str) -> Instrument | None:
         normalized = normalize_catalog_symbol(symbol)
@@ -111,7 +141,9 @@ class CatalogExecutionMixin(FuturesCloseRuntimeMixin):
             },
         )
 
-    def _prepare_instrument_catalog(self, standard_input: UnifiedStandardInput) -> None:
+    def _prepare_instrument_catalog(
+        self, standard_input: UnifiedStandardInput, *, include_account_symbols: bool = True
+    ) -> None:
         """所有必要资料齐全后才允许 planning；取消及失败不发送订单。"""
         self._prepare_futures_close_policy(standard_input.futures_close_policy)
         self._catalog_frozen = False
@@ -130,7 +162,8 @@ class CatalogExecutionMixin(FuturesCloseRuntimeMixin):
         self._catalog_prepare_deadline = None if self._catalog_requires_specs else started + 15.0
         self._catalog_event(ExecutionEventType.INSTRUMENTS_WAITING, symbols, started)
         try:
-            symbols.extend(self._catalog_related_symbols())
+            if include_account_symbols:
+                symbols.extend(self._catalog_related_symbols())
             remaining = (
                 None
                 if self._catalog_prepare_deadline is None

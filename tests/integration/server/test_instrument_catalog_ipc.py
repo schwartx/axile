@@ -317,7 +317,8 @@ def test_ctp_specs_request_crosses_ipc_and_skips_code_only_tq_source():
         providers[0].bind(lambda symbols, timeout: [Instrument(ROW.exchange, ROW.symbol, ROW.kind)], channel="tq")
         assert not providers[0].ensure([ROW.key])[ROW.key].has_specs
         providers[1].bind(lambda symbols, timeout: calls.append(symbols) or [ROW], channel="ctp")
-        assert providers[1].ensure([ROW.key], require_specs=True)[ROW.key] == ROW
+        assert providers[1].ensure_with_status([ROW.key], require_specs=True) == ({ROW.key: ROW}, True)
+        assert providers[1].ensure_with_status([ROW.key], require_specs=True) == ({ROW.key: ROW}, False)
         assert calls == [[ROW.key]]
     finally:
         for provider in providers:

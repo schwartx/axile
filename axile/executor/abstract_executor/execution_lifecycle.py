@@ -96,7 +96,11 @@ class AbstractExecutorExecutionLifecycleMixin(AbstractExecutorExecutionRuntimeFa
             # 总超时的计时零点：连接已就绪、planning 尚未开始，因此执行器构造与登录耗时
             # 不计入额度（要覆盖登录挂死需要另一个 pre-flight 超时）。
             executor._reset_execution_state(standard_input)
-            executor._prepare_instrument_catalog(standard_input)
+            if _on_planning_assets is None:
+                executor._prepare_instrument_catalog(standard_input)
+            else:
+                # 服务端 CTP 调仓在首次规划读取真实持仓时补齐目录。
+                executor._prepare_instrument_catalog(standard_input, include_account_symbols=False)
             standard_input = executor._normalize_connected_standard_input(standard_input)
 
             # 非交易时间直接在入口层返回休市结果，避免继续进入规划和下单阶段。

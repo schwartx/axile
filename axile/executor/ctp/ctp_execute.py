@@ -206,6 +206,12 @@ def _session_block_message(reason_code: str) -> str:
 class CtpExecutionEngine(ExecutionEngine):
     """CTP 的品种时段筛选与 scoped cancel 编排器。"""
 
+    @override
+    def _read_initial_planning_assets(self) -> UnifiedAccountAssets:
+        if self.on_planning_assets is None:
+            return super()._read_initial_planning_assets()
+        return cast("CTPExecutor", self._owner)._get_account_assets(complete_planning_catalog=True)
+
     def _symbol_session_block(self, symbol: str) -> tuple[str, str] | None:
         reason_code = cast("CTPExecutor", self._owner)._get_ctp_session_block_reason(symbol)
         if reason_code is None:
@@ -1787,25 +1793,36 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         return {"documents": documents}
 
     @override
-    def get_account_assets(self):
+    def get_account_assets(self) -> UnifiedAccountAssets:
+        return self._get_account_assets()
+
+    def _get_account_assets(self, *, complete_planning_catalog: bool = False) -> UnifiedAccountAssets:
+        """按首次规划需要补齐目录；等过柜台资料后只复查一次。"""
+        account, positions = self._query_account_observation()
+        if not self._validation_catalog:
+            symbols = self._position_catalog_symbols(positions)
+            if complete_planning_catalog and self._extend_planning_catalog(symbols):
+                account, positions = self._query_account_observation()
+                symbols = self._position_catalog_symbols(positions)
+            self._ensure_instrument_symbols(symbols)
+        quotes, quote_errors = self._position_valuation_quotes(positions)
+        return account_to_unified(account, positions, self._instruments, quotes=quotes, quote_errors=quote_errors)
+
+    def _query_account_observation(self) -> tuple[object, list[object]]:
+        """读取资金和持仓，保留原生账户观测。"""
         receipt = capture_command_receipt(self)
         c = self._config()
-        a = build_query_account(c)
-        accounts = self._query("ReqQryTradingAccount", a)
+        accounts = self._query("ReqQryTradingAccount", build_query_account(c))
         if not accounts:
             raise CtpRequestError("资金查询返回空结果")
-        p = build_query_positions(c)
-        positions = self._query("ReqQryInvestorPosition", p)
+        positions = self._query("ReqQryInvestorPosition", build_query_positions(c))
         replay_capture.capture(
             self,
             "/account_observation",
             lambda: replay_capture.account_observation(accounts, positions, source="ctp.account_query"),
             receipt=receipt,
         )
-        if not self._validation_catalog:
-            self._ensure_instrument_symbols(self._position_catalog_symbols(positions))
-        quotes, quote_errors = self._position_valuation_quotes(positions)
-        return account_to_unified(accounts[-1], positions, self._instruments, quotes=quotes, quote_errors=quote_errors)
+        return accounts[-1], positions
 
     def get_account_cash_flows(self):
         """查询柜台可返回的银期转账流水，不读取或发起转账密码。"""

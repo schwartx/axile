@@ -34,11 +34,13 @@ def test_ctp_worker_freezes_planning_assets_before_dispatch(monkeypatch, case):
         ],
     )
 
-    def prepare_catalog(_standard_input):
+    def prepare_catalog(_standard_input, *, include_account_symbols):
+        assert not include_account_symbols
         calls.append("catalog")
         events.append({"event_type": "catalog", "seq": executor.next_audit_seq()})
 
-    def read_assets():
+    def read_assets(*, complete_planning_catalog=False):
+        assert complete_planning_catalog == (case != "closed")
         calls.append("assets")
         if case == "recovery":
             raise CtpSessionRecoveryRequired("connection lost", return_code=-2)
@@ -68,7 +70,7 @@ def test_ctp_worker_freezes_planning_assets_before_dispatch(monkeypatch, case):
     monkeypatch.setattr(executor, "_verify_connection", lambda: True)
     monkeypatch.setattr(executor, "_prepare_instrument_catalog", prepare_catalog)
     monkeypatch.setattr(executor, "_check_trading_time", lambda: case != "closed")
-    monkeypatch.setattr(executor, "get_account_assets", read_assets)
+    monkeypatch.setattr(executor, "_get_account_assets", read_assets)
     monkeypatch.setattr(executor, "handle_termination_checkpoint", checkpoint)
     monkeypatch.setattr(executor, "_execution_engine", lambda: engine)
     monkeypatch.setattr(engine, "_build_dispatch_phases", after_planning)

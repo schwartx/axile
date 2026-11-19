@@ -219,7 +219,9 @@ class AbstractExecutorCapabilityMixin:
         """在渠道连接及其运行时目录就绪后规范化标准输入."""
         return standard_input
 
-    def _prepare_instrument_catalog(self, standard_input: UnifiedStandardInput) -> None:
+    def _prepare_instrument_catalog(
+        self, standard_input: UnifiedStandardInput, *, include_account_symbols: bool = True
+    ) -> None:
         """渠道可在 planning 前准备本次所需合约资料。"""
 
     def _release_instrument_catalog(self) -> None:

@@ -183,16 +183,33 @@ class InstrumentCatalog:
         source_name: str | None = None,
     ) -> dict[str, Instrument]:
         """缺失资料由执行账户补齐；重叠查询共享，取消仅结束当前等待。"""
+        rows, _ = self.ensure_with_status(
+            symbols, checkpoint, timeout, require_specs=require_specs, source_name=source_name
+        )
+        return rows
+
+    def ensure_with_status(
+        self,
+        symbols: list[str],
+        checkpoint: Callable[[], None] | None = None,
+        timeout: float | None = None,
+        *,
+        require_specs: bool = False,
+        source_name: str | None = None,
+    ) -> tuple[dict[str, Instrument], bool]:
+        """返回目录资料，以及本次读取是否遇到缺项、需要等待资料补齐。"""
         if timeout is None and not require_specs:
             timeout = self.limits.ensure
         deadline = catalog_deadline(timeout)
+        waited_for_fill = False
         while True:
             with self._lock:
                 current = {raw: self._find(raw) for raw in symbols}
                 if require_specs:
                     current = {raw: row if row is not None and row.has_specs else None for raw, row in current.items()}
                 if all(row is not None for row in current.values()):
-                    return {raw: row for raw, row in current.items() if row is not None}
+                    return {raw: row for raw, row in current.items() if row is not None}, waited_for_fill
+                waited_for_fill = True
                 missing = list(
                     dict.fromkeys(normalize_catalog_symbol(raw) for raw, row in current.items() if row is None)
                 )
@@ -473,6 +490,17 @@ class InstrumentCatalogProvider(Protocol):
         """读取或补齐少量合约。"""
         ...
 
+    def ensure_with_status(
+        self,
+        symbols: list[str],
+        checkpoint: Callable[[], None] | None = None,
+        timeout: float | None = None,
+        *,
+        require_specs: bool = False,
+    ) -> tuple[Mapping[str, Instrument], bool]:
+        """返回所需资料和是否等待了缺项补齐。"""
+        ...
+
     def close(self) -> None:
         """注销当前来源，不清除共享缓存。"""
         ...
@@ -503,6 +531,19 @@ class LocalInstrumentCatalogProvider:
     ) -> Mapping[str, Instrument]:
         """仅请求必要资料。"""
         return self.catalog.ensure(symbols, checkpoint, timeout, require_specs=require_specs, source_name=self.owner)
+
+    def ensure_with_status(
+        self,
+        symbols: list[str],
+        checkpoint: Callable[[], None] | None = None,
+        timeout: float | None = None,
+        *,
+        require_specs: bool = False,
+    ) -> tuple[Mapping[str, Instrument], bool]:
+        """读取资料及缓存等待状态。"""
+        return self.catalog.ensure_with_status(
+            symbols, checkpoint, timeout, require_specs=require_specs, source_name=self.owner
+        )
 
     def close(self) -> None:
         """注销来源。"""
