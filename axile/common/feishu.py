@@ -1,8 +1,10 @@
 """飞书自定义机器人最小 HTTP 客户端."""
 
-from typing import Any, Final, cast
-
-import requests
+import json
+from http.client import HTTPException
+from typing import Final
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 _FEISHU_HOOK_BASE: Final = "https://open.feishu.cn/open-apis/bot/v2/hook/"
 _FEISHU_TIMEOUT_SECONDS: Final = 15
@@ -22,24 +24,31 @@ def push_feishu_card(card: dict[str, object], key: str, *, timeout: float = _FEI
 
     Raises
     ------
-    requests.RequestException
-        网络请求失败或 HTTP 状态异常。
     RuntimeError
-        飞书响应无法解析，或响应体表示发送失败。
+        HTTP 请求失败、飞书响应无法解析，或响应体表示发送失败。
     """
-    response = requests.post(
+    request = Request(
         f"{_FEISHU_HOOK_BASE}{key}",
-        json=cast(Any, {"msg_type": "interactive", "card": card}),
-        timeout=timeout,
+        data=json.dumps({"msg_type": "interactive", "card": card}, allow_nan=False).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
     )
-    response.raise_for_status()
     try:
-        result = response.json()
-    except ValueError as exc:
-        raise RuntimeError("飞书返回了无法解析的响应") from exc
+        with urlopen(request, timeout=timeout) as response:
+            result = json.load(response)
+    except HTTPError as exc:
+        exc.close()
+        raise RuntimeError(f"飞书请求失败（HTTP {exc.code}）") from None
+    except (OSError, HTTPException):
+        raise RuntimeError("飞书请求失败，请检查网络和 Webhook 配置") from None
+    except ValueError:
+        raise RuntimeError("飞书返回了无法解析的响应") from None
 
     if isinstance(result, dict) and (result.get("code") == 0 or result.get("StatusMessage") == "success"):
         return
 
     detail = result.get("msg") or result.get("StatusMessage") or result if isinstance(result, dict) else result
-    raise RuntimeError(f"飞书返回失败: {str(detail)[:200]}")
+    message = str(detail)
+    if key:
+        message = message.replace(key, "[已隐藏]")
+    raise RuntimeError(f"飞书返回失败: {message[:200]}")
