@@ -26,6 +26,7 @@ from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.session_closed import session_closed_scope
 from axile.executor.termination import ExecutionTerminated
 from axile.server.context import Context, ContextSettings, PortfolioExecutor
+from axile.server.db.models import now_str
 from axile.server.db.models.account import AccountSnapshot
 from axile.server.execution.execution_algorithms import resolve_account_leverages, resolve_execution_algorithm_name
 from axile.server.execution.input_persistence import sanitize_execution_input
@@ -289,6 +290,82 @@ def _terminate_stuck_portfolio_calculation(finished: threading.Event, timeout: f
         os._exit(124)
 
 
+def _execute_trade_with_audit(
+    *,
+    account: AccountSnapshot,
+    execution_id: str | None,
+    algorithm_name: str,
+    trigger_source: str,
+    audit_input: dict[str, object],
+    standard_input: UnifiedStandardInput,
+    executor: object,
+    notification_snapshot: dict[str, object] | None,
+) -> UnifiedStandardOutput:
+    """同步冻结调仓证据，内置 CTP 使用首次规划读取的账户快照。"""
+    execute = getattr(executor, "execute")
+    options = {"notification_snapshot": notification_snapshot} if notification_snapshot else {}
+    started = None
+    if (
+        execution_id
+        and account.trade_channel == "ctp"
+        and getattr(execute, "__func__", None) is AbstractExecutor.execute
+    ):
+        from axile.executor.ctp.ctp_execute import CTPExecutor
+
+        if type(executor) is CTPExecutor:
+            started = executor.next_audit_seq(), now_str()
+
+    def write_audit(before_account_assets: dict[str, object] | None) -> bool:
+        return _append_trade_pre_execute_audit(
+            account=account,
+            execution_id=execution_id,
+            algorithm_name=algorithm_name,
+            trigger_source=trigger_source,
+            audit_input=audit_input,
+            standard_input=standard_input,
+            executor=executor,
+            before_account_assets=before_account_assets,
+            started=started,
+        )
+
+    if started is None:
+        write_audit(_capture_before_account_snapshot(executor))
+        return cast(UnifiedStandardOutput, execute(standard_input, cleanup=False, retain_runtime=True, **options))
+
+    audit_attempted = False
+
+    def persist_planning_assets(assets: UnifiedAccountAssets) -> None:
+        nonlocal audit_attempted
+        audit_attempted = True
+        if not write_audit(cast("dict[str, object]", to_payload(assets, mode="json"))):
+            raise RuntimeError("调仓执行前审计未完整写入")
+
+    try:
+        output = cast(
+            UnifiedStandardOutput,
+            execute(
+                standard_input,
+                cleanup=False,
+                retain_runtime=True,
+                _on_planning_assets=persist_planning_assets,
+                **options,
+            ),
+        )
+    except Exception:
+        if not audit_attempted:
+            # 连接恢复和提前终止应保留原始原因，此时没有可复用的规划快照。
+            try:
+                if not write_audit(None):
+                    logger.error("规划前退出的调仓审计未完整写入 execution_id={}", execution_id)
+            except Exception:
+                logger.exception("规划前退出的调仓审计写入失败 execution_id={}", execution_id)
+        raise
+
+    if not audit_attempted and not write_audit(_capture_before_account_snapshot(executor)):
+        raise RuntimeError("休市调仓审计未完整写入")
+    return output
+
+
 def _handle_execute_trade(
     request: WorkerBackendRequest,
     state: _WorkerBackendState,
@@ -341,8 +418,7 @@ def _handle_execute_trade(
         normalized_symbol_fields = {field: getattr(standard_input, field) for field in _SYMBOL_FIELDS}
         audit_input = {**audit_input, **sanitize_execution_input(standard_input.to_dict())}
         state.progress.report(request.execution_id, "snapshot")
-        before_account_assets = _capture_before_account_snapshot(executor)
-        _append_trade_pre_execute_audit(
+        output = _execute_trade_with_audit(
             account=account,
             execution_id=request.execution_id,
             algorithm_name=algorithm_name,
@@ -350,17 +426,7 @@ def _handle_execute_trade(
             audit_input=audit_input,
             standard_input=standard_input,
             executor=executor,
-            before_account_assets=before_account_assets,
-        )
-        execute = getattr(executor, "execute")
-        output = cast(
-            UnifiedStandardOutput,
-            execute(
-                standard_input,
-                cleanup=False,
-                retain_runtime=True,
-                **({"notification_snapshot": notification_snapshot} if notification_snapshot else {}),
-            ),
+            notification_snapshot=notification_snapshot,
         )
         replay_end_reason = str(output.status)
         result = _dump_output_payload(output)

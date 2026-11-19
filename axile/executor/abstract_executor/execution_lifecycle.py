@@ -24,6 +24,7 @@ from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.termination import ExecutionTerminated
 
 if TYPE_CHECKING:
+    from axile.executor.models.unified_account_assets import UnifiedAccountAssets
     from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
     from axile.executor.models.unified_output import UnifiedStandardOutput
 
@@ -51,6 +52,8 @@ class AbstractExecutorExecutionLifecycleMixin(AbstractExecutorExecutionRuntimeFa
         cleanup: bool = True,
         retain_runtime: bool = False,
         notification_snapshot: dict[str, object] | None = None,
+        *,
+        _on_planning_assets: Callable[[UnifiedAccountAssets], None] | None = None,
     ) -> UnifiedStandardOutput:
         """
         执行统一交易流程入口.
@@ -63,6 +66,8 @@ class AbstractExecutorExecutionLifecycleMixin(AbstractExecutorExecutionRuntimeFa
             执行结束后是否调用资源清理逻辑。
         retain_runtime : bool, default=False
             执行结束后是否保留当前 execution runtime。
+        _on_planning_assets : Callable[[UnifiedAccountAssets], None] | None
+            首次规划取得账户快照后同步调用；异常中断执行。
 
         Returns
         -------
@@ -101,7 +106,10 @@ class AbstractExecutorExecutionLifecycleMixin(AbstractExecutorExecutionRuntimeFa
             else:
                 executor._validate_input(standard_input)
                 # 真正的 symbol 级 planning / dispatch 全部下沉给通用编排层。
-                output = executor._execution_engine().run(standard_input)
+                engine = executor._execution_engine()
+                if _on_planning_assets is not None:
+                    engine.on_planning_assets = _on_planning_assets
+                output = engine.run(standard_input)
 
             # 通知是尾部副作用，不影响主执行结果的返回；投递到有界后台队列，
             # 统一经有界后台队列发送，隔离飞书网络延迟且避免线程随执行次数增长。
