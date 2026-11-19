@@ -45,7 +45,7 @@ fn idle(c: &Connection) -> Result<(), AnalysisError> {
     Ok(())
 }
 fn excluded(t: &str) -> bool {
-    t == "alembic_version"
+    matches!(t, "alembic_version" | "axon_alembic_version")
         || t.starts_with("analysis_")
         || t == "account_analysis"
         || t.starts_with("account_connection")
@@ -152,7 +152,7 @@ fn export_snapshot(path: &str, request: &Value) -> Result<Value, AnalysisError> 
     Ok(json!({"executions":records(&c)?}))
 }
 
-fn merge_table(c: &Connection, t: &str) -> Result<(), AnalysisError> {
+fn merge_table(c: &Connection, t: &str, defer_asset_link: bool) -> Result<(), AnalysisError> {
     // UPSERT 保留旧历史，不以 REPLACE 触发父行删除与级联。
     let mut info = c
         .prepare(&format!("PRAGMA main.table_info({})", quote(t)))
@@ -204,8 +204,22 @@ fn merge_table(c: &Connection, t: &str) -> Result<(), AnalysisError> {
     } else {
         format!("DO UPDATE SET {updates}")
     };
+    let incoming = if defer_asset_link {
+        cols.iter()
+            .map(|(name, _)| {
+                if name == "asset_fact_id" {
+                    "NULL".to_owned()
+                } else {
+                    quote(name)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    } else {
+        "*".into()
+    };
     c.execute_batch(&format!(
-        "INSERT INTO main.{0} SELECT * FROM incoming.{0} WHERE true ON CONFLICT ({1}) {conflict}",
+        "INSERT INTO main.{0} SELECT {incoming} FROM incoming.{0} WHERE true ON CONFLICT ({1}) {conflict}",
         quote(t),
         keys.join(",")
     ))
@@ -262,7 +276,7 @@ fn import_snapshot(path: &str, request: &Value) -> Result<Value, AnalysisError> 
         [text(request, "snapshot")?],
     )
     .map_err(err)?;
-    let dest = tables(&c, "main")?;
+    let mut dest = tables(&c, "main")?;
     if dest != tables(&c, "incoming")? {
         return Err(err("数据结构不同，请先安装匹配版本"));
     }
@@ -308,9 +322,28 @@ fn import_snapshot(path: &str, request: &Value) -> Result<Value, AnalysisError> 
     if collisions > 0 {
         return Err(err("执行记录身份冲突，接收端不能与发送端独立生成重叠记录"));
     }
+    // Business triggers check owners immediately even when SQLite foreign keys are deferred.
+    let parents = [
+        "account",
+        "execution_input",
+        "executerecord",
+        "account_asset_snapshot",
+        "business_asset_snapshot",
+        "execution_order_collection",
+        "target_weight_snapshot",
+    ];
+    dest.sort_by_key(|table| {
+        parents
+            .iter()
+            .position(|name| name == table)
+            .unwrap_or(parents.len())
+    });
     for t in dest.iter().filter(|t| !excluded(t)) {
-        merge_table(c, t)?;
+        merge_table(c, t, t == "account_asset_snapshot")?;
     }
+    // The snapshot owns the fact that it also references. Validate the link and hash
+    // the final row only after both owners are present, within the same transaction.
+    merge_table(c, "account_asset_snapshot", false)?;
     let result = json!({"source_id":source,"executions":records(c)?});
     tx.commit().map_err(err)?;
     Ok(result)

@@ -35,6 +35,36 @@ def seed(path, ident=1):
         )
 
 
+def test_asset_snapshot_fact_links_import_and_reimport(peers):
+    source, target = peers
+    seed(source)
+    for path, revision in ((source, "source"), (target, "receiver")):
+        with sqlite3.connect(path) as connection:
+            connection.execute("CREATE TABLE axon_alembic_version(version_num TEXT PRIMARY KEY)")
+            connection.execute("INSERT INTO axon_alembic_version VALUES(?)", (revision,))
+    request = json.dumps({"action": "import", "source_id": "peer", "snapshot": str(source)})
+    for total in (50, 55):
+        _core.asset_snapshot_write(
+            str(source),
+            json.dumps(
+                {
+                    "account_id": 1,
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "account_assets": {"total_asset": total, "positions": []},
+                }
+            ),
+        )
+        for _ in range(2):
+            _core.transfer_data(str(target), request)
+        with sqlite3.connect(target) as connection:
+            assert connection.execute(
+                "SELECT a.total_asset FROM account_asset_snapshot s "
+                "JOIN business_asset_snapshot a ON a.asset_id=s.asset_fact_id AND a.account_snapshot_id=s.id "
+                "ORDER BY s.id DESC LIMIT 1"
+            ).fetchone() == (total,)
+            assert connection.execute("SELECT version_num FROM axon_alembic_version").fetchone() == ("receiver",)
+
+
 def raw_manifest(database, execution):
     from axile.server.execution_replay.reader import index, metadata
 
