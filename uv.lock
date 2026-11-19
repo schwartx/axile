@@ -221,7 +221,7 @@ wheels = [
 
 [[package]]
 name = "axile"
-version = "0.26.0a4"
+version = "0.26.0a5"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
