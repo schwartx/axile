@@ -142,14 +142,15 @@ def _append_trade_pre_execute_audit(
     standard_input: UnifiedStandardInput,
     executor: object,
     before_account_assets: dict[str, object] | None = None,
-) -> None:
+    started: tuple[int, str] | None = None,
+) -> bool:
     """补写调仓命令的开始审计与输入快照（含执行前账户快照）.
 
     调仓路径会在真实下单前先持久化输入、目标仓位和规则快照，
-    这样即使执行中途异常，也能复原这次命令原本打算做什么。
+    `started` 保留等待规划快照前记录的开始序号和时间。返回值表明整批审计是否写入。
     """
     if not execution_id:
-        return
+        return True
 
     input_id = persist_pre_execute_input_sync(
         account_id=cast(int, account.id),
@@ -170,7 +171,8 @@ def _append_trade_pre_execute_audit(
             status=ExecutionEventStatus.INFO,
             reason_family=ExecutionReasonFamily.SYSTEM,
             reason_code="COMMON.EXECUTION_STARTED",
-            seq=_event_seq(executor),
+            seq=started[0] if started is not None else _event_seq(executor),
+            ts_local_created=started[1] if started is not None else None,
             details={
                 "debug": {
                     "trigger_source": trigger_source,
@@ -234,7 +236,7 @@ def _append_trade_pre_execute_audit(
             },
         )
     )
-    append_execution_audit_batch_sync(batch)
+    return append_execution_audit_batch_sync(batch) == len(batch)
 
 
 def _append_empty_positions_pre_execute_audit(

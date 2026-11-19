@@ -267,6 +267,7 @@ class ExecutionEngine:
         self._runtime = runtime or owner.require_execution_runtime()
         self._account_snapshot: tuple[UnifiedAccountAssets, str | None] | None = None
         self._resolved_positions: dict[str, float] = {}
+        self.on_planning_assets: Callable[[UnifiedAccountAssets], None] | None = None
 
     def run(self, standard_input: UnifiedStandardInput) -> UnifiedStandardOutput:
         """执行通用编排流程."""
@@ -620,12 +621,18 @@ class ExecutionEngine:
             effective_curr_target=effective_curr_target,
         )
 
+    def _read_execution_account_assets(self, *, initial: bool) -> UnifiedAccountAssets:
+        """读取规划或收尾使用的账户快照。"""
+        return self._owner.get_account_assets()
+
     def _build_symbol_planning_context(
         self,
         standard_input: UnifiedStandardInput,
     ) -> tuple[UnifiedAccountAssets, dict[str, float], list[str]]:
         """取得通用 planning 使用的账户快照、目标权重与候选 symbol。"""
-        account_assets = self._owner.get_account_assets()
+        account_assets = self._read_execution_account_assets(initial=True)
+        if self.on_planning_assets is not None:
+            self.on_planning_assets(account_assets)
         effective_curr_target = self._build_effective_curr_target(standard_input, account_assets)
         symbols = self._owner.get_all_symbols(effective_curr_target, standard_input.last_target)
         # 空仓目标且没有待处理品种时，沿空计划汇总为 NOOP。
@@ -1501,7 +1508,7 @@ class ExecutionEngine:
     def _read_result_assets(self) -> tuple[UnifiedAccountAssets, str | None]:
         """收尾查询失败也保留已生成的品种与订单证据。"""
         try:
-            assets = self._owner.get_account_assets()
+            assets = self._read_execution_account_assets(initial=False)
             if any(not isfinite(position.volume) for position in assets.positions):
                 return UnifiedAccountAssets.unavailable(), "最终持仓尚未确认"
             if is_degraded_snapshot_source(assets.source):

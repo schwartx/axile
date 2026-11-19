@@ -183,19 +183,39 @@ class InstrumentCatalog:
         source_name: str | None = None,
     ) -> dict[str, Instrument]:
         """缺失资料由执行账户补齐；重叠查询共享，取消仅结束当前等待。"""
+        rows, _ = self.ensure_with_status(
+            symbols, checkpoint, timeout, require_specs=require_specs, source_name=source_name
+        )
+        return rows
+
+    def ensure_with_status(
+        self,
+        symbols: list[str],
+        checkpoint: Callable[[], None] | None = None,
+        timeout: float | None = None,
+        *,
+        require_specs: bool = False,
+        source_name: str | None = None,
+        cache_only: bool = False,
+    ) -> tuple[dict[str, Instrument], bool]:
+        """返回目录资料，以及本次读取是否遇到缺项、需要等待资料补齐。"""
         if timeout is None and not require_specs:
             timeout = self.limits.ensure
         deadline = catalog_deadline(timeout)
+        waited_for_fill = False
         while True:
             with self._lock:
                 current = {raw: self._find(raw) for raw in symbols}
                 if require_specs:
                     current = {raw: row if row is not None and row.has_specs else None for raw, row in current.items()}
                 if all(row is not None for row in current.values()):
-                    return {raw: row for raw, row in current.items() if row is not None}
+                    return {raw: row for raw, row in current.items() if row is not None}, waited_for_fill
                 missing = list(
                     dict.fromkeys(normalize_catalog_symbol(raw) for raw, row in current.items() if row is None)
                 )
+                if cache_only:
+                    raise CatalogError(f"共享目录缺少合约资料: {', '.join(missing)}", "CATALOG.NOT_FOUND")
+                waited_for_fill = True
                 fresh, waits = [], []
                 batch = _Attempt(deadline=deadline)
                 for symbol in missing:
@@ -225,8 +245,7 @@ class InstrumentCatalog:
                 if attempt.error is not None:
                     raise attempt.error
             # 刷新可能替换了等待期间的结果；在同一锁内复制全部必要资料。
-            if deadline is not None and clock_monotonic() >= deadline:
-                raise CatalogError("等待合约资料超时", "CATALOG.TIMEOUT")
+            catalog_remaining(deadline)
 
     def query_source(
         self, symbols: list[str], *, source_name: str, timeout: float, require_specs: bool = False
@@ -473,6 +492,18 @@ class InstrumentCatalogProvider(Protocol):
         """读取或补齐少量合约。"""
         ...
 
+    def ensure_with_status(
+        self,
+        symbols: list[str],
+        checkpoint: Callable[[], None] | None = None,
+        timeout: float | None = None,
+        *,
+        require_specs: bool = False,
+        cache_only: bool = False,
+    ) -> tuple[Mapping[str, Instrument], bool]:
+        """返回所需资料和是否等待了缺项补齐。"""
+        ...
+
     def close(self) -> None:
         """注销当前来源，不清除共享缓存。"""
         ...
@@ -503,6 +534,20 @@ class LocalInstrumentCatalogProvider:
     ) -> Mapping[str, Instrument]:
         """仅请求必要资料。"""
         return self.catalog.ensure(symbols, checkpoint, timeout, require_specs=require_specs, source_name=self.owner)
+
+    def ensure_with_status(
+        self,
+        symbols: list[str],
+        checkpoint: Callable[[], None] | None = None,
+        timeout: float | None = None,
+        *,
+        require_specs: bool = False,
+        cache_only: bool = False,
+    ) -> tuple[Mapping[str, Instrument], bool]:
+        """读取资料及缓存等待状态。"""
+        return self.catalog.ensure_with_status(
+            symbols, checkpoint, timeout, require_specs=require_specs, source_name=self.owner, cache_only=cache_only
+        )
 
     def close(self) -> None:
         """注销来源。"""
