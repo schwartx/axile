@@ -9,15 +9,17 @@ dependencies = [
     "zstandard>=0.23,<1",
     "apscheduler>=3.11.0",
     "croniter>=5.0.0",
-    "fastapi[standard]>=0.115.12",
+    "fastapi>=0.115.12",
+    "httpx>=0.23,<1",
     "loguru>=0.7.3",
     "numpy==2.3.2",
     "pandas>=2.2.3",
     "python-dotenv>=1.1.0",
+    "python-multipart>=0.0.18",
     "shinny-calendar>=1.0.2026,<2",
     "typer>=0.20.1",
     "tomlkit>=0.15.0",
-    "requests>=2.32.3",
+    "uvicorn[standard]>=0.12.0",
     "msgspec>=0.19,<1",
 ]
 
@@ -25,7 +27,11 @@ dependencies = [
 [project.optional-dependencies]
 # CTP交易所版本依赖
 ctp = ["openctp-ctp==6.7.11.*"]
-gm = ["gm>=3.0.183; sys_platform != 'darwin'"]
+gm = [
+    "gm>=3.0.183; sys_platform != 'darwin'",
+    "psutil>=7.0.0",
+    "six>=1.16.0", # GM SDK 运行时导入 six，但未声明该依赖。
+]
 tqsdk = ["tqsdk>=3.10.2,<3.11"]
 all = ["axile[ctp]", "axile[gm]", "axile[tqsdk]"]
 
