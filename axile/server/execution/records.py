@@ -7,49 +7,25 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Protocol, cast
+from typing import cast
 
 import loguru
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
 from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.session_closed import session_closed_scope
 from axile.executor.termination import TERMINATION_TRIGGER_OPERATOR
-from axile.server.asset_observations import is_asset_observation, valid_asset_snapshot_condition
+from axile.server.asset_observations import is_asset_observation
 from axile.server.core.db import SessionLocal
 from axile.server.db.models import AccountAssetSnapshot, ExecuteRecord
 from axile.server.db.models.account import AccountContext
+from axile.server.repositories import get_previous_account_asset_snapshot
 
-
-class _WriteSessionProtocol(Protocol):
-    """描述执行记录写入时需要的最小 session 能力."""
-
-    async def __aenter__(self) -> "_WriteSessionProtocol":
-        """进入异步会话上下文."""
-
-    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
-        """退出异步会话上下文."""
-
-    def add(self, obj: object) -> None:
-        """将对象加入当前会话."""
-
-    async def commit(self) -> None:
-        """提交当前事务."""
-
-    async def rollback(self) -> None:
-        """回滚当前事务."""
-
-    async def scalar(self, statement: object) -> object | None:
-        """执行语句并返回首行首列值."""
-
-    async def refresh(self, obj: object) -> None:
-        """刷新指定对象."""
-
-
-type SessionFactory = Callable[[], _WriteSessionProtocol]
+type SessionFactory = Callable[[], AsyncSession]
 
 
 def _sanitize_execute_record_input(raw_input: dict[str, object] | None) -> dict[str, object]:
@@ -57,24 +33,6 @@ def _sanitize_execute_record_input(raw_input: dict[str, object] | None) -> dict[
     persisted_raw_input = dict(raw_input or {})
     persisted_raw_input.pop("account_config", None)
     return persisted_raw_input
-
-
-async def _previous_asset_snapshot(account_id: int, session_factory: SessionFactory) -> AccountAssetSnapshot | None:
-    """在独立读会话取上一笔可信资产快照，避免写事务升级 SQLite 读锁。"""
-    try:
-        async with session_factory() as session:
-            return cast(
-                "AccountAssetSnapshot | None",
-                await session.scalar(
-                    select(AccountAssetSnapshot)
-                    .where(AccountAssetSnapshot.account_id == account_id, valid_asset_snapshot_condition())
-                    .order_by(col(AccountAssetSnapshot.id).desc())
-                    .limit(1)
-                ),
-            )
-    except SQLAlchemyError as exc:
-        loguru.logger.warning("读取执行记录参考市值失败 | account_id={} error={}", account_id, exc)
-        return None
 
 
 async def _persist_execute_record(
@@ -90,9 +48,14 @@ async def _persist_execute_record(
     assets = raw_result.get("account_assets")
     observed_assets = assets if isinstance(assets, dict) and is_asset_observation(assets, raw_result) else None
     if observed_assets is not None and observed_assets.get("market_value") is None:
-        previous = await _previous_asset_snapshot(account_id, session_factory)
+        previous = await get_previous_account_asset_snapshot(account_id, session_factory)
         value = previous.assets.get("market_value") if previous is not None else None
-        if previous is not None and type(value) in (int, float) and -float("inf") < value < float("inf"):
+        if (
+            previous is not None
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and -float("inf") < value < float("inf")
+        ):
             raw_result = {
                 **raw_result,
                 "account_assets": {**observed_assets, "market_value": value},
@@ -127,9 +90,8 @@ async def _persist_execute_record(
             await session.rollback()
             if execution_id is None:
                 raise
-            existing = cast(
-                "ExecuteRecord | None",
-                await session.scalar(select(ExecuteRecord).where(ExecuteRecord.execution_id == execution_id)),
+            existing = await session.scalar(
+                select(ExecuteRecord).where(col(ExecuteRecord.execution_id) == execution_id)
             )
             if existing is None:
                 raise
