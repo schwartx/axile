@@ -20,11 +20,11 @@ function DraftWorkbench({ draft }: { draft: EditorDraft }) {
       <h1 className="text-[17px] font-semibold text-ink-1">{draft.title}</h1>
       <p>{draft.path}</p>
       <p role="status">{offline}</p>
-      <p>补全、代码检查和格式化在本地运行。服务器试跑和提交请返回原页面操作。</p>
+      <p>返回原页面可使用代码辅助、格式化、试跑和提交。</p>
       <button type="button" className="text-accent" onClick={() => downloadCode(code)}>下载当前代码</button>
       <a href={draft.path} className="block text-accent">返回原页面</a>
     </aside>}>
-    <PythonWorkbenchPane kind={draft.kind} code={code} savedCode={draft.baseline} draftKey={draft.key}
+    <PythonWorkbenchPane localOnly kind={draft.kind} code={code} savedCode={draft.baseline} draftKey={draft.key}
       onChange={setCode} running={false} runDisabled stale={false} result={null} onRun={() => {}}
       editorRef={editor} statusTarget={status} storageKey="axile.localEditor.split" title={draft.title} />
   </PythonWorkbench>

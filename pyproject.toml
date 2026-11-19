@@ -19,6 +19,8 @@ dependencies = [
     "shinny-calendar>=1.0.2026,<2",
     "typer>=0.20.1",
     "tomlkit>=0.15.0",
+    "ty>=0.0.83,<0.1",
+    "ruff>=0.11,<1",
     "uvicorn[standard]>=0.12.0",
     "msgspec>=0.19,<1",
 ]

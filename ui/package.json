@@ -10,15 +10,14 @@
     "@codemirror/view": "6.43.13"
   },
   "scripts": {
-    "dev": "bun run build:heat && bun run build:editor && vite",
-    "build": "bun run build:heat && bun run build:editor && bun run typecheck && vite build",
+    "dev": "bun run build:heat && vite",
+    "build": "bun run build:heat && bun run typecheck && vite build",
     "typecheck": "tsrs -b --noEmit",
     "test": "bun test",
     "test:e2e": "playwright test",
     "lint": "oxlint",
     "preview": "vite preview",
-    "build:heat": "bun scripts/build-replay-heat.ts",
-    "build:editor": "bun scripts/build-editor.ts"
+    "build:heat": "bun scripts/build-replay-heat.ts"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",
@@ -35,7 +34,6 @@
     "@replit/codemirror-indentation-markers": "^6.5.3",
     "@uiw/react-codemirror": "^4.25.11",
     "dompurify": "^3.4.15",
-    "fzstd": "0.1.1",
     "lucide-react": "^1.31.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

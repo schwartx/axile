@@ -8,8 +8,6 @@ import { wasmAssets } from './scripts/wasmAssets.ts'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss(), wasmAssets(), editorOffline()],
-  // Discover the Worker-only decoder before the first consented download can trigger a reload.
-  optimizeDeps: { include: ['fzstd'] },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

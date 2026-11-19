@@ -5,7 +5,6 @@ import type { Plugin } from 'vite'
 const groups = {
   analysis: ['replay/heat-wasm/axile_replay_heat_bg.wasm'],
   raw: ['replay/raw-wasm/axile_replay_heat_bg.wasm'],
-  editor: ['editor/wasm/ty_wasm_bg.wasm.bin', 'editor/wasm/library.json.bin'],
 }
 
 /** URLs and sizes come from the same generated files in dev and production. */
