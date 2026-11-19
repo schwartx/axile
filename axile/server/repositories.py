@@ -1,9 +1,12 @@
 """账户、组合与执行关系相关的数据库查询辅助函数."""
 
+from collections.abc import Callable
 from typing import Dict, List, Optional, cast
 
+import loguru
 from fastapi import HTTPException
 from sqlalchemy import union_all
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import and_, col, desc, func, select
 
@@ -44,6 +47,20 @@ async def get_recent_account_asset_snapshots_for_accounts(
             grouped.setdefault(snapshot.account_id, []).append(snapshot)
 
     return grouped
+
+
+async def get_previous_account_asset_snapshot(
+    account_id: int, session_factory: Callable[[], AsyncSession]
+) -> AccountAssetSnapshot | None:
+    """在独立读会话取上一笔可信资产快照，读取失败时留空。"""
+    try:
+        async with session_factory() as session:
+            grouped = await get_recent_account_asset_snapshots_for_accounts(session, [account_id], limit=1)
+            snapshots = grouped.get(account_id)
+            return snapshots[0] if snapshots else None
+    except SQLAlchemyError as exc:
+        loguru.logger.warning("读取上一笔资产快照失败 | account_id={} error={}", account_id, exc)
+        return None
 
 
 async def add_record_portfolio_account(

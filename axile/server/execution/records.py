@@ -7,11 +7,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Protocol, cast
+from typing import cast
 
 import loguru
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
 from axile.executor.models.execution_result import ExecutionStatus
@@ -21,34 +23,9 @@ from axile.server.asset_observations import is_asset_observation
 from axile.server.core.db import SessionLocal
 from axile.server.db.models import AccountAssetSnapshot, ExecuteRecord
 from axile.server.db.models.account import AccountContext
+from axile.server.repositories import get_previous_account_asset_snapshot
 
-
-class _WriteSessionProtocol(Protocol):
-    """描述执行记录写入时需要的最小 session 能力."""
-
-    async def __aenter__(self) -> "_WriteSessionProtocol":
-        """进入异步会话上下文."""
-
-    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
-        """退出异步会话上下文."""
-
-    def add(self, obj: object) -> None:
-        """将对象加入当前会话."""
-
-    async def commit(self) -> None:
-        """提交当前事务."""
-
-    async def rollback(self) -> None:
-        """回滚当前事务."""
-
-    async def scalar(self, statement: object) -> object | None:
-        """执行语句并返回首行首列值."""
-
-    async def refresh(self, obj: object) -> None:
-        """刷新指定对象."""
-
-
-type SessionFactory = Callable[[], _WriteSessionProtocol]
+type SessionFactory = Callable[[], AsyncSession]
 
 
 def _sanitize_execute_record_input(raw_input: dict[str, object] | None) -> dict[str, object]:
@@ -68,6 +45,23 @@ async def _persist_execute_record(
     session_factory: SessionFactory,
 ) -> ExecuteRecord:
     """将执行记录写入数据库并返回刷新后的记录对象."""
+    assets = raw_result.get("account_assets")
+    observed_assets = assets if isinstance(assets, dict) and is_asset_observation(assets, raw_result) else None
+    if observed_assets is not None and observed_assets.get("market_value") is None:
+        previous = await get_previous_account_asset_snapshot(account_id, session_factory)
+        value = previous.assets.get("market_value") if previous is not None else None
+        if (
+            previous is not None
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and -float("inf") < value < float("inf")
+        ):
+            raw_result = {
+                **raw_result,
+                "account_assets": {**observed_assets, "market_value": value},
+                "market_value_reference": {"snapshot_id": previous.id, "created_at": previous.created_at},
+            }
+
     async with session_factory() as session:
         record = ExecuteRecord(
             account_id=account_id,
@@ -77,12 +71,11 @@ async def _persist_execute_record(
             is_success=is_success,
         )
         session.add(record)
-        assets = raw_result.get("account_assets")
-        if isinstance(assets, dict) and is_asset_observation(assets, raw_result):
+        if observed_assets is not None:
             session.add(
                 AccountAssetSnapshot(
                     account_id=account_id,
-                    assets=assets,
+                    assets=observed_assets,
                     source="execution",
                     execution_id=execution_id,
                     created_at=record.created_at,
@@ -97,9 +90,8 @@ async def _persist_execute_record(
             await session.rollback()
             if execution_id is None:
                 raise
-            existing = cast(
-                "ExecuteRecord | None",
-                await session.scalar(select(ExecuteRecord).where(ExecuteRecord.execution_id == execution_id)),
+            existing = await session.scalar(
+                select(ExecuteRecord).where(col(ExecuteRecord.execution_id) == execution_id)
             )
             if existing is None:
                 raise
