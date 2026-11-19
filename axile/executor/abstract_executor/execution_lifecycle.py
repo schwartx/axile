@@ -24,6 +24,7 @@ from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.termination import ExecutionTerminated
 
 if TYPE_CHECKING:
+    from axile.executor.models.unified_account_assets import UnifiedAccountAssets
     from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
     from axile.executor.models.unified_output import UnifiedStandardOutput
 
@@ -103,6 +104,9 @@ class AbstractExecutorExecutionLifecycleMixin(AbstractExecutorExecutionRuntimeFa
                 # 真正的 symbol 级 planning / dispatch 全部下沉给通用编排层。
                 output = executor._execution_engine().run(standard_input)
 
+            if notification_snapshot is not None:
+                output.account_assets = self._apply_previous_asset_prices(output.account_assets, notification_snapshot)
+
             # 通知是尾部副作用，不影响主执行结果的返回；投递到有界后台队列，
             # 统一经有界后台队列发送，隔离飞书网络延迟且避免线程随执行次数增长。
             if standard_input.extra.get("server_notification"):
@@ -138,6 +142,12 @@ class AbstractExecutorExecutionLifecycleMixin(AbstractExecutorExecutionRuntimeFa
                 executor._cleanup()
             if not retain_runtime:
                 executor.clear_execution_runtime()
+
+    def _apply_previous_asset_prices(
+        self, assets: UnifiedAccountAssets, snapshot: dict[str, object]
+    ) -> UnifiedAccountAssets:
+        """允许渠道在交易结束后使用历史快照补充估值。"""
+        return assets
 
     def _execution_engine(self) -> ExecutionEngine:
         """创建本次执行使用的通用编排器."""

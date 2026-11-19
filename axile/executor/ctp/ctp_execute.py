@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import shutil
 import tempfile
 import threading
@@ -18,6 +19,7 @@ from zoneinfo import ZoneInfo
 
 from openctp_ctp import thostmduserapi as md
 from openctp_ctp import thosttraderapi as td
+from pydantic import ValidationError
 
 from axile.channels.cn_futures import canonicalize_cn_futures_symbol, czce_is_option_instrument
 from axile.common.trade_channel import TradeChannel
@@ -98,9 +100,10 @@ from axile.executor.market_data_validation import (
     DEFAULT_QUOTE_MAX_AGE_SECONDS,
     QUOTE_FUTURE_TOLERANCE_SECONDS,
     MarketDataUnavailableError,
+    quote_time_error,
 )
 from axile.executor.models.execution_result import AlgorithmResult, ExecutionStatus, TargetSizingDecision
-from axile.executor.models.unified_account_assets import UnifiedAccountAssets
+from axile.executor.models.unified_account_assets import UnifiedAccountAssets, is_degraded_snapshot_source
 from axile.executor.models.unified_callback import (
     UnifiedCallbackClient,
 )
@@ -1487,6 +1490,59 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             self._ensure_instrument_symbols(self._position_catalog_symbols(positions))
         quotes, quote_errors = self._position_valuation_quotes(positions)
         return account_to_unified(accounts[-1], positions, self._instruments, quotes=quotes, quote_errors=quote_errors)
+
+    @override
+    def _apply_previous_asset_prices(
+        self, assets: UnifiedAccountAssets, snapshot: dict[str, object]
+    ) -> UnifiedAccountAssets:
+        """用上一份资产快照的有效报价补齐休市持仓估值。"""
+        if assets.market_value is not None or is_degraded_snapshot_source(assets.source):
+            return assets
+        try:
+            previous = UnifiedAccountAssets.model_validate(snapshot.get("assets"))
+        except ValidationError:
+            return assets
+        if is_degraded_snapshot_source(previous.source):
+            return assets
+
+        previous_prices = {position.symbol: position.extra for position in previous.positions if position.market_value}
+        now = clock_now().timestamp()
+        positions = list(assets.positions)
+        for index, position in enumerate(positions):
+            if position.market_value is not None or position.extra.get("valuation_reason") != "missing_quote":
+                continue
+            reference = previous_prices.get(position.symbol)
+            if reference is None or self._get_ctp_session_block_reason(position.symbol) != "CTP.SESSION.CLOSED":
+                continue
+            price = reference.get("last_price")
+            timestamp = reference.get("quote_timestamp")
+            multiplier = position.extra.get("volume_multiple")
+            if not isinstance(price, (int, float)) or isinstance(price, bool) or not 0 < price < math.inf:
+                continue
+            if not isinstance(multiplier, (int, float)) or isinstance(multiplier, bool) or not 0 < multiplier < math.inf:
+                continue
+            if type(timestamp) is not int or quote_time_error(timestamp, now=now, max_age=86400, future_tolerance=0):
+                continue
+            market_value = position.volume * price * multiplier
+            if not math.isfinite(market_value) or market_value <= 0:
+                continue
+            extra = dict(position.extra)
+            extra.pop("valuation_reason", None)
+            extra.update(
+                last_price=price,
+                quote_timestamp=timestamp,
+                quote_update_time=reference.get("quote_update_time"),
+                valuation_status="priced",
+                valuation_source="ctp_previous_asset_snapshot",
+                valuation_reference=True,
+            )
+            positions[index] = position.model_copy(update={"market_value": market_value, "extra": extra})
+
+        if positions == assets.positions:
+            return assets
+        values = [position.market_value for position in positions]
+        market_value = sum(value for value in values if value is not None) if None not in values else None
+        return assets.model_copy(update={"positions": positions, "market_value": market_value})
 
     def _position_valuation_quotes(self, positions):
         """盘中有限等待 tick，休市直接用最近价格，缺价时查询快照。"""
