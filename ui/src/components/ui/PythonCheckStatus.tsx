@@ -8,7 +8,7 @@ function SourceStatus({ source, checks, onRetry }: { source: 'lsp' | 'contract';
   const failure = useErrorPresentation(state?.error)
   const name = source === 'lsp' ? 'LSP 诊断' : '入口契约检查'
   return <div>
-    <span>{name}：{state?.status === 'disabled' ? '未启用本地代码辅助' : state?.status === 'succeeded' ? `检查完成 · ${state.diagnostics.length} 条诊断` : state?.status === 'failed' ? failure.local ? '检查失败' : '检查暂不可用' : '检查中…'}</span>
+    <span>{name}：{state?.status === 'disabled' ? '代码辅助需连接 Axile' : state?.status === 'succeeded' ? `检查完成 · ${state.diagnostics.length} 条诊断` : state?.status === 'failed' ? failure.local ? '检查失败' : '检查暂不可用' : '检查中…'}</span>
     <ErrorNotice intent="read" title={`${name}失败`} error={state?.error} evidence={checks ? [{ label: '文档版本', value: String(checks.version) }, { label: '请求代次', value: String(checks.generation) }] : []} onRetry={onRetry} contextKey={checks?.version} />
   </div>
 }

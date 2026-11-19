@@ -11,7 +11,6 @@ import { pythonVisualFeatures, quickFix, renamePythonSymbol } from '@/components
 import type { Diagnostic as ProtocolDiagnostic, DocumentSymbol, SymbolInformation } from 'vscode-languageserver-protocol'
 import { actionTargetsDiagnostic } from '@/components/ui/pythonQuickFixAvailability'
 import { pythonDefinitionClick } from '@/components/ui/pythonDefinitionClick'
-import { wasmResource } from '@/lib/wasmResources'
 
 export type LanguageStatus = 'disabled' | 'connecting' | 'ready' | 'reconnecting'
 export type DocumentSymbols = DocumentSymbol[] | SymbolInformation[]
@@ -27,7 +26,7 @@ export function connectPython(
   onChecks?: (checks: PythonChecks) => void,
 ) {
   let disposed = false
-  let worker: Worker | null = null
+  let socket: WebSocket | null = null
   let client: LSPClient | null = null
   let timer: ReturnType<typeof setTimeout> | undefined
   let watchdog: ReturnType<typeof setTimeout> | undefined
@@ -69,7 +68,7 @@ export function connectPython(
       })
       const [tyResult, contractResult] = await Promise.allSettled([
         observe('lsp', tyRead, value => value.items ?? []),
-        observe('contract', active ? checkPythonContract(doc.toString(), kind, active) : Promise.reject(connectionError), value => value.diagnostics),
+        observe('contract', checkPythonContract(doc.toString(), kind), value => value.diagnostics),
       ])
       if (disposed || editor.state.doc !== doc || generation !== analysisGeneration) return []
       const tyItems = tyResult.status === 'fulfilled' ? tyResult.value.items ?? [] : []
@@ -127,38 +126,23 @@ export function connectPython(
   const connect = () => {
     if (disposed) return
     onStatus(failures ? 'reconnecting' : 'connecting')
-    const currentWorker = new Worker(new URL('../../features/editor/python.worker.ts', import.meta.url), { type: 'module' })
-    worker = currentWorker
-    const message = { uri: 'file:///draft/portfolio.py', rootUri: 'file:///draft' }
+    const url = new URL('/api/v1/editor/lsp', window.location.href)
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+    const ws = new WebSocket(url)
+    socket = ws
     const handlers = new Set<(message: string) => void>()
-    currentWorker.onmessage = (event: MessageEvent<string>) => {
-      if (disposed || worker !== currentWorker) return
-      const message = JSON.parse(event.data)
-      if (message.type === 'ready') attachClient()
-      else if (message.type === 'failed') failed(new Error(message.message))
-      else handlers.forEach(handler => handler(event.data))
-    }
-    const failed = (cause: unknown) => {
-      if (disposed || worker !== currentWorker) return
-      connectionError = cause instanceof Error ? cause : new Error('本地代码分析器启动失败')
-      clearTimeout(watchdog)
-      currentWorker.terminate()
-      worker = null
-      analysisGeneration += 1
-      client?.disconnect()
-      client = null
-      onClient?.(null)
-      view.dispatch({ effects: slot.reconfigure([watcher, analysis(null, '')]) })
-      forceLinting(view)
-      onStatus('reconnecting')
-      timer = setTimeout(connect, Math.min(1000 * 2 ** failures++, 15000))
-    }
-    currentWorker.onerror = event => { event.preventDefault(); failed(new Error(event.message || '本地代码分析器运行失败')) }
-    void wasmResource('editor').read().then(([wasm, library]) => {
-      if (!disposed && worker === currentWorker) currentWorker.postMessage({ kind: 'init', wasm, library }, [wasm!, library!])
-    }).catch(failed)
-    watchdog = setTimeout(() => failed(new Error('本地代码分析器加载超时')), 120000)
-    const attachClient = () => {
+    const sources = new Map<string, WorkspaceFile>()
+    watchdog = setTimeout(() => ws.close(), 15000)
+    ws.onmessage = (event) => {
+      if (disposed) return
+      const message = JSON.parse(String(event.data))
+      if (message.type !== 'session') {
+        for (const [uri, code] of Object.entries(message.axileSources ?? {})) {
+          if (typeof code === 'string') sources.set(uri, { uri, languageId: 'python', version: 0, doc: Text.of(code.split('\n')), getView: () => null })
+        }
+        handlers.forEach((handler) => handler(String(event.data)))
+        return
+      }
       const active = new LSPClient({
         rootUri: message.rootUri,
         timeout: 10000,
@@ -173,21 +157,14 @@ export function connectPython(
       })
       client = active
       const workspace = active.workspace
-      const sources = new Map<string, WorkspaceFile>()
-      workspace.requestFile = async (uri) => {
-        const existing = workspace.getFile(uri) ?? sources.get(uri)
-        if (existing) return existing
-        const { code } = await active.request<object, { code: string }>('axile/source', { textDocument: { uri } })
-        const file: WorkspaceFile = { uri, languageId: 'python', version: 0, doc: Text.of(code.split('\n')), getView: () => null }
-        sources.set(uri, file)
-        return file
-      }
+      workspace.requestFile = async (uri) => workspace.getFile(uri) ?? sources.get(uri) ?? null
       workspace.displayFile = async (uri) => {
         try {
           const own = workspace.getFile(uri)?.getView()
           if (own) return displaySource(uri, own.state.doc.toString())
           const file = await workspace.requestFile(uri)
-          return file && !disposed ? displaySource(uri, file.doc.toString()) : null
+          if (!file) throw new Error('该位置没有可预览的 Python 源码')
+          return !disposed && socket === ws && active.connected ? displaySource(uri, file.doc.toString()) : null
         } catch (error) {
           if (!disposed) showDialog(view, { label: error instanceof Error ? error.message : '无法打开源码预览' })
           return null
@@ -195,14 +172,14 @@ export function connectPython(
       }
       active.connect({
         send: (value) => {
-          if (worker !== currentWorker) throw connectionError
-          currentWorker.postMessage(value)
+          if (ws.readyState !== WebSocket.OPEN) throw new Error('语言服务已断开')
+          ws.send(value)
         },
         subscribe: (handler) => { handlers.add(handler) },
         unsubscribe: (handler) => { handlers.delete(handler) },
       })
       void active.initializing.then(() => {
-        if (disposed || worker !== currentWorker) return
+        if (disposed || socket !== ws || ws.readyState !== WebSocket.OPEN) return
         clearTimeout(watchdog)
         failures = 0
         view.dispatch({ effects: slot.reconfigure([
@@ -219,7 +196,21 @@ export function connectPython(
         forceLinting(view)
         onClient?.(active)
         onStatus('ready')
-      }).catch(failed)
+      }).catch(() => ws.close())
+    }
+    ws.onerror = () => ws.close()
+    ws.onclose = (event) => {
+      connectionError = new Error(`代码分析器连接关闭：${event.code} ${event.reason}`)
+      clearTimeout(watchdog)
+      analysisGeneration += 1
+      client?.disconnect()
+      client = null
+      if (disposed) return
+      onClient?.(null)
+      view.dispatch({ effects: slot.reconfigure([watcher, analysis(null, '')]) })
+      forceLinting(view)
+      onStatus('reconnecting')
+      timer = setTimeout(connect, Math.min(1000 * 2 ** failures++, 15000))
     }
   }
   connect()
@@ -230,7 +221,7 @@ export function connectPython(
     clearTimeout(timer)
     clearTimeout(watchdog)
     client?.disconnect()
-    worker?.terminate()
+    socket?.close()
     view.dispatch({ effects: slot.reconfigure([]) })
   }
 }

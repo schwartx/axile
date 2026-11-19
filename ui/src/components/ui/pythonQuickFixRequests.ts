@@ -37,7 +37,7 @@ export async function readPythonCodeActions(client: Pick<LSPClient, 'request'>, 
 /** 某一来源失败时仍保留其他来源的修复；多处失败的原文全部可读。 */
 export async function readPythonQuickFixOptions(client: Pick<LSPClient, 'request'>, input: {
   uri: string; code: string; kind: PythonEditorKind; range: Range
-}, contractCheck = (code: string, kind: PythonEditorKind) => checkPythonContract(code, kind, client)) {
+}, contractCheck = checkPythonContract) {
   const textDocument = { uri: input.uri }
   const [contract, diagnostics] = await Promise.allSettled([
     contractCheck(input.code, input.kind),

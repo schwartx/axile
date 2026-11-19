@@ -103,12 +103,10 @@ jobs:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
-          /tmp/axile-editor-*
           /tmp/axile-replay-heat-*
-          ui/src/features/editor/wasm
-        key: wasm-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-bindgen-0.2.130-${{ hashFiles('rust/**/Cargo.lock', 'rust/editor-wasm/axile.rs', 'ui/scripts/build-editor.ts', 'ui/scripts/build-replay-heat.ts') }}-${{ github.sha }}
+        key: wasm-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-bindgen-0.2.130-${{ hashFiles('rust/**/Cargo.lock', 'ui/scripts/build-replay-heat.ts') }}-${{ github.sha }}
         restore-keys: |
-          wasm-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-bindgen-0.2.130-${{ hashFiles('rust/**/Cargo.lock', 'rust/editor-wasm/axile.rs', 'ui/scripts/build-editor.ts', 'ui/scripts/build-replay-heat.ts') }}-
+          wasm-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-bindgen-0.2.130-${{ hashFiles('rust/**/Cargo.lock', 'ui/scripts/build-replay-heat.ts') }}-
     - run: bun run lint && bun run build
       working-directory: ui
     - uses: actions/upload-artifact@v4

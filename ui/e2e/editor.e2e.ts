@@ -21,7 +21,6 @@ async function sourceCode(page: Page) {
 test.beforeEach(async ({ page }) => {
   page.on('pageerror', (error) => { throw error })
   await page.goto('/e2e/editor.html')
-  await page.getByRole('button', { name: '下载并开启', exact: true }).click()
   await expect(page.getByRole('status', { name: '代码分析器' })).toHaveAttribute('data-state', 'ready')
 })
 
@@ -88,19 +87,17 @@ test('auto-import completion inserts an import and is undoable', async ({ page }
 })
 
 test('a delayed formatter cannot overwrite newer typing', async ({ page }) => {
-  await page.evaluate(() => {
-    const original = Worker.prototype.postMessage
-    Worker.prototype.postMessage = function (message: unknown) {
-      if (typeof message === 'string' && JSON.parse(message).method === 'axile/format') {
-        (window as unknown as { finishFormat: () => void }).finishFormat = () => original.call(this, message)
-      } else original.call(this, message)
-    }
+  let finish: () => void = () => {}
+  const waiting = new Promise<void>((resolve) => { finish = resolve })
+  await page.route('**/editor/format', async (route) => {
+    await waiting
+    await route.fulfill({ json: { code: 'value = 1\n' } })
   })
   await replace(page, 'value=1')
   await page.getByRole('button', { name: '格式化', exact: true }).click()
   await expect(page.getByRole('button', { name: '格式化中…' })).toBeDisabled()
   await replace(page, 'value=2')
-  await page.evaluate(() => (window as unknown as { finishFormat: () => void }).finishFormat())
+  finish()
   await expect(page.getByText('代码已变化，请重新格式化')).toBeVisible()
   await expect(page.getByTestId('code')).toHaveText('value=2')
 })
@@ -122,14 +119,6 @@ test('definition opens a read-only source tab and rename is undoable', async ({ 
   expect(source).not.toBeNull()
   await page.keyboard.type('cannot_edit_source')
   await expect.poll(() => sourceCode(page)).toBe(source)
-  const toggle = page.getByRole('switch', { name: '本地代码辅助' })
-  await toggle.click()
-  await expect(page.getByRole('tab', { name: 'context.py', exact: true })).toHaveCount(0)
-  await toggle.click()
-  await expect(page.getByRole('status', { name: '代码分析器' })).toHaveAttribute('data-state', 'ready')
-  await page.locator('.cm-content').first().focus()
-  await page.keyboard.press('F12')
-  await expect(page.getByRole('tab', { name: 'context.py', exact: true })).toHaveAttribute('aria-selected', 'true')
   await page.getByRole('button', { name: '关闭 context.py', exact: true }).click()
   await expect(page.locator('.cm-content').first()).toBeFocused()
   await page.keyboard.press('Home')
@@ -210,11 +199,19 @@ test('indentation, bracket pairing, comment and multi-selection shortcuts', asyn
   await expect(page.getByTestId('code')).toHaveText('price = 1\nother = price')
 })
 
-test('network loss leaves local analysis and undo available', async ({ page, context }) => {
-  await context.setOffline(true)
-  await replace(page, 'draft: int = "keep me"\n')
-  await expect(page.getByRole('status', { name: '代码分析器' })).toHaveAttribute('data-state', 'ready')
-  await expect(page.getByTestId('code')).toHaveText('draft: int = "keep me"\n')
+test('reconnect closes old previews and resynchronizes unsaved text without losing undo', async ({ page, request }) => {
+  const draft = 'import httpx\ndraft: int = "keep me"\nhttpx.Client()'
+  await replace(page, draft)
+  await page.keyboard.press('Home')
+  for (let i = 0; i < 8; i++) await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('F12')
+  const preview = page.getByRole('tab', { name: '_client.py', exact: true })
+  await expect(preview).toHaveAttribute('aria-selected', 'true')
+  await request.post('http://127.0.0.1:1439/test/disconnect')
+  await expect(page.getByRole('status', { name: '代码分析器' })).toHaveAttribute('data-state', 'reconnecting')
+  await expect(page.getByRole('status', { name: '代码分析器' })).toHaveAttribute('data-state', 'ready', { timeout: 20000 })
+  await expect(preview).toHaveCount(0)
+  await expect(page.getByTestId('code')).toHaveText(draft)
   await expect(page.getByTestId('problems')).toContainText('not assignable')
   await editorCommand(page, '撤销')
   await expect(page.getByTestId('code')).not.toContainText('keep me')

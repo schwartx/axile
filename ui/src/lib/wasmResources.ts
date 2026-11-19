@@ -6,7 +6,6 @@ export type WasmKind = keyof typeof assets
 const resources = {
   analysis: createWasmDownload(assets.analysis),
   raw: createWasmDownload(assets.raw),
-  editor: createWasmDownload(assets.editor),
 }
 export const wasmResource = (kind: WasmKind) => resources[kind]
 export function useWasmResource(kind: WasmKind) {

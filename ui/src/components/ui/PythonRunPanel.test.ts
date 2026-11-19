@@ -3,7 +3,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 // Vite supplies this manifest; static-render tests never download editor components.
-mock.module('virtual:wasm-assets', () => ({ default: { analysis: [], raw: [], editor: [] } }))
+mock.module('virtual:wasm-assets', () => ({ default: { analysis: [], raw: [] } }))
 const { PythonRunPanel } = await import('./PythonRunPanel')
 
 describe('PythonRunPanel', () => {
