@@ -4,9 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
-from typing import cast
-
-import pandas as pd
 
 from axile.channels.algorithm_scopes import (
     FUTURES_SCOPE_PATTERN,
@@ -309,23 +306,6 @@ _CHINA_FUTURES_NIGHT = ChannelNightSchedule(
 )
 
 
-def _contribution_target(config: dict[str, float], frame: pd.DataFrame) -> pd.DataFrame:
-    """将策略权重与组合配置相乘并写入贡献度列."""
-    strategies = cast("pd.Series", frame["strategy"])
-    frame["contribution"] = frame["weight"] * strategies.map(config)
-    return frame
-
-
-def _gm_target(config: dict[str, float], frame: pd.DataFrame) -> pd.DataFrame:
-    """计算掘金目标贡献度并保持 Axile 通用证券代码."""
-    return _contribution_target(config, frame.copy())
-
-
-def _tq_target(config: dict[str, float], frame: pd.DataFrame) -> pd.DataFrame:
-    """计算天勤目标贡献度并保持 Axile 通用合约代码."""
-    return _contribution_target(config, frame.copy())
-
-
 _CTP_STEPS = tuple(
     ConnectionStepDefinition(id=key, label=label)
     for key, label in (
@@ -534,7 +514,6 @@ def _ctp_plugin() -> ChannelPlugin:
         create_executor=_create_ctp_executor,
         configure_market_data=_configure_ctp_market_data,
         validate_connection=_validate_ctp_connection,
-        target_transform=_contribution_target,
         execution_backend="process",
         required_modules=("openctp_ctp",),
         install_extra="ctp",
@@ -661,7 +640,6 @@ def _gm_plugin() -> ChannelPlugin:
         account_config_model=GMAccountConfig,
         create_executor=_create_gm_executor,
         configure_market_data=_configure_gm_market_data,
-        target_transform=_gm_target,
         execution_backend="process",
         required_modules=("gm",),
         install_extra="gm",
@@ -784,7 +762,6 @@ def _tq_plugin() -> ChannelPlugin:
         account_config_model=TQAccountConfig,
         create_executor=_create_tq_executor,
         configure_market_data=_configure_tq_market_data,
-        target_transform=_tq_target,
         execution_backend="process",
         required_modules=("tqsdk",),
         install_extra="tqsdk",

@@ -7,7 +7,6 @@ from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import Annotated
 
-import pandas as pd
 import pytest
 from msgspec import Meta
 
@@ -39,12 +38,6 @@ class DemoAccountConfig(BaseAccountConfig):
     """测试插件账户配置。"""
 
     token: Annotated[str, Meta(min_length=1)]
-
-
-def _target_transform(config: dict[str, float], frame: pd.DataFrame) -> pd.DataFrame:
-    transformed = frame.copy()
-    transformed["contribution"] = transformed["weight"] * transformed["strategy"].map(config)
-    return transformed
 
 
 def _plugin(
@@ -87,7 +80,6 @@ def _plugin(
         ),
         account_config_model=DemoAccountConfig,
         create_executor=lambda config: SimpleNamespace(config=config),
-        target_transform=_target_transform,
         execution_backend="process",
         required_modules=required_modules,
         max_parallel_symbols=max_parallel_symbols,

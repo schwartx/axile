@@ -6,7 +6,6 @@ from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pandas as pd
 import pytest
 
 from axile.channels import (
@@ -32,11 +31,6 @@ class _Config(BaseAccountConfig):
     """工厂测试账户配置。"""
 
     key: str
-
-
-def _target_transform(config: dict[str, float], frame: pd.DataFrame) -> pd.DataFrame:
-    del config
-    return frame
 
 
 def _plugin() -> ChannelPlugin:
@@ -70,7 +64,6 @@ def _plugin() -> ChannelPlugin:
         ),
         account_config_model=_Config,
         create_executor=create_executor,
-        target_transform=_target_transform,
     )
 
 

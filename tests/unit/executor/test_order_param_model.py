@@ -33,7 +33,6 @@ def test_channel_plugin_defaults_to_unknown() -> None:
         descriptor=gm.descriptor,
         account_config_model=gm.account_config_model,
         create_executor=gm.create_executor,
-        target_transform=gm.target_transform,
         validate_connection=gm.validate_connection,
     )
     assert plugin.order_param_model is OrderParamModel.UNKNOWN

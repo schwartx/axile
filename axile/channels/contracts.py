@@ -6,7 +6,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, is_dataclass
 from typing import TYPE_CHECKING, Annotated, Literal, Protocol
 
-import pandas as pd
 from msgspec import Meta
 
 from axile.channels.market_data import MarketDataFactory
@@ -36,7 +35,6 @@ class ConnectionProgress(Protocol):
 
 type ConnectionValidator = Callable[[BaseAccountConfig, ConnectionProgress], None]
 type ExecutorFactory = Callable[[BaseAccountConfig], "AbstractExecutor"]
-type TargetTransform = Callable[[dict[str, float], pd.DataFrame], pd.DataFrame]
 type CanonicalizeSymbol = Callable[[str], str]
 type QuantizeTargetQuantity = Callable[[float, float, float], float]
 
@@ -477,8 +475,6 @@ class ChannelPlugin:
         用于验证渠道账户配置的 Pydantic 模型。
     create_executor : ExecutorFactory
         根据已验证配置创建执行器的工厂。
-    target_transform : TargetTransform
-        将策略权重表转换为渠道目标贡献度的函数。
     execution_backend : ExecutionBackend
         执行阻塞渠道逻辑所用的隔离后端。
     required_modules : tuple[str, ...]
@@ -507,7 +503,6 @@ class ChannelPlugin:
     descriptor: ChannelDescriptor
     account_config_model: type[BaseAccountConfig]
     create_executor: ExecutorFactory
-    target_transform: TargetTransform
     execution_backend: ExecutionBackend = "process"
     required_modules: tuple[str, ...] = ()
     install_extra: str | None = None
