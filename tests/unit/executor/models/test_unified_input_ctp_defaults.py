@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Annotated
 
-import pandas as pd
 import pytest
 from msgspec import Meta
 
@@ -101,10 +100,6 @@ def test_external_plugin_controls_unknown_channel_config_validation(monkeypatch:
         def select(self, **_kwargs: object) -> _NoEntryPoints:
             return self
 
-    def target_transform(config: dict[str, float], frame: pd.DataFrame) -> pd.DataFrame:
-        del config
-        return frame
-
     monkeypatch.setattr(registry.metadata, "entry_points", lambda: _NoEntryPoints())
     registry._reset_registry_for_tests()
     list_channels()
@@ -131,7 +126,6 @@ def test_external_plugin_controls_unknown_channel_config_validation(monkeypatch:
             ),
             account_config_model=ExternalConfig,
             create_executor=lambda config: SimpleNamespace(config=config),
-            target_transform=target_transform,
         )
     )
     try:
