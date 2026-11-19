@@ -14,7 +14,6 @@
     "build": "bun run build:heat && bun run typecheck && vite build",
     "typecheck": "tsrs -b --noEmit",
     "test": "bun test",
-    "test:e2e": "playwright test",
     "lint": "oxlint",
     "preview": "vite preview",
     "build:heat": "bun scripts/build-replay-heat.ts"
@@ -42,7 +41,6 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
-    "@playwright/test": "^1.63.0",
     "@tailwindcss/vite": "^4.3.2",
     "@types/bun": "^1.3.14",
     "@types/node": "^24.13.2",

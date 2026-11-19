@@ -6,4 +6,4 @@
 
 代码也会保存到浏览器的 IndexedDB。点击状态栏里的“本地草稿”，确认页面显示“可离线使用”后，可断网重新打开、编辑和下载草稿。本地草稿页只在浏览器内编辑，返回原页面即可使用代码辅助、格式化、试跑或提交。
 
-运行 `bun x playwright test editor.e2e.ts` 检查在线编辑器。运行 `bun x playwright test --config playwright.offline.config.ts editor-offline.e2e.ts` 检查生产构建的断网打开和草稿恢复。
+本地开发时用 ego-browser 或 agent-browser 验证在线编辑器，以及生产构建的断网打开和草稿恢复。
