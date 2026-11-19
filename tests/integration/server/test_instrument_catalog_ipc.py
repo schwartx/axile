@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from axile.executor.instrument_catalog import CatalogLimits, InstrumentCatalog
+from axile.executor.instrument_catalog import CatalogError, CatalogLimits, InstrumentCatalog
 from axile.executor.instrument_catalog_records import Instrument
 from axile.server.execution.worker_backend.catalog import (
     CatalogSession,
@@ -317,8 +317,14 @@ def test_ctp_specs_request_crosses_ipc_and_skips_code_only_tq_source():
         providers[0].bind(lambda symbols, timeout: [Instrument(ROW.exchange, ROW.symbol, ROW.kind)], channel="tq")
         assert not providers[0].ensure([ROW.key])[ROW.key].has_specs
         providers[1].bind(lambda symbols, timeout: calls.append(symbols) or [ROW], channel="ctp")
+        with pytest.raises(CatalogError, match="共享目录缺少合约资料"):
+            providers[1].ensure_with_status([ROW.key], require_specs=True, cache_only=True)
+        assert calls == []
         assert providers[1].ensure_with_status([ROW.key], require_specs=True) == ({ROW.key: ROW}, True)
-        assert providers[1].ensure_with_status([ROW.key], require_specs=True) == ({ROW.key: ROW}, False)
+        assert providers[1].ensure_with_status([ROW.key], require_specs=True, cache_only=True) == (
+            {ROW.key: ROW},
+            False,
+        )
         assert calls == [[ROW.key]]
     finally:
         for provider in providers:

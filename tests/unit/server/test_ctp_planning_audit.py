@@ -39,8 +39,8 @@ def test_ctp_worker_freezes_planning_assets_before_dispatch(monkeypatch, case):
         calls.append("catalog")
         events.append({"event_type": "catalog", "seq": executor.next_audit_seq()})
 
-    def read_assets(*, complete_planning_catalog=False):
-        assert complete_planning_catalog == (case != "closed")
+    def read_assets(*, extend_catalog=None):
+        assert extend_catalog == (None if case == "closed" else "allow_fill")
         calls.append("assets")
         if case == "recovery":
             raise CtpSessionRecoveryRequired("connection lost", return_code=-2)

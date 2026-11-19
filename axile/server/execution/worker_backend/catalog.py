@@ -225,6 +225,7 @@ class CatalogSession(_CatalogPipe):
                 catalog_remaining(catalog_deadline(None)),
                 require_specs=message.get("require_specs", False),
                 source_name=self.source,
+                cache_only=message.get("cache_only", False),
             )
             return {
                 "rows": {symbol: row.wire() for symbol, row in rows.items()},
@@ -279,11 +280,14 @@ class RemoteCatalogProvider(_CatalogPipe):
         timeout: float | None = None,
         *,
         require_specs: bool = False,
+        cache_only: bool = False,
     ) -> tuple[Mapping[str, Instrument], bool]:
         """读取资料及主进程观察到的缓存等待状态。"""
         if timeout is None and not require_specs:
             timeout = 15.0
-        result = self._request("ensure", timeout, checkpoint, symbols=symbols, require_specs=require_specs)
+        result = self._request(
+            "ensure", timeout, checkpoint, symbols=symbols, require_specs=require_specs, cache_only=cache_only
+        )
         return (
             {symbol: Instrument.from_wire(row) for symbol, row in result["rows"].items()},
             result["waited_for_fill"],

@@ -13,7 +13,7 @@ from datetime import date, datetime
 from pathlib import Path
 from sys import float_info
 from types import SimpleNamespace
-from typing import TypeVar, cast, override
+from typing import Literal, TypeVar, cast, override
 from zoneinfo import ZoneInfo
 
 from openctp_ctp import thostmduserapi as md
@@ -207,10 +207,12 @@ class CtpExecutionEngine(ExecutionEngine):
     """CTP 的品种时段筛选与 scoped cancel 编排器。"""
 
     @override
-    def _read_initial_planning_assets(self) -> UnifiedAccountAssets:
+    def _read_execution_account_assets(self, *, initial: bool) -> UnifiedAccountAssets:
         if self.on_planning_assets is None:
-            return super()._read_initial_planning_assets()
-        return cast("CTPExecutor", self._owner)._get_account_assets(complete_planning_catalog=True)
+            return super()._read_execution_account_assets(initial=initial)
+        return cast("CTPExecutor", self._owner)._get_account_assets(
+            extend_catalog="allow_fill" if initial else "cache_only"
+        )
 
     def _symbol_session_block(self, symbol: str) -> tuple[str, str] | None:
         reason_code = cast("CTPExecutor", self._owner)._get_ctp_session_block_reason(symbol)
@@ -1796,12 +1798,14 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
     def get_account_assets(self) -> UnifiedAccountAssets:
         return self._get_account_assets()
 
-    def _get_account_assets(self, *, complete_planning_catalog: bool = False) -> UnifiedAccountAssets:
-        """按首次规划需要补齐目录；等过柜台资料后只复查一次。"""
+    def _get_account_assets(
+        self, *, extend_catalog: Literal["allow_fill", "cache_only"] | None = None
+    ) -> UnifiedAccountAssets:
+        """首次规划可等待补齐资料，收尾只追加共享缓存里的资料。"""
         account, positions = self._query_account_observation()
         if not self._validation_catalog:
             symbols = self._position_catalog_symbols(positions)
-            if complete_planning_catalog and self._extend_planning_catalog(symbols):
+            if extend_catalog and self._extend_execution_catalog(symbols, cache_only=extend_catalog == "cache_only"):
                 account, positions = self._query_account_observation()
                 symbols = self._position_catalog_symbols(positions)
             self._ensure_instrument_symbols(symbols)

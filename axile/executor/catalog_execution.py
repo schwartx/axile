@@ -54,19 +54,19 @@ class CatalogExecutionMixin(FuturesCloseRuntimeMixin):
         self._catalog_records.update({row.key: row for row in rows.values()})
         self._install_catalog(rows)
 
-    def _extend_planning_catalog(self, symbols: list[str]) -> bool:
-        """只为首次规划追加持仓合约；已经固定的记录保持同一份。"""
+    def _extend_execution_catalog(self, symbols: list[str], *, cache_only: bool) -> bool:
+        """追加本次新发现的持仓合约，保留已经固定的记录。"""
         self._catalog_checkpoint()
         missing = [symbol for symbol in symbols if self._catalog_record(symbol) is None]
         if not missing:
             return False
-        rows, waited_for_fill = self._load_instrument_symbols(missing, None, extending=True)
+        rows, waited_for_fill = self._load_instrument_symbols(missing, None, extending=True, cache_only=cache_only)
         self._catalog_records = {**{row.key: row for row in rows.values()}, **self._catalog_records}
         self._install_catalog(rows)
         return waited_for_fill
 
     def _load_instrument_symbols(
-        self, symbols: list[str], timeout: float | None, *, extending: bool = False
+        self, symbols: list[str], timeout: float | None, *, extending: bool = False, cache_only: bool = False
     ) -> tuple[Mapping[str, Instrument], bool]:
         """加载完整依赖链，供固定初始目录或补齐首次规划缺项。"""
         if timeout is None and not self._catalog_requires_specs:
@@ -81,7 +81,11 @@ class CatalogExecutionMixin(FuturesCloseRuntimeMixin):
                 raise CatalogError("等待合约资料超时", "CATALOG.TIMEOUT")
             if extending:
                 rows, waited = self._instrument_provider.ensure_with_status(
-                    required, self._catalog_checkpoint, remaining, require_specs=self._catalog_requires_specs
+                    required,
+                    self._catalog_checkpoint,
+                    remaining,
+                    require_specs=self._catalog_requires_specs,
+                    cache_only=cache_only,
                 )
                 waited_for_fill |= waited
             else:

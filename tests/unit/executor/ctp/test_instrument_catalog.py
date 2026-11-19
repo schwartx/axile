@@ -284,9 +284,18 @@ def test_continuous_native_callbacks_do_not_extend_the_batch_deadline(monkeypatc
 
 @pytest.mark.parametrize(
     "case",
-    ["fixed", "shared_hit", "cold", "dependency_miss", "unavailable", "position_changes"],
+    [
+        "fixed",
+        "shared_hit",
+        "cold",
+        "dependency_miss",
+        "unavailable",
+        "position_changes",
+        "settlement_shared_hit",
+        "settlement_cache_miss",
+    ],
 )
-def test_ctp_planning_only_refreshes_assets_after_waiting_for_catalog(monkeypatch, case):
+def test_ctp_execution_only_refreshes_assets_after_waiting_for_catalog(monkeypatch, case):
     """真实目录和规划流程只用最后一次读取写审计。"""
     executor = CTPExecutor(TradeChannel("ctp"))
     executor.account_config = from_payload(CTPAccountConfig, build_account().account_config)
@@ -310,7 +319,7 @@ def test_ctp_planning_only_refreshes_assets_after_waiting_for_catalog(monkeypatc
     provider.bind(query_instruments, channel="ctp")
     executor.set_instrument_catalog_provider(provider)
     seeded = ["rb2701"]
-    if case == "shared_hit":
+    if case in {"shared_hit", "settlement_shared_hit"}:
         seeded.append("ag2701")
     if case == "dependency_miss":
         seeded.append(option)
@@ -327,6 +336,8 @@ def test_ctp_planning_only_refreshes_assets_after_waiting_for_catalog(monkeypatc
         assert name == "ReqQryInvestorPosition"
         position_reads += 1
         symbol = {"fixed": "rb2701", "dependency_miss": option, "unavailable": "au2701"}.get(case, "ag2701")
+        if case.startswith("settlement_") and position_reads == 1:
+            symbol = "rb2701"
         if case == "position_changes" and position_reads == 2:
             symbol = "au2701"
         return [
@@ -358,6 +369,15 @@ def test_ctp_planning_only_refreshes_assets_after_waiting_for_catalog(monkeypatc
         assert observations == [assets] and observations[0] is assets
         assert assets.total_asset == 10000 + 100 * (position_reads - 1)
         assert assets.positions[0].volume == position_reads
+    if case.startswith("settlement_"):
+        settled, error = engine._read_result_assets()
+        assert observations == [assets]
+        if case == "settlement_shared_hit":
+            assert error is None
+            assert [(position.symbol, position.volume) for position in settled.positions] == [("ag2701", 2)]
+        else:
+            assert settled.source == "unavailable"
+            assert error and "ag2701" in error
     assert executor._catalog_frozen and executor._catalog_record("rb2701") is pinned
     account_reads = ["ReqQryTradingAccount", "ReqQryInvestorPosition"]
     expected = {
@@ -367,5 +387,7 @@ def test_ctp_planning_only_refreshes_assets_after_waiting_for_catalog(monkeypatc
         "dependency_miss": [*account_reads, ("catalog", ("SHFE.ag2701",)), *account_reads],
         "unavailable": [*account_reads, ("catalog", ("au2701",))],
         "position_changes": [*account_reads, ("catalog", ("ag2701",)), *account_reads],
+        "settlement_shared_hit": account_reads * 2,
+        "settlement_cache_miss": account_reads * 2,
     }
     assert trace == expected[case]
