@@ -275,7 +275,7 @@ fn list(connection: &Connection, request: &Value, table: &str) -> Result<Value, 
             public_event(&mut item)?;
         } else {
             item["content"] = summary_refs::resolve_artifact_content(connection, &item, None)?;
-            enum_field(&item, "artifact_type", "standard_input|target_snapshot|account_snapshot|account_snapshot_before|trade_rules_snapshot|market_snapshot|environment_snapshot")?;
+            enum_field(&item, "artifact_type", "standard_input|target_snapshot|account_snapshot|account_snapshot_before|position_confirmation|trade_rules_snapshot|market_snapshot|environment_snapshot")?;
             if !item["content"].is_object() {
                 return Err(invalid("附件内容必须是对象"));
             }

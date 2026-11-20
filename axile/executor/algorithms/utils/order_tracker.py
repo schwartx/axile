@@ -207,6 +207,7 @@ class OrderTracker:
     rest_price_refresh_interval: float = 1.0
     start_volume: float | None = None
     _checkpoint_failed: bool = field(default=False, init=False)
+    _checkpointed_terminal_count: int = field(default=0, init=False)
     _checkpoint_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _explicit_error: str | None = field(default=None, init=False)
     _order_errors: dict[str, str] = field(default_factory=dict, init=False)
@@ -595,7 +596,10 @@ class OrderTracker:
 
     def wait_for_completion(self, timeout: float = 120) -> bool:
         """等待当前 tracker 内所有订单收敛到终态。"""
-        return self._wait_callback(timeout)
+        try:
+            return self._wait_callback(timeout)
+        finally:
+            self._save_checkpoint(new_terminals_only=True)
 
     def _wait_callback(self, timeout: float) -> bool:
         """
@@ -694,18 +698,22 @@ class OrderTracker:
         self._finalize_timeout_cancellations(known_only=not saved)
         return False
 
-    def _save_checkpoint(self) -> bool:
+    def _save_checkpoint(self, *, new_terminals_only: bool = False) -> bool:
         if self.start_volume is None:
             return True
         # 把同一跟踪器的快照和写入排序，避免并发回调让旧快照覆盖较新的订单集合。
         with self._checkpoint_lock:
             with self.lock:
+                terminal_count = len(self.completed_orders)
+                if new_terminals_only and terminal_count == self._checkpointed_terminal_count:
+                    return True
                 for order in self.pending_orders.values():
                     order.extra["terminal_confirmation_pending"] = True
                 orders = [
                     copy_data(order) for order in (*self.completed_orders.values(), *self.pending_orders.values())
                 ]
             if save_position_checkpoint(self.executor, self.start_volume, orders):
+                self._checkpointed_terminal_count = terminal_count
                 return True
             self._checkpoint_failed = True
             self.explicit_error = "待核对仓位保存失败"
@@ -776,6 +784,8 @@ class OrderTracker:
                 unconfirmed.setdefault(order_id, reason)
                 if order_id not in self._cancel_restrictions:
                     self._order_errors.setdefault(order_id, reason)
+        # 在调用线程保存回报，下一次查仓可能阻塞或导致 worker 被回收。
+        self._save_checkpoint(new_terminals_only=True)
         return unconfirmed
 
     def _record_cancellation_item(self, order_id: str, item: OrderCancellation) -> None:

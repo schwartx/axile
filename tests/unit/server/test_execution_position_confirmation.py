@@ -11,6 +11,8 @@ from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionKind, ExecutionReasonFamily
 from axile.executor.algorithms.core.base import AlgorithmInput
 from axile.executor.algorithms.defaults.single_maker import impl as single_maker
+from axile.executor.algorithms.defaults.twap import impl as twap
+from axile.executor.algorithms.utils import order_helper
 from axile.executor.algorithms.utils.final_position import read_final_position, save_position_checkpoint
 from axile.executor.algorithms.utils.order_tracker import OrderTracker
 from axile.executor.algorithms.utils.outcome import summarize_outcome
@@ -18,8 +20,9 @@ from axile.executor.constants.order_status import OrderStatus
 from axile.executor.execution_runtime import ExecutionRuntime, ExecutionRuntimeBindings
 from axile.executor.models.execution_result import AlgorithmResult
 from axile.executor.models.unified_account_assets import PositionDirection
+from axile.executor.models.unified_input_accounts import GMAccountConfig
 from axile.executor.models.unified_order import OrderDirection
-from axile.executor.order_cancellation import CancellationResult
+from axile.executor.order_cancellation import CancellationResult, CancelRequestStatus, OrderCancellation
 from axile.executor.order_terminal_audit import order_terminal_details
 from axile.executor.termination import ExecutionTerminated, ExecutionTerminationController
 from axile.server.execution.audit_sink import ServerExecutionAuditSink
@@ -621,6 +624,86 @@ def test_clear_empty_snapshot_cancels_and_reconciles_old_buy(native_database, mo
         assert output.symbol_results[order.symbol].expected_volume == filled
     else:
         assert output.status == "NOOP"
+
+
+@pytest.mark.parametrize(
+    "extra, expected_reason",
+    [
+        ({"pending_order_terminals": [{"symbol": SELL}]}, "COMMON.ORDER.TERMINAL_UNCONFIRMED"),
+        ({"pending_positions": {SELL: 400}}, "COMMON.POSITION.UNCONFIRMED"),
+    ],
+)
+def test_clear_after_restart_while_closed_reports_persisted_blocker(monkeypatch, extra, expected_reason):
+    owner = engine([_assets()], channel="gm")._owner
+    owner.account_config = GMAccountConfig(
+        connection_mode="service", account_id="test-account", token="test-token", serv_addr="localhost:7001"
+    )
+    monkeypatch.setattr(owner, "_check_trading_time", lambda: False)
+    cancel = Mock()
+    monkeypatch.setattr(owner, "cancel_all_orders", cancel)
+
+    output = owner.empty_positions(extra=extra)
+    assert output.status == "BLOCKED"
+    assert not output.success
+    assert output.reason_code == expected_reason
+    cancel.assert_not_called()
+
+
+@pytest.mark.parametrize("from_cancel_query", [False, True])
+def test_twap_preserves_zero_fill_terminal_before_next_slice(native_database, monkeypatch, from_cancel_query):
+    seed_account(native_database)
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    audit = ServerExecutionAuditSink()
+    execution_id = "twap-interrupted-between-slices"
+    old = engine([], channel="ctp")
+    attach_audit(old._runtime, audit, execution_id, 1)
+    executor = _SingleMakerExecutor()
+    executor.has_audit_sink = True
+    executor.audit_context = old._runtime.audit_context
+    executor.emit_audit_event = old._runtime.emit_audit_event
+    stopped = ExecutionTerminated(reason="operator", mode="graceful")
+    executor.get_account_assets = Mock(side_effect=[_assets(), _assets(), stopped])
+    executor.sleep_or_terminate = Mock()
+    clock = ClockStub()
+    tracker = OrderTracker(executor=executor, clock=clock)
+    order = result(
+        start=0, observed=0, target=200, direction=OrderDirection.BUY, filled=0, status=OrderStatus.PENDING
+    ).orders[0]
+    terminal = copy_data(order, update={"status": OrderStatus.CANCELED})
+    cancellation = CancellationResult()
+    if from_cancel_query:
+        cancellation.orders[order.symbol, order.order_id] = OrderCancellation(
+            CancelRequestStatus.SUBMITTED, "已撤销", terminal_order=terminal
+        )
+
+    def submit(*_args, **_kwargs):
+        tracker.add_order(order)
+        if not from_cancel_query:
+            tracker.on_order_update(terminal)
+        return [order]
+
+    monkeypatch.setattr(twap, "get_default_clock", lambda: clock)
+    monkeypatch.setattr(twap, "setup_order_tracker", lambda *_: tracker)
+    monkeypatch.setattr(twap, "teardown_order_tracker", Mock())
+    monkeypatch.setattr(order_helper, "get_default_clock", lambda: clock)
+    monkeypatch.setattr(order_helper, "submit_and_track_split_orders", submit)
+    monkeypatch.setattr(order_helper, "cancel_pending_orders_via_query", lambda _: cancellation)
+    if from_cancel_query:
+        # 第一片等单结束后才从撤单查询取到终态。
+        monkeypatch.setattr(tracker, "_wait_callback", lambda _: False)
+
+    with pytest.raises(ExecutionTerminated):
+        twap.twap(
+            executor,
+            AlgorithmInput(symbol=order.symbol, target_volume=400, trade_rule={}, params=twap.TwapParams(slices=2)),
+        )
+    assert executor.get_account_assets.call_count == 3
+    finish_terminated(1, execution_id, stopped)
+
+    assert (
+        native_store_call(native_database, "execution_read", {"op": "pending_order_terminals", "account_id": 1}) == []
+    )
+    assert native_store_call(native_database, "execution_read", {"op": "pending_positions", "account_id": 1}) == {}
 
 
 def test_zero_fill_terminal_is_saved_before_interrupted_position_query(native_database, monkeypatch):
