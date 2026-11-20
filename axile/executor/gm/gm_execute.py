@@ -45,7 +45,7 @@ from axile.common.gm_symbols import GM_SYMBOL_RESOLVER, normalize_gm_standard_in
 from axile.common.trade_channel import TradeChannel
 from axile.executor import replay as recording
 from axile.executor.abstract_executor.base import AbstractExecutor
-from axile.executor.algorithms.utils.clock import clock_now
+from axile.executor.algorithms.utils.clock import clock_now, get_default_clock
 from axile.executor.connection_state import connection_monitor, preserve_connection_failure
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.gm import replay
@@ -590,20 +590,28 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
 
     # ==================== 核心交易方法 ====================
 
-    def get_account_assets(self) -> UnifiedAccountAssets:
-        """获取账户资产."""
+    def get_account_assets(self, *, deadline: float | None = None) -> UnifiedAccountAssets:
+        """获取账户资产。指定截止时间时，持仓与资金查询共用单调时钟预算。"""
         if not self.account_id:
             raise ValueError("账户ID未初始化")
+
+        def query_timeout() -> float:
+            if deadline is None:
+                return 10.0
+            remaining = deadline - get_default_clock().monotonic()
+            if remaining <= 0:
+                raise TimeoutError("GM 资产查询已到截止时间")
+            return min(10.0, remaining)
 
         logger.info(f"开始获取账户资产: account_id={self.account_id}")
         logger.info(f"准备查询持仓: account_id={self.account_id}")
         positions = cast(
             "list[Any]",
-            self._call_bridge("get_position", account_id=self.account_id, timeout=10.0),
+            self._call_bridge("get_position", account_id=self.account_id, timeout=query_timeout()),
         )
         logger.info(f"持仓查询完成: account_id={self.account_id}, positions={len(positions)}")
         logger.info(f"准备查询资金: account_id={self.account_id}")
-        raw_cash = self._call_bridge("get_cash", account_id=self.account_id, timeout=10.0)
+        raw_cash = self._call_bridge("get_cash", account_id=self.account_id, timeout=query_timeout())
         logger.info(f"资金查询完成: account_id={self.account_id}, has_cash={bool(raw_cash)}")
         total_asset, available_cash, cash_diagnostics = _gm_cash_snapshot(raw_cash)
 

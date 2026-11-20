@@ -10,7 +10,7 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, fields
 from math import isfinite
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from axile.common.serialization import copy_data, to_payload
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
@@ -42,6 +42,7 @@ from axile.executor.termination import ExecutionTerminated
 
 if TYPE_CHECKING:
     from axile.executor.abstract_executor.base import AbstractExecutor
+    from axile.executor.gm.gm_execute import GMExecutor
 
 
 type ObjectDict = dict[str, object]
@@ -1027,16 +1028,21 @@ class ExecutionEngine:
         deadline = clock.monotonic() + _GM_REDUCTION_CONFIRM_SECONDS
         while not self._has_unsuccessful_results(settled) and any(row.position_confirmed is False for row in settled):
             assert self._account_snapshot is not None
+            now = clock.monotonic()
             remaining = self._runtime.deadline_remaining_seconds()
-            if self._account_snapshot[1] is not None or (remaining is not None and remaining <= 1.0):
-                break
-            if clock.monotonic() + 1.0 > deadline:
+            read_deadline = min(deadline, now + remaining) if remaining is not None else deadline
+            if self._account_snapshot[1] is not None or now + 1.0 >= read_deadline:
                 break
             try:
                 self._runtime.sleep_or_terminate(1.0)
-                settled = self._settle_result_positions(results)
-            except ExecutionTerminated:
+                self._account_snapshot = self._read_result_assets(gm_deadline=read_deadline)
+                settled = self._reconcile_result_positions(settled, self._account_snapshot[0])
+                self._owner.handle_termination_checkpoint()
+            except ExecutionTerminated as exc:
                 self._remember_unconfirmed_positions(settled)
+                exc.raw_result = {
+                    "symbol_results": {row.symbol: to_payload(row, mode="json") for row in settled},
+                }
                 raise
         return settled
 
@@ -1535,10 +1541,14 @@ class ExecutionEngine:
             return COMMON_SESSION_CLOSED
         return None
 
-    def _read_result_assets(self) -> tuple[UnifiedAccountAssets, str | None]:
+    def _read_result_assets(self, *, gm_deadline: float | None = None) -> tuple[UnifiedAccountAssets, str | None]:
         """收尾查询失败也保留已生成的品种与订单证据。"""
         try:
-            assets = self._read_execution_account_assets(initial=False)
+            assets = (
+                self._read_execution_account_assets(initial=False)
+                if gm_deadline is None
+                else cast("GMExecutor", self._owner).get_account_assets(deadline=gm_deadline)
+            )
             if any(not isfinite(position.volume) for position in assets.positions):
                 return UnifiedAccountAssets.unavailable(), "最终持仓尚未确认"
             if is_degraded_snapshot_source(assets.source):

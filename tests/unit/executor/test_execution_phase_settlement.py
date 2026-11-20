@@ -382,7 +382,7 @@ def test_confirm_reduction_before_opening_without_reusing_stale_position(monkeyp
 
 
 @pytest.mark.parametrize(
-    ("confirmation_second", "execution_seconds", "waited"), [(9, None, 9), (11, None, 10), (9, 3, 2)]
+    ("confirmation_second", "execution_seconds", "waited"), [(9, None, 9), (11, None, 9), (9, 3, 2)]
 )
 def test_gm_delayed_reduction_opens_only_after_broker_confirms(
     monkeypatch, confirmation_second, execution_seconds, waited
@@ -397,7 +397,7 @@ def test_gm_delayed_reduction_opens_only_after_broker_confirms(
     monkeypatch.setattr(
         e._owner,
         "get_account_assets",
-        lambda: assets(sell=500 if clock.time() >= confirmation_second else 900, buy=1400 if opened else 0),
+        lambda **_: assets(sell=500 if clock.time() >= confirmation_second else 900, buy=1400 if opened else 0),
     )
 
     def dispatch(tasks):
@@ -410,9 +410,35 @@ def test_gm_delayed_reduction_opens_only_after_broker_confirms(
     output = e.run(inputs(e))
 
     assert clock.time() == waited
-    assert opened == ([9] if waited == 9 else [])
+    assert opened == ([confirmation_second] if confirmation_second <= waited else [])
     assert output.symbol_results[SELL].position_confirmed is bool(opened)
     assert output.symbol_results[BUY].status == (ExecutionStatus.SUCCEEDED if opened else ExecutionStatus.BLOCKED)
+
+
+def test_gm_delayed_reduction_passes_remaining_budget_to_slow_query(monkeypatch):
+    clock = ClockStub()
+    monkeypatch.setattr("axile.executor.execution_engine.get_default_clock", lambda: clock)
+    before = assets(sell=900)
+    e = engine([], channel="gm")
+    e._runtime.sleep_or_terminate.side_effect = clock.sleep
+    e._runtime.deadline_remaining_seconds.side_effect = lambda: 2.5 - clock.time()
+    dispatch = Mock(return_value=[result(observed=900)])
+    monkeypatch.setattr(e, "_run_prepared_symbol_algorithms", dispatch)
+
+    def read_assets(*, deadline=None):
+        if deadline is None:
+            return before
+        assert deadline == 2.5
+        clock.sleep(deadline - clock.time())
+        raise TimeoutError
+
+    monkeypatch.setattr(e._owner, "get_account_assets", read_assets)
+    output = e.run(inputs(e))
+
+    assert clock.time() == 2.5
+    assert output.symbol_results[SELL].position_confirmed is False
+    assert output.symbol_results[BUY].status == ExecutionStatus.BLOCKED
+    dispatch.assert_called_once()
 
 
 def test_gm_termination_during_position_confirmation_keeps_pending_fill(monkeypatch):

@@ -317,7 +317,7 @@ def test_passive_order_at_best_bid_does_not_chase_on_wide_spread() -> None:
     assert tracker._get_orders_needing_chase() == []
 
 
-@pytest.mark.parametrize(("price", "should_chase"), [(1.724, False), (1.723, True)])
+@pytest.mark.parametrize(("price", "should_chase"), [(1.724, False), (1.723, True), (float("nan"), False)])
 def test_gm_chase_requires_more_than_one_price_tick(monkeypatch, price, should_chase):
     executor = _ChaseExecutor()
     monkeypatch.setattr(executor, "get_tick_size", lambda: 0.001)
@@ -328,8 +328,9 @@ def test_gm_chase_requires_more_than_one_price_tick(monkeypatch, price, should_c
         clock=clock,
         chase_config=ChaseConfig(enabled=True, ticks=1, interval=0),
     )
-    order = copy_data(_build_pending_order("etf-bid", "159981.SZ"), update={"price": price})
+    order = _build_pending_order("etf-bid", "159981.SZ")
     tracker.add_order(order, direction=OrderDirection.BUY)
+    tracker.on_order_update(copy_data(order, update={"price": price}))
     tracker.latest_prices[order.symbol] = UnifiedPriceData(
         symbol=order.symbol,
         bids=[(1.725, 100)],
@@ -522,9 +523,12 @@ def test_timeout_cancel_does_not_extend_deadline_for_delayed_terminal() -> None:
 
 
 @pytest.mark.parametrize("before_wait_expires", [True, False])
-def test_gm_timeout_cancel_uses_terminal_callback_in_result(monkeypatch, before_wait_expires):
+@pytest.mark.parametrize("in_pending_query", [True, False])
+def test_gm_timeout_cancel_uses_terminal_callback_in_result(monkeypatch, before_wait_expires, in_pending_query):
     order = _build_pending_order("gm-late-cancel")
     executor = _TimeoutCancelExecutor(order)
+    if not in_pending_query:
+        monkeypatch.setattr(executor, "get_pending_orders", lambda: [])
     clock = ClockStub()
     tracker = OrderTracker(executor=executor, clock=clock)
     tracker.add_order(order)
@@ -544,7 +548,7 @@ def test_gm_timeout_cancel_uses_terminal_callback_in_result(monkeypatch, before_
     else:
         with pytest.raises(RuntimeError, match="订单终态尚未确认") as raised:
             tracker.wait_for_completion(timeout=0)
-        assert tracker.explicit_error == "撤单请求已提交，订单终态尚未确认"
+        assert "订单终态尚未确认" in tracker.explicit_error
         tracker.on_order_update(terminal)
         tracker.record_exception(raised.value)
 
@@ -552,7 +556,7 @@ def test_gm_timeout_cancel_uses_terminal_callback_in_result(monkeypatch, before_
     assert tracker.completed_orders[order.order_id].status == OrderStatus.CANCELED
     outcome = summarize_outcome(0, 0, order.volume, tracker.get_all_orders(), [], **tracker.outcome_inputs())
     assert outcome["reason_code"] == "COMMON.TARGET.NOT_REACHED"
-    assert executor.cancel_calls == [order.order_id]
+    assert executor.cancel_calls == ([order.order_id] if in_pending_query else [])
     assert executor._placed == 0
 
 

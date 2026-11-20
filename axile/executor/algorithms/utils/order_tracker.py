@@ -17,6 +17,7 @@ Notes
 import threading
 from dataclasses import dataclass, field, is_dataclass
 from decimal import Decimal
+from math import isfinite
 from typing import Any, cast
 
 from axile.common.logging import LogComponent, bind_log_context
@@ -693,22 +694,22 @@ class OrderTracker:
         return False
 
     def _finalize_timeout_cancellations(self) -> None:
-        """收尾只接收已提交撤单的终态回报，不再报单。"""
+        """超时后核对订单终态，收尾期间不再报单。"""
         cancellation = cancel_pending_orders_via_query(self.executor)
-        self._reconcile_timeout_cancellations(cancellation)
+        missing = self._reconcile_timeout_cancellations(cancellation)
         unconfirmed = self.record_cancellation_result(cancellation)
-        if (
-            unconfirmed
-            and self.executor.channel_type == "gm"
-            and any(
-                item.request_status == CancelRequestStatus.SUBMITTED and item.terminal_order is None
-                for item in cancellation.orders.values()
-            )
-        ):
-            self.executor.handle_termination_checkpoint()
-            self.clock.event_wait(self.all_done_event, _GM_TIMEOUT_CANCEL_CONFIRM_SECONDS)
-            self.executor.handle_termination_checkpoint()
-            unconfirmed = self.record_cancellation_result(cancellation)
+        if unconfirmed and self.executor.channel_type == "gm":
+            submitted = {
+                order_id
+                for (_, order_id), item in cancellation.orders.items()
+                if item.request_status == CancelRequestStatus.SUBMITTED
+            }
+            # 已从挂单查询消失的本地委托，也可能仍在等最终回报。
+            if unconfirmed.keys() & (submitted | missing):
+                self.executor.handle_termination_checkpoint()
+                self.clock.event_wait(self.all_done_event, _GM_TIMEOUT_CANCEL_CONFIRM_SECONDS)
+                self.executor.handle_termination_checkpoint()
+                unconfirmed = self.record_cancellation_result(cancellation)
         if unconfirmed and not self.waiting_on_restriction():
             raise _OrderTerminalUnconfirmedError(unconfirmed)
 
@@ -784,21 +785,18 @@ class OrderTracker:
                 self._cancel_restrictions[order_id] = exc.execution_error
         self._logger.warning(f"撤单受限，保留原委托 {order_id}: {exc.execution_error}")
 
-    def _reconcile_timeout_cancellations(self, result: CancellationResult) -> None:
-        """在回调注销前补查一次超时撤单终态，不额外等待、追单或重新报单。
-
-        复用渠道的真实终态对账能力；不支持该能力的渠道保持原有回调路径。
-        查询失败或仍未终态时保留 pending，由结果聚合明确报告未知状态。
-        已耗尽执行等待期限，因此不再开启确认等待窗口；网络请求受渠道自身超时限制。
-        """
+    def _reconcile_timeout_cancellations(self, result: CancellationResult) -> set[str]:
+        """核对未出现在挂单查询中的委托，返回参与补查的跟踪订单标识。"""
         if not callable(getattr(self.executor, "reconcile_terminal_order", None)):
-            return
+            return set()
         self.executor.handle_termination_checkpoint()
         checked = {order_id for _, order_id in result.unconfirmed}
         checked.update(order.order_id for order in result.terminal_orders)
         with self.lock:
             already_checked = [order for order_id, order in self.pending_orders.items() if order_id in checked]
+            missing = self.pending_orders.keys() - checked
         self._reconcile_missing_pending(already_checked)
+        return missing
 
     def _get_effective_refresh_interval(
         self,
@@ -1172,7 +1170,7 @@ class OrderTracker:
                 direction = info["direction"]
 
                 levels = latest_price.bids if direction == OrderDirection.BUY else latest_price.asks
-                if not levels or not levels[0][0] > 0:
+                if not levels or levels[0][0] <= 0 or not isfinite(levels[0][0]) or not isfinite(order.price):
                     continue
                 # 与重挂使用同侧盘口，精确区分刚好到达阈值与超过阈值。
                 best_price = Decimal(str(levels[0][0]))

@@ -48,6 +48,8 @@ class ExecutionTerminated(RuntimeError):
         以品种和订单号为键，保留不可撤单或终态未确认的原因。
     cancel_outcomes : dict[str, dict[str, object]]
         逐单记录撤单操作分类、终态是否确认及查询异常。
+    raw_result : dict[str, object] | None
+        终止前已取得的执行结果证据，供终止记录保存。
     acked_at : str | None
         执行线程首次确认终止的时间。
     trigger : str
@@ -74,6 +76,7 @@ class ExecutionTerminated(RuntimeError):
         cancel_unconfirmed: bool = False,
         cancel_details: dict[str, str] | None = None,
         cancel_outcomes: dict[str, dict[str, object]] | None = None,
+        raw_result: dict[str, object] | None = None,
     ) -> None:
         self.reason = reason
         self.mode = mode
@@ -85,6 +88,7 @@ class ExecutionTerminated(RuntimeError):
         self.cancel_unconfirmed = cancel_unconfirmed
         self.cancel_details = dict(cancel_details or {})
         self.cancel_outcomes = dict(cancel_outcomes or {})
+        self.raw_result = raw_result
         message_parts = ["execution terminated"]
         if trigger and trigger != TERMINATION_TRIGGER_OPERATOR:
             message_parts.append(f"trigger={trigger}")
