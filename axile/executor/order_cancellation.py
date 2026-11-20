@@ -95,6 +95,7 @@ def cancel_orders(
     *,
     cancel: Callable[[str, str], bool],
     reconcile: Callable[[str, str], UnifiedOrder | None],
+    on_terminal: Callable[[UnifiedOrder], None] | None = None,
 ) -> CancellationResult:
     """逐笔请求并核实；异常无法证明请求是否到达上游，因而记为未知。"""
     result = CancellationResult()
@@ -126,4 +127,6 @@ def cancel_orders(
             and terminal.is_completed()
         ):
             item.terminal_order = terminal
+            if on_terminal is not None:
+                on_terminal(terminal)
     return result

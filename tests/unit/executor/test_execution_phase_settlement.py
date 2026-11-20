@@ -379,6 +379,22 @@ def test_confirm_reduction_before_opening_without_reusing_stale_position(monkeyp
         e._runtime.sleep_or_terminate.assert_not_called()
 
 
+def test_phase_two_does_not_open_if_position_checkpoint_cannot_be_saved(monkeypatch):
+    before = assets(sell=900)
+    e = engine([before, assets(sell=500)], channel="gm")
+    e._runtime.emit_audit_artifact.return_value = False
+    dispatch = Mock(return_value=[result(observed=500)])
+    monkeypatch.setattr(e, "_run_prepared_symbol_algorithms", dispatch)
+
+    output = e.run(inputs(e))
+
+    assert e._owner.account_assets_calls == 1
+    assert output.symbol_results[SELL].position_confirmed is False
+    assert output.symbol_results[BUY].status == ExecutionStatus.BLOCKED
+    assert "保存失败" in output.symbol_results[BUY].error
+    dispatch.assert_called_once()
+
+
 @pytest.mark.parametrize("restored", [False, True])
 def test_unconfirmed_fills_block_next_execution_until_snapshot_matches(monkeypatch, restored):
     before = assets(sell=0)

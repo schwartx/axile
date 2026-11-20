@@ -29,8 +29,16 @@ class _FakeTracker:
     def add_order(self, order: UnifiedOrder, **kwargs: Any) -> None:
         self.orders.append((order, kwargs))
 
+    def require_saved_orders(self) -> None:
+        pass
+
     def assert_ready_for_submission(self) -> None:
         pass
+
+    def position_for_submission(
+        self, current: float, direction, *, needs_position_detail: bool, leg_order_ids=None
+    ) -> float:
+        return current
 
     def wait_for_completion(self, timeout: float | None = None) -> bool:
         _ = timeout
@@ -68,6 +76,52 @@ def _make_executor(model: OrderParamModel) -> MagicMock:
 
 
 _ASSETS = UnifiedAccountAssets(available_cash=0.0, total_asset=0.0, market_value=0.0, positions=[])
+
+
+@pytest.mark.parametrize("target", [-100, 100])
+@pytest.mark.parametrize(
+    ("model", "late", "bounds", "submitted"),
+    [
+        (OrderParamModel.DIRECTIONAL, False, None, [50, 50]),
+        (OrderParamModel.OFFSET, False, (1, 25), [25, 25]),
+        (OrderParamModel.DIRECTIONAL, True, None, [50, 70]),
+        (OrderParamModel.OFFSET, True, None, [50]),
+        (OrderParamModel.POSITION_SIDE, True, None, [50]),
+    ],
+)
+def test_twap_does_not_resubmit_fills_missing_from_position(monkeypatch, target, model, late, bounds, submitted):
+    from axile.executor.algorithms.core.base import AlgorithmInput
+    from axile.executor.algorithms.defaults.twap.impl import TwapParams, twap
+    from tests.fixtures.algorithm_fakes import ClockStub
+    from tests.unit.executor.algorithms.test_order_tracker_and_single_maker_regressions import _SingleMakerExecutor
+
+    clock = ClockStub()
+    monkeypatch.setattr("axile.executor.algorithms.utils.clock._default_clock", clock)
+    executor = _make_executor(model)
+    executor.sleep_or_terminate.side_effect = clock.sleep
+    executor.get_market_data.return_value = _SingleMakerExecutor().get_market_data()
+    executor.get_pending_orders.return_value = []
+    executor.get_order_volume_bounds.return_value = bounds
+    executor.is_termination_requested.return_value = False
+    place_order = executor.place_order.side_effect
+
+    from axile.executor.models.unified_order import TradeRecord
+
+    def fill(*args, **kwargs):
+        order = place_order(*args, **kwargs)
+        if late and executor.place_order.call_count == 1:
+            trade = TradeRecord.create(trade_id="late", order_id=order.order_id, symbol=order.symbol, trade_volume=30)
+            executor.get_min_notional.side_effect = lambda: executor.register_trade_callback.call_args.args[0](trade)
+            return copy_data(order, update={"status": OrderStatus.CANCELED})
+        return copy_data(order, update={"status": OrderStatus.FILLED, "filled_volume": order.volume})
+
+    executor.place_order.side_effect = fill
+    output = twap(
+        executor,
+        AlgorithmInput(executor.symbol, target, {}, params=TwapParams(total_duration=30, slices=2, max_wait_seconds=1)),
+    )
+    assert [order.volume for order in output.orders] == submitted
+    assert output.position_confirmed is False
 
 
 @pytest.mark.parametrize("algorithm", ["SINGLE-MAKER", "TWAP", "POV"])
@@ -443,8 +497,8 @@ def test_timeout_stops_split_and_blocks_next_slice_until_terminal(monkeypatch, m
     assert len(orders) == 1
     assert executor.place_order.call_count == 1
     executor.cancel_order.assert_called_once_with(orders[0].order_id)
-    # 下单前及 tracker 超时诊断刷新资产，拆单函数不再刷新资产后补单。
-    assert executor.get_account_assets.call_count == 2
+    # 超时收尾只核对委托，资产查询来自拆单报单前。
+    assert executor.get_account_assets.call_count == 1
     with pytest.raises(RuntimeError, match="旧单尚未确认终态"):
         _submit(executor, tracker, OrderDirection.SELL, 5, target=-3, current=2)
     assert executor.place_order.call_count == 1
@@ -476,6 +530,25 @@ def test_split_legs_share_deadline(monkeypatch, elapsed, expected_volumes, expec
 
     assert [call.args[2] for call in executor.place_order.call_args_list] == expected_volumes
     assert waits == pytest.approx(expected_waits)
+
+
+@pytest.mark.parametrize("callback_first", [False, True])
+def test_failed_terminal_checkpoint_blocks_the_next_slice(callback_first):
+    executor = _make_executor(OrderParamModel.DIRECTIONAL)
+    executor.has_audit_sink = True
+    executor.audit_context = {"execution_id": "split"}
+    tracker = OrderTracker(executor=executor, start_volume=0)
+    order = _submit(executor, tracker, OrderDirection.BUY, 2, target=2, current=0)[0]
+    terminal = copy_data(order, update={"status": OrderStatus.CANCELED})
+    executor.get_pending_orders.return_value = []
+    executor.reconcile_terminal_order.return_value = terminal
+    executor.emit_audit_event.return_value = False
+    if callback_first:
+        tracker.on_order_update(terminal)
+
+    with pytest.raises(RuntimeError, match="待核对仓位保存失败"):
+        _submit(executor, tracker, OrderDirection.BUY, 2, target=2, current=0)
+    assert executor.place_order.call_count == 1
 
 
 def test_submission_gate_reconciles_missing_cancel_callback() -> None:

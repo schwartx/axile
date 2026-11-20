@@ -21,6 +21,9 @@ class ExecutionEventType(str, Enum):
     ORDER_SUBMITTED = "order_submitted"
     ORDER_ACKNOWLEDGED = "order_acknowledged"
     ORDER_TERMINAL = "order_terminal"
+    ORDER_TERMINAL_PENDING = "order_terminal_pending"
+    POSITION_CHECKPOINT = "position_checkpoint"
+    ORDER_POSITION_RECONCILED = "order_position_reconciled"
     EXECUTION_COMPLETED = "execution_completed"
     EXECUTION_FAILED = "execution_failed"
 
@@ -53,6 +56,7 @@ class ExecutionArtifactType(str, Enum):
     TARGET_SNAPSHOT = "target_snapshot"
     ACCOUNT_SNAPSHOT = "account_snapshot"
     ACCOUNT_SNAPSHOT_BEFORE = "account_snapshot_before"
+    POSITION_CONFIRMATION = "position_confirmation"
     TRADE_RULES_SNAPSHOT = "trade_rules_snapshot"
     MARKET_SNAPSHOT = "market_snapshot"
     ENVIRONMENT_SNAPSHOT = "environment_snapshot"

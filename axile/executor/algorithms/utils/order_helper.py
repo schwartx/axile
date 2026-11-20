@@ -339,7 +339,9 @@ def submit_and_track_order(
     target_volume: float,
     current_volume: float,
     deadline: float | None = None,
-    **kwargs: object,
+    slice_target: float | None = None,
+    leg_order_ids: set[str] | None = None,
+    **kwargs: Any,
 ) -> UnifiedOrder | None:
     """
     提交订单并纳入统一跟踪流程。
@@ -383,7 +385,26 @@ def submit_and_track_order(
     """
     symbol = executor.symbol
 
-    decision = resolve_reduce_intent(executor, direction, volume, target_volume, current_volume, price)
+    while True:
+        decision = resolve_reduce_intent(executor, direction, volume, target_volume, current_volume, price)
+        tracker.require_saved_orders()
+        position = tracker.position_for_submission(
+            current_volume, direction, needs_position_detail=slice_target is None, leg_order_ids=leg_order_ids
+        )
+        if position is None:
+            return None
+        if slice_target is None:
+            break
+        allowed = min(
+            volume,
+            _remaining_toward_target(direction, slice_target, position),
+            _remaining_toward_target(direction, target_volume, position),
+        )
+        if allowed == volume:
+            break
+        if allowed <= 0:
+            return None
+        volume, current_volume = allowed, position
     if decision.action == "SKIP":
         executor.emit_audit_event(
             event_type=ExecutionEventType.SYMBOL_SKIPPED,
@@ -440,6 +461,18 @@ def submit_and_track_order(
         executor.logger.info(f"{symbol} {direction.value} {volume} 取整后数量为 0，跳过下单")
         return None
 
+    position_side = kwargs.get("position_side")
+    offset_flag = kwargs.get("offset_flag")
+    tracker.add_order(
+        order,
+        direction=direction,
+        target_volume=float(target_volume),
+        current_volume=float(current_volume),
+        position_side=position_side if isinstance(position_side, str) else None,
+        offset_flag=offset_flag if isinstance(offset_flag, str) else None,
+        submission_deadline=deadline,
+    )
+
     # 补发「挂单」审计事件，供前端逐只动作流呈现「决策→挂单→追价→成交」中的挂单一步。
     # 无审计上下文时 emit_audit_event 自身静默跳过，故对无上下文的渠道零影响。
     client_order_id = order.extra.get("cl_ord_id") if isinstance(order.extra, dict) else None
@@ -459,18 +492,6 @@ def submit_and_track_order(
                 "price": float(price),
             }
         },
-    )
-
-    position_side = kwargs.get("position_side")
-    offset_flag = kwargs.get("offset_flag")
-    tracker.add_order(
-        order,
-        direction=direction,
-        target_volume=float(target_volume),
-        current_volume=float(current_volume),
-        position_side=position_side if isinstance(position_side, str) else None,
-        offset_flag=offset_flag if isinstance(offset_flag, str) else None,
-        submission_deadline=deadline,
     )
 
     executor.logger.debug(f"订单已提交: {symbol} {direction.value} {volume} @{price}, 订单ID: {order.order_id}")
@@ -597,6 +618,7 @@ def _place_offset_leg(
     chunks = [
         (chunk, extra) for quantity, extra in plan for chunk in _leg_chunks(executor, order_type, quantity, trade_rule)
     ]
+    leg_order_ids: set[str] = set()
     for chunk, extra in chunks:
         order = submit_and_track_order(
             executor,
@@ -608,11 +630,14 @@ def _place_offset_leg(
             target_volume=target_volume,
             current_volume=current_volume,
             deadline=deadline,
+            slice_target=None,
+            leg_order_ids=leg_order_ids,
             **{**leg_kwargs, **extra},
         )
         if order is None:
             break
         orders.append(order)
+        leg_order_ids.add(order.order_id)
     return orders
 
 
@@ -672,6 +697,8 @@ def _submit_close_open_orders(
             break
         account_assets = executor.get_account_assets()
         current_volume = executor.get_current_volume(account_assets)
+        if tracker.position_for_submission(current_volume, direction, needs_position_detail=True) is None:
+            break
         remaining = min(
             _remaining_toward_target(direction, target_volume, current_volume),
             _remaining_toward_target(direction, slice_target, current_volume),
@@ -752,7 +779,14 @@ def submit_and_track_split_orders(
     # 快照必须在终态确认之后读取：回调也可能先于门控到达，此时 pending 已为空。
     slice_target = current_volume + (volume if direction == OrderDirection.BUY else -volume)
     account_assets = executor.get_account_assets()
-    current_volume = executor.get_current_volume(account_assets)
+    position = tracker.position_for_submission(
+        executor.get_current_volume(account_assets),
+        direction,
+        needs_position_detail=model != OrderParamModel.DIRECTIONAL,
+    )
+    if position is None:
+        return []
+    current_volume = position
     volume = min(
         _remaining_toward_target(direction, target_volume, current_volume),
         _remaining_toward_target(direction, slice_target, current_volume),
@@ -787,6 +821,8 @@ def submit_and_track_split_orders(
             target_volume=target_volume,
             current_volume=current_volume,
             deadline=deadline,
+            slice_target=slice_target if model == OrderParamModel.DIRECTIONAL else None,
+            leg_order_ids=None,
             **kwargs,
         )
         return [order] if order is not None else []
@@ -893,7 +929,7 @@ def execute_order_slice(
         return detail
 
     tracker.wait_for_completion(timeout=max(0.0, deadline - get_default_clock().time()))
-    cancellation = cancel_pending_orders_via_query(executor)
+    cancellation = cancel_pending_orders_via_query(executor, on_terminal=tracker.record_terminal_order)
     unconfirmed = tracker.record_cancellation_result(cancellation)
     if cancellation.orders:
         detail["cancel_outcomes"] = cancellation.outcomes

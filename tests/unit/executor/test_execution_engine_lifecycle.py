@@ -460,7 +460,7 @@ def test_progress_enters_settling_only_after_both_dispatch_phases(monkeypatch):
     dispatch = SimpleNamespace(phase_one_tasks=[object()], phase_two_plans=[object()], direct_results=[])
     monkeypatch.setattr(engine, "_build_symbol_algorithm_plans", lambda value: planning)
     monkeypatch.setattr(engine, "_build_dispatch_phases", lambda value: dispatch)
-    monkeypatch.setattr(engine, "_prepare_account_for_symbol_dispatch", lambda value: None)
+    monkeypatch.setattr(engine, "_prepare_account_for_symbol_dispatch", lambda: None)
 
     def dispatch_phase(*args, **kwargs):
         assert seen == ["planning", "executing"]

@@ -27,7 +27,7 @@ class _LockExecutor(FuturesCloseRuntimeMixin, _TestExecutor):
         self.book = _FuturesExecutor(channel)
         self.book.symbol = "IF2612"
         self.book.long_today, self.book.long_yesterday, self.book.short_today, self.book.short_yesterday = positions
-        self.cancel_all_orders = Mock()
+        self.cancel_all_orders = Mock(return_value={})
         if channel == TradeChannel("tq"):
             from axile.executor.tq.converters import account_to_unified
             from axile.executor.tq.symbols import TQInstrument, TQSymbolResolver

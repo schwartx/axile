@@ -14,6 +14,7 @@ from axile.executor.gm.common import convert_gm_trade_to_trade_record
 from axile.executor.gm.core import gm_strategy
 from axile.executor.gm.gm_execute import GMExecutor
 from axile.executor.models.unified_input import GMAccountConfig
+from tests.fixtures.algorithm_fakes import ClockStub
 
 
 def report(**changes):
@@ -37,6 +38,42 @@ def instance():
         GMAccountConfig(connection_mode="service", account_id="test", token="test", serv_addr="127.0.0.1:7001"),
         connect=False,
     )
+
+
+@pytest.mark.parametrize(
+    ("symbol", "step"),
+    [("159981.SZ", 0.001), ("SZSE.158001", 0.001), ("513880.SH", 0.001), ("000001.SZ", 0.01)],
+)
+def test_gm_stock_and_etf_price_steps(symbol, step):
+    assert instance().get_tick_size(symbol) == step
+
+
+@pytest.mark.parametrize("position_seconds", [0.75, 2.5])
+def test_gm_assets_share_timeout_between_position_and_cash(monkeypatch, position_seconds):
+    clock = ClockStub()
+    executor = instance()
+    calls = []
+    monkeypatch.setattr(
+        executor,
+        "get_active_execution_runtime",
+        lambda: SimpleNamespace(deadline_remaining_seconds=lambda: 2.5 - clock.time()),
+    )
+
+    def bridge(operation, *, timeout, **_):
+        calls.append((operation, timeout))
+        if operation == "get_position":
+            clock.sleep(position_seconds)
+            return []
+        return {"nav": 900, "available": 900}
+
+    monkeypatch.setattr(executor, "_call_bridge", bridge)
+    if position_seconds < 2.5:
+        assert executor.get_account_assets().total_asset == 900
+        assert calls == [("get_position", 2.5), ("get_cash", 1.75)]
+    else:
+        with pytest.raises(TimeoutError):
+            executor.get_account_assets()
+        assert calls == [("get_position", 2.5)]
 
 
 @pytest.mark.parametrize("kind", [None, 0, 1, 5, 8, 16, 17, ExecType_CancelRejected, 999])

@@ -323,6 +323,7 @@ def pov(
 
     accumulator = _VolumeAccumulator()
     tracker = setup_order_tracker(executor, executor.get_market_data(), None)
+    tracker.start_volume = start_volume
     executor.register_price_callback(accumulator.on_price, bind_order_context=False)
     slice_details: list[dict[str, Any]] = []
 
@@ -351,7 +352,9 @@ def pov(
         executor.unregister_price_callback(accumulator.on_price)
         teardown_order_tracker(executor, tracker, None)
 
-    account_assets, final_volume, explicit_error = read_final_position(executor, executor.get_current_volume)
+    account_assets, final_volume, explicit_error = read_final_position(
+        executor, executor.get_current_volume, start=start_volume, orders=tracker.get_all_orders(for_position=True)
+    )
     orders = tracker.get_all_orders()
     trades = tracker.get_all_trades()
 

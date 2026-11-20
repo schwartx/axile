@@ -151,6 +151,8 @@ class _SharedTickSingleMakerExecutor(_SingleMakerExecutor):
 
 
 class _RefreshingExecutor:
+    channel_type = "ctp"
+
     def __init__(self, pending_orders: list[UnifiedOrder]) -> None:
         self.symbol = "rb2610"
         self.logger = MagicMock()
@@ -175,6 +177,9 @@ class _RefreshingExecutor:
 
     def handle_termination_checkpoint(self) -> None:
         self.checkpoint_calls += 1
+
+    def emit_audit_event(self, **_kwargs: object) -> bool:
+        return True
 
 
 def _patch_single_maker_dependencies(

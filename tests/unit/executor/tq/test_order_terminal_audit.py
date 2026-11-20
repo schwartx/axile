@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import gc
 import threading
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
@@ -120,6 +122,34 @@ def test_nonterminal_and_unknown_states_never_emit_terminal(audited_executor, st
     assert not sink.events
 
 
+@pytest.mark.parametrize("during_write", [False, True])
+def test_late_fill_corrects_original_terminal(audited_executor, monkeypatch, during_write):
+    instance, api, sink = audited_executor
+    submit(instance)
+    entered, release = threading.Event(), threading.Event()
+    append = sink.append_event
+
+    def write(**event):
+        entered.set()
+        assert release.wait(timeout=5)
+        return append(**event)
+
+    monkeypatch.setattr(sink, "append_event", write)
+    if not during_write:
+        release.set()
+    try:
+        instance._on_runtime_event("order", finish(api, left=2))
+        assert entered.wait(timeout=5)
+        if not during_write:
+            assert instance._terminal_audit.flush()
+        for left in (1, 1, 0):
+            instance._on_runtime_event("order", finish(api, left=left))
+    finally:
+        release.set()
+    assert instance._terminal_audit.flush()
+    assert [event["details"]["order"]["filled_volume"] for event in sink.events] == [0, 1, 2]
+
+
 def test_callback_and_reconciliation_concurrently_emit_once(audited_executor):
     instance, api, sink = audited_executor
     order = submit(instance)
@@ -152,7 +182,12 @@ def test_late_callback_keeps_original_execution_sink_and_sequence(audited_execut
     instance.set_audit_context({"execution_id": "wrong", "account_id": 99, "algorithm": "wrong"})
     next_sink = RecordingSink()
     bind_execution(instance, next_sink, "execution-B")
+    previous = weakref.ref(old_runtime)
+    del old_runtime
+    api.order.update(status="ALIVE", volume_left=2)
     new_order = submit(instance)
+    gc.collect()
+    assert previous() is None
     instance._on_runtime_event("order", old_row)
     instance._on_runtime_event("order", finish(api))
     instance._on_runtime_event("order", old_row)

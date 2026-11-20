@@ -34,6 +34,7 @@ from axile.executor.replay_actions import replay_operation
 
 if TYPE_CHECKING:
     from axile.executor.abstract_executor.base import AbstractExecutor
+    from axile.executor.models.unified_input import AccountConfig
 
 DEFAULT_CLEAR_TIMEOUT = 10 * DEFAULT_EXECUTION_TIMEOUT_SECONDS
 """清仓路径的默认总超时秒数（调用方未显式指定时使用）。.
@@ -199,9 +200,9 @@ class AbstractExecutorFacadeMixin:
         executor = _executor(self)
         return executor._query_trades_impl(executor._normalize_symbol(symbol), order_id)
 
-    def cancel_all_orders(self) -> None:
+    def cancel_all_orders(self) -> dict[tuple[str, str], float]:
         """
-        撤销当前账户全部未完成订单.
+        撤销当前账户全部未完成订单，返回撤单期间各委托新增成交的有符号数量。
 
         Raises
         ------
@@ -210,8 +211,9 @@ class AbstractExecutorFacadeMixin:
         """
         executor = _executor(self)
         executor.get_pending_orders(None)
+        active = executor.account_orders.snapshot()["data"]
         result = cancel_orders(
-            executor.account_orders.snapshot()["data"],
+            active,
             cancel=executor.cancel_order,
             reconcile=executor.reconcile_terminal_order,
         )
@@ -230,6 +232,13 @@ class AbstractExecutorFacadeMixin:
             error = CancelNotAllowedError(message) if result.only_restricted else RuntimeError(message)
             setattr(error, "execution_error", message)
             raise error
+        changes: dict[tuple[str, str], float] = {}
+        for order in active:
+            terminal = result.orders[order.symbol, order.order_id].terminal_order
+            if terminal is not None and terminal.filled_volume > order.filled_volume:
+                delta = terminal.filled_volume - order.filled_volume
+                changes[order.symbol, order.order_id] = delta if order.direction == OrderDirection.BUY else -delta
+        return changes
 
     def reconcile_terminal_order(self, symbol: str, order_id: str) -> UnifiedOrder | None:
         """默认使用已收到的真实终态回报；不以挂单查询缺失推断撤单成功。"""
@@ -553,7 +562,13 @@ class AbstractExecutorFacadeMixin:
             notification_snapshot = None
         account_assets = executor.get_account_assets()
         curr_target = self._build_empty_positions_curr_target(account_assets.positions)
-        if not curr_target:
+        extra = _coerce_object_dict(kwargs.get("extra", {}))
+        if not executor.account_config and not (
+            curr_target
+            or extra.get("pending_order_terminals")
+            or extra.get("pending_positions")
+            or executor.pending_positions
+        ):
             return self._create_empty_positions_noop_output(account_assets)
 
         account_config = executor.account_config
@@ -567,18 +582,19 @@ class AbstractExecutorFacadeMixin:
             kwargs=kwargs,
         )
 
-        result = executor.execute(
-            standard_input,
-            cleanup=cleanup,
-            retain_runtime=retain_runtime,
-            **({"notification_snapshot": notification_snapshot} if notification_snapshot else {}),
-        )
-        return result
+        if notification_snapshot:
+            return executor.execute(
+                standard_input,
+                cleanup=cleanup,
+                retain_runtime=retain_runtime,
+                notification_snapshot=notification_snapshot,
+            )
+        return executor.execute(standard_input, cleanup=cleanup, retain_runtime=retain_runtime)
 
     def _build_empty_positions_standard_input(
         self,
         *,
-        account_config: object,
+        account_config: AccountConfig,
         positions: list[Position],
         curr_target: dict[str, float],
         kwargs: dict[str, object],

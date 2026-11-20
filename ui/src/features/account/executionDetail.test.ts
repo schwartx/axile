@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test'
 
-import { buildExecutionDetail, executionHeadline, formatOrderTradeCounts } from './executionDetail'
+import { buildExecutionDetail, hasPendingOrderTerminals, executionHeadline, formatOrderTradeCounts } from './executionDetail'
 
 import type { ExecutionArtifact, ExecutionEvent, ExecutionStatus } from '@/types/api'
 
@@ -744,4 +744,59 @@ it('运行中展示已有目标和部分成交，累计委托快照不重复计�
     symbol_results: { A: { status: 'SUCCEEDED', target_volume: 10, final_volume: 10, filled: 10 } },
   }, [live])
   expect(result.symbols[0]).toMatchObject({ filled: 10, target: 10, observedAfter: 10, inProgress: false })
+})
+
+it('late terminal evidence updates the matching recorded order only', () => {
+  const pending = ev({ event_type: 'order_terminal_pending', symbol: 'A', order_id: 'late',
+    details: { order: { status: '终态待确认' } } })
+  const terminal = ev({ event_type: 'order_terminal', status: 'SUCCESS', reason_family: 'EXCHANGE',
+    symbol: 'A', order_id: 'late',
+    details: { order: { terminal_status: '已撤销', filled_volume: 2, avg_price: 1.725 } } })
+  const summary = { symbol_results: { A: { status: 'PARTIAL', orders: [
+    { order_id: 'late', status: '已申报', direction: 'BUY', filled_volume: 0 },
+    { order_id: 'other', status: '已成交', direction: 'BUY', filled_volume: 5 },
+  ] } } }
+  expect(hasPendingOrderTerminals([pending])).toBe(true)
+  expect(buildExecutionDetail([pending], [], null, summary).symbols[0]?.orders[0]?.status).toBe('终态待确认')
+  expect(hasPendingOrderTerminals([terminal, pending])).toBe(false)
+  const symbol = buildExecutionDetail([terminal, pending], [], null, summary).symbols[0]
+  expect(symbol?.orders.map(({ status, filled_volume }) => [status, filled_volume])).toEqual([['已撤销', 2], ['已成交', 5]])
+  expect(symbol?.filled).toBe(7)
+})
+
+it('uses accepted orders after an interrupted execution and stops polling at a known terminal', () => {
+  const order = { order_id: 'accepted', direction: 'SELL', status: '已申报', volume: 400, filled_volume: 0 }
+  const checkpoint = ev({ event_type: 'position_checkpoint', symbol: 'A', details: { orders: [order] } })
+  const summary = { symbol_results: { A: { orders: [
+    { order_id: 'earlier', direction: 'SELL', status: '已成交', filled_volume: 100 },
+  ] } } }
+  expect(hasPendingOrderTerminals([checkpoint], summary)).toBe(true)
+  expect(buildExecutionDetail([checkpoint], [], null, summary).symbols[0]?.orders.map(row => row.order_id))
+    .toEqual(['earlier', 'accepted'])
+
+  const filled = ev({ event_type: 'order_terminal', status: 'SUCCESS', reason_family: 'EXCHANGE', symbol: 'A',
+    order_id: 'accepted', details: { order: { direction: 'OrderDirection.SELL', terminal_status: '已成交', filled_volume: 400 } } })
+  expect(hasPendingOrderTerminals([filled, checkpoint], summary)).toBe(false)
+  expect(buildExecutionDetail([filled, checkpoint], [], null, summary).symbols[0]?.filled).toBe(-500)
+
+  const pendingRecord = { symbol_results: { A: { orders: [
+    { ...order, extra: { terminal_confirmation_pending: true } },
+  ] } } }
+  expect(hasPendingOrderTerminals([], pendingRecord)).toBe(true)
+  expect(hasPendingOrderTerminals([filled], pendingRecord)).toBe(false)
+
+  const partial = ev({ event_type: 'position_checkpoint', symbol: 'A', details: { orders: [{ ...order, filled_volume: 300 }] } })
+  const staleCancel = ev({ ...filled, details: { order: { terminal_status: '已撤销', filled_volume: 0 } } })
+  expect(buildExecutionDetail([partial, staleCancel], [], null, null).symbols[0]?.filled).toBe(-300)
+
+  const canceled = { ...order, status: '已撤销' }
+  const settled = ev({ event_type: 'position_checkpoint', symbol: 'A', details: { orders: [canceled] } })
+  const zeroRecord = { symbol_results: { A: { orders: [canceled] } } }
+  const tradeFill = ev({ ...settled, details: { orders: [{ ...canceled, filled_volume: 40 }] } })
+  expect(buildExecutionDetail([tradeFill], [], null, zeroRecord).symbols[0]?.filled).toBe(-40)
+  expect(buildExecutionDetail([filled, staleCancel], [], null, zeroRecord).symbols[0]?.filled).toBe(-400)
+  const fullRecord = { symbol_results: { A: { orders: [{ ...order, status: '已成交', filled_volume: 400 }] } } }
+  expect(buildExecutionDetail([staleCancel], [], null, fullRecord).symbols[0]?.orders[0]?.status).toBe('已成交')
+  expect(hasPendingOrderTerminals([checkpoint, settled])).toBe(false)
+  expect(hasPendingOrderTerminals([checkpoint], { symbol_results: { A: { orders: [canceled] } } })).toBe(false)
 })

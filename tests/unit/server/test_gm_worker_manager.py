@@ -355,7 +355,6 @@ def test_empty_positions_keeps_paused_gm_session(monkeypatch: pytest.MonkeyPatch
 def test_clear_positions_preserves_termination_during_prepare(monkeypatch: pytest.MonkeyPatch) -> None:
     """清仓准备期间的协作终止须穿过 worker IPC，不能降级为普通执行错误。"""
     import pickle
-    from types import SimpleNamespace
 
     from axile.server.execution.worker_backend import worker
 
@@ -383,7 +382,7 @@ def test_clear_positions_preserves_termination_during_prepare(monkeypatch: pytes
         commands.append(request.command)
         return pickle.loads(pickle.dumps(worker._handle_worker_request(request, state)))
 
-    monkeypatch.setattr(manager, "_current_session", lambda _account: SimpleNamespace(worker_alive=True))
+    monkeypatch.setattr(manager, "_current_session", lambda _account: {"worker_alive": True})
     monkeypatch.setattr(manager, "_request_blocking", request_blocking)
     monkeypatch.setattr(worker, "_resolve_prepared_executor", resolve)
 

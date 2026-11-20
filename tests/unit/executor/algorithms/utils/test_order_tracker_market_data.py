@@ -114,7 +114,7 @@ def test_fallback_uses_one_frozen_snapshot_for_protection_and_each_child(monkeyp
     order = copy_data(_build_pending_order("fallback", symbol), update={"volume": 3, "status": OrderStatus.CANCELED})
     snapshot = _price(symbol, 9.99, 10.01, 1_011_000)
     tracker.on_price_update(snapshot)
-    tracker.add_order(order, direction=OrderDirection.BUY)
+    tracker.add_order(copy_data(order, update={"status": OrderStatus.PENDING}), direction=OrderDirection.BUY)
     info = dict(tracker._chase_info[order.order_id])
     tracker.on_order_update(order)
     evidence = []
@@ -173,7 +173,7 @@ def test_fallback_order_validation_reaches_final_submission_boundary(monkeypatch
     order = copy_data(
         _build_pending_order("fallback-boundary", session.symbol), update={"volume": 3, "status": OrderStatus.CANCELED}
     )
-    tracker.add_order(order, direction=OrderDirection.BUY)
+    tracker.add_order(copy_data(order, update={"status": OrderStatus.PENDING}), direction=OrderDirection.BUY)
     info = dict(tracker._chase_info[order.order_id])
     tracker.on_order_update(order)
     snapshot = _price(session.symbol, 9.99, 10.01, 1_000_000)
@@ -224,7 +224,7 @@ def test_fallback_final_validation_uses_order_purpose_and_frozen_quote(monkeypat
     session = ExecutionSession(owner, "rb2612.SHFE")
     tracker = OrderTracker(session, clock=clock, chase_config=ChaseConfig(enabled=True))
     order = copy_data(_build_pending_order("fallback-purpose", session.symbol), update={"status": OrderStatus.CANCELED})
-    tracker.add_order(order, direction=OrderDirection.BUY)
+    tracker.add_order(copy_data(order, update={"status": OrderStatus.PENDING}), direction=OrderDirection.BUY)
     info = dict(tracker._chase_info[order.order_id])
     tracker.on_order_update(order)
     snapshot = _price(session.symbol, 9.99, 10.01, 1_000_000)

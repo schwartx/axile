@@ -1,8 +1,11 @@
 """分别判定本次交易完成情况与渠道持仓核对结果。"""
 
+from collections import defaultdict
+from collections.abc import Sequence
 from math import isclose, isfinite
 from typing import TypedDict
 
+from axile.common.serialization import copy_data
 from axile.domain.execution import ExecutionReasonFamily
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.models.execution_result import ExecutionOutcome, ExecutionStatus, outcome_from_status
@@ -26,16 +29,29 @@ class OutcomeSummary(TypedDict):
     reason_family: ExecutionReasonFamily | None
 
 
-def confirmed_position(start: float, orders: list[UnifiedOrder]) -> float | None:
+def order_with_trade_fill(order: UnifiedOrder, trade_fill: float) -> UnifiedOrder:
+    """生成持仓核对用的累计量，同时保留原订单回报。"""
+    if trade_fill <= 0 or trade_fill <= order.filled_volume:
+        return order
+    filled = order.volume if isclose(trade_fill, order.volume, rel_tol=1e-12) else trade_fill
+    return copy_data(order, update={"filled_volume": filled})
+
+
+def confirmed_position(start: float, orders: list[UnifiedOrder], trades: Sequence[TradeRecord] = ()) -> float | None:
     """用有效起点及去重后的终态累计成交推导仓位，证据不足时返回空值。"""
     if not isfinite(start) or not orders:
         return None
+    trade_fills: dict[str, float] = defaultdict(float)
+    for trade in trades:
+        trade_fills[trade.order_id] += trade.trade_volume
     unique: dict[str, UnifiedOrder] = {}
     for order in orders:
+        order = order_with_trade_fill(order, trade_fills.get(order.order_id, 0))
         if (
             not order.order_id
             or not order.is_completed()
             or order.status == OrderStatus.REJECTED
+            and order.filled_volume != 0
             or not isfinite(order.volume)
             or not isfinite(order.filled_volume)
             or not 0 <= order.filled_volume <= order.volume
@@ -89,7 +105,7 @@ def summarize_outcome(
         or (bool(orders) and not terminal)
     )
     rejected = any(order.status == OrderStatus.REJECTED for order in orders)
-    expected = confirmed_position(start, orders)
+    expected = confirmed_position(start, orders, trades)
     execution_final = expected if expected is not None else final
     position_confirmed = (
         isfinite(final) and isclose(final, expected, rel_tol=0, abs_tol=1e-9) if expected is not None else None

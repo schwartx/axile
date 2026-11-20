@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+from axile.common.serialization import copy_data
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.core.base import AlgorithmInput, ExecutorProtocol
 from axile.executor.algorithms.defaults.ctp_target_pos_task.impl import (
@@ -166,7 +167,7 @@ def test_F13_target_chase_config_creates_chase_entries() -> None:
     assert all(order.extra["offset_flag"] != "" for order in executor.orders)
     # 直接再测一次 add_order 接线：用同配置 tracker 重放算法生成的订单
     probe = OrderTracker(executor=executor, chase_config=ChaseConfig(enabled=True))
-    sample = executor.orders[0]
+    sample = copy_data(executor.orders[0], update={"status": OrderStatus.PENDING, "filled_volume": 0})
     probe.add_order(
         sample,
         direction=OrderDirection(sample.direction)

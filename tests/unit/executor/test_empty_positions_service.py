@@ -125,6 +125,24 @@ def test_empty_positions_returns_noop_result_when_no_positions() -> None:
     assert result.memory == {"message": "当前账户无持仓，无需清仓"}
 
 
+@pytest.mark.parametrize("unexpected_volume", [None, 400])
+def test_empty_clear_requires_real_flat_final_snapshot(unexpected_volume):
+    from tests.unit.executor.test_base_executor_symbol_dispatch import _assets, _TestExecutor
+
+    final = (
+        UnifiedAccountAssets.unavailable()
+        if unexpected_volume is None
+        else _assets(positions=[("A", unexpected_volume, PositionDirection.LONG)])
+    )
+    executor = _TestExecutor(account_assets_snapshots=[_assets(), _assets(), final])
+    result = executor.empty_positions()
+    assert result.status == ExecutionStatus.FAILED
+    if unexpected_volume is None:
+        assert result.error == "最终持仓尚未确认"
+    else:
+        assert result.symbol_results["A"].reason_code == "COMMON.TARGET.NOT_REACHED"
+
+
 @pytest.mark.parametrize("available", [0, 1])
 def test_empty_positions_checks_configuration_only_for_closeable_positions(available):
     executor = _EmptyPositionsExecutor(
@@ -139,6 +157,7 @@ def test_empty_positions_checks_configuration_only_for_closeable_positions(avail
             ],
         )
     )
+    executor.channel_type = TradeChannel("gm")
     if available:
         with pytest.raises(ValueError, match="账户配置不能为空"):
             executor.empty_positions(algorithm=object())
@@ -205,9 +224,9 @@ def test_empty_positions_builds_final_input_without_losing_rules_or_notification
     )
     actual, flags = captured.pop()
     assert actual.channel_type == TradeChannel("ctp") and actual.account_config == executor.account_config
-    assert actual.curr_target == {"A": 0.0}
+    assert actual.curr_target == {"A": 0.0, "B": 0.0}
     assert actual.last_target == {"A": 0.25, "B": -0.75}
-    assert actual.trade_rules == {"A": {"price": "ACTIVE"}}
+    assert actual.trade_rules == {"A": {"price": "ACTIVE"}, "B": {"price": "PASSIVE"}}
     assert actual.futures_close_policy.fallback == "today_first"
     assert actual.forbidden_symbols == ["A"] and actual.risk_symbols == []
     assert actual.algorithm == {"method": "SINGLE-MAKER", "params": {"max_wait_seconds": 60 if timeout is None else 9}}
@@ -216,6 +235,7 @@ def test_empty_positions_builds_final_input_without_losing_rules_or_notification
     assert actual.feishu_account == {"id": 1} and actual.extra == {
         "audit": {"execution_id": "e"},
         "channel_type": "ctp",
+        "close_all_positions": True,
     }
     assert "ignored" not in to_payload(actual)
     assert flags == {"cleanup": False, "retain_runtime": True, "notification_snapshot": notification}

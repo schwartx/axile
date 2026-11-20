@@ -113,7 +113,7 @@ class AbstractExecutorCapabilityMixin:
 
     def _create_non_trading_output(self, standard_input: UnifiedStandardInput) -> UnifiedStandardOutput:
         """
-        创建休市跳过输出；已有未决委托仍按受阻保留。
+        创建休市跳过输出；有待核对的委托或仓位时返回受阻。
 
         Parameters
         ----------
@@ -123,12 +123,21 @@ class AbstractExecutorCapabilityMixin:
         Returns
         -------
         UnifiedStandardOutput
-            无未决委托时为 ``NOOP``，否则为 ``BLOCKED``。
+            无待核对的委托和仓位时为 ``NOOP``，否则为 ``BLOCKED``。
         """
         executor = _executor(self)
         runtime = executor.require_execution_runtime()
         empty_assets = UnifiedAccountAssets.unavailable()
         retained = executor.account_orders.snapshot()["data"]
+        extra = standard_input.extra
+        reason_code, error = COMMON_SESSION_CLOSED, None
+        if extra.get("pending_order_terminals"):
+            reason_code, error = "COMMON.ORDER.TERMINAL_UNCONFIRMED", "非交易时段，仍有未决委托"
+        elif retained:
+            error = "非交易时段，仍有未决委托"
+        elif extra.get("pending_positions") or executor.pending_positions:
+            reason_code, error = "COMMON.POSITION.UNCONFIRMED", "非交易时段，仍有成交后的持仓待核对"
+
         symbol_results = {
             symbol: AlgorithmResult(
                 symbol=symbol,
@@ -144,11 +153,11 @@ class AbstractExecutorCapabilityMixin:
             account_assets=empty_assets,
             memory={"message": SESSION_CLOSED_MESSAGE},
             symbol_results=symbol_results,
-            outcome=ExecutionOutcome.BLOCKED if retained else ExecutionOutcome.COMPLETED,
-            outcome_reason=SESSION_CLOSED_MESSAGE,
-            status=ExecutionStatus.BLOCKED if retained else ExecutionStatus.NOOP,
-            error="非交易时段，仍有未决委托" if retained else None,
-            reason_code=COMMON_SESSION_CLOSED,
+            outcome=ExecutionOutcome.BLOCKED if error else ExecutionOutcome.COMPLETED,
+            outcome_reason=error or SESSION_CLOSED_MESSAGE,
+            status=ExecutionStatus.BLOCKED if error else ExecutionStatus.NOOP,
+            error=error,
+            reason_code=reason_code,
             execution_time=runtime.elapsed_seconds(),
             channel_type=executor.channel_type,
             inputs=standard_input,
