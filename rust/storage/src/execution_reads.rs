@@ -277,15 +277,25 @@ fn read_on(connection: &Connection, request: &Value) -> Result<Value, AnalysisEr
         "pending_positions" => {
             // 新字段由既有审计证据无损保存；每个品种只采用最近一次持仓核对结论。
             let mut statement = connection.prepare(
-                "WITH latest AS (
-                    SELECT s.map_key,s.audit_evidence,
-                           row_number() OVER (PARTITION BY s.map_key ORDER BY r.id DESC) AS rank
+                "WITH evidence AS (
+                    SELECT s.map_key AS symbol,
+                           json_extract(s.audit_evidence,'$.unrecognized_fields.expected_volume') AS expected,
+                           json_extract(s.audit_evidence,'$.unrecognized_fields.position_confirmed') AS confirmed,
+                           r.created_at_us AS observed_at,r.id AS record_id
                     FROM executerecord r JOIN execution_symbol_result s ON s.record_id=r.id
                     WHERE r.account_id=?1 AND s.node_kind='object'
                       AND json_type(s.audit_evidence,'$.unrecognized_fields.expected_volume') IN ('integer','real')
-                ) SELECT map_key,json_extract(audit_evidence,'$.unrecognized_fields.expected_volume')
-                  FROM latest WHERE rank=1
-                    AND json_extract(audit_evidence,'$.unrecognized_fields.position_confirmed')=0"
+                    UNION ALL
+                    SELECT p.key,p.value,0,a.created_at_us,0
+                    FROM execution_intent i JOIN execution_artifact a ON a.execution_id=i.execution_id
+                    JOIN json_each(a.content,'$.positions') p
+                    WHERE i.account_id=?1 AND a.artifact_type='POSITION_CONFIRMATION'
+                      AND p.type IN ('integer','real')
+                ), latest AS (
+                    SELECT *,row_number() OVER (
+                        PARTITION BY symbol ORDER BY observed_at DESC,record_id DESC
+                    ) AS rank FROM evidence
+                ) SELECT symbol,expected FROM latest WHERE rank=1 AND confirmed=0"
             ).map_err(sql)?;
             let rows = statement
                 .query_map([integer(request, "account_id")?], |row| {
@@ -295,6 +305,34 @@ fn read_on(connection: &Connection, request: &Value) -> Result<Value, AnalysisEr
                 .collect::<Result<Map<_, _>, _>>()
                 .map_err(sql)?;
             Ok(Value::Object(rows))
+        }
+        "pending_order_terminals" => {
+            let mut statement = connection.prepare(
+                "SELECT DISTINCT p.execution_id,p.algorithm,p.symbol,p.order_id
+                 FROM execution_event p
+                 WHERE p.account_id=?1 AND p.event_type='ORDER_TERMINAL_PENDING'
+                   AND p.symbol IS NOT NULL AND p.order_id IS NOT NULL
+                   AND NOT EXISTS (
+                     SELECT 1 FROM execution_event t
+                     WHERE t.account_id=p.account_id AND t.execution_id=p.execution_id
+                       AND t.symbol=p.symbol AND t.order_id=p.order_id AND t.event_type='ORDER_TERMINAL'
+                       AND t.reason_family='EXCHANGE' AND t.status='SUCCESS'
+                       AND json_type(t.details,'$.order.terminal_status')='text'
+                   )"
+            ).map_err(sql)?;
+            let rows = statement
+                .query_map([integer(request, "account_id")?], |row| {
+                    Ok(json!({
+                        "execution_id": row.get::<_, String>(0)?,
+                        "algorithm": row.get::<_, String>(1)?,
+                        "symbol": row.get::<_, String>(2)?,
+                        "order_id": row.get::<_, String>(3)?,
+                    }))
+                })
+                .map_err(sql)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(sql)?;
+            Ok(Value::Array(rows))
         }
         "detail" => {
             let Some(record) = record_on(

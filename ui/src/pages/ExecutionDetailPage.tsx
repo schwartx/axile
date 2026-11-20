@@ -25,6 +25,7 @@ import {
   buildExecutionDetail,
   executionHeadline,
   formatOrderTradeCounts,
+  hasPendingOrderTerminals,
   SOURCE_DEGRADED_LABEL,
   type ChainAction,
   type ExecutionDetailModel,
@@ -570,6 +571,7 @@ export function ExecutionDetailPage() {
   const running = useRunning(accountId)
   const isLive = running != null && running.executionId === executionId
   const [settledId, setSettledId] = useState<string | null>(null)
+  const [awaitingOrdersId, setAwaitingOrdersId] = useState<string | null>(null)
   const status = usePolling(statusFetcher, {
     queryKey: `execution:${executionId ?? 'missing'}:status`,
     intervalMs: settledId === executionId ? 0 : 2500,
@@ -584,9 +586,14 @@ export function ExecutionDetailPage() {
   }, [executionId, taskStatus])
   const events = usePolling(eventsFetcher, {
     queryKey: `execution:${executionId ?? 'missing'}:events`,
-    intervalMs: pollMs,
+    intervalMs: awaitingOrdersId === executionId ? 2500 : pollMs,
     enabled: Boolean(executionId),
   })
+  useEffect(() => {
+    if (events.data?.complete) {
+      setAwaitingOrdersId(hasPendingOrderTerminals(events.data.data) ? executionId ?? null : null)
+    }
+  }, [events.data, executionId])
   const artifacts = usePolling(artifactsFetcher, {
     queryKey: `execution:${executionId ?? 'missing'}:artifacts`,
     intervalMs: pollMs,

@@ -53,7 +53,11 @@ def test_gm_assets_share_timeout_between_position_and_cash(monkeypatch, position
     clock = ClockStub()
     executor = instance()
     calls = []
-    monkeypatch.setattr("axile.executor.gm.gm_execute.get_default_clock", lambda: clock)
+    monkeypatch.setattr(
+        executor,
+        "get_active_execution_runtime",
+        lambda: SimpleNamespace(deadline_remaining_seconds=lambda: 2.5 - clock.time()),
+    )
 
     def bridge(operation, *, timeout, **_):
         calls.append((operation, timeout))
@@ -64,11 +68,11 @@ def test_gm_assets_share_timeout_between_position_and_cash(monkeypatch, position
 
     monkeypatch.setattr(executor, "_call_bridge", bridge)
     if position_seconds < 2.5:
-        assert executor.get_account_assets(deadline=2.5).total_asset == 900
+        assert executor.get_account_assets().total_asset == 900
         assert calls == [("get_position", 2.5), ("get_cash", 1.75)]
     else:
         with pytest.raises(TimeoutError):
-            executor.get_account_assets(deadline=2.5)
+            executor.get_account_assets()
         assert calls == [("get_position", 2.5)]
 
 

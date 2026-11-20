@@ -282,6 +282,26 @@ interface OrderInfo {
   ts: string | null
 }
 
+/** 同一委托的真实终态优先于超时当天记录的待确认状态。 */
+function orderSettlementEvents(events: ExecutionEvent[]): Map<string, ExecutionEvent> {
+  const byOrder = new Map<string, ExecutionEvent>()
+  for (const event of events) {
+    if (!event.symbol || !event.order_id) continue
+    const key = JSON.stringify([event.symbol, event.order_id])
+    if (event.event_type === 'order_terminal' && event.status === 'SUCCESS' &&
+        event.reason_family === 'EXCHANGE' && typeof asDict(asDict(event.details)?.order)?.terminal_status === 'string') {
+      byOrder.set(key, event)
+    } else if (event.event_type === 'order_terminal_pending' && !byOrder.has(key)) {
+      byOrder.set(key, event)
+    }
+  }
+  return byOrder
+}
+
+export function hasPendingOrderTerminals(events: ExecutionEvent[]): boolean {
+  return [...orderSettlementEvents(events).values()].some(event => event.event_type === 'order_terminal_pending')
+}
+
 /** 逐只聚合 `order_terminal` 事件（取最后一条终态）。 */
 function ordersBySymbol(events: ExecutionEvent[]): Map<string, OrderInfo> {
   const out = new Map<string, OrderInfo>()
@@ -778,6 +798,7 @@ export function buildExecutionDetail(
     provisionalRows(events, artifacts, liveOrders, beforeAssets).map(row => [String(row.symbol), row]),
   )
   for (const row of recordedRows) bySymbol.set(row.symbol, { ...bySymbol.get(row.symbol), ...row, inProgress: false })
+  const settlements = orderSettlementEvents(events)
   const symbols: SymbolChain[] = [...bySymbol.values()].map((s) => {
     const row = { ...s, inProgress: s.inProgress === true && isActiveExecution(task?.status) } as Record<string, unknown>
     if (isDegradedSnapshotSource(srcBefore)) row.before = null
@@ -791,6 +812,13 @@ export function buildExecutionDetail(
       row.after = final
     }
     const chain = buildSymbolChain(row, startedAt, orders, decisions, skips, pnlBefore, pnlAfter)
+    chain.orders = chain.orders.map(order => {
+      const settlement = settlements.get(JSON.stringify([chain.symbol, order.order_id]))
+      if (!settlement) return order
+      const evidence = asDict(asDict(settlement.details)?.order)
+      return { ...order, status: asStr(evidence?.terminal_status ?? evidence?.status) || order.status,
+        filled_volume: asNum(evidence?.filled_volume) ?? order.filled_volume, avg_price: asNum(evidence?.avg_price) ?? order.avg_price }
+    })
     return chain
   })
 

@@ -52,7 +52,6 @@ from axile.executor.order_volume_limits import split_order_volumes
 from axile.executor.termination import ExecutionTerminated
 
 MARKET_FALLBACK_MAX_SLIPPAGE = 0.005
-_GM_TIMEOUT_CANCEL_CONFIRM_SECONDS = 1.0
 
 
 class _OrderTerminalUnconfirmedError(RuntimeError):
@@ -696,20 +695,18 @@ class OrderTracker:
     def _finalize_timeout_cancellations(self) -> None:
         """超时后核对订单终态，收尾期间不再报单。"""
         cancellation = cancel_pending_orders_via_query(self.executor)
-        missing = self._reconcile_timeout_cancellations(cancellation)
+        self._reconcile_timeout_cancellations(cancellation)
         unconfirmed = self.record_cancellation_result(cancellation)
-        if unconfirmed and self.executor.channel_type == "gm":
-            submitted = {
-                order_id
-                for (_, order_id), item in cancellation.orders.items()
-                if item.request_status == CancelRequestStatus.SUBMITTED
-            }
-            # 已从挂单查询消失的本地委托，也可能仍在等最终回报。
-            if unconfirmed.keys() & (submitted | missing):
-                self.executor.handle_termination_checkpoint()
-                self.clock.event_wait(self.all_done_event, _GM_TIMEOUT_CANCEL_CONFIRM_SECONDS)
-                self.executor.handle_termination_checkpoint()
-                unconfirmed = self.record_cancellation_result(cancellation)
+        for order_id, reason in unconfirmed.items():
+            self.executor.emit_audit_event(
+                event_type=ExecutionEventType.ORDER_TERMINAL_PENDING,
+                status=ExecutionEventStatus.WARNING,
+                reason_family=ExecutionReasonFamily.ACCOUNT_STATE,
+                reason_code="COMMON.ORDER.TERMINAL_UNCONFIRMED",
+                symbol=self.executor.symbol,
+                order_id=order_id,
+                details={"message": reason, "order": {"status": "终态待确认"}},
+            )
         if unconfirmed and not self.waiting_on_restriction():
             raise _OrderTerminalUnconfirmedError(unconfirmed)
 
@@ -785,18 +782,16 @@ class OrderTracker:
                 self._cancel_restrictions[order_id] = exc.execution_error
         self._logger.warning(f"撤单受限，保留原委托 {order_id}: {exc.execution_error}")
 
-    def _reconcile_timeout_cancellations(self, result: CancellationResult) -> set[str]:
-        """核对未出现在挂单查询中的委托，返回参与补查的跟踪订单标识。"""
+    def _reconcile_timeout_cancellations(self, result: CancellationResult) -> None:
+        """核对未出现在挂单查询中的委托。"""
         if not callable(getattr(self.executor, "reconcile_terminal_order", None)):
-            return set()
+            return
         self.executor.handle_termination_checkpoint()
         checked = {order_id for _, order_id in result.unconfirmed}
         checked.update(order.order_id for order in result.terminal_orders)
         with self.lock:
             already_checked = [order for order_id, order in self.pending_orders.items() if order_id in checked]
-            missing = self.pending_orders.keys() - checked
         self._reconcile_missing_pending(already_checked)
-        return missing
 
     def _get_effective_refresh_interval(
         self,

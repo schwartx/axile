@@ -45,7 +45,7 @@ from axile.common.gm_symbols import GM_SYMBOL_RESOLVER, normalize_gm_standard_in
 from axile.common.trade_channel import TradeChannel
 from axile.executor import replay as recording
 from axile.executor.abstract_executor.base import AbstractExecutor
-from axile.executor.algorithms.utils.clock import clock_now, get_default_clock
+from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.connection_state import connection_monitor, preserve_connection_failure
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.gm import replay
@@ -590,15 +590,16 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
 
     # ==================== 核心交易方法 ====================
 
-    def get_account_assets(self, *, deadline: float | None = None) -> UnifiedAccountAssets:
-        """获取账户资产。指定截止时间时，持仓与资金查询共用单调时钟预算。"""
+    def get_account_assets(self) -> UnifiedAccountAssets:
+        """获取账户资产，持仓与资金查询共用执行剩余时间。"""
         if not self.account_id:
             raise ValueError("账户ID未初始化")
 
+        runtime = self.get_active_execution_runtime()
+
         def query_timeout() -> float:
-            if deadline is None:
+            if runtime is None or (remaining := runtime.deadline_remaining_seconds()) is None:
                 return 10.0
-            remaining = deadline - get_default_clock().monotonic()
             if remaining <= 0:
                 raise TimeoutError("GM 资产查询已到截止时间")
             return min(10.0, remaining)

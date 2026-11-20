@@ -21,6 +21,28 @@ if TYPE_CHECKING:
     from axile.executor.models.unified_order import UnifiedOrder
 
 
+def order_terminal_details(order: UnifiedOrder) -> dict[str, object]:
+    """将已知终态转成共享的逐单审计证据。"""
+    return {
+        "order": {
+            "direction": str(order.direction),
+            "order_type": str(order.order_type),
+            "status": order.status,
+            "terminal_status": order.status,
+            "volume": float(order.volume),
+            "filled_volume": float(order.filled_volume),
+            "remaining_volume": float(order.remaining_volume),
+            "avg_price": float(order.avg_price),
+            "filled_ratio": float(order.filled_ratio),
+            "offset": order.extra.get("offset"),
+        },
+        "exchange": {
+            "exchange_id": order.extra.get("exchange_id"),
+            "last_msg": order.extra.get("last_msg"),
+        },
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class _OrderOrigin:
     """提交前冻结归属和输出 sink，不读取下一轮 execution 的绑定。"""
@@ -143,24 +165,7 @@ class OrderTerminalAudit:
                 symbol=order.symbol,
                 order_id=order.order_id,
                 seq=origin.next_seq(),
-                details={
-                    "order": {
-                        "direction": str(order.direction),
-                        "order_type": str(order.order_type),
-                        "status": order.status,
-                        "terminal_status": order.status,
-                        "volume": float(order.volume),
-                        "filled_volume": float(order.filled_volume),
-                        "remaining_volume": float(order.remaining_volume),
-                        "avg_price": float(order.avg_price),
-                        "filled_ratio": float(order.filled_ratio),
-                        "offset": order.extra.get("offset"),
-                    },
-                    "exchange": {
-                        "exchange_id": order.extra.get("exchange_id"),
-                        "last_msg": order.extra.get("last_msg"),
-                    },
-                },
+                details=order_terminal_details(order),
             )
         except Exception:
             self._logger.exception("{} 订单终态审计写入失败 order_id={}", str(self._channel), order.order_id)

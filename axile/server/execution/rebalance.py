@@ -448,6 +448,9 @@ async def trade(
     standard_input.extra = {
         **standard_input.extra,
         "algorithm_selection": algorithm_selection,
+        "pending_order_terminals": await native_operation(
+            "execution_read", {"op": "pending_order_terminals", "account_id": account.id}
+        ),
         "pending_positions": await native_operation(
             "execution_read", {"op": "pending_positions", "account_id": account.id}
         ),

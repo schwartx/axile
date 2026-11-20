@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
@@ -522,40 +522,25 @@ def test_timeout_cancel_does_not_extend_deadline_for_delayed_terminal() -> None:
     assert executor._placed == 0
 
 
-@pytest.mark.parametrize("before_wait_expires", [True, False])
 @pytest.mark.parametrize("in_pending_query", [True, False])
-def test_gm_timeout_cancel_uses_terminal_callback_in_result(monkeypatch, before_wait_expires, in_pending_query):
-    order = _build_pending_order("gm-late-cancel")
+def test_timeout_cancel_records_pending_without_waiting_for_callback(monkeypatch, in_pending_query):
+    order = _build_pending_order("late-cancel")
     executor = _TimeoutCancelExecutor(order)
     if not in_pending_query:
         monkeypatch.setattr(executor, "get_pending_orders", lambda: [])
+    audit = Mock(return_value=True)
+    monkeypatch.setattr(executor, "emit_audit_event", audit)
     clock = ClockStub()
     tracker = OrderTracker(executor=executor, clock=clock)
     tracker.add_order(order)
-    terminal = copy_data(order, update={"status": OrderStatus.CANCELED})
 
-    def wait(event, timeout):
-        if before_wait_expires:
-            clock.sleep(0.07)
-            tracker.on_order_update(terminal)
-            return event.is_set()
-        return ClockStub.event_wait(clock, event, timeout)
+    with pytest.raises(RuntimeError, match="订单终态尚未确认"):
+        tracker.wait_for_completion(timeout=0)
 
-    monkeypatch.setattr(clock, "event_wait", wait)
-    if before_wait_expires:
-        assert tracker.wait_for_completion(timeout=0) is False
-        assert clock.time() == 0.07
-    else:
-        with pytest.raises(RuntimeError, match="订单终态尚未确认") as raised:
-            tracker.wait_for_completion(timeout=0)
-        assert "订单终态尚未确认" in tracker.explicit_error
-        tracker.on_order_update(terminal)
-        tracker.record_exception(raised.value)
-
-    assert not tracker.pending_orders
-    assert tracker.completed_orders[order.order_id].status == OrderStatus.CANCELED
-    outcome = summarize_outcome(0, 0, order.volume, tracker.get_all_orders(), [], **tracker.outcome_inputs())
-    assert outcome["reason_code"] == "COMMON.TARGET.NOT_REACHED"
+    pending = audit.call_args.kwargs
+    assert pending["event_type"].value == "order_terminal_pending"
+    assert pending["order_id"] == order.order_id
+    assert clock.time() == 0
     assert executor.cancel_calls == ([order.order_id] if in_pending_query else [])
     assert executor._placed == 0
 
@@ -575,7 +560,7 @@ def test_timeout_cancel_keeps_unknown_when_confirmation_unavailable(query_error:
     assert order.order_id in tracker.pending_orders
     assert not tracker.completed_orders
     assert len(executor.reconcile_calls) == 1
-    assert clock.time() == 1.0
+    assert clock.time() == 0
     outcome = summarize_outcome(0, 0, order.volume, tracker.get_all_orders(), tracker.get_all_trades())
     assert outcome["error"] == "订单最终状态尚未确认（含撤单结果未知）"
 

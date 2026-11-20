@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test'
 
-import { buildExecutionDetail, executionHeadline, formatOrderTradeCounts } from './executionDetail'
+import { buildExecutionDetail, hasPendingOrderTerminals, executionHeadline, formatOrderTradeCounts } from './executionDetail'
 
 import type { ExecutionArtifact, ExecutionEvent, ExecutionStatus } from '@/types/api'
 
@@ -744,4 +744,22 @@ it('运行中展示已有目标和部分成交，累计委托快照不重复计�
     symbol_results: { A: { status: 'SUCCEEDED', target_volume: 10, final_volume: 10, filled: 10 } },
   }, [live])
   expect(result.symbols[0]).toMatchObject({ filled: 10, target: 10, observedAfter: 10, inProgress: false })
+})
+
+it('late terminal evidence updates the matching recorded order only', () => {
+  const pending = ev({ event_type: 'order_terminal_pending', symbol: 'A', order_id: 'late',
+    details: { order: { status: '终态待确认' } } })
+  const terminal = ev({ event_type: 'order_terminal', status: 'SUCCESS', reason_family: 'EXCHANGE',
+    symbol: 'A', order_id: 'late',
+    details: { order: { terminal_status: '已撤销', filled_volume: 2, avg_price: 1.725 } } })
+  const summary = { symbol_results: { A: { status: 'PARTIAL', orders: [
+    { order_id: 'late', status: '已申报', filled_volume: 0 },
+    { order_id: 'other', status: '已成交', filled_volume: 5 },
+  ] } } }
+  expect(hasPendingOrderTerminals([pending])).toBe(true)
+  expect(buildExecutionDetail([pending], [], null, summary).symbols[0]?.orders[0]?.status).toBe('终态待确认')
+  expect(hasPendingOrderTerminals([terminal, pending])).toBe(false)
+  expect(buildExecutionDetail([terminal, pending], [], null, summary).symbols[0]?.orders.map(
+    ({ status, filled_volume }) => [status, filled_volume],
+  )).toEqual([['已撤销', 2], ['已成交', 5]])
 })

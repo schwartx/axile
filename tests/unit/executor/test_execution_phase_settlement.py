@@ -15,8 +15,6 @@ from axile.executor.models.unified_account_assets import PositionDirection
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_input_accounts import GMAccountConfig
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
-from axile.executor.termination import ExecutionTerminated
-from tests.fixtures.algorithm_fakes import ClockStub
 from tests.unit.executor.test_base_executor_symbol_dispatch import _assets, _TestExecutor
 
 SELL = "rb2610"
@@ -381,79 +379,19 @@ def test_confirm_reduction_before_opening_without_reusing_stale_position(monkeyp
         e._runtime.sleep_or_terminate.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    ("confirmation_second", "execution_seconds", "waited"), [(9, None, 9), (11, None, 9), (9, 3, 2)]
-)
-def test_gm_delayed_reduction_opens_only_after_broker_confirms(
-    monkeypatch, confirmation_second, execution_seconds, waited
-):
-    clock = ClockStub()
-    monkeypatch.setattr("axile.executor.execution_engine.get_default_clock", lambda: clock)
-    opened = []
-    e = engine([], channel="gm")
-    e._runtime.sleep_or_terminate.side_effect = clock.sleep
-    if execution_seconds is not None:
-        e._runtime.deadline_remaining_seconds.side_effect = lambda: execution_seconds - clock.time()
-    monkeypatch.setattr(
-        e._owner,
-        "get_account_assets",
-        lambda **_: assets(sell=500 if clock.time() >= confirmation_second else 900, buy=1400 if opened else 0),
-    )
-
-    def dispatch(tasks):
-        if tasks[0].symbol == SELL:
-            return [result(observed=900)]
-        opened.append(clock.time())
-        return [buy_result()]
-
-    monkeypatch.setattr(e, "_run_prepared_symbol_algorithms", dispatch)
-    output = e.run(inputs(e))
-
-    assert clock.time() == waited
-    assert opened == ([confirmation_second] if confirmation_second <= waited else [])
-    assert output.symbol_results[SELL].position_confirmed is bool(opened)
-    assert output.symbol_results[BUY].status == (ExecutionStatus.SUCCEEDED if opened else ExecutionStatus.BLOCKED)
-
-
-def test_gm_delayed_reduction_passes_remaining_budget_to_slow_query(monkeypatch):
-    clock = ClockStub()
-    monkeypatch.setattr("axile.executor.execution_engine.get_default_clock", lambda: clock)
+def test_phase_two_does_not_open_if_position_checkpoint_cannot_be_saved(monkeypatch):
     before = assets(sell=900)
-    e = engine([], channel="gm")
-    e._runtime.sleep_or_terminate.side_effect = clock.sleep
-    e._runtime.deadline_remaining_seconds.side_effect = lambda: 2.5 - clock.time()
-    dispatch = Mock(return_value=[result(observed=900)])
+    e = engine([before, assets(sell=500)], channel="gm")
+    e._runtime.emit_audit_artifact.return_value = False
+    dispatch = Mock(return_value=[result(observed=500)])
     monkeypatch.setattr(e, "_run_prepared_symbol_algorithms", dispatch)
 
-    def read_assets(*, deadline=None):
-        if deadline is None:
-            return before
-        assert deadline == 2.5
-        clock.sleep(deadline - clock.time())
-        raise TimeoutError
-
-    monkeypatch.setattr(e._owner, "get_account_assets", read_assets)
     output = e.run(inputs(e))
 
-    assert clock.time() == 2.5
+    assert e._owner.account_assets_calls == 1
     assert output.symbol_results[SELL].position_confirmed is False
     assert output.symbol_results[BUY].status == ExecutionStatus.BLOCKED
-    dispatch.assert_called_once()
-
-
-def test_gm_termination_during_position_confirmation_keeps_pending_fill(monkeypatch):
-    before = assets(sell=900)
-    e = engine([before, before, before], channel="gm")
-    e._runtime.sleep_or_terminate.side_effect = ExecutionTerminated(reason="停止", mode="graceful")
-    dispatch = Mock(return_value=[result(observed=900)])
-    monkeypatch.setattr(e, "_run_prepared_symbol_algorithms", dispatch)
-    request = inputs(e)
-
-    with pytest.raises(ExecutionTerminated):
-        e.run(request)
-
-    assert e._owner.pending_positions == {SELL: 500}
-    assert e.run(request).status == ExecutionStatus.BLOCKED
+    assert "保存失败" in output.symbol_results[BUY].error
     dispatch.assert_called_once()
 
 

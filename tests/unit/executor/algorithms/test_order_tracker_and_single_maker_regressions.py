@@ -178,6 +178,9 @@ class _RefreshingExecutor:
     def handle_termination_checkpoint(self) -> None:
         self.checkpoint_calls += 1
 
+    def emit_audit_event(self, **_kwargs: object) -> bool:
+        return True
+
 
 def _patch_single_maker_dependencies(
     monkeypatch: pytest.MonkeyPatch,
