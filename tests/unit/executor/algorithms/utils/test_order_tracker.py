@@ -364,7 +364,7 @@ def test_wait_for_completion_cancel_failure_keeps_execution_error(monkeypatch: p
     tracker.add_order(_build_pending_order("gm-order-1"))
     monkeypatch.setattr(
         "axile.executor.algorithms.utils.order_tracker.cancel_pending_orders_via_query",
-        lambda _executor: CancellationResult(
+        lambda _executor, **_kwargs: CancellationResult(
             orders={
                 ("SHSE.600000", "gm-order-1"): OrderCancellation(
                     CancelRequestStatus.FAILED, "撤单失败，订单终态尚未确认"

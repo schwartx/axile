@@ -31,7 +31,7 @@ from axile.executor.algorithms.exceptions import (
     format_exception_message,
 )
 from axile.executor.algorithms.utils.clock import Clock, get_default_clock
-from axile.executor.algorithms.utils.final_position import save_position_checkpoint
+from axile.executor.algorithms.utils.final_position import save_order_checkpoint
 from axile.executor.algorithms.utils.trading import cancel_pending_orders_via_query
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.market_data_validation import (
@@ -207,7 +207,8 @@ class OrderTracker:
     rest_price_refresh_interval: float = 1.0
     start_volume: float | None = None
     _checkpoint_failed: bool = field(default=False, init=False)
-    _checkpointed_terminal_count: int = field(default=0, init=False)
+    _checkpoint_started: bool = field(default=False, init=False)
+    _checkpoint_updates: dict[str, UnifiedOrder] = field(default_factory=dict, init=False, repr=False)
     _checkpoint_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _explicit_error: str | None = field(default=None, init=False)
     _order_errors: dict[str, str] = field(default_factory=dict, init=False)
@@ -361,6 +362,7 @@ class OrderTracker:
             resolved_offset = None if raw_offset is None else str(raw_offset)
         with self.lock:
             self.pending_orders[order.order_id] = order
+            self._checkpoint_updates[order.order_id] = order
             self.order_trades.setdefault(order.order_id, [])
 
             if chase_enabled and self.chase_config and resolved_direction:
@@ -414,6 +416,7 @@ class OrderTracker:
             order = self._merge_order_update(tracked_order_id, tracked_order, order)
             order.order_id = tracked_order.order_id
             self.pending_orders[tracked_order_id] = order
+            self._checkpoint_updates[order.order_id] = order
 
             if order.is_completed():
                 self.completed_orders[tracked_order_id] = order
@@ -692,32 +695,46 @@ class OrderTracker:
 
         summary = self.get_status_summary()
         self._logger.warning(f"等待订单完成超时: elapsed={timeout:.1f}s, {self._format_status_summary(summary)}")
-        saved = self._save_checkpoint()
+        saved = self._save_checkpoint(refresh_pending=True)
         self._logger.info(f"正在撤销所有未成交订单: pending={self.get_pending_count()}")
         self.executor.handle_termination_checkpoint()
         self._finalize_timeout_cancellations(known_only=not saved)
         return False
 
-    def _save_checkpoint(self, *, new_terminals_only: bool = False) -> bool:
-        if self.start_volume is None:
+    def _save_checkpoint(self, *, new_terminals_only: bool = False, refresh_pending: bool = False) -> bool:
+        start = self.start_volume
+        if start is None or not isfinite(start):
             return True
-        # 把同一跟踪器的快照和写入排序，避免并发回调让旧快照覆盖较新的订单集合。
+        # 同一跟踪器串行写入，避免旧回报覆盖新状态。
         with self._checkpoint_lock:
             with self.lock:
-                terminal_count = len(self.completed_orders)
-                if new_terminals_only and terminal_count == self._checkpointed_terminal_count:
-                    return True
-                for order in self.pending_orders.values():
-                    order.extra["terminal_confirmation_pending"] = True
-                orders = [
-                    copy_data(order) for order in (*self.completed_orders.values(), *self.pending_orders.values())
+                if refresh_pending:
+                    self._checkpoint_updates.update((order.order_id, order) for order in self.pending_orders.values())
+                updates = [
+                    order
+                    for order in self._checkpoint_updates.values()
+                    if not new_terminals_only or order.is_completed()
                 ]
-            if save_position_checkpoint(self.executor, self.start_volume, orders):
-                self._checkpointed_terminal_count = terminal_count
+                for order in updates:
+                    if not order.is_completed():
+                        order.extra["terminal_confirmation_pending"] = True
+            if not (
+                getattr(self.executor, "has_audit_sink", False) is True
+                and self.executor.audit_context.get("execution_id")
+            ):
+                with self.lock:
+                    self._checkpoint_updates.clear()
                 return True
-            self._checkpoint_failed = True
-            self.explicit_error = "待核对仓位保存失败"
-            return False
+            for order in updates:
+                if not save_order_checkpoint(self.executor, order, None if self._checkpoint_started else start):
+                    self._checkpoint_failed = True
+                    self.explicit_error = "待核对仓位保存失败"
+                    return False
+                self._checkpoint_started = True
+                with self.lock:
+                    if self._checkpoint_updates.get(order.order_id) is order:
+                        del self._checkpoint_updates[order.order_id]
+            return True
 
     def _persist_accepted_orders(self) -> None:
         """受理后先留证；写入失败时处置已知委托并停止后续下单。"""
@@ -735,9 +752,10 @@ class OrderTracker:
                 pending,
                 cancel=lambda _symbol, order_id: self.executor.cancel_order(order_id),
                 reconcile=reconcile if callable(reconcile) else lambda _symbol, _order_id: None,
+                on_terminal=self.record_terminal_order,
             )
         else:
-            cancellation = cancel_pending_orders_via_query(self.executor)
+            cancellation = cancel_pending_orders_via_query(self.executor, on_terminal=self.record_terminal_order)
         self._reconcile_timeout_cancellations(cancellation)
         unconfirmed = self.record_cancellation_result(cancellation)
         for order_id, reason in unconfirmed.items():
@@ -752,6 +770,11 @@ class OrderTracker:
             )
         if unconfirmed and not self.waiting_on_restriction():
             raise _OrderTerminalUnconfirmedError(unconfirmed)
+
+    def record_terminal_order(self, order: UnifiedOrder) -> None:
+        """在执行线程写入已核对的终态，再继续下一笔渠道调用。"""
+        self.on_order_update(order)
+        self._save_checkpoint(new_terminals_only=True)
 
     def record_cancellation_result(self, result: CancellationResult) -> dict[str, str]:
         """收敛真实终态并记录仍在场的委托，后续成交可清除本单撤单错误。"""
@@ -963,7 +986,7 @@ class OrderTracker:
                     else "REST确认终态，可能与WS回调并发"
                 )
                 self._logger.info(f"对账发现订单 {order_id} 已终态（{cause}），收敛并补发终态")
-                self.on_order_update(terminal_order)
+                self.record_terminal_order(terminal_order)
 
     def _check_and_chase(self) -> None:
         """检查并执行追单."""
@@ -1228,6 +1251,7 @@ class OrderTracker:
                 # 回调可能在新订单刚提交后立刻到达，因此必须先插入新主键，再删除旧主键，
                 # 否则早到回调会找不到对应的追单上下文。
                 self.pending_orders[new_order.order_id] = new_order
+                self._checkpoint_updates[new_order.order_id] = new_order
                 self._chase_info[new_order.order_id] = info
 
                 if old_order_id in self.pending_orders:

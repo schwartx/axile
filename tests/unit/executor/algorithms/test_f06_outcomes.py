@@ -129,7 +129,7 @@ def test_algorithm_outcome(monkeypatch, module, case, expected, termination_at=N
         monkeypatch.setattr(
             order_helper,
             "cancel_pending_orders_via_query",
-            lambda _: CancellationResult(
+            lambda _, **_kwargs: CancellationResult(
                 orders={
                     (executor.symbol, "1"): OrderCancellation(CancelRequestStatus.UNKNOWN, "撤单失败，订单终态尚未确认")
                 }
@@ -284,7 +284,7 @@ def test_algorithm_keeps_tracker_cancel_error(monkeypatch, module):
 
     monkeypatch.setattr(order_module, "submit_and_track_split_orders", split_submit)
     if module is not maker:
-        monkeypatch.setattr(order_helper, "cancel_pending_orders_via_query", lambda _: CancellationResult())
+        monkeypatch.setattr(order_helper, "cancel_pending_orders_via_query", lambda _, **_kwargs: CancellationResult())
     if module is maker:
         entry, params = maker.single_maker_callback, maker.SingleMakerParams(max_wait_seconds=1)
     elif module is twap:

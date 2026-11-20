@@ -1,6 +1,7 @@
 """持仓确认结果使用真实原生存储跨执行恢复，保留账户隔离。"""
 
 import asyncio
+import json
 from threading import Event
 from unittest.mock import Mock
 
@@ -687,7 +688,7 @@ def test_twap_preserves_zero_fill_terminal_before_next_slice(native_database, mo
     monkeypatch.setattr(twap, "teardown_order_tracker", Mock())
     monkeypatch.setattr(order_helper, "get_default_clock", lambda: clock)
     monkeypatch.setattr(order_helper, "submit_and_track_split_orders", submit)
-    monkeypatch.setattr(order_helper, "cancel_pending_orders_via_query", lambda _: cancellation)
+    monkeypatch.setattr(order_helper, "cancel_pending_orders_via_query", lambda _, **_kwargs: cancellation)
     if from_cancel_query:
         # 第一片等单结束后才从撤单查询取到终态。
         monkeypatch.setattr(tracker, "_wait_callback", lambda _: False)
@@ -735,7 +736,77 @@ def test_zero_fill_terminal_is_saved_before_interrupted_position_query(native_da
     assert native_store_call(native_database, "execution_read", {"op": "pending_positions", "account_id": 1}) == {}
 
 
-def test_reversal_without_result_uses_latest_phase_orders(native_database, monkeypatch):
+def test_cancellation_preserves_first_terminal_when_second_query_is_interrupted(native_database, monkeypatch):
+    seed_account(native_database)
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    execution_id = "interrupted-cancellation"
+    audit = ServerExecutionAuditSink()
+    old = engine([], channel="ctp")
+    attach_audit(old._runtime, audit, execution_id, 1)
+    executor = _SingleMakerExecutor()
+    executor.has_audit_sink = True
+    executor.audit_context = old._runtime.audit_context
+    executor.emit_audit_event = old._runtime.emit_audit_event
+    first = copy_data(result(filled=0, status=OrderStatus.PENDING).orders[0], update={"order_id": "first"})
+    second = copy_data(first, update={"order_id": "second"})
+    terminal = copy_data(first, update={"status": OrderStatus.CANCELED, "filled_volume": 100})
+    tracker = OrderTracker(executor, clock=ClockStub(), start_volume=900)
+    tracker.add_order(first)
+    tracker.add_order(second)
+    executor.get_pending_orders = Mock(return_value=[first, second])
+    stopped = ExecutionTerminated(reason="operator", mode="graceful")
+    request = {"op": "pending_order_terminals", "account_id": 1}
+
+    def reconcile(_symbol, order_id):
+        if order_id == first.order_id:
+            return terminal
+        group = native_store_call(native_database, "execution_read", request)[0]
+        assert group["pending"]["first"]["filled_volume"] == 100
+        raise stopped
+
+    executor.reconcile_terminal_order = reconcile
+    with pytest.raises(ExecutionTerminated):
+        tracker.wait_for_completion(timeout=0)
+    finish_terminated(1, execution_id, stopped)
+    append_terminal(audit, 1, execution_id, copy_data(second, update={"status": OrderStatus.CANCELED}), seq=99)
+    replacement = engine([assets(sell=900)], channel="ctp")
+    attach_audit(replacement._runtime, audit, "next", 1)
+    next_input = inputs(replacement, buy=False)
+    next_input.extra["pending_order_terminals"] = native_store_call(native_database, "execution_read", request)
+    output = replacement.run(next_input)
+    assert output.status == "BLOCKED"
+    assert output.symbol_results[SELL].expected_volume == 800
+    replacement._owner.reconcile_terminal_order.assert_not_called()
+
+
+def test_slice_checkpoints_store_only_changed_orders(native_database, monkeypatch):
+    seed_account(native_database)
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    execution_id = "split-order-checkpoints"
+    source = Mock()
+    source.has_audit_sink = True
+    source.symbol = SELL
+    attach_audit(source, ServerExecutionAuditSink(), execution_id, 1)
+    tracker = OrderTracker(source, clock=ClockStub(), start_volume=900)
+    order = result(filled=0, status=OrderStatus.PENDING).orders[0]
+    for index in range(12):
+        pending = copy_data(order, update={"order_id": f"slice-{index}"})
+        tracker.add_order(pending)
+        tracker.record_terminal_order(copy_data(pending, update={"status": OrderStatus.CANCELED}))
+        assert tracker.wait_for_completion()
+
+    page = json.loads(native_store_call(native_database, "list_execution_events_json", {"execution_id": execution_id}))
+    events = page["data"]
+    assert len(events) == 24
+    assert sum("start_volume" in row["details"] for row in events) == 1
+    assert all([order["order_id"] for order in row["details"]["orders"]] == [row["order_id"]] for row in events)
+    assert (
+        native_store_call(native_database, "execution_read", {"op": "pending_order_terminals", "account_id": 1}) == []
+    )
+
+
+@pytest.mark.parametrize("compact", [False, True])
+def test_reversal_without_result_uses_latest_phase_orders(native_database, monkeypatch, compact):
     seed_account(native_database)
     monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
     audit = ServerExecutionAuditSink()
@@ -746,9 +817,12 @@ def test_reversal_without_result_uses_latest_phase_orders(native_database, monke
     attach_audit(source, audit, execution_id, account_id=1)
 
     close = copy_data(result(start=900, target=0, filled=900).orders[0], update={"order_id": "close"})
-    assert save_position_checkpoint(
-        source, 900, [copy_data(close, update={"status": OrderStatus.PENDING, "filled_volume": 0})]
-    )
+    closing = copy_data(close, update={"status": OrderStatus.PENDING, "filled_volume": 0})
+    if compact:
+        tracker = OrderTracker(source, clock=ClockStub(), start_volume=900)
+        tracker.add_order(closing)
+    else:
+        assert save_position_checkpoint(source, 900, [closing])
     source.emit_audit_event(
         event_type=ExecutionEventType.ORDER_TERMINAL_PENDING,
         status=ExecutionEventStatus.WARNING,
@@ -768,9 +842,13 @@ def test_reversal_without_result_uses_latest_phase_orders(native_database, monke
         symbol=SELL,
         order_id=outside_tracker.order_id,
     )
-    assert save_position_checkpoint(source, 900, [close])
     opened = result(start=0, target=-400, filled=200, status=OrderStatus.PARTIALLY_FILLED).orders[0]
-    assert save_position_checkpoint(source, 0, [opened])
+    if compact:
+        tracker.record_terminal_order(close)
+        OrderTracker(source, clock=ClockStub(), start_volume=0).add_order(opened)
+    else:
+        assert save_position_checkpoint(source, 900, [close])
+        assert save_position_checkpoint(source, 0, [opened])
     append_terminal(audit, 1, execution_id, close, seq=91)
     append_terminal(audit, 1, execution_id, copy_data(opened, update={"status": OrderStatus.CANCELED}), seq=92)
     append_terminal(audit, 1, execution_id, outside_tracker, seq=93)

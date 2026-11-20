@@ -13,6 +13,30 @@ from axile.executor.models.unified_order import UnifiedOrder
 from axile.executor.termination import ExecutionTerminated
 
 
+def _checkpoint_order(order: UnifiedOrder) -> dict[str, object]:
+    return to_payload(
+        order,
+        mode="json",
+        include={"order_id", "symbol", "direction", "order_type", "volume", "price", "status", "filled_volume"},
+    )
+
+
+def save_order_checkpoint(executor: ExecutorProtocol, order: UnifiedOrder, start: float | None) -> bool:
+    """只写变化的委托。首笔委托同时记录阶段起始仓位。"""
+    details: dict[str, object] = {"orders": [_checkpoint_order(order)]}
+    if start is not None:
+        details["start_volume"] = start
+    return executor.emit_audit_event(
+        event_type=ExecutionEventType.POSITION_CHECKPOINT,
+        status=ExecutionEventStatus.INFO,
+        reason_family=ExecutionReasonFamily.ACCOUNT_STATE,
+        reason_code="COMMON.POSITION.UNCONFIRMED",
+        symbol=executor.symbol,
+        order_id=order.order_id,
+        details=details,
+    )
+
+
 def save_position_checkpoint(
     executor: ExecutorProtocol, start: float | None, orders: list[UnifiedOrder] | None
 ) -> bool:
@@ -34,23 +58,7 @@ def save_position_checkpoint(
             details={
                 "start_volume": start,
                 "expected_volume": expected,
-                "orders": [
-                    to_payload(
-                        order,
-                        mode="json",
-                        include={
-                            "order_id",
-                            "symbol",
-                            "direction",
-                            "order_type",
-                            "volume",
-                            "price",
-                            "status",
-                            "filled_volume",
-                        },
-                    )
-                    for order in orders
-                ],
+                "orders": [_checkpoint_order(order) for order in orders],
             },
         )
     return True

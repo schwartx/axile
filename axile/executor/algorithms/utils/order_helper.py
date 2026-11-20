@@ -893,7 +893,7 @@ def execute_order_slice(
         return detail
 
     tracker.wait_for_completion(timeout=max(0.0, deadline - get_default_clock().time()))
-    cancellation = cancel_pending_orders_via_query(executor)
+    cancellation = cancel_pending_orders_via_query(executor, on_terminal=tracker.record_terminal_order)
     unconfirmed = tracker.record_cancellation_result(cancellation)
     if cancellation.orders:
         detail["cancel_outcomes"] = cancellation.outcomes
