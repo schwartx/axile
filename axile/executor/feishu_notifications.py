@@ -49,7 +49,7 @@ def _select_notification_assets(
     current = output.account_assets
     if not is_degraded_snapshot_source(current.source):
         return current
-    if notification_snapshot is None:
+    if notification_snapshot is None or "assets" not in notification_snapshot:
         return None
     try:
         assets = from_payload(UnifiedAccountAssets, notification_snapshot["assets"])
@@ -118,6 +118,8 @@ def build_execution_notification_context(
         exclude={"extra": True, "positions": {"__all__": {"extra"}}},
     )
     if output.inputs is not None:
+        if notification_snapshot and "last_target" in notification_snapshot:
+            result["inputs"]["last_target"] = notification_snapshot["last_target"]
         audit = output.inputs.extra.get("audit")
         audit = audit if isinstance(audit, dict) else {}
         result["inputs"]["extra"] = {

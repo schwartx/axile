@@ -19,6 +19,7 @@ from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.session_closed import COMMON_SESSION_CLOSED
 from axile.server._native import _core
 from axile.server.execution import input_persistence, rebalance, records
+from axile.server.native_store import native_operation
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database
 from tests.fixtures.rust_store.execution_rows import ExecuteRecord
@@ -349,6 +350,41 @@ def test_latest_success_target_does_not_fall_back_to_older_nonempty_target(
             assert business_evidence(await rebalance._load_last_target_snapshot(build_account())) == business_evidence(
                 latest_input.get("curr_target", {})
             )
+
+    asyncio.run(scenario())
+
+
+def test_rebalance_preview_uses_frozen_previous_target(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """worker 回传省略结果输入，通知预览从冻结的审计输入读上次目标。"""
+
+    async def scenario() -> None:
+        with _database(monkeypatch, tmp_path):
+            previous = {"c2611": -3}
+            raw_input = {**_input({"c2701": -3}), "last_target": previous}
+            await asyncio.to_thread(
+                input_persistence.persist_pre_execute_input_sync,
+                account_id=1,
+                execution_id="current",
+                payload=raw_input,
+            )
+            result = {
+                "status": "NOOP",
+                "success": True,
+                "channel_type": "tq",
+                "account_assets": {"total_asset": 10, "available_cash": 10, "market_value": None, "positions": []},
+            }
+            await asyncio.to_thread(
+                records.stage_execute_result_sync, account_id=1, execution_id="current", result=result
+            )
+            await records.append_execute_record_from_output(
+                account=build_account(),
+                raw_input=raw_input,
+                output=from_payload(UnifiedStandardOutput, result),
+                execution_id="current",
+                execution_kind=ExecutionKind.REBALANCE,
+            )
+            preview = await native_operation("notifications_preview", {"account_id": 1})
+            assert preview["context"]["targets"]["previous"] == previous
 
     asyncio.run(scenario())
 

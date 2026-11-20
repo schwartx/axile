@@ -191,6 +191,9 @@ async def append_execute_record_from_output(
     result["execution_kind"] = execution_kind.value
     if isinstance(result.get("inputs"), dict):
         result["inputs"] = sanitize_execution_input(result["inputs"])
+    elif output.inputs is None and execution_kind == ExecutionKind.REBALANCE:
+        # 调仓 worker 省略结果输入，预览可复用独立的审计输入。
+        result.pop("inputs", None)
     # 落库边界按当前 status 重新派生展示结论，防止绕过校验器的中途改写造成两套结论分离。
     result["outcome"] = outcome_from_status(output.status).value
     result["outcome_reason"] = output.outcome_reason

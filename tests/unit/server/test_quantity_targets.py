@@ -62,7 +62,6 @@ def test_quantity_bypasses_leverage_and_survives_standard_input_roundtrip():
     inputs = rebalance._build_rebalance_standard_input(
         account=account,
         curr_target=normalized,
-        last_target={},
         execution_id="quantity",
         trigger_source="manual",
         target_mode="quantity",
@@ -184,7 +183,6 @@ def test_standard_input_does_not_drop_invalid_quantity_values(value):
         rebalance._build_rebalance_standard_input(
             account=account,
             curr_target={"XAUUSD": value},
-            last_target={},
             execution_id="bad",
             trigger_source="manual",
             target_mode="quantity",
