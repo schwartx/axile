@@ -24,28 +24,22 @@ fn tables(c: &Connection, schema: &str) -> Result<Vec<String>, AnalysisError> {
     let rows = s.query_map([], |r| r.get(0)).map_err(err)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(err)
 }
+fn busy(c: &Connection) -> Result<bool, AnalysisError> {
+    c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM execution_intent WHERE finished_at_us IS NULL) OR EXISTS(SELECT 1 FROM supplement_group WHERE status IN ('active','cancelling'))",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(err)
+}
 fn idle(c: &Connection) -> Result<(), AnalysisError> {
-    let n: i64 = c
-        .query_row(
-            "SELECT count(*) FROM execution_intent WHERE finished_at_us IS NULL",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(err)?;
-    let p: i64 = c
-        .query_row(
-            "SELECT count(*) FROM supplement_group WHERE status IN ('active','cancelling')",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(err)?;
-    if n + p > 0 {
+    if busy(c)? {
         return Err(err("存在运行中的执行或补单"));
     }
     Ok(())
 }
 fn excluded(t: &str) -> bool {
-    t == "alembic_version"
+    matches!(t, "alembic_version" | "axon_alembic_version")
         || t.starts_with("analysis_")
         || t == "account_analysis"
         || t.starts_with("account_connection")
@@ -96,6 +90,7 @@ pub fn transfer(path: &str, request: &Value) -> Result<Value, AnalysisError> {
         "export_package" => package::export(path, request),
         "import_package" => package::import(path, request),
         "acknowledge" => state::acknowledge(path, request),
+        "cleanup_acknowledged" => state::cleanup_acknowledged(path, request),
         "cancel_package" => state::cancel(path, request),
         "prepare_package" => state::prepare(path, request),
         "prune_recordings" => state::prune_recordings_request(path, request),
@@ -152,7 +147,7 @@ fn export_snapshot(path: &str, request: &Value) -> Result<Value, AnalysisError> 
     Ok(json!({"executions":records(&c)?}))
 }
 
-fn merge_table(c: &Connection, t: &str) -> Result<(), AnalysisError> {
+fn merge_table(c: &Connection, t: &str, defer_asset_link: bool) -> Result<(), AnalysisError> {
     // UPSERT 保留旧历史，不以 REPLACE 触发父行删除与级联。
     let mut info = c
         .prepare(&format!("PRAGMA main.table_info({})", quote(t)))
@@ -204,8 +199,22 @@ fn merge_table(c: &Connection, t: &str) -> Result<(), AnalysisError> {
     } else {
         format!("DO UPDATE SET {updates}")
     };
+    let incoming = if defer_asset_link {
+        cols.iter()
+            .map(|(name, _)| {
+                if name == "asset_fact_id" {
+                    "NULL".to_owned()
+                } else {
+                    quote(name)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    } else {
+        "*".into()
+    };
     c.execute_batch(&format!(
-        "INSERT INTO main.{0} SELECT * FROM incoming.{0} WHERE true ON CONFLICT ({1}) {conflict}",
+        "INSERT INTO main.{0} SELECT {incoming} FROM incoming.{0} WHERE true ON CONFLICT ({1}) {conflict}",
         quote(t),
         keys.join(",")
     ))
@@ -262,7 +271,7 @@ fn import_snapshot(path: &str, request: &Value) -> Result<Value, AnalysisError> 
         [text(request, "snapshot")?],
     )
     .map_err(err)?;
-    let dest = tables(&c, "main")?;
+    let mut dest = tables(&c, "main")?;
     if dest != tables(&c, "incoming")? {
         return Err(err("数据结构不同，请先安装匹配版本"));
     }
@@ -308,9 +317,28 @@ fn import_snapshot(path: &str, request: &Value) -> Result<Value, AnalysisError> 
     if collisions > 0 {
         return Err(err("执行记录身份冲突，接收端不能与发送端独立生成重叠记录"));
     }
+    // Business triggers check owners immediately even when SQLite foreign keys are deferred.
+    let parents = [
+        "account",
+        "execution_input",
+        "executerecord",
+        "account_asset_snapshot",
+        "business_asset_snapshot",
+        "execution_order_collection",
+        "target_weight_snapshot",
+    ];
+    dest.sort_by_key(|table| {
+        parents
+            .iter()
+            .position(|name| name == table)
+            .unwrap_or(parents.len())
+    });
     for t in dest.iter().filter(|t| !excluded(t)) {
-        merge_table(c, t)?;
+        merge_table(c, t, t == "account_asset_snapshot")?;
     }
+    // The snapshot owns the fact that it also references. Validate the link and hash
+    // the final row only after both owners are present, within the same transaction.
+    merge_table(c, "account_asset_snapshot", false)?;
     let result = json!({"source_id":source,"executions":records(c)?});
     tx.commit().map_err(err)?;
     Ok(result)
@@ -320,7 +348,6 @@ fn prune_history(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let c = Connection::open(path).map_err(err)?;
     c.execute_batch("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000")
         .map_err(err)?;
-    idle(&c)?;
     let cutoff = request["cutoff_us"]
         .as_i64()
         .ok_or_else(|| err("缺少保留时间"))?;
@@ -329,6 +356,7 @@ fn prune_history(path: &str, request: &Value) -> Result<Value, AnalysisError> {
         .ok_or_else(|| err("缺少接收确认"))?;
     let tx = c.unchecked_transaction().map_err(err)?;
     let c = &tx;
+    idle(c)?;
     let mut removed = 0;
     for id in ids {
         let id = id.as_str().ok_or_else(|| err("无效执行 ID"))?;

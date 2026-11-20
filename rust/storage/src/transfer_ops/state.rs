@@ -61,22 +61,76 @@ pub(super) fn prepare(database: &str, request: &Value) -> Result<Value> {
     }
     Ok(json!({"package":result["package"],"batch":result["manifest"]["batch"],"receipt":null}))
 }
+fn confirmed_manifest(directory: &Path, receipt: &Value, source_id: &Value) -> Result<Manifest> {
+    let value = files::read_json(&directory.join("manifest.json"))?;
+    let manifest = Manifest::parse(&value)?;
+    if receipt["batch"] != manifest.batch
+        || receipt["manifest_sha256"] != files::manifest_hash(&value)?
+        || receipt["source_id"] != manifest.source_id
+        || source_id != &receipt["source_id"]
+    {
+        return Err(invalid("接收确认与本机数据包不符"));
+    }
+    Ok(manifest)
+}
+
 pub(super) fn acknowledge(database: &str, request: &Value) -> Result<Value> {
     let receipt = &request["receipt"];
     let batch = super::text(receipt, "batch")?;
     files::identity(batch)?;
     let root = files::root(database)?;
     let directory = root.join("outbox").join(batch);
-    let value = files::read_json(&directory.join("manifest.json"))?;
-    let manifest = Manifest::parse(&value)?;
-    if receipt["manifest_sha256"] != files::manifest_hash(&value)?
-        || receipt["source_id"] != manifest.source_id
-        || request["source_id"] != manifest.source_id
-    {
-        return Err(invalid("接收确认与本机数据包不符"));
-    }
+    let manifest = confirmed_manifest(&directory, receipt, &request["source_id"])?;
     let plan = Plan::parse(request)?;
+    let pending = root.join("pending.json");
+    let online = pending.exists() && files::read_json(&pending)?["batch"] == batch;
+    let queued = directory.join("cleanup-pending.json");
+    let done = directory.join("cleanup-done.json");
     files::write_json(&directory.join("receipt.json"), receipt)?;
+    let result = if online || queued.exists() || done.exists() {
+        // Persist retention before releasing the outbox slot; confirmation retries reuse this plan.
+        if !queued.exists() && !done.exists() {
+            files::write_json(
+                &queued,
+                &json!({"plan": {
+                    "execution_days": plan.execution_days, "replay_days": plan.replay_days
+                }}),
+            )?;
+        }
+        json!({"removed_executions":0,"removed_recordings":0,"cleanup_pending":queued.exists()})
+    } else {
+        cleanup(database, &manifest, &plan)?
+    };
+    files::remove_file(&directory.join("data.axile"))?;
+    if online {
+        files::remove_file(&pending)?;
+    }
+    Ok(result)
+}
+
+pub(super) fn cleanup_acknowledged(database: &str, request: &Value) -> Result<Value> {
+    let batch = super::text(request, "batch")?;
+    files::identity(batch)?;
+    let directory = files::root(database)?.join("outbox").join(batch);
+    let queued = directory.join("cleanup-pending.json");
+    if !queued.exists() {
+        return Ok(json!({"cleanup_pending":false}));
+    }
+    let connection = rusqlite::Connection::open(database).map_err(invalid)?;
+    if super::busy(&connection)? {
+        return Ok(json!({"cleanup_pending":true}));
+    }
+    let receipt = files::read_json(&directory.join("receipt.json"))?;
+    let manifest = confirmed_manifest(&directory, &receipt, &request["source_id"])?;
+    let plan = Plan::parse(&files::read_json(&queued)?)?;
+    let mut removed = cleanup(database, &manifest, &plan)?;
+    fs::rename(&queued, directory.join("cleanup-done.json")).map_err(invalid)?;
+    files::sync_directory(&directory)?;
+    removed["cleanup_pending"] = json!(false);
+    Ok(removed)
+}
+
+fn cleanup(database: &str, manifest: &Manifest, plan: &Plan) -> Result<Value> {
     let now = package::now_us()?;
     let mut removed = json!({"removed_executions":0,"removed_recordings":0});
     if let Some(days) = plan.execution_days {
@@ -93,12 +147,7 @@ pub(super) fn acknowledge(database: &str, request: &Value) -> Result<Value> {
         let cutoff = now
             .checked_sub(i64::from(days) * 86_400_000_000)
             .ok_or_else(|| invalid("保留范围无效"))?;
-        removed["removed_recordings"] = json!(prune_recordings(database, &manifest, cutoff)?);
-    }
-    files::remove_file(&directory.join("data.axile"))?;
-    let pending = root.join("pending.json");
-    if pending.exists() && files::read_json(&pending)?["batch"] == batch {
-        files::remove_file(&pending)?;
+        removed["removed_recordings"] = json!(prune_recordings(database, manifest, cutoff)?);
     }
     Ok(removed)
 }

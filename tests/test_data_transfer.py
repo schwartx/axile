@@ -1,5 +1,6 @@
 """传送的累积、去重、回执和破损包边界。"""
 
+import asyncio
 import hashlib
 import json
 import sqlite3
@@ -33,6 +34,36 @@ def seed(path, ident=1):
             "INSERT INTO executerecord(id,account_id,execution_id,is_success,created_at_us) VALUES(?,1,?,1,?)",
             (ident, f"exec-{ident}", ident),
         )
+
+
+def test_asset_snapshot_fact_links_import_and_reimport(peers):
+    source, target = peers
+    seed(source)
+    for path, revision in ((source, "source"), (target, "receiver")):
+        with sqlite3.connect(path) as connection:
+            connection.execute("CREATE TABLE axon_alembic_version(version_num TEXT PRIMARY KEY)")
+            connection.execute("INSERT INTO axon_alembic_version VALUES(?)", (revision,))
+    request = json.dumps({"action": "import", "source_id": "peer", "snapshot": str(source)})
+    for total in (50, 55):
+        _core.asset_snapshot_write(
+            str(source),
+            json.dumps(
+                {
+                    "account_id": 1,
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "account_assets": {"total_asset": total, "positions": []},
+                }
+            ),
+        )
+        for _ in range(2):
+            _core.transfer_data(str(target), request)
+        with sqlite3.connect(target) as connection:
+            assert connection.execute(
+                "SELECT a.total_asset FROM account_asset_snapshot s "
+                "JOIN business_asset_snapshot a ON a.asset_id=s.asset_fact_id AND a.account_snapshot_id=s.id "
+                "ORDER BY s.id DESC LIMIT 1"
+            ).fetchone() == (total,)
+            assert connection.execute("SELECT version_num FROM axon_alembic_version").fetchone() == ("receiver",)
 
 
 def raw_manifest(database, execution):
@@ -304,9 +335,11 @@ def test_schedule_saved_and_restored(peers):
     transfer.save_plan(plan)
     transfer.configure_schedule()
     assert scheduler.get_job("data-transfer").func is transfer.scheduled_pull
+    assert scheduler.get_job("data-transfer-cleanup").func is transfer.scheduled_cleanup
     transfer.save_plan(transfer.TransferPlan())
     transfer.configure_schedule()
     assert scheduler.get_job("data-transfer") is None
+    assert scheduler.get_job("data-transfer-cleanup").func is transfer.scheduled_cleanup
 
 
 def test_network_failure_keeps_source_batch_without_cleanup(peers, monkeypatch):
@@ -342,8 +375,6 @@ def test_network_failure_keeps_source_batch_without_cleanup(peers, monkeypatch):
 
 @pytest.mark.parametrize("failure", [None, "ack_before", "ack_after", "import", "oversize", "self"])
 def test_pull_downloads_then_confirms_and_resumes_receipt(peers, monkeypatch, failure):
-    import asyncio
-
     import httpx
 
     source, target = peers
@@ -403,15 +434,18 @@ def test_pull_downloads_then_confirms_and_resumes_receipt(peers, monkeypatch, fa
             asyncio.run(transfer.pull(plan))
         assert pending.exists()
         with sqlite3.connect(source) as connection:
-            assert connection.execute("SELECT count(*) FROM executerecord").fetchone() == (
-                (2 if failure == "ack_before" else 1),
-            )
+            assert connection.execute("SELECT count(*) FROM executerecord").fetchone() == (2,)
         # 修改当前规则也先补交上一次的回执，沿用其来源和保留范围。
         plan = transfer.TransferPlan(source_url="https://different.test", execution_days=30)
     result = asyncio.run(transfer.pull(plan))
-    assert result["batch"]
+    assert result["batch"] and result["cleanup_pending"]
     assert calls == ["identity", "export", "acknowledge"] + (["acknowledge"] if failure else [])
     assert not pending.exists()
+    with sqlite3.connect(source) as connection:
+        assert connection.execute("SELECT count(*) FROM executerecord").fetchone() == (2,)
+    with monkeypatch.context() as context:
+        context.setattr(transfer, "database_path", lambda: str(source))
+        asyncio.run(transfer.scheduled_cleanup())
     with sqlite3.connect(source) as connection:
         assert connection.execute("SELECT count(*) FROM executerecord").fetchone() == (1,)
     with sqlite3.connect(target) as connection:
@@ -575,9 +609,50 @@ def test_source_finishes_saved_receipt_before_new_export(peers, monkeypatch, cle
     assert json.loads(pending.read_text())["batch"] != manifest["batch"]
     assert not package.exists()
     with sqlite3.connect(source) as c:
+        assert c.execute("SELECT count(*) FROM executerecord").fetchone() == (2,)
+    asyncio.run(transfer.scheduled_cleanup())
+    with sqlite3.connect(source) as c:
         assert c.execute("SELECT count(*) FROM executerecord").fetchone() == (1,)
     with sqlite3.connect(target) as c:
         assert c.execute("SELECT count(*) FROM executerecord").fetchone() == (2,)
+
+
+def test_online_confirmation_releases_next_batch_before_busy_source_cleanup(peers, monkeypatch):
+    source, target = peers
+    seed(source)
+    seed(source, 2)
+    plan = transfer.TransferPlan(source_url="https://peer.test", execution_days=1, replay_days=1)
+    raw_record(source, "old", 1)
+    package = transfer.prepare_package(plan, "receiver")
+    monkeypatch.setattr(transfer, "database_path", lambda: str(target))
+    receipt = transfer.import_package(package)
+    monkeypatch.setattr(transfer, "database_path", lambda: str(source))
+    with sqlite3.connect(source) as c:
+        c.execute(
+            "INSERT INTO execution_intent(execution_id,account_id,kind,trigger_source,status,channel,algorithm,"
+            "payload,created_at_us) VALUES('ongoing',1,'rebalance','manual','RUNNING','binance','SINGLE-MAKER','{}',3)"
+        )
+
+    assert transfer.acknowledge(receipt, plan) == {
+        "removed_executions": 0,
+        "removed_recordings": 0,
+        "cleanup_pending": True,
+    }
+    assert not package.exists()
+    assert transfer.prepare_package(plan, "receiver") != package
+    assert transfer.acknowledge(receipt, transfer.TransferPlan())["cleanup_pending"]
+    asyncio.run(transfer.scheduled_cleanup())
+    with sqlite3.connect(source) as c:
+        assert c.execute("SELECT count(*) FROM executerecord").fetchone() == (2,)
+        c.execute("UPDATE execution_intent SET status='SUCCEEDED',finished_at_us=4")
+    assert list((source.parent / "replay").rglob("*.mcap"))
+
+    asyncio.run(transfer.scheduled_cleanup())
+    with sqlite3.connect(source) as c:
+        assert c.execute("SELECT execution_id FROM executerecord").fetchall() == [("exec-2",)]
+    assert not list((source.parent / "replay").rglob("*.mcap"))
+    assert transfer.acknowledge(receipt, plan)["cleanup_pending"] is False
+    asyncio.run(transfer.scheduled_cleanup())
 
 
 @pytest.mark.parametrize("configured", [False, True])

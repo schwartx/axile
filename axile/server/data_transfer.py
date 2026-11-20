@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Annotated
 
 import httpx
+from loguru import logger
 from msgspec import Meta
 
 from axile.common.serialization import from_payload, to_payload
@@ -160,7 +161,7 @@ def import_package(package: Path) -> dict:
 
 
 def acknowledge(receipt: dict, plan: TransferPlan) -> dict:
-    """由 Rust 验证回执并可重复完成源端清理。"""
+    """验证回执并按传送方式完成或安排源端清理。"""
     return _operation("acknowledge", receipt=receipt, **_plan_request(plan))
 
 
@@ -265,9 +266,28 @@ async def scheduled_pull() -> None:
         )
 
 
+async def scheduled_cleanup() -> None:
+    """重试已确认在线批次的保留清理，并在源端繁忙时留待下次。"""
+    for pending in sorted(root().glob("outbox/*/cleanup-pending.json")):
+        batch = pending.parent.name
+        try:
+            async with _lock:
+                result = await native_call(
+                    _operation, "cleanup_acknowledged", batch=batch, source_id=settings()["source_id"]
+                )
+        except Exception:
+            logger.warning("数据传送清理未完成，保留待清理批次 {}", batch)
+        else:
+            if result["cleanup_pending"]:
+                break
+
+
 def configure_schedule() -> None:
     """恢复或撤销本实例的定时传送任务。"""
     from axile.server.core.scheduler import scheduler
+
+    if not scheduler.get_job("data-transfer-cleanup"):
+        scheduler.add_job(scheduled_cleanup, "interval", minutes=1, id="data-transfer-cleanup", max_instances=1)
 
     if scheduler.get_job("data-transfer"):
         scheduler.remove_job("data-transfer")
