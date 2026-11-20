@@ -11,6 +11,7 @@ from axile.common.serialization import copy_data, to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionKind, ExecutionReasonFamily
 from axile.executor.algorithms.core.base import AlgorithmInput
+from axile.executor.algorithms.defaults.ctp_target_pos_task.impl import _place_volume_slices
 from axile.executor.algorithms.defaults.single_maker import impl as single_maker
 from axile.executor.algorithms.defaults.twap import impl as twap
 from axile.executor.algorithms.utils import order_helper
@@ -291,7 +292,7 @@ def test_unresolved_order_survives_restart_and_terminal_is_written_to_origin(nat
     ]
     assert native_store_call(native_database, "execution_read", {**read_pending, "account_id": 2}) == []
 
-    replacement = engine([assets(), assets(), assets()], channel="gm")
+    replacement = engine([assets()] * 4, channel="gm")
     replacement._owner.reconcile_terminal_order = Mock(return_value=None)
     attach_audit(replacement._runtime, audit, "new", account_id=1)
     request = inputs(replacement, buy=False)
@@ -300,6 +301,13 @@ def test_unresolved_order_survives_restart_and_terminal_is_written_to_origin(nat
     replacement._owner.reconcile_terminal_order.assert_called_once_with(SELL, SELL)
 
     replacement._owner.reconcile_terminal_order.return_value = result(filled=0, status=OrderStatus.CANCELED).orders[0]
+    append = replacement._runtime.emit_audit_event.side_effect
+    replacement._runtime.emit_audit_event.side_effect = lambda **event: (
+        False if event["event_type"] == ExecutionEventType.ORDER_TERMINAL else append(**event)
+    )
+    assert replacement.run(request).status == "BLOCKED"
+    assert native_store_call(native_database, "execution_read", read_pending) == pending
+    replacement._runtime.emit_audit_event.side_effect = append
     assert replacement.run(request).status == "NOOP"
     assert native_store_call(native_database, "execution_read", read_pending) == []
 
@@ -314,7 +322,7 @@ def test_recovered_late_fill_blocks_until_account_position_catches_up(
     audit = ServerExecutionAuditSink()
     origin = {"execution_id": "late-fill", "account_id": 1, "channel": TradeChannel("gm"), "algorithm": "TEST"}
     known = copy_data(result(start=900, target=800, filled=100).orders[0], update={"order_id": "first"})
-    late = result(start=800, target=500, filled=0, status=OrderStatus.PENDING).orders[0]
+    late = result(start=800, target=400 if audit_pending_saved else 500, filled=0, status=OrderStatus.PENDING).orders[0]
     tracker = OrderTracker(executor=Mock())
     tracker.add_order(late)
     assert late.order_id in tracker.record_cancellation_result(CancellationResult())
@@ -326,7 +334,29 @@ def test_recovered_late_fill_blocks_until_account_position_catches_up(
         native_database, execution_id="late-fill", raw_result={"symbol_results": {SELL: to_payload(row, mode="json")}}
     )
 
+    terminal = copy_data(late, update={"filled_volume": 300, "status": OrderStatus.FILLED})
     if audit_pending_saved:
+        # 完整结果含上一阶段 100 手。本阶段两个回报中较高的累计成交量为 300 手。
+        observed = copy_data(
+            late,
+            update={
+                "filled_volume": 200 if terminal_in_db else 300,
+                "status": OrderStatus.CANCELED if terminal_in_db else OrderStatus.PARTIALLY_FILLED,
+            },
+        )
+        terminal = copy_data(
+            late, update={"filled_volume": 300 if terminal_in_db else 0, "status": OrderStatus.CANCELED}
+        )
+        assert audit.append_event(
+            **origin,
+            symbol=SELL,
+            seq=0,
+            event_type=ExecutionEventType.POSITION_CHECKPOINT,
+            status=ExecutionEventStatus.INFO,
+            reason_family=ExecutionReasonFamily.ACCOUNT_STATE,
+            reason_code="COMMON.POSITION.UNCONFIRMED",
+            details={"start_volume": 800, "orders": [to_payload(observed, mode="json")]},
+        )
         assert audit.append_event(
             **origin,
             symbol=SELL,
@@ -338,7 +368,6 @@ def test_recovered_late_fill_blocks_until_account_position_catches_up(
             reason_code="COMMON.ORDER.TERMINAL_UNCONFIRMED",
         )
 
-    terminal = copy_data(late, update={"filled_volume": 300, "status": OrderStatus.FILLED})
     if terminal_in_db:
         assert audit.append_event(
             **origin,
@@ -905,3 +934,65 @@ def test_checkpoint_write_failure_still_cancels_known_order(native_database, mon
     assert tracker.explicit_error == "待核对仓位保存失败"
     with pytest.raises(RuntimeError, match="待核对仓位保存失败"):
         tracker.assert_ready_for_submission()
+
+
+@pytest.mark.parametrize("record_first_slice", [False, True])
+def test_restart_after_second_ctp_slice_is_accepted(native_database, monkeypatch, record_first_slice):
+    seed_account(native_database)
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    executor = _SingleMakerExecutor()
+    executor.has_audit_sink = True
+    runtime = Mock()
+    audit = ServerExecutionAuditSink()
+    attach_audit(runtime, audit, "split-close", 1)
+    executor.audit_context = runtime.audit_context
+    first = copy_data(result(filled=0, status=OrderStatus.PENDING).orders[0], update={"order_id": "first"})
+    second = copy_data(result(filled=400).orders[0], update={"order_id": "second"})
+    tracker = OrderTracker(executor, clock=ClockStub(), start_volume=900)
+    executor.get_order_volume_bounds = lambda *_: (1, 400)
+
+    def place(*args, **kwargs):
+        if executor.place_order.call_count == 1:
+            return first
+        tracker.on_order_update(copy_data(first, update={"status": OrderStatus.CANCELED}))
+        return second
+
+    class WorkerStopped(BaseException):
+        pass
+
+    def write(**event):
+        saved = runtime.emit_audit_event(**event)
+        if executor.place_order.call_count == 2 and event["event_type"] == ExecutionEventType.POSITION_CHECKPOINT:
+            assert saved
+            raise WorkerStopped
+        return saved
+
+    executor.place_order = Mock(side_effect=place)
+    executor.emit_audit_event = write
+    with pytest.raises(WorkerStopped):
+        _place_volume_slices(
+            executor, OrderDirection.SELL, 800, "ACTIVE", offset_flag="1", trade_rule={}, tracker=tracker
+        )
+
+    if record_first_slice:
+        prior = result(start=900, filled=0, status=OrderStatus.CANCELED)
+        prior.orders = [copy_data(first, update={"status": OrderStatus.CANCELED})]
+        persist(
+            native_database,
+            execution_id="split-close",
+            raw_result={"symbol_results": {SELL: to_payload(prior, mode="json")}},
+        )
+
+    replacement = engine([assets(sell=900)], channel="ctp")
+    attach_audit(replacement._runtime, audit, "replacement", 1)
+    request = inputs(replacement, buy=False, sell_target=100)
+    request.extra["pending_order_terminals"] = native_store_call(
+        native_database, "execution_read", {"op": "pending_order_terminals", "account_id": 1}
+    )
+    dispatch = Mock()
+    replacement._run_prepared_symbol_algorithms = dispatch
+    assert request.extra["pending_order_terminals"][0]["pending"]["second"]["filled_volume"] == 400
+    output = replacement.run(request)
+    dispatch.assert_not_called()
+    assert output.status == "BLOCKED"
+    assert output.symbol_results[SELL].expected_volume == 500

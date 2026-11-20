@@ -276,47 +276,33 @@ fn pending_order_terminals(
     connection: &Connection,
     account_id: i64,
 ) -> Result<Value, AnalysisError> {
-    // 历史检查点和最终快照带全量委托。逐单检查点只在阶段首笔带起始量。
+    // 阶段首批和全量快照都带 start_volume。从最近的起点按订单号折叠后续变化。
     let mut statement = connection.prepare(
         "WITH checkpoints AS (
-            SELECT id,execution_id,algorithm,symbol,order_id,details,
+            SELECT id,execution_id,symbol,json_extract(details,'$.start_volume') AS start_volume,
                    row_number() OVER (PARTITION BY execution_id,symbol ORDER BY id DESC) AS rank
             FROM execution_event WHERE account_id=?1 AND event_type='POSITION_CHECKPOINT'
-              AND json_type(details,'$.orders')='array'
-              AND (order_id IS NULL OR json_type(details,'$.start_volume') IN ('integer','real'))
-        ), compact_orders AS (
-            SELECT e.execution_id,e.algorithm,e.symbol,e.order_id,json_extract(e.details,'$.orders[0]') AS body,
-                   row_number() OVER (PARTITION BY e.execution_id,e.symbol,e.order_id ORDER BY e.id DESC) AS rank
-            FROM checkpoints s JOIN execution_event e ON e.execution_id=s.execution_id AND e.symbol=s.symbol
-            WHERE s.rank=1 AND s.order_id IS NOT NULL AND e.id>=s.id AND e.account_id=?1
-              AND e.event_type='POSITION_CHECKPOINT' AND e.order_id IS NOT NULL
-        ), current_orders AS (
+              AND json_type(details,'$.start_volume') IN ('integer','real')
+        ), changes AS (
             SELECT e.execution_id,e.algorithm,e.symbol,json_extract(o.value,'$.order_id') AS order_id,
-                   o.value AS body,0 AS compact,
-                   json_extract(o.value,'$.status') IN ('已成交','已撤销','已拒绝','已过期') AS terminal
-            FROM checkpoints e JOIN json_each(e.details,'$.orders') o WHERE e.rank=1 AND e.order_id IS NULL
-            UNION ALL
-            SELECT execution_id,algorithm,symbol,order_id,body,1,
-                   json_extract(body,'$.status') IN ('已成交','已撤销','已拒绝','已过期')
-            FROM compact_orders WHERE rank=1
+                   s.start_volume,o.value AS body,json_type(e.details,'$.expected_volume') IS NULL AS delta,
+                   row_number() OVER (PARTITION BY e.execution_id,e.symbol,json_extract(o.value,'$.order_id')
+                                      ORDER BY e.id DESC) AS rank
+            FROM checkpoints s JOIN execution_event e ON e.execution_id=s.execution_id AND e.symbol=s.symbol
+            JOIN json_each(e.details,'$.orders') o
+            WHERE s.rank=1 AND e.id>=s.id AND e.account_id=?1 AND e.event_type='POSITION_CHECKPOINT'
+        ), current_orders AS (
+            SELECT *,json_extract(body,'$.status') IN ('已成交','已撤销','已拒绝','已过期') AS terminal
+            FROM changes WHERE rank=1
         ), candidates AS (
+            -- 已登记委托统一由 current_orders 处理，额外发现的旧挂单仍需核实。
             SELECT p.execution_id,p.algorithm,p.symbol,p.order_id
             FROM execution_event p
             WHERE p.account_id=?1 AND p.event_type='ORDER_TERMINAL_PENDING'
               AND NOT EXISTS (
-                  SELECT 1 FROM checkpoints e
-                  WHERE e.rank=1 AND e.execution_id=p.execution_id AND e.symbol=p.symbol AND e.id>p.id
-                    AND EXISTS (
-                        SELECT 1 FROM execution_event tracked JOIN json_each(tracked.details,'$.orders') o
-                        WHERE tracked.execution_id=p.execution_id AND tracked.symbol=p.symbol
-                          AND tracked.account_id=?1 AND tracked.event_type='POSITION_CHECKPOINT'
-                          AND json_extract(o.value,'$.order_id')=p.order_id
-                    )
-                    AND NOT EXISTS (
-                        SELECT 1 FROM current_orders o
-                        WHERE o.execution_id=p.execution_id AND o.symbol=p.symbol AND o.order_id=p.order_id
-                          AND NOT o.terminal
-                    )
+                  SELECT 1 FROM execution_event e JOIN json_each(e.details,'$.orders') o
+                  WHERE e.account_id=?1 AND e.execution_id=p.execution_id AND e.symbol=p.symbol
+                    AND e.event_type='POSITION_CHECKPOINT' AND json_extract(o.value,'$.order_id')=p.order_id
               )
             UNION
             SELECT r.execution_id,COALESCE(s.algorithm,'SINGLE-MAKER'),s.map_key,json_extract(o.order_id,'$')
@@ -326,19 +312,22 @@ fn pending_order_terminals(
               AND o.status NOT IN ('已成交','已撤销','已拒绝','已过期')
             UNION
             SELECT o.execution_id,o.algorithm,o.symbol,o.order_id
-            FROM current_orders o WHERE NOT o.terminal OR (o.compact AND json_extract(o.body,'$.filled_volume')<>0)
+            FROM current_orders o WHERE NOT o.terminal OR (o.delta AND json_extract(o.body,'$.filled_volume')<>0)
         )
-        SELECT p.execution_id,p.algorithm,p.symbol,p.order_id,
-               COALESCE(
-                   (SELECT json_set(o.body,'$.terminal_status',json_extract(o.body,'$.status'))
-                    FROM current_orders o WHERE o.execution_id=p.execution_id AND o.symbol=p.symbol
-                      AND o.order_id=p.order_id AND o.terminal),
+        SELECT p.execution_id,p.algorithm,p.symbol,
+               json_group_object(p.order_id,json(COALESCE(
                    (SELECT json_extract(t.details,'$.order') FROM execution_event t
                     WHERE t.account_id=?1 AND t.execution_id=p.execution_id AND t.symbol=p.symbol
                       AND t.order_id=p.order_id AND t.event_type='ORDER_TERMINAL'
                       AND t.reason_family='EXCHANGE' AND t.status='SUCCESS'
-                      AND json_type(t.details,'$.order.terminal_status')='text' ORDER BY t.id DESC LIMIT 1)
-               )
+                      AND json_type(t.details,'$.order.terminal_status')='text' ORDER BY t.id DESC LIMIT 1),
+                   (SELECT json_set(o.body,'$.terminal_status',json_extract(o.body,'$.status'))
+                    FROM current_orders o WHERE o.execution_id=p.execution_id AND o.symbol=p.symbol
+                      AND o.order_id=p.order_id AND o.terminal)
+               ))),
+               (SELECT json_object('start_volume',o.start_volume,'orders',json_group_array(json(o.body)))
+                FROM current_orders o WHERE o.execution_id=p.execution_id AND o.symbol=p.symbol
+                GROUP BY o.start_volume)
         FROM candidates p
         WHERE p.symbol IS NOT NULL AND p.order_id IS NOT NULL AND NOT EXISTS (
             SELECT 1 FROM execution_event c WHERE c.account_id=?1 AND c.execution_id=p.execution_id
@@ -350,7 +339,7 @@ fn pending_order_terminals(
               AND json_extract(o.order_id,'$')=p.order_id
               AND o.status IN ('已成交','已撤销','已拒绝','已过期')
         )
-        ORDER BY p.execution_id,p.symbol,p.order_id"
+        GROUP BY p.execution_id,p.symbol ORDER BY p.execution_id,p.symbol"
     ).map_err(sql)?;
     let rows = statement
         .query_map([account_id], |row| {
@@ -366,28 +355,27 @@ fn pending_order_terminals(
         .collect::<Result<Vec<_>, _>>()
         .map_err(sql)?;
     let mut groups: Vec<Value> = Vec::new();
-    for (execution, algorithm, symbol, order_id, terminal) in rows {
-        let same_group = groups
-            .last()
-            .is_some_and(|row| row["execution_id"] == execution && row["symbol"] == symbol);
-        if !same_group {
-            let details = previous_order_position(connection, account_id, &execution, &symbol)?;
-            groups.push(json!({
-                "execution_id": execution, "algorithm": algorithm, "symbol": symbol,
-                "start_volume": details["start_volume"], "orders": details["orders"], "pending": {},
-            }));
+    for (execution, algorithm, symbol, pending, checkpoint) in rows {
+        let recorded = recorded_order_position(connection, account_id, &execution, &symbol)?;
+        let details = match checkpoint {
+            Some(raw) => serde_json::from_str(&raw).map_err(|error| invalid(error.to_string()))?,
+            None => recorded.clone(),
+        };
+        let pending: Value =
+            serde_json::from_str(&pending).map_err(|error| invalid(error.to_string()))?;
+        let mut group = json!({
+            "execution_id": execution, "algorithm": algorithm, "symbol": symbol,
+            "start_volume": details["start_volume"], "orders": details["orders"], "pending": pending,
+        });
+        if !recorded.is_null() && recorded != details {
+            group["recorded_position"] = recorded;
         }
-        let terminal = terminal
-            .map(|raw| serde_json::from_str(&raw))
-            .transpose()
-            .map_err(|error| invalid(error.to_string()))?
-            .unwrap_or(Value::Null);
-        groups.last_mut().expect("group just inserted")["pending"][order_id] = terminal;
+        groups.push(group);
     }
     Ok(Value::Array(groups))
 }
 
-fn previous_order_position(
+fn recorded_order_position(
     connection: &Connection,
     account_id: i64,
     execution: &str,
@@ -405,46 +393,11 @@ fn previous_order_position(
            AND json_type(s.audit_evidence,'$.unrecognized_fields.start_volume') IN ('integer','real')",
         params![account_id, execution, symbol], |row| row.get::<_, String>(0),
     ).optional().map_err(sql)?;
-    if let Some(recorded) = recorded {
-        return serde_json::from_str(&recorded).map_err(|error| invalid(error.to_string()));
-    }
-    let start = connection
-        .query_row(
-            "SELECT id,order_id IS NOT NULL,details FROM execution_event
-         WHERE account_id=?1 AND execution_id=?2 AND symbol=?3 AND event_type='POSITION_CHECKPOINT'
-           AND json_type(details,'$.orders')='array'
-           AND (order_id IS NULL OR json_type(details,'$.start_volume') IN ('integer','real'))
-         ORDER BY id DESC LIMIT 1",
-            params![account_id, execution, symbol],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, bool>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            },
-        )
-        .optional()
-        .map_err(sql)?;
-    let Some((start_id, compact, raw)) = start else {
-        return Ok(Value::Null);
-    };
-    let mut details: Value =
-        serde_json::from_str(&raw).map_err(|error| invalid(error.to_string()))?;
-    if compact {
-        let orders: String = connection.query_row(
-            "SELECT json_group_array(json(body)) FROM (
-                SELECT json_extract(details,'$.orders[0]') AS body,
-                       row_number() OVER (PARTITION BY order_id ORDER BY id DESC) AS rank
-                FROM execution_event WHERE account_id=?1 AND execution_id=?2 AND symbol=?3 AND id>=?4
-                  AND event_type='POSITION_CHECKPOINT' AND order_id IS NOT NULL
-            ) WHERE rank=1",
-            params![account_id, execution, symbol, start_id], |row| row.get(0),
-        ).map_err(sql)?;
-        details["orders"] =
-            serde_json::from_str(&orders).map_err(|error| invalid(error.to_string()))?;
-    }
-    Ok(details)
+    recorded
+        .map(|raw| serde_json::from_str(&raw))
+        .transpose()
+        .map(|value| value.unwrap_or(Value::Null))
+        .map_err(|error| invalid(error.to_string()))
 }
 
 fn read_on(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {

@@ -15,6 +15,7 @@ Notes
 """
 
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field, is_dataclass
 from decimal import Decimal
 from math import isfinite
@@ -31,7 +32,7 @@ from axile.executor.algorithms.exceptions import (
     format_exception_message,
 )
 from axile.executor.algorithms.utils.clock import Clock, get_default_clock
-from axile.executor.algorithms.utils.final_position import save_order_checkpoint
+from axile.executor.algorithms.utils.final_position import save_order_changes
 from axile.executor.algorithms.utils.trading import cancel_pending_orders_via_query
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.market_data_validation import (
@@ -353,33 +354,37 @@ class OrderTracker:
         submission_deadline : float | None, default=None
             本单追价和市价兜底的绝对截止时间，换单后继续沿用。
         """
-        buffered_trades: list[TradeRecord] = []
-        buffered_order_updates: list[UnifiedOrder] = []
         resolved_direction = direction or _coerce_order_direction(order.direction)
         resolved_offset = offset_flag
         if resolved_offset is None and isinstance(order.extra, dict):
             raw_offset = order.extra.get("offset_flag")
             resolved_offset = None if raw_offset is None else str(raw_offset)
+        chase_info = None
+        if chase_enabled and self.chase_config and resolved_direction:
+            chase_info = {
+                "symbol": order.symbol,
+                "direction": resolved_direction,
+                "target_volume": target_volume,
+                "current_volume": current_volume,
+                "original_price": order.price,
+                "chase_count": 0,
+                "last_chase_time": 0.0,
+                "position_side": position_side,
+                "offset_flag": resolved_offset,
+                "trade_rule": dict(trade_rule) if trade_rule is not None else None,
+                "submission_deadline": submission_deadline,
+            }
+
+        self._register_order(order, chase_info)
+
+    def _register_order(self, order: UnifiedOrder, chase_info: dict[str, Any] | None) -> None:
+        """登记受理、吸收早到回报，并在下一次渠道调用前保存本批证据。"""
         with self.lock:
             self.pending_orders[order.order_id] = order
             self._checkpoint_updates[order.order_id] = order
             self.order_trades.setdefault(order.order_id, [])
-
-            if chase_enabled and self.chase_config and resolved_direction:
-                self._chase_info[order.order_id] = {
-                    "symbol": order.symbol,
-                    "direction": resolved_direction,
-                    "target_volume": target_volume,
-                    "current_volume": current_volume,
-                    "original_price": order.price,
-                    "chase_count": 0,
-                    "last_chase_time": 0.0,
-                    "position_side": position_side,
-                    "offset_flag": resolved_offset,
-                    "trade_rule": dict(trade_rule) if trade_rule is not None else None,
-                    "submission_deadline": submission_deadline,
-                }
-
+            if chase_info is not None:
+                self._chase_info[order.order_id] = chase_info
             self.all_done_event.clear()
             buffered_trades, buffered_order_updates = self._pop_early_events(order)
 
@@ -391,7 +396,11 @@ class OrderTracker:
         for buffered_order in buffered_order_updates:
             self.on_order_update(buffered_order)
 
-        self._persist_accepted_orders()
+        if order.is_completed():
+            self.on_order_update(order)
+        if not self._save_checkpoint():
+            self._finalize_timeout_cancellations(known_only=True)
+            raise RuntimeError("待核对仓位保存失败")
 
         # 下单即探针：未收到期待的回报时报告通道可疑，由账户恢复核对。
         self._register_order_ack_probe(order.order_id)
@@ -581,6 +590,7 @@ class OrderTracker:
             raise RuntimeError("待核对仓位保存失败")
         # 查询可能触发订单回调，必须在锁外执行；缺失终态回调时依靠 REST 恢复。
         self._query_pending_orders()
+        self.require_saved_orders()
         with self.lock:
             if self.pending_orders or self._chasing_order_id is not None or self._fallback_submitting:
                 raise RuntimeError("旧单尚未确认终态，拒绝继续下单")
@@ -725,21 +735,22 @@ class OrderTracker:
                 with self.lock:
                     self._checkpoint_updates.clear()
                 return True
-            for order in updates:
-                if not save_order_checkpoint(self.executor, order, None if self._checkpoint_started else start):
-                    self._checkpoint_failed = True
-                    self.explicit_error = "待核对仓位保存失败"
-                    return False
-                self._checkpoint_started = True
-                with self.lock:
+            if not updates:
+                return True
+            if not save_order_changes(self.executor, updates, None if self._checkpoint_started else start):
+                self._checkpoint_failed = True
+                self.explicit_error = "待核对仓位保存失败"
+                return False
+            self._checkpoint_started = True
+            with self.lock:
+                for order in updates:
                     if self._checkpoint_updates.get(order.order_id) is order:
                         del self._checkpoint_updates[order.order_id]
             return True
 
-    def _persist_accepted_orders(self) -> None:
-        """受理后先留证；写入失败时处置已知委托并停止后续下单。"""
-        if not self._save_checkpoint():
-            self._finalize_timeout_cancellations(known_only=True)
+    def require_saved_orders(self) -> None:
+        """每笔报单前保存已收到的回报。写入失败后，本阶段只允许收尾。"""
+        if not self._save_checkpoint() or self._checkpoint_failed:
             raise RuntimeError("待核对仓位保存失败")
 
     def _finalize_timeout_cancellations(self, *, known_only: bool = False) -> None:
@@ -747,7 +758,10 @@ class OrderTracker:
         if known_only:
             with self.lock:
                 pending = [order for order in self.pending_orders.values() if not order.is_completed()]
-            reconcile = getattr(self.executor, "reconcile_terminal_order", None)
+            reconcile = cast(
+                "Callable[[str, str], UnifiedOrder | None] | None",
+                getattr(self.executor, "reconcile_terminal_order", None),
+            )
             cancellation = cancel_orders(
                 pending,
                 cancel=lambda _symbol, order_id: self.executor.cancel_order(order_id),
@@ -1068,7 +1082,7 @@ class OrderTracker:
                     if latest_price is not None:
                         levels = latest_price.bids if direction == OrderDirection.BUY else latest_price.asks
                         new_price = levels[0][0] if levels else 0.0
-                    if new_price <= 0:
+                    if not isfinite(new_price) or new_price <= 0:
                         message = "追单失败：撤单确认后行情不可用或追单价格缺失"
                         self._set_order_error(order_id, message)
                         self.executor.emit_audit_event(
@@ -1083,6 +1097,9 @@ class OrderTracker:
                         continue
                     kwargs = _chase_place_kwargs(chase_info)
 
+                    self.require_saved_orders()
+                    if self._submission_expired(chase_info):
+                        continue
                     new_order = self.executor.place_order(
                         direction,
                         OrderType.LIMIT,
@@ -1093,8 +1110,11 @@ class OrderTracker:
                     )
 
                     chase_index = chase_info["chase_count"] + 1
-                    self._update_chase_info(order_id, new_order)
-                    self._persist_accepted_orders()
+                    with self.lock:
+                        self._chase_info.pop(order_id, None)
+                    self._register_order(
+                        new_order, {**chase_info, "chase_count": chase_index, "last_chase_time": self.clock.time()}
+                    )
                     self.executor.emit_audit_event(
                         event_type=ExecutionEventType.ORDER_SUBMITTED,
                         status=ExecutionEventStatus.INFO,
@@ -1240,25 +1260,6 @@ class OrderTracker:
         else:
             return 1.0
 
-    def _update_chase_info(self, old_order_id: str, new_order: UnifiedOrder) -> None:
-        """把追单上下文从旧订单迁移到新订单。"""
-        with self.lock:
-            if old_order_id in self._chase_info:
-                info = self._chase_info[old_order_id]
-                info["chase_count"] += 1
-                info["last_chase_time"] = self.clock.time()
-
-                # 回调可能在新订单刚提交后立刻到达，因此必须先插入新主键，再删除旧主键，
-                # 否则早到回调会找不到对应的追单上下文。
-                self.pending_orders[new_order.order_id] = new_order
-                self._checkpoint_updates[new_order.order_id] = new_order
-                self._chase_info[new_order.order_id] = info
-
-                if old_order_id in self.pending_orders:
-                    del self.pending_orders[old_order_id]
-                if old_order_id in self._chase_info:
-                    del self._chase_info[old_order_id]
-
     def _fallback_to_market_order(self) -> None:
         """对达到最大追单次数的订单使用市价单兜底.
 
@@ -1382,6 +1383,7 @@ class OrderTracker:
                     split_order_volumes(remaining, bounds[1], min_size=bounds[0]) if bounds is not None else [remaining]
                 )
                 for index, chunk in enumerate(slices, 1):
+                    self.require_saved_orders()
                     if self._submission_expired(chase_info):
                         return
                     market_order = self.executor.place_order(
@@ -1402,8 +1404,6 @@ class OrderTracker:
                         trade_rule=chase_info.get("trade_rule"),
                         chase_enabled=False,
                     )
-                    if market_order.is_completed():
-                        self.on_order_update(market_order)
                     self.executor.emit_audit_event(
                         event_type=ExecutionEventType.ORDER_SUBMITTED,
                         status=ExecutionEventStatus.WARNING,

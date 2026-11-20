@@ -779,6 +779,16 @@ it('uses accepted orders after an interrupted execution and stops polling at a k
   expect(hasPendingOrderTerminals([filled, checkpoint], summary)).toBe(false)
   expect(buildExecutionDetail([filled, checkpoint], [], null, summary).symbols[0]?.filled).toBe(-500)
 
+  const pendingRecord = { symbol_results: { A: { orders: [
+    { ...order, extra: { terminal_confirmation_pending: true } },
+  ] } } }
+  expect(hasPendingOrderTerminals([], pendingRecord)).toBe(true)
+  expect(hasPendingOrderTerminals([filled], pendingRecord)).toBe(false)
+
+  const partial = ev({ event_type: 'position_checkpoint', symbol: 'A', details: { orders: [{ ...order, filled_volume: 300 }] } })
+  const staleCancel = ev({ ...filled, details: { order: { terminal_status: '已撤销', filled_volume: 0 } } })
+  expect(buildExecutionDetail([partial, staleCancel], [], null, null).symbols[0]?.filled).toBe(-300)
+
   const canceled = { ...order, status: '已撤销' }
   const settled = ev({ event_type: 'position_checkpoint', symbol: 'A', details: { orders: [canceled] } })
   expect(hasPendingOrderTerminals([checkpoint, settled])).toBe(false)

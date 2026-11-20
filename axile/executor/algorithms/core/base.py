@@ -129,6 +129,7 @@ class ExecutorProtocol(Protocol):
         *,
         market_data: UnifiedPriceData | None = None,
         market_data_purpose: MarketDataPurpose | None = None,
+        quote_price: Callable[[UnifiedPriceData], float] | None = None,
         **kwargs: object,
     ) -> UnifiedOrder:
         """下单，可显式携带行情证据并要求按盘口用途校验。"""

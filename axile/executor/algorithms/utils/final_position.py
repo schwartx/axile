@@ -21,9 +21,9 @@ def _checkpoint_order(order: UnifiedOrder) -> dict[str, object]:
     )
 
 
-def save_order_checkpoint(executor: ExecutorProtocol, order: UnifiedOrder, start: float | None) -> bool:
-    """只写变化的委托。首笔委托同时记录阶段起始仓位。"""
-    details: dict[str, object] = {"orders": [_checkpoint_order(order)]}
+def save_order_changes(executor: ExecutorProtocol, orders: list[UnifiedOrder], start: float | None) -> bool:
+    """一次提交本批变化，首批同时记录阶段起始仓位。"""
+    details: dict[str, object] = {"orders": [_checkpoint_order(order) for order in orders]}
     if start is not None:
         details["start_volume"] = start
     return executor.emit_audit_event(
@@ -32,7 +32,7 @@ def save_order_checkpoint(executor: ExecutorProtocol, order: UnifiedOrder, start
         reason_family=ExecutionReasonFamily.ACCOUNT_STATE,
         reason_code="COMMON.POSITION.UNCONFIRMED",
         symbol=executor.symbol,
-        order_id=order.order_id,
+        order_id=orders[0].order_id if len(orders) == 1 else None,
         details=details,
     )
 

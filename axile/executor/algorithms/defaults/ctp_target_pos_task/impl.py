@@ -306,6 +306,8 @@ def _place_volume_slices(
     submitted = 0.0
     for chunk in slices:
         limit_price = 0.0
+        if tracker is not None:
+            tracker.require_saved_orders()
         try:
             if (
                 isinstance(executor, ExecutionSession)

@@ -29,6 +29,9 @@ class _FakeTracker:
     def add_order(self, order: UnifiedOrder, **kwargs: Any) -> None:
         self.orders.append((order, kwargs))
 
+    def require_saved_orders(self) -> None:
+        pass
+
     def assert_ready_for_submission(self) -> None:
         pass
 
@@ -476,6 +479,25 @@ def test_split_legs_share_deadline(monkeypatch, elapsed, expected_volumes, expec
 
     assert [call.args[2] for call in executor.place_order.call_args_list] == expected_volumes
     assert waits == pytest.approx(expected_waits)
+
+
+@pytest.mark.parametrize("callback_first", [False, True])
+def test_failed_terminal_checkpoint_blocks_the_next_slice(callback_first):
+    executor = _make_executor(OrderParamModel.DIRECTIONAL)
+    executor.has_audit_sink = True
+    executor.audit_context = {"execution_id": "split"}
+    tracker = OrderTracker(executor=executor, start_volume=0)
+    order = _submit(executor, tracker, OrderDirection.BUY, 2, target=2, current=0)[0]
+    terminal = copy_data(order, update={"status": OrderStatus.CANCELED})
+    executor.get_pending_orders.return_value = []
+    executor.reconcile_terminal_order.return_value = terminal
+    executor.emit_audit_event.return_value = False
+    if callback_first:
+        tracker.on_order_update(terminal)
+
+    with pytest.raises(RuntimeError, match="待核对仓位保存失败"):
+        _submit(executor, tracker, OrderDirection.BUY, 2, target=2, current=0)
+    assert executor.place_order.call_count == 1
 
 
 def test_submission_gate_reconciles_missing_cancel_callback() -> None:

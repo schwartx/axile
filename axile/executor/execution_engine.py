@@ -476,16 +476,36 @@ class ExecutionEngine:
                 )
         return list(blocked.values())
 
+    @staticmethod
+    def _order_position_basis(previous: ObjectDict) -> tuple[object, dict[str, UnifiedOrder]]:
+        """阶段快照和最终结果各自配对起点；完整结果可涵盖反手的两个阶段。"""
+
+        def orders_in(source: ObjectDict) -> dict[str, UnifiedOrder]:
+            return {order.order_id: order for order in from_payload(list[UnifiedOrder], source["orders"] or [])}
+
+        orders = orders_in(previous)
+        start = previous["start_volume"]
+        recorded = previous.get("recorded_position")
+        if isinstance(recorded, dict):
+            other = orders_in(recorded)
+            if orders.keys() <= other.keys():
+                start, orders, other = recorded["start_volume"], other, orders
+            for key in orders.keys() & other.keys():
+                order, update = orders[key], other[key]
+                if update.is_completed() and not order.is_completed():
+                    order, update = update, order
+                orders[key] = copy_data(order, update={"filled_volume": max(order.filled_volume, update.filled_volume)})
+        return start, orders
+
     def _reconcile_order_group(self, symbol: str, previous: ObjectDict) -> str | None:
         context = {
             **self._runtime.audit_context,
             "execution_id": previous["execution_id"],
             "algorithm": previous["algorithm"],
         }
-        original = from_payload(list[UnifiedOrder], previous["orders"] or [])
-        orders = {order.order_id: order for order in original}
+        start, orders = self._order_position_basis(previous)
         pending = dict(cast("dict[str, ObjectDict | None]", previous["pending"]))
-        for order in original:
+        for order in orders.values():
             if not order.is_completed():
                 pending.setdefault(order.order_id, None)
         for order_id, evidence in pending.items():
@@ -494,16 +514,6 @@ class ExecutionEngine:
                 terminal = self._owner.reconcile_terminal_order(symbol, order_id)
                 if terminal is None:
                     return f"上一轮委托 {order_id} 终态尚未确认，已阻断本次下单"
-                self._runtime.emit_audit_event(
-                    event_type=ExecutionEventType.ORDER_TERMINAL,
-                    status=ExecutionEventStatus.SUCCESS,
-                    reason_family=ExecutionReasonFamily.EXCHANGE,
-                    reason_code="COMMON.ORDER_TERMINAL",
-                    symbol=symbol,
-                    order_id=order_id,
-                    details=order_terminal_details(terminal),
-                    audit_context=context,
-                )
             else:
                 terminal = from_payload(
                     UnifiedOrder,
@@ -518,11 +528,24 @@ class ExecutionEngine:
                         "filled_volume": evidence["filled_volume"],
                     },
                 )
+            known = orders.get(order_id)
+            if known is not None and terminal.filled_volume < known.filled_volume:
+                terminal = copy_data(terminal, update={"filled_volume": known.filled_volume})
+            if evidence is None and not self._runtime.emit_audit_event(
+                event_type=ExecutionEventType.ORDER_TERMINAL,
+                status=ExecutionEventStatus.SUCCESS,
+                reason_family=ExecutionReasonFamily.EXCHANGE,
+                reason_code="COMMON.ORDER_TERMINAL",
+                symbol=symbol,
+                order_id=order_id,
+                details=order_terminal_details(terminal),
+                audit_context=context,
+            ):
+                return "旧委托终态保存失败，已阻断本次下单"
             orders[order_id] = terminal
 
         expected = None
         if any(order.filled_volume != 0 for order in orders.values()):
-            start = previous["start_volume"]
             expected = (
                 confirmed_position(float(start), list(orders.values())) if isinstance(start, (int, float)) else None
             )

@@ -88,7 +88,7 @@ class ExecutionTerminated(RuntimeError):
         self.cancel_unconfirmed = cancel_unconfirmed
         self.cancel_details = dict(cancel_details or {})
         self.cancel_outcomes = dict(cancel_outcomes or {})
-        self.raw_result = raw_result
+        self.raw_result: dict[str, object] | None = raw_result
         message_parts = ["execution terminated"]
         if trigger and trigger != TERMINATION_TRIGGER_OPERATOR:
             message_parts.append(f"trigger={trigger}")

@@ -339,7 +339,7 @@ def submit_and_track_order(
     target_volume: float,
     current_volume: float,
     deadline: float | None = None,
-    **kwargs: object,
+    **kwargs: Any,
 ) -> UnifiedOrder | None:
     """
     提交订单并纳入统一跟踪流程。
@@ -406,6 +406,7 @@ def submit_and_track_order(
     if decision.reduce_only:
         kwargs["reduce_only"] = True
 
+    tracker.require_saved_orders()
     if deadline is not None and get_default_clock().time() >= deadline:
         executor.logger.info(f"{symbol} 下单时间额度已耗尽，停止提交")
         return None

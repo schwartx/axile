@@ -320,21 +320,26 @@ function orderSettlementEvents(events: ExecutionEvent[]): Map<string, ExecutionE
 }
 
 export function hasPendingOrderTerminals(events: ExecutionEvent[], summary?: Dict | null): boolean {
-  const orders = checkpointOrders(events)
-  const pending = new Set([...orders].filter(([, order]) => !isTerminalOrderStatus(order.status)).map(([key]) => key))
+  const pending = new Set<string>()
+  const settled = new Set<string>()
+  for (const [key, order] of checkpointOrders(events)) {
+    (isTerminalOrderStatus(order.status) ? settled : pending).add(key)
+  }
   for (const [key, event] of orderSettlementEvents(events)) {
-    if (event.event_type === 'order_terminal') pending.delete(key)
-    else if (!isTerminalOrderStatus(orders.get(key)?.status)) pending.add(key)
+    (event.event_type === 'order_terminal' ? settled : pending).add(key)
   }
   for (const [symbol, value] of Object.entries(asDict(summary?.symbol_results) ?? {})) {
     const recorded = asDict(value)?.orders
     if (!Array.isArray(recorded)) continue
     for (const value of recorded) {
       const order = asDict(value)
-      if (isTerminalOrderStatus(order?.status)) pending.delete(orderKey(symbol, order?.order_id))
+      if (!order?.order_id) continue
+      const key = orderKey(symbol, order.order_id)
+      if (isTerminalOrderStatus(order.status)) settled.add(key)
+      else if (asDict(order.extra)?.terminal_confirmation_pending === true) pending.add(key)
     }
   }
-  return pending.size > 0
+  return [...pending].some(key => !settled.has(key))
 }
 
 /** 逐只聚合 `order_terminal` 事件（取最后一条终态）。 */
@@ -870,7 +875,8 @@ export function buildExecutionDetail(
         if (checkpoint && isTerminalOrderStatus(checkpoint.status)) evidence = checkpoint
       }
       if (!evidence) return order
-      const filled = asNum(evidence?.filled_volume) ?? order.filled_volume
+      const reported = asNum(evidence.filled_volume)
+      const filled = reported == null ? order.filled_volume : Math.max(reported, order.filled_volume ?? 0, asNum(checkpoint?.filled_volume) ?? 0)
       if (filled !== order.filled_volume) quantityChanged = true
       return { ...order, status: asStr(evidence?.terminal_status ?? evidence?.status) || order.status,
         filled_volume: filled, avg_price: asNum(evidence?.avg_price) ?? order.avg_price }
