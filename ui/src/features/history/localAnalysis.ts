@@ -55,6 +55,17 @@ export interface LocalResult {
   histogram: number[]
   unknown: number
 }
+export interface CostViewQuery {
+  window: Omit<CostSelection, 'record_id'> & { record_id?: string }
+  symbol: string
+  side: string
+}
+export interface CostView {
+  summary: LocalResult['summary']
+  unknown: number
+  rows: { symbol: string; buy?: CostSummary; sell?: CostSummary; hasUnknownSide: boolean }[]
+  detail: { symbol: string; side: string; result: LocalResult } | null
+}
 export interface FeeResult {
   preview: { sized: PreviewMode; target: PreviewMode } | null
   preview_error: string | null

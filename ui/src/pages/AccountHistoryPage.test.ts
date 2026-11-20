@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 
 // Module stubs stay in a child process so this page test cannot replace the API
 // or hooks used by the cache/chart tests in the main Bun test process.
-function renderPage(options: { displayed?: boolean; marker?: number; status?: string; loadingResult?: boolean; errors?: boolean; retries?: string[]; selected?: boolean; inputsError?: boolean } = {}) {
+function renderPage(options: { displayed?: boolean; marker?: number; status?: string; loadingResult?: boolean; errors?: boolean; retries?: string[]; selected?: boolean; inputsError?: boolean; analysisPhase?: 'cached' | 'downloading' } = {}) {
   const script = `
     import { mock } from 'bun:test'
     import { createElement } from 'react'
@@ -16,7 +16,7 @@ function renderPage(options: { displayed?: boolean; marker?: number; status?: st
     const displayed = options.displayed === false ? null : { version: 's1', range: '90', computed_at: null, data_until: null, result, daily_costs: {}, events: [], event_count: 0, execution_index: [{ record_id: 11, time_ms: 1000, has_transactions: false }] }
     mock.module('react-router', () => ({ useParams: () => ({ id: '7' }) }))
     mock.module('@/components/ui/nav', () => ({ useNavigate: () => () => {} }))
-    mock.module('@/lib/wasmResources', () => ({ wasmResource: () => ({}), useWasmResource: () => ({ resource: { bytes: 100, check: async () => {}, cancel: () => {}, download: async () => true }, state: { phase: 'missing', loaded: 0, total: 100, error: null } }) }))
+    mock.module('@/lib/wasmResources', () => ({ wasmResource: () => ({}), useWasmResource: () => ({ resource: { bytes: 100, check: async () => {}, cancel: () => {}, download: async () => true }, state: { phase: options.analysisPhase ?? 'missing', loaded: 0, total: 100, error: null } }) }))
     mock.module('@/features/account/pageHead', () => ({ AccountPageTitle: () => createElement('h1', null, 'History') }))
     mock.module('@/stores/domain', () => ({ useDomainStore: selector => selector({ accounts: [] }) }))
     mock.module('@/components/ui/Segmented', () => ({ Segmented: ({ value }) => createElement('span', { 'data-segment': value }) }))
@@ -30,6 +30,7 @@ function renderPage(options: { displayed?: boolean; marker?: number; status?: st
       selectionQuery: selection => selection?.kind === 'interval' ? { start: selection.start, end: selection.end } : {},
       savePerformanceSettings: async () => ({ backtest_fee_rate: 0, backtest_weight_type: 'cs' }),
     }))
+    mock.module('@/features/history/useLocalAnalysis', () => ({ useLocalAnalysis: () => ({ value: null, error: null, initializing: true }) }))
     mock.module('@/features/history/localAnalysis', () => ({ loadAnalysisInputs: async (accountId,version,range,kind) => { inputs.push({accountId,version,range,kind}); return null }, previewPerformance: chart => chart.result }))
     mock.module('@/lib/hooks/usePolling', () => ({ usePolling: (fetcher, { queryKey, enabled = true }) => {
       if ((queryKey.startsWith('performance-summary:') || queryKey.startsWith('analysis-inputs:')) && enabled) void fetcher(new AbortController().signal)
@@ -100,13 +101,20 @@ test('未加载观测时保留公共时间范围，禁用区间选择', () => {
   }
 })
 
-test('成本分析默认折叠不加载输入，区间摘要仍可读取', () => {
+test('品种列表与主图一起显示，组件未下载时不读取成本输入', () => {
   const page = renderPage({ loadingResult: true })
   expect(page.inputs).toEqual([])
   expect(page.queries).toEqual([{ accountId: 7, version: 's1', range: '90', dimension: 'summary', start: 0, end: 1000 }])
-  expect(page.html).toContain('展开成本分析')
-  expect(page.html).toContain('aria-expanded="false"')
-  expect(page.html).toContain('inert=""')
-  expect(page.html).not.toContain('正在加载选区')
+  expect(page.html).toContain('aria-label="绩效图品种"')
+  expect(page.html).toContain('全部品种')
+  expect(page.html).not.toContain('选区成本分析')
   expect(page.charts[0].snapshotId).toBe('s1')
+})
+
+test('组件已缓存时直接加载品种数据，下载进度显示在主图区域', () => {
+  expect(renderPage({ analysisPhase: 'cached' }).inputs).toEqual([{ accountId: 7, version: 's1', range: '90', kind: 'costs' }])
+  const html = renderPage({ analysisPhase: 'downloading' }).html
+  const list = html.indexOf('aria-label="绩效图品种"')
+  expect(html.indexOf('正在下载组件')).toBeGreaterThan(list)
+  expect(html).not.toContain('aria-label="品种明细"')
 })

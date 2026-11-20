@@ -1,5 +1,6 @@
-import { LocalCostPanel } from '@/features/history/LocalCostPanel'
-import { loadAnalysisInputs, previewPerformance, type FeeResult, type LocalResult } from '@/features/history/localAnalysis'
+import { PerformanceSymbolSelect, SymbolSlippage } from '@/features/history/PerformanceSymbolSelect'
+import { SymbolPerformance } from '@/features/history/SymbolPerformance'
+import { loadAnalysisInputs, previewPerformance, type FeeResult, type CostView, type CostViewQuery } from '@/features/history/localAnalysis'
 import { useLocalAnalysis } from '@/features/history/useLocalAnalysis'
 import { ContributionPanel } from '@/features/history/ContributionPanel'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -129,38 +130,63 @@ function AccountHistory({ accountId }: { accountId: number }) {
   const dirty = parsed != null && parsed.backtest_fee_rate !== settings?.backtest_fee_rate
   const [costSymbol, setCostSymbol] = useState('')
   const [costSide, setCostSide] = useState('')
-  const [costOpen, setCostOpen] = useState(false)
   const { resource: analysisWasm, state: analysisDownload } = useWasmResource('analysis')
   const analysisReady = analysisDownload.phase === 'cached'
   const [trialEnabled, setTrialEnabled] = useState(true)
-  const startAnalysis = () => { setTrialEnabled(true); void analysisWasm.download() }
-  const cancelAnalysis = () => { analysisWasm.cancel(); setCostOpen(false); setTrialEnabled(false) }
+  const [downloadOwner, setDownloadOwner] = useState<'cost' | 'trial' | null>(null)
+  const startAnalysis = (owner: 'cost' | 'trial') => {
+    setTrialEnabled(true)
+    if (analysisDownload.phase === 'downloading') return
+    setDownloadOwner(owner)
+    void analysisWasm.download()
+  }
+  const cancelAnalysis = () => { analysisWasm.cancel(); setTrialEnabled(false) }
   useEffect(() => () => analysisWasm.cancel(), [analysisWasm])
   const inputs = usePolling(useCallback((signal: AbortSignal) => loadAnalysisInputs(accountId, snapshot!.version, displayedRange, 'costs', signal, JSON.parse(selectionKey)), [accountId, snapshot?.version, displayedRange, selectionKey]), {
-    queryKey: `analysis-inputs:${accountId}:${snapshot?.version}:${displayedRange}:${selectionKey}`, intervalMs: 0, enabled: !!snapshot?.version && costOpen && analysisReady, manual: true, retainDataWhenDisabled: true,
+    queryKey: `analysis-inputs:${accountId}:${snapshot?.version}:${displayedRange}:${selectionKey}`, intervalMs: 0, enabled: !!snapshot?.version && analysisReady, manual: true, retainDataWhenDisabled: true,
   })
+  const downloadInCosts = downloadOwner !== 'trial'
+  const downloadProgress = analysisDownload.phase === 'downloading' || analysisDownload.phase === 'error'
+    ? <WasmDownloadProgress state={analysisDownload} onCancel={cancelAnalysis} onRetry={() => startAnalysis(downloadOwner ?? 'trial')} />
+    : null
   const refreshInputs = inputs.refresh
   useEffect(() => {
-    if (costOpen && analysisReady && !inputs.data && !inputs.error && !inputs.loading && !inputs.refreshing) void refreshInputs()
-  }, [costOpen, analysisReady, inputs.data, inputs.error, inputs.loading, inputs.refreshing, refreshInputs])
-  const inputData = costOpen && analysisReady && inputs.data?.version === snapshot?.version && inputs.data?.range === displayedRange ? inputs.data : null
-  const localQuery = useMemo(() => ({ ...selectionQuery(selection), record_id: selection?.kind === 'execution' ? String(selection.recordId) : undefined, symbol: costSymbol || undefined, side: costSide || undefined }), [selection, costSymbol, costSide])
-  const local = useLocalAnalysis<typeof localQuery, LocalResult>(inputData, localQuery)
-  const symbols = useMemo(() => [...new Set(inputData?.records.flatMap(record => record.trades.map(trade => (trade as { symbol: string }).symbol)) ?? [])].sort(), [inputData])
+    if (analysisReady && !inputs.data && !inputs.error && !inputs.loading && !inputs.refreshing) void refreshInputs()
+  }, [analysisReady, inputs.data, inputs.error, inputs.loading, inputs.refreshing, refreshInputs])
+  const inputData = analysisReady && inputs.data?.version === snapshot?.version && inputs.data?.range === displayedRange ? inputs.data : null
+  const localQuery = useMemo<CostViewQuery>(() => ({ window: { ...selectionQuery(selection), record_id: selection?.kind === 'execution' ? String(selection.recordId) : undefined }, symbol: costSymbol, side: costSide }), [selection, costSymbol, costSide])
+  const local = useLocalAnalysis<typeof localQuery, CostView>(inputData, localQuery)
+  const needsReplay = dirty || (!!costSymbol && !!data?.backtest_included)
   const feeInputs = usePolling(useCallback((signal: AbortSignal) => loadAnalysisInputs(accountId, snapshot!.version, displayedRange, 'fees', signal), [accountId, snapshot?.version, displayedRange]), {
-    queryKey: `analysis-fees:${accountId}:${snapshot?.version}:${displayedRange}`, intervalMs: 0, enabled: !!snapshot?.version && dirty && analysisReady && trialEnabled, manual: true, retainDataWhenDisabled: true,
+    queryKey: `analysis-fees:${accountId}:${snapshot?.version}:${displayedRange}`, intervalMs: 0, enabled: !!snapshot?.version && needsReplay && analysisReady && trialEnabled, manual: true, retainDataWhenDisabled: true,
   })
   const refreshFeeInputs = feeInputs.refresh
   useEffect(() => {
-    if (dirty && analysisReady && trialEnabled && !feeInputs.data && !feeInputs.error && !feeInputs.loading && !feeInputs.refreshing) void refreshFeeInputs()
-  }, [dirty, analysisReady, trialEnabled, feeInputs.data, feeInputs.error, feeInputs.loading, feeInputs.refreshing, refreshFeeInputs])
+    if (needsReplay && analysisReady && trialEnabled && !feeInputs.data && !feeInputs.error && !feeInputs.loading && !feeInputs.refreshing) void refreshFeeInputs()
+  }, [needsReplay, analysisReady, trialEnabled, feeInputs.data, feeInputs.error, feeInputs.loading, feeInputs.refreshing, refreshFeeInputs])
   const feeData = analysisReady && trialEnabled && feeInputs.data?.version === snapshot?.version && feeInputs.data?.range === displayedRange ? feeInputs.data : null
   const feeQuery = useMemo(() => dirty && parsed ? { fee_rate: parsed.backtest_fee_rate } : null, [dirty, parsed])
-  const trial = useLocalAnalysis<typeof feeQuery, FeeResult>(feeData, feeQuery)
-  const trialMessage = !analysisReady || !trialEnabled ? '本地试算尚未启用，当前显示正式曲线' : trial.value?.preview_error ?? (feeInputs.error || trial.error ? '试算不可用，当前显示正式曲线' : trial.value?.preview ? '图中回测曲线为本地试算；账户收益仍为正式记录' : '正在准备完整窗口，当前仍显示正式曲线')
+  const trial = useLocalAnalysis<typeof feeQuery, FeeResult>(feeQuery ? feeData : null, feeQuery)
+  const contributionQuery = useMemo(() => costSymbol && data?.backtest_included ? {
+    contribution: [costSymbol, backtestMode === 'target'] as [string, boolean],
+    fee_rate: dirty && parsed ? parsed.backtest_fee_rate : data.settings.backtest_fee_rate,
+  } : null, [costSymbol, backtestMode, dirty, parsed, data])
+  const replay = useLocalAnalysis<typeof contributionQuery, [number, number][]>(contributionQuery ? feeData : null, contributionQuery)
+  const listedSymbols = useMemo(() => {
+    const names = new Set(snapshot?.contributions?.map(row => row.symbol))
+    for (const record of inputData?.records ?? []) {
+      for (const trade of record.trades) names.add((trade as { symbol: string }).symbol)
+    }
+    return [...names].sort()
+  }, [snapshot, inputData])
+  const selectSymbol = (symbol: string, side = '') => {
+    setCostSymbol(symbol)
+    setCostSide(side)
+  }
+  const trialMessage = costSymbol && parsed ? `品种回测按 ${fee} BP 试算` : !analysisReady || !trialEnabled ? '本地试算尚未启用，当前显示正式曲线' : trial.value?.preview_error ?? (feeInputs.error || trial.error ? '试算不可用，当前显示正式曲线' : trial.value?.preview ? '图中回测曲线为本地试算；账户收益仍为正式记录' : '正在准备完整窗口，当前仍显示正式曲线')
   const chartData = useMemo(() => snapshot && dirty && parsed && trial.value?.preview ? previewPerformance(snapshot, trial.value.preview, parsed.backtest_fee_rate) : data, [snapshot, dirty, parsed, trial.value?.preview, data])
   const intervalCosts = usePolling(useCallback((s: AbortSignal) => getPerformanceCosts(accountId, { version: snapshot!.version, range: displayedRange, dimension: 'summary', ...JSON.parse(selectionKey) }, s), [accountId, snapshot?.version, displayedRange, selectionKey]), {
-    queryKey: `performance-summary:${accountId}:${snapshot?.version}:${displayedRange}:${selectionKey}`, intervalMs: 0, enabled: !!snapshot?.version && selection?.kind === 'interval' && (!costOpen || !analysisReady || !!inputs.error || !!local.error),
+    queryKey: `performance-summary:${accountId}:${snapshot?.version}:${displayedRange}:${selectionKey}`, intervalMs: 0, enabled: !!snapshot?.version && selection?.kind === 'interval' && (!analysisReady || !!inputs.error || !!local.error),
   })
 
   const save = async () => {
@@ -209,7 +235,7 @@ function AccountHistory({ accountId }: { accountId: number }) {
           <button type="button" aria-label="刷新绩效与成本" title="刷新绩效与成本" disabled={saving || backtestBusy} onClick={() => void performance.refresh()} className="flex h-9 w-9 items-center justify-center rounded border border-line disabled:opacity-40"><RefreshCw size={14} className={backtestBusy ? 'animate-spin motion-reduce:animate-none' : ''} /></button>
           <span role="status" className="sr-only">{dirty && !saving ? '参数已修改，待计算' : ''}</span>
         </div>
-        <Segmented size="sm" value={view} options={VIEWS} onChange={value => withViewTransition(() => setView(value))} />
+        {!costSymbol && <Segmented size="sm" value={view} options={VIEWS} onChange={value => withViewTransition(() => setView(value))} />}
         <fieldset><legend className="sr-only">回测口径</legend><Segmented size="sm" value={backtestMode} options={BACKTEST_MODES} onChange={setBacktestMode} trailing={
           <Tooltip content={<div className="space-y-1"><p><b>数量换算后：</b>按数量换算目标敞口，并非实际成交持仓。</p><p><b>目标权重：</b>直接按目标权重计算回测收益。</p></div>} arrow>
             <button type="button" aria-label="回测口径说明" className="flex h-9 w-8 items-center justify-center rounded text-ink-3 hover:text-ink-1 focus-visible:outline-accent"><CircleHelp size={15} aria-hidden="true" /></button>
@@ -229,6 +255,7 @@ function AccountHistory({ accountId }: { accountId: number }) {
           channel={account.data?.trade_channel ?? item?.trade_channel}
           market={account.data?.market ?? item?.market}
         />
+        {snapshot && <PerformanceSymbolSelect scope={`${snapshot.version}:${displayedRange}:${selectionKey}`} result={local.value} symbols={listedSymbols} symbol={costSymbol} onChange={selectSymbol} />}
         <Tooltip content={data ? <dl className="space-y-1 text-xs">
           <div><dt className="inline text-ink-3">数据覆盖：</dt><dd className="inline">{data.baseline ? shanghaiLabel(data.baseline) : '—'} → {data.end ? shanghaiLabel(data.end) : '—'}</dd></div>
           <div><dt className="inline text-ink-3">有效回测记录：</dt><dd className="inline">{data.backtest_included ? `${backtestMode === 'target' ? data.target_used_record_count ?? 0 : data.used_record_count}/${data.observation_count}` : 0}</dd></div>
@@ -287,14 +314,28 @@ function AccountHistory({ accountId }: { accountId: number }) {
     {!data && <PerformanceChartPlaceholder accountId={accountId} controls={controls} loading={backtestBusy || !metadata && !initialError} failed={!!initialError} message={loadingMessage} />}
     <ErrorNotice intent="read" title="费率试算不可用，当前保留正式曲线" error={dirty ? feeInputs.error ?? trial.error : null} variant="compact" onRetry={refreshFeeInputs} />
     {dirty && <p role="status" className="py-2 text-xs text-warn">费率试算 {fee} BP · 未保存 · {trialMessage}<button type="button" className="ml-3 text-accent hover:underline" onClick={() => setDraft(null)}>取消试算</button></p>}
-    {data && <div className="pb-4">
-      <PerformanceChart key={displayedRange} accountId={accountId} snapshotId={snapshot?.version} viewKey={`${accountId}:${displayedRange}`} data={chartData!} executionIndex={snapshot!.execution_index} daily={daily} backtestMode={backtestMode} scaleMode={scale} costs={costs} intervalCost={local.value?.summary ?? (intervalCosts.error || intervalCosts.loading ? null : intervalCosts.data?.summary ?? null)} onSelect={value => { setSelectionNotice(false); setSelection(value) }} selection={selection} portfolioNames={portfolioNames} controls={controls} showExecutions={markers} />
-
+    {data && snapshot && <div data-testid="symbol-workbench" className="min-w-0 pb-4">
+      <ErrorNotice intent="read" error={inputs.error ?? local.error} title="滑点数据读取失败" onRetry={refreshInputs} variant="compact" />
+      {downloadInCosts && downloadProgress}
+      {!analysisReady && !downloadProgress && <button type="button" className="text-xs text-accent" onClick={() => startAnalysis('cost')}>加载分析组件（{downloadSize(analysisWasm.bytes)}）</button>}
+      {costSymbol ? <>
+        <div className="mb-1 flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
+          <div className="flex min-h-10 flex-wrap items-center gap-x-3">
+            <h2 className="font-medium">{costSymbol} · 绩效贡献</h2>
+            <SymbolSlippage key={costSymbol} result={local.value} symbol={costSymbol} side={costSide} onSelect={selectSymbol} />
+          </div>
+          {controls}
+        </div>
+        <SymbolPerformance chart={snapshot} selection={selection} symbol={costSymbol} samples={replay.value} currency={item?.currency ?? null} scaleMode={scale}
+          inputs={markers ? inputData : null} onInterval={(start, end) => setSelection({ kind: 'interval', start, end })} />
+        <ErrorNotice intent="read" error={feeInputs.error ?? replay.error} title="品种回测读取失败" onRetry={refreshFeeInputs} variant="compact" />
+        {contributionQuery && !replay.error && !feeInputs.error && <p role="status" className="text-xs text-ink-2">{replay.value?.length === 0 ? '区间内无有效回测观测' : !replay.value && analysisReady ? '正在读取品种回测' : ''}</p>}
+      </> : (
+            <PerformanceChart key={displayedRange} accountId={accountId} snapshotId={snapshot?.version} viewKey={`${accountId}:${displayedRange}`} data={chartData!} executionIndex={snapshot!.execution_index} daily={daily} backtestMode={backtestMode} scaleMode={scale} costs={costs} intervalCost={local.value?.summary ?? (intervalCosts.error || intervalCosts.loading ? null : intervalCosts.data?.summary ?? null)} onSelect={value => { setSelectionNotice(false); setSelection(value) }} selection={selection} portfolioNames={portfolioNames} controls={controls} showExecutions={markers} />
+      )}
     </div>}
-    {dirty && (!analysisReady || !trialEnabled) && analysisDownload.phase !== 'downloading' && <button type="button" className="py-2 text-xs text-accent focus-visible:outline-accent" onClick={startAnalysis}>启用本地试算{!analysisReady && `（下载 ${downloadSize(analysisWasm.bytes)}）`}</button>}
-    <WasmDownloadProgress state={analysisDownload} onCancel={cancelAnalysis} onRetry={startAnalysis} />
-    {analysisReady && (local.initializing || trial.initializing) && <p role="status" className="py-2 text-xs text-ink-3">正在初始化本地分析组件…</p>}
-    {snapshot && <LocalCostPanel open={costOpen} onToggle={() => { setCostOpen(value => !value); if (!costOpen) startAnalysis() }} error={inputs.error ?? local.error} onRetry={refreshInputs} result={local.value} symbols={symbols} symbol={costSymbol} side={costSide} onSymbol={setCostSymbol} onSide={setCostSide} />}
+    {dirty && (!analysisReady || !trialEnabled) && !downloadProgress && <button type="button" className="py-2 text-xs text-accent focus-visible:outline-accent" onClick={() => startAnalysis('trial')}>启用本地试算{!analysisReady && `（下载 ${downloadSize(analysisWasm.bytes)}）`}</button>}
+    {!downloadInCosts && downloadProgress}
     {snapshot && <ContributionPanel key={accountId} chart={snapshot} selection={selection} scaleMode={scale} />}
     <div className="border-t border-line py-4">
       <SectionLabel>账户时间线</SectionLabel>
