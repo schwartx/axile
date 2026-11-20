@@ -572,7 +572,7 @@ def test_exchange_fill_after_zero_fill_cancel_reopens_position_check(native_data
     query = {"op": "pending_order_terminals", "account_id": 1}
     assert native_store_call(native_database, "execution_read", query) == []
 
-    for seq, filled in [(80, 100), (82, 300)]:
+    for seq, filled in [(80, 100), (82, 300), (83, 350)]:
         append_terminal(audit, 1, "old", copy_data(canceled, update={"filled_volume": filled}), seq=seq)
         replacement = engine([assets(sell=900)])
         attach_audit(replacement._runtime, audit, f"restart-{seq}", 1)
@@ -725,10 +725,19 @@ def test_operator_stop_before_timeout_recovers_late_fill(native_database, monkey
 
 
 @pytest.mark.parametrize(
-    ("filled", "other_pending", "recorded"), [(0, False, True), (400, False, True), (0, True, True), (0, True, False)]
+    ("filled", "other_pending", "recorded", "updated"),
+    [
+        (0, False, True, False),
+        (400, False, True, False),
+        (0, True, True, False),
+        (0, True, False, False),
+        (0, False, False, False),
+        (400, False, False, False),
+        (400, False, False, True),
+    ],
 )
 def test_clear_empty_snapshot_cancels_and_reconciles_old_buy(
-    native_database, monkeypatch, filled, other_pending, recorded
+    native_database, monkeypatch, filled, other_pending, recorded, updated
 ):
     seed_account(native_database)
     monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
@@ -751,7 +760,15 @@ def test_clear_empty_snapshot_cancels_and_reconciles_old_buy(
             "filled_volume": filled,
         },
     )
-    owner = engine([_assets()], channel="ctp")._owner
+    snapshots = [_assets(), _assets(), assets(sell=filled), _assets()] if updated else [_assets()]
+    owner = engine(snapshots, channel="ctp")._owner
+    if updated:
+
+        def close(_engine, tasks):
+            assert len(tasks) == 1 and tasks[0].symbol == SELL and tasks[0].algorithm_input.target_volume == 0
+            return [result(start=filled, observed=0, target=0, filled=filled)]
+
+        monkeypatch.setattr("axile.executor.execution_engine.ExecutionEngine._run_prepared_symbol_algorithms", close)
     owner.set_audit_context({"execution_id": "clear", "account_id": 1, "algorithm": "TEST"})
     owner.set_audit_sink(audit)
     monkeypatch.setattr(owner, "_get_pending_orders_impl", Mock(return_value=[order]))
@@ -767,7 +784,10 @@ def test_clear_empty_snapshot_cancels_and_reconciles_old_buy(
     )
     owner.cancel_order.assert_called_once_with(order.symbol, order.order_id)
     owner.reconcile_terminal_order.assert_any_call(order.symbol, order.order_id)
-    if filled:
+    if updated:
+        assert output.status == "SUCCEEDED"
+        assert output.symbol_results[SELL].final_volume == 0
+    elif filled:
         assert output.status == "BLOCKED"
         assert output.symbol_results[order.symbol].expected_volume == filled
     elif other_pending:

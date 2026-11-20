@@ -396,9 +396,10 @@ class ExecutionEngine:
         # dispatch 阶段把计划拆成可直接返回的 NOOP、第一阶段减仓、第二阶段开仓三类。
         dispatch_phases = self._build_dispatch_phases(planning)
         has_dispatch = bool(dispatch_phases.phase_one_tasks or dispatch_phases.phase_two_plans)
+        changes = {}
         try:
             if has_dispatch or clearing:
-                self._prepare_account_for_symbol_dispatch()
+                changes = self._prepare_account_for_symbol_dispatch()
         except CancelNotAllowedError as exc:
             if not has_dispatch:
                 raise
@@ -426,6 +427,20 @@ class ExecutionEngine:
                 ],
             ]
         blocked_orders = self._reconcile_previous_orders(standard_input, previous_orders)
+        if clearing and changes:
+            recovered = {
+                (group["symbol"], order_id)
+                for group in previous_orders
+                for order_id in cast("dict[str, object]", group["pending"])
+            }
+            for (symbol, order_id), delta in changes.items():
+                if (symbol, order_id) not in recovered:
+                    positions = self._owner.pending_positions
+                    before = positions.get(symbol, self._owner.get_current_volume(symbol, planning.account_assets))
+                    positions[symbol] = before + delta
+            planning = self._build_symbol_algorithm_plans(standard_input)
+            dispatch_phases = self._build_dispatch_phases(planning)
+            has_dispatch = bool(dispatch_phases.phase_one_tasks or dispatch_phases.phase_two_plans)
         blocked_orders.extend(
             self._pending_position_results(planning.account_assets, skip={row.symbol for row in blocked_orders})
         )
@@ -455,8 +470,32 @@ class ExecutionEngine:
             merged_results = self._settle_result_positions(merged_results)
         else:
             merged_results = self._reconcile_result_positions(merged_results, self._account_snapshot[0])
+        if clearing:
+            self._check_remaining_clear_positions(standard_input, merged_results)
         self._emit_symbol_decision_events(standard_input, merged_results)
         return merged_results
+
+    def _check_remaining_clear_positions(
+        self, standard_input: UnifiedStandardInput, results: list[AlgorithmResult]
+    ) -> None:
+        """收尾时才出现的持仓也属于清仓目标。"""
+        if self._account_snapshot is None:
+            return
+        assets, snapshot_error = self._account_snapshot
+        if snapshot_error:
+            return
+        planned = {row.symbol for row in results} | set(standard_input.forbidden_symbols)
+        for symbol in sorted({pos.symbol for pos in assets.positions if pos.volume > 0} - planned):
+            results.append(
+                self._build_failed_algorithm_result(
+                    symbol=symbol,
+                    algorithm_name=self._get_symbol_algorithm_name(standard_input, symbol),
+                    error="清仓收尾时发现未纳入计划的持仓",
+                    account_assets=assets,
+                    target_volume=0,
+                    reason_code=TARGET_NOT_REACHED,
+                )
+            )
 
     def _reconcile_previous_orders(
         self, standard_input: UnifiedStandardInput, pending: list[ObjectDict]
@@ -1091,10 +1130,10 @@ class ExecutionEngine:
             direct_results=direct_results,
         )
 
-    def _prepare_account_for_symbol_dispatch(self) -> None:
-        """撤销账户旧委托，避免成交干扰调仓或清仓。"""
+    def _prepare_account_for_symbol_dispatch(self) -> dict[tuple[str, str], float]:
+        """撤销账户旧委托，并保留撤单期间新增的成交。"""
         self._owner.handle_termination_checkpoint()
-        self._owner.cancel_all_orders()
+        return self._owner.cancel_all_orders()
 
     def _run_phase_one_dispatch(
         self,
@@ -1641,7 +1680,7 @@ class ExecutionEngine:
         if (
             explicit_error
             and not only_normal_skips
-            and not all(result.expected_volume is not None and result.success for result in results)
+            and not (results and all(result.expected_volume is not None and result.success for result in results))
             and status
             in {
                 ExecutionStatus.SUCCEEDED,
@@ -1658,9 +1697,17 @@ class ExecutionEngine:
             status = ExecutionStatus.PARTIAL if progressed else ExecutionStatus.FAILED
             error = error or explicit_error
 
+        memory = self._runtime.memory
+        if (
+            standard_input.extra.get("close_all_positions")
+            and not results
+            and not explicit_error
+            and not account_assets.positions
+        ):
+            memory = {**memory, "message": "当前账户无持仓，无需清仓"}
         return UnifiedStandardOutput(
             account_assets=account_assets,
-            memory=self._runtime.memory,
+            memory=memory,
             symbol_results=symbol_results,
             status=status,
             error=error,
