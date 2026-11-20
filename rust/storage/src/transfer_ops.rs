@@ -24,22 +24,16 @@ fn tables(c: &Connection, schema: &str) -> Result<Vec<String>, AnalysisError> {
     let rows = s.query_map([], |r| r.get(0)).map_err(err)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(err)
 }
+fn busy(c: &Connection) -> Result<bool, AnalysisError> {
+    c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM execution_intent WHERE finished_at_us IS NULL) OR EXISTS(SELECT 1 FROM supplement_group WHERE status IN ('active','cancelling'))",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(err)
+}
 fn idle(c: &Connection) -> Result<(), AnalysisError> {
-    let n: i64 = c
-        .query_row(
-            "SELECT count(*) FROM execution_intent WHERE finished_at_us IS NULL",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(err)?;
-    let p: i64 = c
-        .query_row(
-            "SELECT count(*) FROM supplement_group WHERE status IN ('active','cancelling')",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(err)?;
-    if n + p > 0 {
+    if busy(c)? {
         return Err(err("存在运行中的执行或补单"));
     }
     Ok(())
@@ -96,6 +90,7 @@ pub fn transfer(path: &str, request: &Value) -> Result<Value, AnalysisError> {
         "export_package" => package::export(path, request),
         "import_package" => package::import(path, request),
         "acknowledge" => state::acknowledge(path, request),
+        "cleanup_acknowledged" => state::cleanup_acknowledged(path, request),
         "cancel_package" => state::cancel(path, request),
         "prepare_package" => state::prepare(path, request),
         "prune_recordings" => state::prune_recordings_request(path, request),
@@ -353,7 +348,6 @@ fn prune_history(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let c = Connection::open(path).map_err(err)?;
     c.execute_batch("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000")
         .map_err(err)?;
-    idle(&c)?;
     let cutoff = request["cutoff_us"]
         .as_i64()
         .ok_or_else(|| err("缺少保留时间"))?;
@@ -362,6 +356,7 @@ fn prune_history(path: &str, request: &Value) -> Result<Value, AnalysisError> {
         .ok_or_else(|| err("缺少接收确认"))?;
     let tx = c.unchecked_transaction().map_err(err)?;
     let c = &tx;
+    idle(c)?;
     let mut removed = 0;
     for id in ids {
         let id = id.as_str().ok_or_else(|| err("无效执行 ID"))?;
