@@ -218,22 +218,10 @@ def _normalize_rebalance_target(
     return {symbol: _normalize_weight(weight) for symbol, weight in curr_target.items()}
 
 
-async def _load_last_target_snapshot(account: AccountContext) -> dict[str, object]:
-    """加载上一次成功调仓记录中的目标快照."""
-    try:
-        evidence = await native_operation("execution_read", {"op": "last_target", "account_id": account.id})
-    except Exception as e:
-        loguru.logger.opt(exception=e).error("{}", e)
-        raise
-
-    return cast("dict[str, object]", evidence["target"]) if evidence["present"] else {}
-
-
 def _build_rebalance_standard_input(
     *,
     account: AccountContext,
     curr_target: dict[str, float],
-    last_target: dict[str, object],
     execution_id: str | None,
     trigger_source: str,
     gm_session: dict[str, Any] | None = None,
@@ -248,8 +236,6 @@ def _build_rebalance_standard_input(
         当前待执行的账户对象。
     curr_target : dict[str, float]
         已规范化的目标权重。
-    last_target : dict[str, object]
-        上一次成功执行记录中的目标快照。
     execution_id : str | None
         当前 execution 标识。
     trigger_source : str
@@ -265,7 +251,6 @@ def _build_rebalance_standard_input(
         {
             "curr_target": curr_target,
             "target_mode": target_mode,
-            "last_target": last_target,
             "account_config": account.account_config,
             "algorithm": account.algorithm,
             "product_algorithms": {key: profile.algorithm for key, profile in account.product_algorithms.items()},
@@ -422,8 +407,7 @@ async def trade(
 
     if normalized_target is None:
         normalized_target = _normalize_rebalance_target(account, curr_target, target_mode=target_mode)
-    last_target = await _load_last_target_snapshot(account)
-    notification_snapshot = await load_notification_snapshot(account)
+    notification_snapshot = await load_notification_snapshot(account, include_previous_target=True)
     gm_session = None
     if execution_id and str(account.trade_channel) == "gm":
         from axile.server.execution.intents import get_intent
@@ -442,7 +426,6 @@ async def trade(
     standard_input = _build_rebalance_standard_input(
         account=account,
         curr_target=normalized_target,
-        last_target=last_target,
         execution_id=execution_id,
         trigger_source=trigger_source,
         gm_session=gm_session,
@@ -461,6 +444,10 @@ async def trade(
     long_leverage, short_leverage = resolve_account_leverages(account)
     standard_input_dict = standard_input.to_dict()
     audit_input = sanitize_execution_input(standard_input_dict)
+    # 历史目标只写入审计，避免让旧合约参与渠道解析与规划。
+    audit_input.pop("last_target", None)
+    if notification_snapshot and "last_target" in notification_snapshot:
+        audit_input["last_target"] = notification_snapshot["last_target"]
     audit_input["strategy_target"] = dict(curr_target)
     audit_input["sizing_context"] = {
         "long_leverage": long_leverage,
@@ -497,6 +484,7 @@ async def trade(
         raw_input = dict(standard_input_dict)
         if normalized_symbol_fields is not None:
             raw_input.update(normalized_symbol_fields)
+        raw_input.pop("last_target", None)
         record = await append_execute_record_from_output(
             account=account,
             raw_input=raw_input,
@@ -514,7 +502,7 @@ async def trade(
         msg = execution_error_message(exc, "调仓执行")
         await append_error_execute_record(
             account_id=account.id,
-            raw_input=standard_input_dict,
+            raw_input={key: value for key, value in standard_input_dict.items() if key != "last_target"},
             msg=msg,
             raw_result=exception_details(exc),
             execution_id=execution_id,

@@ -104,7 +104,6 @@ def test_independent_product_schedule_freezes_and_survives_input_roundtrip(monke
     standard = _build_rebalance_standard_input(
         account=selected,
         curr_target={"ag2612": 0.2, "ag2702": 0.1, "rb2701": 0.1},
-        last_target={},
         execution_id="fixture",
         trigger_source="manual",
     )
@@ -156,7 +155,7 @@ def test_standard_input_rejects_malformed_product_map_and_accepts_default_params
     )
     selected, _ = execution_algorithms.select_rebalance_algorithm(account)
     standard = _build_rebalance_standard_input(
-        account=selected, curr_target={"ag2612": 0.1}, last_target={}, execution_id="fixture", trigger_source="manual"
+        account=selected, curr_target={"ag2612": 0.1}, execution_id="fixture", trigger_source="manual"
     )
     assert standard.get_symbol_algorithm("ag2612") == {"method": "TWAP", "params": {}}
     for invalid in ([], None, {"ag": "TWAP"}, {"ag": {"params": {}}}):
@@ -264,7 +263,6 @@ def test_frozen_product_algorithms_survive_native_storage(native_database):
     standard = _build_rebalance_standard_input(
         account=selected,
         curr_target={"ag2612": 0.1},
-        last_target={},
         execution_id="execution-1",
         trigger_source="manual",
     )

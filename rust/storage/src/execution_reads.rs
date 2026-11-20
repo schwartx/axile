@@ -201,11 +201,19 @@ fn sizing_context(connection: &Connection, input_id: &str) -> Result<Value, Anal
 }
 
 fn last_target(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {
+    last_target_before(connection, integer(request, "account_id")?, None)
+}
+
+pub(crate) fn last_target_before(
+    connection: &Connection,
+    account_id: i64,
+    record_id: Option<i64>,
+) -> Result<Value, AnalysisError> {
     let input: Option<Option<String>> = connection
         .query_row(
             "SELECT input_id FROM executerecord WHERE account_id=?1 AND is_success=1 AND result_staged=0
-             ORDER BY id DESC LIMIT 1",
-            [integer(request, "account_id")?],
+             AND (?2 IS NULL OR id < ?2) ORDER BY id DESC LIMIT 1",
+            params![account_id, record_id],
             |row| row.get(0),
         )
         .optional()

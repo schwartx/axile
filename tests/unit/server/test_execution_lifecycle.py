@@ -843,7 +843,6 @@ def test_direct_worker_entry_preserves_promotion_and_termination_boundaries(monk
     events = AsyncMock()
     monkeypatch.setattr(intents, "promote_intent_to_running", promote)
     monkeypatch.setattr(module, "load_notification_snapshot", AsyncMock(return_value=None))
-    monkeypatch.setattr(rebalance, "_load_last_target_snapshot", AsyncMock(return_value={}))
     monkeypatch.setattr(clear_positions, "trade_channel_check", AsyncMock())
     monkeypatch.setattr(clear_positions, "append_execution_event", events)
     monkeypatch.setattr(

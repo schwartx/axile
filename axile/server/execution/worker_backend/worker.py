@@ -416,7 +416,10 @@ def _handle_execute_trade(
         standard_input = cast(UnifiedStandardInput, normalize_connected(standard_input))
         begin_worker_replay_execution(state, request.execution_id, tuple(standard_input.curr_target))
         normalized_symbol_fields = {field: getattr(standard_input, field) for field in _SYMBOL_FIELDS}
-        audit_input = {**audit_input, **sanitize_execution_input(standard_input.to_dict())}
+        normalized_audit = sanitize_execution_input(standard_input.to_dict())
+        if not standard_input.last_target:
+            normalized_audit.pop("last_target", None)
+        audit_input = {**audit_input, **normalized_audit}
         state.progress.report(request.execution_id, "snapshot")
         output = _execute_trade_with_audit(
             account=account,

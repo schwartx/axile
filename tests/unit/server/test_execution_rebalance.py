@@ -94,41 +94,37 @@ def _stub_intent_promotion(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, i
 
     async def read(name: str, request: dict[str, object]) -> dict[str, object]:
         assert name == "execution_read"
-        if request["op"] == "pending_positions":
-            return {}
-        assert request["op"] == "last_target"
-        return {"present": False, "target": None}
+        assert request["op"] == "pending_positions"
+        return {}
 
     monkeypatch.setattr(rebalance_execution, "native_operation", read)
     return calls
 
 
-@pytest.mark.parametrize(
-    ("present", "target", "expected"),
-    [
-        (False, None, {}),
-        (True, None, None),
-        (True, {}, {}),
-        (True, {"short": -0.25, "flat": 0}, {"short": -0.25, "flat": 0}),
-    ],
-)
-def test_last_target_reads_only_selected_input_target(
-    monkeypatch: pytest.MonkeyPatch,
-    present: bool,
-    target: object,
-    expected: object,
-) -> None:
-    """上次目标只读取成功记录关联的目标；缺失与显式空值保持不同。"""
-    account = build_account()
-    calls: list[tuple[str, object]] = []
+def test_rebalance_keeps_previous_target_out_of_tq_worker_input(monkeypatch):
+    account = build_account(
+        trade_channel=TradeChannel("tq"),
+        account_config={"account_mode": "kq", "tq_username": "test", "tq_password": "test"},
+    )
+    previous = {"c2611": -3, "fu2611": 1, "zn2611": 1}
+    manager = SimpleNamespace(execute_trade=AsyncMock(return_value=(None, None)))
+    monkeypatch.setattr(rebalance_execution, "get_worker_backend_manager", lambda: manager)
+    monkeypatch.setattr(
+        rebalance_execution, "load_notification_snapshot", AsyncMock(return_value={"last_target": previous})
+    )
+    monkeypatch.setattr(
+        rebalance_execution,
+        "append_execute_record_from_output",
+        AsyncMock(return_value={"record_id": 1, "is_success": 1}),
+    )
 
-    async def read(name: str, request: object) -> object:
-        calls.append((name, request))
-        return {"present": present, "target": target}
+    asyncio.run(rebalance_execution.trade(account, {"c2701": -3}, execution_id="tq-current", target_mode="quantity"))
 
-    monkeypatch.setattr(rebalance_execution, "native_operation", read)
-    assert asyncio.run(rebalance_execution._load_last_target_snapshot(account)) == expected
-    assert calls == [("execution_read", {"op": "last_target", "account_id": account.id})]
+    actual = manager.execute_trade.call_args.kwargs
+    assert actual["standard_input_dict"]["last_target"] == {}
+    assert actual["standard_input_dict"]["curr_target"] == {"c2701": -3}
+    assert actual["audit_input"]["last_target"] == previous
+    assert actual["notification_snapshot"]["last_target"] == previous
 
 
 def test_calculate_target_volume_does_not_restore_forbidden_symbols_from_last_target() -> None:
@@ -408,6 +404,7 @@ def test_trade_routes_gm_account_to_worker_manager(
 
     monkeypatch.setattr(worker_state, "create_executor_instance", unexpected_create_executor_instance)
     monkeypatch.setattr(rebalance_execution, "get_worker_backend_manager", lambda: manager)
+    monkeypatch.setattr(rebalance_execution, "load_notification_snapshot", AsyncMock(return_value=None))
     monkeypatch.setattr("axile.server.execution_audit.append_execution_event", unexpected_append_execution_event)
     monkeypatch.setattr(
         worker_audit, "append_execution_audit_batch_sync", lambda _batch: unexpected_append_execution_artifact()
@@ -436,7 +433,11 @@ def test_trade_routes_gm_account_to_worker_manager(
     assert restored.extra["audit"].get("gm_session") == context
     assert restored.execution_notification_code == (None if requested else code)
     assert bool(restored.extra.get("server_notification")) is requested
-    assert captured["raw_input"] == cast(dict[str, object], trade_call["standard_input_dict"])
+    assert restored.last_target == {}
+    assert "last_target" not in trade_call["audit_input"]
+    assert captured["raw_input"] == {
+        key: value for key, value in trade_call["standard_input_dict"].items() if key != "last_target"
+    }
     assert captured["execution_id"] == "exec-gm-worker-trade-1"
 
 
@@ -1041,7 +1042,6 @@ def test_standard_input_accepts_database_trade_channel_string(trigger_source) ->
     standard_input = rebalance_execution._build_rebalance_standard_input(
         account=account,
         curr_target={"SHSE.600000": 0.1},
-        last_target={"SZSE.000001": 0.2},
         execution_id="exec-db-channel-1",
         trigger_source=trigger_source,
         gm_session=context,
@@ -1049,7 +1049,7 @@ def test_standard_input_accepts_database_trade_channel_string(trigger_source) ->
 
     assert standard_input.channel_type == TradeChannel("gm")
     assert standard_input.curr_target == {"600000.SH": 0.1}
-    assert standard_input.last_target == {"000001.SZ": 0.2}
+    assert standard_input.last_target == {}
     assert cast("dict[str, object]", standard_input.extra["audit"])["channel"] == "gm"
     assert standard_input.extra["audit"]["gm_session"] == context
 
@@ -1062,7 +1062,6 @@ def test_account_execution_timeout_flows_into_standard_input(timeout: int) -> No
     standard_input = rebalance_execution._build_rebalance_standard_input(
         account=account,
         curr_target={"ag2612": 0.1},
-        last_target={},
         execution_id="exec-timeout-1",
         trigger_source="scheduler",
     )
