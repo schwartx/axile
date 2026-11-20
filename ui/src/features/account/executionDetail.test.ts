@@ -753,13 +753,13 @@ it('late terminal evidence updates the matching recorded order only', () => {
     symbol: 'A', order_id: 'late',
     details: { order: { terminal_status: '已撤销', filled_volume: 2, avg_price: 1.725 } } })
   const summary = { symbol_results: { A: { status: 'PARTIAL', orders: [
-    { order_id: 'late', status: '已申报', filled_volume: 0 },
-    { order_id: 'other', status: '已成交', filled_volume: 5 },
+    { order_id: 'late', status: '已申报', direction: 'BUY', filled_volume: 0 },
+    { order_id: 'other', status: '已成交', direction: 'BUY', filled_volume: 5 },
   ] } } }
   expect(hasPendingOrderTerminals([pending])).toBe(true)
   expect(buildExecutionDetail([pending], [], null, summary).symbols[0]?.orders[0]?.status).toBe('终态待确认')
   expect(hasPendingOrderTerminals([terminal, pending])).toBe(false)
-  expect(buildExecutionDetail([terminal, pending], [], null, summary).symbols[0]?.orders.map(
-    ({ status, filled_volume }) => [status, filled_volume],
-  )).toEqual([['已撤销', 2], ['已成交', 5]])
+  const symbol = buildExecutionDetail([terminal, pending], [], null, summary).symbols[0]
+  expect(symbol?.orders.map(({ status, filled_volume }) => [status, filled_volume])).toEqual([['已撤销', 2], ['已成交', 5]])
+  expect(symbol?.filled).toBe(7)
 })

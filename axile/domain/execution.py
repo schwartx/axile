@@ -22,6 +22,8 @@ class ExecutionEventType(str, Enum):
     ORDER_ACKNOWLEDGED = "order_acknowledged"
     ORDER_TERMINAL = "order_terminal"
     ORDER_TERMINAL_PENDING = "order_terminal_pending"
+    POSITION_CHECKPOINT = "position_checkpoint"
+    ORDER_POSITION_RECONCILED = "order_position_reconciled"
     EXECUTION_COMPLETED = "execution_completed"
     EXECUTION_FAILED = "execution_failed"
 

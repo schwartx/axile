@@ -811,15 +811,24 @@ export function buildExecutionDetail(
       }
       row.after = final
     }
-    const chain = buildSymbolChain(row, startedAt, orders, decisions, skips, pnlBefore, pnlAfter)
-    chain.orders = chain.orders.map(order => {
-      const settlement = settlements.get(JSON.stringify([chain.symbol, order.order_id]))
+    let quantityChanged = false
+    const previousOrders = Array.isArray(row.orders) ? row.orders as ExecOrder[] : []
+    const reconciled = previousOrders.map(order => {
+      const settlement = settlements.get(JSON.stringify([row.symbol, order.order_id]))
       if (!settlement) return order
       const evidence = asDict(asDict(settlement.details)?.order)
+      const filled = asNum(evidence?.filled_volume) ?? order.filled_volume
+      if (filled !== order.filled_volume) quantityChanged = true
       return { ...order, status: asStr(evidence?.terminal_status ?? evidence?.status) || order.status,
-        filled_volume: asNum(evidence?.filled_volume) ?? order.filled_volume, avg_price: asNum(evidence?.avg_price) ?? order.avg_price }
+        filled_volume: filled, avg_price: asNum(evidence?.avg_price) ?? order.avg_price }
     })
-    return chain
+    row.orders = reconciled
+    if (quantityChanged) {
+      row.filled = reconciled.reduce((sum, order) => sum + ({ buy: 1, sell: -1, none: 0 }[order.side]) * (order.filled_volume ?? 0), 0)
+      row.avg_price = null
+      row.filled_value = null
+    }
+    return buildSymbolChain(row, startedAt, orders, decisions, skips, pnlBefore, pnlAfter)
   })
 
   const reachedCount = symbols.filter((s) => s.reached === true).length

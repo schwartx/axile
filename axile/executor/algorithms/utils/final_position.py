@@ -1,18 +1,64 @@
 """查询最终持仓失败时保留订单证据，不把未知仓位当成零。"""
 
 from collections.abc import Callable
+from math import isfinite
 
+from axile.common.serialization import to_payload
+from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
 from axile.executor.algorithms.core.base import ExecutorProtocol
 from axile.executor.algorithms.exceptions import execution_error_message
+from axile.executor.algorithms.utils.outcome import confirmed_position
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets, is_degraded_snapshot_source
+from axile.executor.models.unified_order import UnifiedOrder
 from axile.executor.termination import ExecutionTerminated
 
 
 def read_final_position(
     executor: ExecutorProtocol,
     quantity: Callable[[UnifiedAccountAssets], float],
+    *,
+    start: float | None = None,
+    orders: list[UnifiedOrder] | None = None,
 ) -> tuple[UnifiedAccountAssets, float, str | None]:
     """返回资产、持仓与明确查询错误；原始异常由日志保留。"""
+    if (
+        start is not None
+        and isfinite(start)
+        and orders
+        and getattr(executor, "has_audit_sink", False) is True
+        and executor.audit_context.get("execution_id")
+        and any(order.filled_volume or not order.is_completed() for order in orders)
+    ):
+        expected = confirmed_position(start, orders)
+        if not executor.emit_audit_event(
+            event_type=ExecutionEventType.POSITION_CHECKPOINT,
+            status=ExecutionEventStatus.INFO,
+            reason_family=ExecutionReasonFamily.ACCOUNT_STATE,
+            reason_code="COMMON.POSITION.UNCONFIRMED",
+            symbol=executor.symbol,
+            details={
+                "start_volume": start,
+                "expected_volume": expected,
+                "orders": [
+                    to_payload(
+                        order,
+                        mode="json",
+                        include={
+                            "order_id",
+                            "symbol",
+                            "direction",
+                            "order_type",
+                            "volume",
+                            "price",
+                            "status",
+                            "filled_volume",
+                        },
+                    )
+                    for order in orders
+                ],
+            },
+        ):
+            return UnifiedAccountAssets.unavailable(), float("nan"), "待核对仓位保存失败"
     try:
         assets = executor.get_account_assets()
         if is_degraded_snapshot_source(assets.source):

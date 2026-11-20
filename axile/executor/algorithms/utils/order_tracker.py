@@ -733,7 +733,8 @@ class OrderTracker:
                 item = result.orders[identity]
                 self._record_cancellation_item(order_id, item)
                 unconfirmed[order_id] = reason
-            for order_id in self.pending_orders:
+            for order_id, order in self.pending_orders.items():
+                order.extra["terminal_confirmation_pending"] = True
                 reason = (
                     self._cancel_restrictions.get(order_id) or self._order_errors.get(order_id) or "订单终态尚未确认"
                 )

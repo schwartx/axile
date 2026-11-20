@@ -299,7 +299,7 @@ fn enum_field(item: &Value, key: &str, choices: &str) -> Result<(), AnalysisErro
 fn public_event(item: &mut Value) -> Result<(), AnalysisError> {
     integer(item, "account_id")?;
     integer(item, "seq")?;
-    enum_field(item, "event_type", "execution_started|execution_termination_requested|execution_termination_acked|execution_terminated|input_snapshotted|instruments_waiting|instruments_ready|instruments_failed|target_computed|futures_close_planned|symbol_decision_made|symbol_skipped|order_submitted|order_acknowledged|order_terminal|order_terminal_pending|execution_completed|execution_failed")?;
+    enum_field(item, "event_type", "execution_started|execution_termination_requested|execution_termination_acked|execution_terminated|input_snapshotted|instruments_waiting|instruments_ready|instruments_failed|target_computed|futures_close_planned|symbol_decision_made|symbol_skipped|order_submitted|order_acknowledged|order_terminal|order_terminal_pending|position_checkpoint|order_position_reconciled|execution_completed|execution_failed")?;
     enum_field(item, "status", "INFO|SUCCESS|WARNING|ERROR")?;
     enum_field(
         item,

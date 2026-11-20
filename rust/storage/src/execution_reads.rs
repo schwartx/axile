@@ -272,6 +272,114 @@ pub(crate) fn target_sizing_on(
     )
 }
 
+fn pending_order_terminals(
+    connection: &Connection,
+    account_id: i64,
+) -> Result<Value, AnalysisError> {
+    let mut statement = connection.prepare(
+        "WITH candidates AS (
+            SELECT execution_id,algorithm,symbol,order_id
+            FROM execution_event WHERE account_id=?1 AND event_type='ORDER_TERMINAL_PENDING'
+            UNION
+            SELECT r.execution_id,COALESCE(s.algorithm,'SINGLE-MAKER'),s.map_key,json_extract(o.order_id,'$')
+            FROM executerecord r JOIN execution_symbol_result s ON s.record_id=r.id
+            JOIN execution_order o ON o.record_id=r.id AND o.path=s.path || '/orders'
+            WHERE r.account_id=?1 AND json_extract(o.extra,'$.terminal_confirmation_pending')=1
+              AND o.status NOT IN ('已成交','已撤销','已拒绝','已过期')
+            UNION
+            SELECT e.execution_id,e.algorithm,e.symbol,json_extract(o.value,'$.order_id')
+            FROM execution_event e JOIN json_each(e.details,'$.orders') o
+            WHERE e.account_id=?1 AND e.event_type='POSITION_CHECKPOINT'
+              AND json_extract(o.value,'$.status') NOT IN ('已成交','已撤销','已拒绝','已过期')
+        )
+        SELECT p.execution_id,p.algorithm,p.symbol,p.order_id,
+               (SELECT json_extract(t.details,'$.order') FROM execution_event t
+                WHERE t.account_id=?1 AND t.execution_id=p.execution_id AND t.symbol=p.symbol
+                  AND t.order_id=p.order_id AND t.event_type='ORDER_TERMINAL'
+                  AND t.reason_family='EXCHANGE' AND t.status='SUCCESS'
+                  AND json_type(t.details,'$.order.terminal_status')='text' ORDER BY t.id DESC LIMIT 1)
+        FROM candidates p
+        WHERE p.symbol IS NOT NULL AND p.order_id IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM execution_event c WHERE c.account_id=?1 AND c.execution_id=p.execution_id
+              AND c.symbol=p.symbol AND c.event_type='ORDER_POSITION_RECONCILED'
+        ) AND NOT EXISTS (
+            SELECT 1 FROM executerecord r JOIN execution_symbol_result s ON s.record_id=r.id
+            JOIN execution_order o ON o.record_id=r.id AND o.path=s.path || '/orders'
+            WHERE r.account_id=?1 AND r.execution_id=p.execution_id AND s.map_key=p.symbol
+              AND json_extract(o.order_id,'$')=p.order_id
+              AND o.status IN ('已成交','已撤销','已拒绝','已过期')
+        )
+        ORDER BY p.execution_id,p.symbol,p.order_id"
+    ).map_err(sql)?;
+    let rows = statement
+        .query_map([account_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        })
+        .map_err(sql)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql)?;
+    let mut groups: Vec<Value> = Vec::new();
+    for (execution, algorithm, symbol, order_id, terminal) in rows {
+        let same_group = groups
+            .last()
+            .is_some_and(|row| row["execution_id"] == execution && row["symbol"] == symbol);
+        if !same_group {
+            let details = previous_order_position(connection, account_id, &execution, &symbol)?;
+            groups.push(json!({
+                "execution_id": execution, "algorithm": algorithm, "symbol": symbol,
+                "start_volume": details["start_volume"], "orders": details["orders"], "pending": {},
+            }));
+        }
+        let terminal = terminal
+            .map(|raw| serde_json::from_str(&raw))
+            .transpose()
+            .map_err(|error| invalid(error.to_string()))?
+            .unwrap_or(Value::Null);
+        groups.last_mut().expect("group just inserted")["pending"][order_id] = terminal;
+    }
+    Ok(Value::Array(groups))
+}
+
+fn previous_order_position(
+    connection: &Connection,
+    account_id: i64,
+    execution: &str,
+    symbol: &str,
+) -> Result<Value, AnalysisError> {
+    let recorded = connection.query_row(
+        "SELECT json_object('start_volume',json_extract(s.audit_evidence,'$.unrecognized_fields.start_volume'),
+                    'orders',(SELECT json_group_array(json_object(
+                      'order_id',json_extract(o.order_id,'$'),'symbol',o.symbol,'direction',o.direction,
+                      'order_type',o.order_type,'price',o.price,'volume',o.volume,'status',o.status,
+                      'filled_volume',o.filled_volume))
+                  FROM execution_order o WHERE o.record_id=r.id AND o.path=s.path || '/orders' AND o.kind='object'))
+         FROM executerecord r JOIN execution_symbol_result s ON s.record_id=r.id
+         WHERE r.account_id=?1 AND r.execution_id=?2 AND s.map_key=?3
+           AND json_type(s.audit_evidence,'$.unrecognized_fields.start_volume') IN ('integer','real')",
+        params![account_id, execution, symbol], |row| row.get::<_, String>(0),
+    ).optional().map_err(sql)?;
+    if let Some(recorded) = recorded {
+        return serde_json::from_str(&recorded).map_err(|error| invalid(error.to_string()));
+    }
+    let details = connection.query_row(
+        "SELECT details FROM execution_event WHERE account_id=?1 AND execution_id=?2 AND symbol=?3
+           AND event_type='POSITION_CHECKPOINT' AND json_type(details,'$.orders')='array'
+         ORDER BY id DESC LIMIT 1",
+        params![account_id, execution, symbol], |row| row.get::<_, String>(0),
+    ).optional().map_err(sql)?;
+    details
+        .map(|raw| serde_json::from_str(&raw))
+        .transpose()
+        .map(|value| value.unwrap_or(Value::Null))
+        .map_err(|error| invalid(error.to_string()))
+}
+
 fn read_on(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {
     match text(request, "op")? {
         "pending_positions" => {
@@ -291,6 +399,11 @@ fn read_on(connection: &Connection, request: &Value) -> Result<Value, AnalysisEr
                     JOIN json_each(a.content,'$.positions') p
                     WHERE i.account_id=?1 AND a.artifact_type='POSITION_CONFIRMATION'
                       AND p.type IN ('integer','real')
+                    UNION ALL
+                    SELECT symbol,json_extract(details,'$.expected_volume'),0,ts_persisted_us,0
+                    FROM execution_event WHERE account_id=?1
+                      AND event_type IN ('POSITION_CHECKPOINT','ORDER_POSITION_RECONCILED')
+                      AND json_type(details,'$.expected_volume') IN ('integer','real')
                 ), latest AS (
                     SELECT *,row_number() OVER (
                         PARTITION BY symbol ORDER BY observed_at DESC,record_id DESC
@@ -307,32 +420,7 @@ fn read_on(connection: &Connection, request: &Value) -> Result<Value, AnalysisEr
             Ok(Value::Object(rows))
         }
         "pending_order_terminals" => {
-            let mut statement = connection.prepare(
-                "SELECT DISTINCT p.execution_id,p.algorithm,p.symbol,p.order_id
-                 FROM execution_event p
-                 WHERE p.account_id=?1 AND p.event_type='ORDER_TERMINAL_PENDING'
-                   AND p.symbol IS NOT NULL AND p.order_id IS NOT NULL
-                   AND NOT EXISTS (
-                     SELECT 1 FROM execution_event t
-                     WHERE t.account_id=p.account_id AND t.execution_id=p.execution_id
-                       AND t.symbol=p.symbol AND t.order_id=p.order_id AND t.event_type='ORDER_TERMINAL'
-                       AND t.reason_family='EXCHANGE' AND t.status='SUCCESS'
-                       AND json_type(t.details,'$.order.terminal_status')='text'
-                   )"
-            ).map_err(sql)?;
-            let rows = statement
-                .query_map([integer(request, "account_id")?], |row| {
-                    Ok(json!({
-                        "execution_id": row.get::<_, String>(0)?,
-                        "algorithm": row.get::<_, String>(1)?,
-                        "symbol": row.get::<_, String>(2)?,
-                        "order_id": row.get::<_, String>(3)?,
-                    }))
-                })
-                .map_err(sql)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(sql)?;
-            Ok(Value::Array(rows))
+            pending_order_terminals(connection, integer(request, "account_id")?)
         }
         "detail" => {
             let Some(record) = record_on(

@@ -351,7 +351,9 @@ def pov(
         executor.unregister_price_callback(accumulator.on_price)
         teardown_order_tracker(executor, tracker, None)
 
-    account_assets, final_volume, explicit_error = read_final_position(executor, executor.get_current_volume)
+    account_assets, final_volume, explicit_error = read_final_position(
+        executor, executor.get_current_volume, start=start_volume, orders=tracker.get_all_orders()
+    )
     orders = tracker.get_all_orders()
     trades = tracker.get_all_trades()
 

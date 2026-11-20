@@ -12,7 +12,7 @@ from dataclasses import dataclass, fields
 from math import isfinite
 from typing import TYPE_CHECKING, cast
 
-from axile.common.serialization import copy_data, to_payload
+from axile.common.serialization import copy_data, from_payload, to_payload
 from axile.domain.execution import (
     ExecutionArtifactType,
     ExecutionEventStatus,
@@ -22,7 +22,8 @@ from axile.domain.execution import (
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.algorithms.core.base import AlgorithmInput, ExecutorProtocol, resolve_algorithm
 from axile.executor.algorithms.exceptions import execution_error_message
-from axile.executor.algorithms.utils.outcome import TARGET_NOT_REACHED, summarize_outcome
+from axile.executor.algorithms.utils.outcome import TARGET_NOT_REACHED, confirmed_position, summarize_outcome
+from axile.executor.constants.order_status import OrderStatus
 from axile.executor.execution_runtime import ExecutionRuntime
 from axile.executor.execution_session import ExecutionSession
 from axile.executor.futures_close_policy import futures_product
@@ -419,6 +420,7 @@ class ExecutionEngine:
                 ],
             ]
         blocked_orders = self._reconcile_previous_orders(standard_input)
+        blocked_orders = blocked_orders or self._pending_position_results(planning.account_assets)
         if blocked_orders:
             self._account_snapshot = planning.account_assets, None
             self._emit_symbol_decision_events(standard_input, blocked_orders)
@@ -449,38 +451,89 @@ class ExecutionEngine:
         return merged_results
 
     def _reconcile_previous_orders(self, standard_input: UnifiedStandardInput) -> list[AlgorithmResult]:
-        """按原委托号核对上轮未确认终态的订单，确认前阻断本轮报单。"""
-        pending = cast("list[dict[str, str]]", standard_input.extra.get("pending_order_terminals", []))
+        """把历史委托终态转换成可跨 worker 恢复的仓位核对证据。"""
+        pending = cast("list[ObjectDict]", standard_input.extra.get("pending_order_terminals", []))
         blocked: dict[str, AlgorithmResult] = {}
         for previous in pending:
-            symbol, order_id = previous["symbol"], previous["order_id"]
-            self._owner.handle_termination_checkpoint()
-            terminal = self._owner.reconcile_terminal_order(symbol, order_id)
-            if terminal is None:
+            symbol = cast("str", previous["symbol"])
+            error = self._reconcile_order_group(symbol, previous)
+            if error is not None:
                 blocked[symbol] = self._build_failed_algorithm_result(
                     symbol=symbol,
                     algorithm_name=self._get_symbol_algorithm_name(standard_input, symbol),
-                    error=f"上一轮委托 {order_id} 终态尚未确认，已阻断本次下单",
+                    error=error,
                     status=ExecutionStatus.BLOCKED,
                     reason_code="COMMON.ORDER.TERMINAL_UNCONFIRMED",
                     reason_family=ExecutionReasonFamily.ACCOUNT_STATE,
                 )
-                continue
-            self._runtime.emit_audit_event(
-                event_type=ExecutionEventType.ORDER_TERMINAL,
-                status=ExecutionEventStatus.SUCCESS,
-                reason_family=ExecutionReasonFamily.EXCHANGE,
-                reason_code="COMMON.ORDER_TERMINAL",
-                symbol=symbol,
-                order_id=order_id,
-                details=order_terminal_details(terminal),
-                audit_context={
-                    **self._runtime.audit_context,
-                    "execution_id": previous["execution_id"],
-                    "algorithm": previous["algorithm"],
-                },
-            )
         return list(blocked.values())
+
+    def _reconcile_order_group(self, symbol: str, previous: ObjectDict) -> str | None:
+        context = {
+            **self._runtime.audit_context,
+            "execution_id": previous["execution_id"],
+            "algorithm": previous["algorithm"],
+        }
+        original = from_payload(list[UnifiedOrder], previous["orders"] or [])
+        orders = {order.order_id: order for order in original}
+        pending = dict(cast("dict[str, ObjectDict | None]", previous["pending"]))
+        for order in original:
+            if not order.is_completed():
+                pending.setdefault(order.order_id, None)
+        for order_id, evidence in pending.items():
+            self._owner.handle_termination_checkpoint()
+            if evidence is None:
+                terminal = self._owner.reconcile_terminal_order(symbol, order_id)
+                if terminal is None:
+                    return f"上一轮委托 {order_id} 终态尚未确认，已阻断本次下单"
+                self._runtime.emit_audit_event(
+                    event_type=ExecutionEventType.ORDER_TERMINAL,
+                    status=ExecutionEventStatus.SUCCESS,
+                    reason_family=ExecutionReasonFamily.EXCHANGE,
+                    reason_code="COMMON.ORDER_TERMINAL",
+                    symbol=symbol,
+                    order_id=order_id,
+                    details=order_terminal_details(terminal),
+                    audit_context=context,
+                )
+            else:
+                terminal = from_payload(
+                    UnifiedOrder,
+                    {
+                        "order_id": order_id,
+                        "symbol": symbol,
+                        "direction": str(evidence["direction"]).rsplit(".", 1)[-1],
+                        "order_type": str(evidence["order_type"]).rsplit(".", 1)[-1],
+                        "price": 0.0,
+                        "status": evidence["terminal_status"],
+                        "volume": evidence["volume"],
+                        "filled_volume": evidence["filled_volume"],
+                    },
+                )
+            orders[order_id] = terminal
+
+        filled = [
+            order for order in orders.values() if order.filled_volume != 0 or order.status != OrderStatus.REJECTED
+        ]
+        expected = None
+        if any(order.filled_volume != 0 for order in filled):
+            start = previous["start_volume"]
+            expected = confirmed_position(float(start), filled) if isinstance(start, (int, float)) else None
+            if expected is None:
+                return "旧委托已有成交，缺少可核对的预期持仓，已阻断本次下单"
+        if not self._runtime.emit_audit_event(
+            event_type=ExecutionEventType.ORDER_POSITION_RECONCILED,
+            status=ExecutionEventStatus.INFO,
+            reason_family=ExecutionReasonFamily.ACCOUNT_STATE,
+            reason_code="COMMON.POSITION.UNCONFIRMED",
+            symbol=symbol,
+            details={"expected_volume": expected},
+            audit_context=context,
+        ):
+            return "旧委托核对结果保存失败，已阻断本次下单"
+        if expected is not None:
+            self._owner.pending_positions[symbol] = expected
+        return None
 
     def _pending_position_results(self, assets: UnifiedAccountAssets) -> list[AlgorithmResult]:
         """上一轮仓位未核对时阻断新单，跨执行保留成交推导证据。"""
