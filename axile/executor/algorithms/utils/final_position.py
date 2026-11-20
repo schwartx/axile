@@ -13,14 +13,10 @@ from axile.executor.models.unified_order import UnifiedOrder
 from axile.executor.termination import ExecutionTerminated
 
 
-def read_final_position(
-    executor: ExecutorProtocol,
-    quantity: Callable[[UnifiedAccountAssets], float],
-    *,
-    start: float | None = None,
-    orders: list[UnifiedOrder] | None = None,
-) -> tuple[UnifiedAccountAssets, float, str | None]:
-    """返回资产、持仓与明确查询错误；原始异常由日志保留。"""
+def save_position_checkpoint(
+    executor: ExecutorProtocol, start: float | None, orders: list[UnifiedOrder] | None
+) -> bool:
+    """在可能阻塞的查询或撤单前，保存重启后核对仓位所需的订单证据。"""
     if (
         start is not None
         and isfinite(start)
@@ -30,7 +26,7 @@ def read_final_position(
         and any(order.filled_volume or not order.is_completed() for order in orders)
     ):
         expected = confirmed_position(start, orders)
-        if not executor.emit_audit_event(
+        return executor.emit_audit_event(
             event_type=ExecutionEventType.POSITION_CHECKPOINT,
             status=ExecutionEventStatus.INFO,
             reason_family=ExecutionReasonFamily.ACCOUNT_STATE,
@@ -57,8 +53,20 @@ def read_final_position(
                     for order in orders
                 ],
             },
-        ):
-            return UnifiedAccountAssets.unavailable(), float("nan"), "待核对仓位保存失败"
+        )
+    return True
+
+
+def read_final_position(
+    executor: ExecutorProtocol,
+    quantity: Callable[[UnifiedAccountAssets], float],
+    *,
+    start: float | None = None,
+    orders: list[UnifiedOrder] | None = None,
+) -> tuple[UnifiedAccountAssets, float, str | None]:
+    """返回资产、持仓与明确查询错误；原始异常由日志保留。"""
+    if not save_position_checkpoint(executor, start, orders):
+        return UnifiedAccountAssets.unavailable(), float("nan"), "待核对仓位保存失败"
     try:
         assets = executor.get_account_assets()
         if is_degraded_snapshot_source(assets.source):

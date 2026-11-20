@@ -293,6 +293,7 @@ def twap(
     executor.logger.info(f"{symbol} 开始执行: 目标={target_volume}, 当前={start_volume}, 增量={delta}, {params}")
 
     tracker = setup_order_tracker(executor, executor.get_market_data(), None)
+    tracker.start_volume = start_volume
     slice_details: list[dict[str, Any]] = []
 
     started = clock.time()

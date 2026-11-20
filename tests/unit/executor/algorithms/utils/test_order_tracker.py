@@ -18,7 +18,7 @@ from axile.executor.constants.order_status import OrderStatus
 from axile.executor.ctp.ctp_execute import CtpSessionRecoveryRequired
 from axile.executor.market_data_validation import MarketDataUnavailableError
 from axile.executor.models.order_channel_health import OrderChannelHealth
-from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
+from axile.executor.models.unified_account_assets import PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
 from axile.executor.order_cancellation import (
@@ -392,52 +392,6 @@ def _build_pending_order(order_id: str, symbol: str = "SHSE.600000") -> UnifiedO
     )
 
 
-def test_order_tracker_timeout_emits_reconciliation_reason() -> None:
-    """超时摘要应标明资产已收敛，而非只记录 timeout。"""
-    tracker = OrderTracker(executor=_FakeExecutor())
-    tracker.add_order(_build_pending_order("gm-order-1"))
-
-    summary = tracker._build_timeout_summary(
-        UnifiedAccountAssets(
-            available_cash=1200.0,
-            total_asset=1200.0,
-            market_value=0.0,
-            positions=[],
-        )
-    )
-
-    assert summary["reconciliation_reason"] == "asset_state_converged_after_timeout"
-
-
-def test_order_tracker_timeout_summary_keeps_pending_order_ids() -> None:
-    """超时摘要应保留仍在等待收敛的订单标识。"""
-    tracker = OrderTracker(executor=_FakeExecutor())
-    tracker.add_order(_build_pending_order("gm-order-1"))
-    tracker.add_order(_build_pending_order("gm-order-2", symbol="SZSE.000001"))
-
-    summary = tracker._build_timeout_summary(
-        UnifiedAccountAssets(
-            available_cash=800.0,
-            total_asset=1000.0,
-            market_value=200.0,
-            positions=[
-                Position(
-                    symbol="SZSE.000001",
-                    volume=100.0,
-                    available_volume=100.0,
-                    market_value=200.0,
-                    direction=PositionDirection.LONG,
-                    avg_price=2.0,
-                )
-            ],
-        )
-    )
-
-    assert summary["pending_order_ids"] == ["gm-order-1", "gm-order-2"]
-    assert summary["pending_symbols"] == ["SHSE.600000", "SZSE.000001"]
-    assert summary["reconciliation_reason"] == "pending_orders_still_active_after_timeout"
-
-
 class _ReconcileExecutor(_ChaseExecutor):
     """模拟支持 REST 终态对账的执行器替身。"""
 
@@ -574,16 +528,6 @@ def test_query_pending_orders_propagates_ctp_session_recovery() -> None:
 
     with pytest.raises(CtpSessionRecoveryRequired, match="return_code=-2"):
         tracker._query_pending_orders()
-
-
-def test_refresh_timeout_account_assets_propagates_ctp_session_recovery() -> None:
-    executor = _FakeExecutor()
-    tracker = OrderTracker(executor=executor)
-    recovery = CtpSessionRecoveryRequired("ReqQryTradingAccount同步拒绝: return_code=-2", return_code=-2)
-    executor.get_account_assets = lambda: (_ for _ in ()).throw(recovery)  # type: ignore[method-assign]
-
-    with pytest.raises(CtpSessionRecoveryRequired, match="return_code=-2"):
-        tracker._refresh_timeout_account_assets()
 
 
 def test_reconcile_missing_pending_converges_on_ws_frame_loss() -> None:
@@ -907,9 +851,7 @@ def test_chase_cancel_propagates_ctp_session_recovery_without_fallback() -> None
     assert not tracker._chase_info[order.order_id].get("market_order_fallback_pending_cancel", False)
 
 
-@pytest.mark.parametrize(
-    "stage", ["chase_cancel", "fallback_cancel", "fallback_submit", "pending_query", "final_assets"]
-)
+@pytest.mark.parametrize("stage", ["chase_cancel", "fallback_cancel", "fallback_submit", "pending_query"])
 @pytest.mark.parametrize("error_type", [ExecutionTerminated, MemoryError])
 def test_tracker_propagates_interruptions_without_continuing_orders(monkeypatch, stage, error_type):
     executor = _ChaseExecutor()
@@ -934,7 +876,6 @@ def test_tracker_propagates_interruptions_without_continuing_orders(monkeypatch,
             lambda: tracker._submit_market_fallback_order(order, tracker._chase_info[order.order_id]),
         ),
         "pending_query": ("get_pending_orders", tracker._query_pending_orders),
-        "final_assets": ("get_account_assets", tracker._refresh_timeout_account_assets),
     }[stage]
     monkeypatch.setattr(executor, method, MagicMock(side_effect=error))
     monkeypatch.setattr(tracker, "_is_market_fallback_price_safe", lambda *args: True)

@@ -31,6 +31,7 @@ from axile.executor.algorithms.exceptions import (
     format_exception_message,
 )
 from axile.executor.algorithms.utils.clock import Clock, get_default_clock
+from axile.executor.algorithms.utils.final_position import save_position_checkpoint
 from axile.executor.algorithms.utils.trading import cancel_pending_orders_via_query
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.market_data_validation import (
@@ -39,7 +40,6 @@ from axile.executor.market_data_validation import (
     market_data_error,
 )
 from axile.executor.models.order_channel_health import OrderChannelHealth
-from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData, clone_price_data
 from axile.executor.order_cancellation import (
@@ -204,6 +204,7 @@ class OrderTracker:
     # price_stale_after 秒，则刷新行情快照，并按 rest_price_refresh_interval 限频。
     price_stale_after: float = DEFAULT_QUOTE_MAX_AGE_SECONDS
     rest_price_refresh_interval: float = 1.0
+    start_volume: float | None = None
     _explicit_error: str | None = field(default=None, init=False)
     _order_errors: dict[str, str] = field(default_factory=dict, init=False)
     _cancel_restrictions: dict[str, str] = field(default_factory=dict, init=False)
@@ -679,14 +680,13 @@ class OrderTracker:
                 last_pending_count = pending_count
 
         summary = self.get_status_summary()
-        refreshed_assets = self._refresh_timeout_account_assets()
-        timeout_summary = self._build_timeout_summary(refreshed_assets)
-        self._logger.warning(
-            f"等待订单完成超时: elapsed={timeout:.1f}s, "
-            f"{self._format_status_summary(summary)}, timeout_summary={timeout_summary}"
-        )
-        # 超时后仍要显式 query 再 cancel，一方面给下游一次最后的状态收敛机会，
-        # 另一方面避免只清 tracker 内存态却把真实挂单留在交易通道里。
+        self._logger.warning(f"等待订单完成超时: elapsed={timeout:.1f}s, {self._format_status_summary(summary)}")
+        with self.lock:
+            for order in self.pending_orders.values():
+                order.extra["terminal_confirmation_pending"] = True
+            orders = [copy_data(order) for order in (*self.completed_orders.values(), *self.pending_orders.values())]
+        if not save_position_checkpoint(self.executor, self.start_volume, orders):
+            raise RuntimeError("待核对仓位保存失败")
         self._logger.info(f"正在撤销所有未成交订单: pending={self.get_pending_count()}")
         self.executor.handle_termination_checkpoint()
         self._finalize_timeout_cancellations()
@@ -919,64 +919,6 @@ class OrderTracker:
                 )
                 self._logger.info(f"对账发现订单 {order_id} 已终态（{cause}），收敛并补发终态")
                 self.on_order_update(terminal_order)
-
-    def _refresh_timeout_account_assets(self) -> UnifiedAccountAssets | None:
-        """在超时诊断阶段刷新一次账户资产快照."""
-        try:
-            return self.executor.get_account_assets()
-        except Exception as exc:  # noqa: BLE001
-            if isinstance(exc, (MemoryError, ExecutionTerminated)) or bool(
-                getattr(exc, "requires_session_recovery", False)
-            ):
-                raise
-            self._logger.warning(f"超时后刷新账户资产失败: {format_exception_message(exc)}")
-            return None
-
-    def _build_timeout_summary(self, refreshed_assets: UnifiedAccountAssets | None) -> dict[str, object]:
-        """构造订单超时诊断摘要.
-
-        Parameters
-        ----------
-        refreshed_assets : UnifiedAccountAssets | None
-            超时后最新拉取的账户资产快照。
-
-        Returns
-        -------
-        dict[str, object]
-            面向日志的超时诊断摘要。
-        """
-        with self.lock:
-            pending_orders = list(self.pending_orders.values())
-
-        pending_order_ids = [order.order_id for order in pending_orders]
-        pending_symbols = sorted({order.symbol for order in pending_orders})
-
-        if refreshed_assets is None:
-            reconciliation_reason = "account_assets_refresh_failed"
-            latest_asset_positions: list[dict[str, object]] = []
-        else:
-            latest_asset_positions = [
-                {
-                    "symbol": position.symbol,
-                    "volume": position.volume,
-                    "available_volume": position.available_volume,
-                    "direction": position.direction,
-                    "market_value": position.market_value,
-                }
-                for position in refreshed_assets.positions
-            ]
-            asset_symbols = {position.symbol for position in refreshed_assets.positions}
-            if pending_symbols and asset_symbols.isdisjoint(pending_symbols):
-                reconciliation_reason = "asset_state_converged_after_timeout"
-            else:
-                reconciliation_reason = "pending_orders_still_active_after_timeout"
-
-        return {
-            "pending_order_ids": pending_order_ids,
-            "pending_symbols": pending_symbols,
-            "reconciliation_reason": reconciliation_reason,
-            "latest_asset_positions": latest_asset_positions,
-        }
 
     def _check_and_chase(self) -> None:
         """检查并执行追单."""

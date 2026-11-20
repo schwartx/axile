@@ -443,8 +443,8 @@ def test_timeout_stops_split_and_blocks_next_slice_until_terminal(monkeypatch, m
     assert len(orders) == 1
     assert executor.place_order.call_count == 1
     executor.cancel_order.assert_called_once_with(orders[0].order_id)
-    # 下单前及 tracker 超时诊断刷新资产，拆单函数不再刷新资产后补单。
-    assert executor.get_account_assets.call_count == 2
+    # 超时收尾只核对委托，资产查询来自拆单报单前。
+    assert executor.get_account_assets.call_count == 1
     with pytest.raises(RuntimeError, match="旧单尚未确认终态"):
         _submit(executor, tracker, OrderDirection.SELL, 5, target=-3, current=2)
     assert executor.place_order.call_count == 1

@@ -251,6 +251,7 @@ def single_maker_callback(
 
     # 使用工具函数设置订单跟踪器
     tracker = setup_order_tracker(executor, market_data, chase_config)
+    tracker.start_volume = current_volume
 
     execution_memory: dict[str, Any] = {}
 

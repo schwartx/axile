@@ -323,6 +323,7 @@ def pov(
 
     accumulator = _VolumeAccumulator()
     tracker = setup_order_tracker(executor, executor.get_market_data(), None)
+    tracker.start_volume = start_volume
     executor.register_price_callback(accumulator.on_price, bind_order_context=False)
     slice_details: list[dict[str, Any]] = []
 

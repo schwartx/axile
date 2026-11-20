@@ -23,7 +23,6 @@ from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.algorithms.core.base import AlgorithmInput, ExecutorProtocol, resolve_algorithm
 from axile.executor.algorithms.exceptions import execution_error_message
 from axile.executor.algorithms.utils.outcome import TARGET_NOT_REACHED, confirmed_position, summarize_outcome
-from axile.executor.constants.order_status import OrderStatus
 from axile.executor.execution_runtime import ExecutionRuntime
 from axile.executor.execution_session import ExecutionSession
 from axile.executor.futures_close_policy import futures_product
@@ -386,7 +385,10 @@ class ExecutionEngine:
         ):
             raise ValueError("待核对持仓证据无效")
         self._owner.pending_positions.update(pending)
-        blocked = self._pending_position_results(planning.account_assets)
+        # 旧单的成交可能已经改变前一阶段的仓位，先收敛这些品种的委托。
+        previous_orders = cast("list[ObjectDict]", standard_input.extra.get("pending_order_terminals", []))
+        order_symbols = {cast("str", group["symbol"]) for group in previous_orders}
+        blocked = self._pending_position_results(planning.account_assets, skip=order_symbols)
         if blocked:
             self._account_snapshot = planning.account_assets, None
             self._emit_symbol_decision_events(standard_input, blocked)
@@ -419,7 +421,7 @@ class ExecutionEngine:
                     if plan.symbol not in direct_symbols
                 ],
             ]
-        blocked_orders = self._reconcile_previous_orders(standard_input)
+        blocked_orders = self._reconcile_previous_orders(standard_input, previous_orders)
         blocked_orders = blocked_orders or self._pending_position_results(planning.account_assets)
         if blocked_orders:
             self._account_snapshot = planning.account_assets, None
@@ -450,9 +452,10 @@ class ExecutionEngine:
         self._emit_symbol_decision_events(standard_input, merged_results)
         return merged_results
 
-    def _reconcile_previous_orders(self, standard_input: UnifiedStandardInput) -> list[AlgorithmResult]:
+    def _reconcile_previous_orders(
+        self, standard_input: UnifiedStandardInput, pending: list[ObjectDict]
+    ) -> list[AlgorithmResult]:
         """把历史委托终态转换成可跨 worker 恢复的仓位核对证据。"""
-        pending = cast("list[ObjectDict]", standard_input.extra.get("pending_order_terminals", []))
         blocked: dict[str, AlgorithmResult] = {}
         for previous in pending:
             symbol = cast("str", previous["symbol"])
@@ -512,13 +515,12 @@ class ExecutionEngine:
                 )
             orders[order_id] = terminal
 
-        filled = [
-            order for order in orders.values() if order.filled_volume != 0 or order.status != OrderStatus.REJECTED
-        ]
         expected = None
-        if any(order.filled_volume != 0 for order in filled):
+        if any(order.filled_volume != 0 for order in orders.values()):
             start = previous["start_volume"]
-            expected = confirmed_position(float(start), filled) if isinstance(start, (int, float)) else None
+            expected = (
+                confirmed_position(float(start), list(orders.values())) if isinstance(start, (int, float)) else None
+            )
             if expected is None:
                 return "旧委托已有成交，缺少可核对的预期持仓，已阻断本次下单"
         if not self._runtime.emit_audit_event(
@@ -535,10 +537,14 @@ class ExecutionEngine:
             self._owner.pending_positions[symbol] = expected
         return None
 
-    def _pending_position_results(self, assets: UnifiedAccountAssets) -> list[AlgorithmResult]:
+    def _pending_position_results(
+        self, assets: UnifiedAccountAssets, *, skip: set[str] | None = None
+    ) -> list[AlgorithmResult]:
         """上一轮仓位未核对时阻断新单，跨执行保留成交推导证据。"""
         blocked = []
         for symbol, expected in list(self._owner.pending_positions.items()):
+            if skip and symbol in skip:
+                continue
             actual = self._owner.get_current_volume(symbol, assets)
             if not is_degraded_snapshot_source(assets.source) and self._is_same_volume(actual, expected):
                 del self._owner.pending_positions[symbol]
@@ -1357,6 +1363,9 @@ class ExecutionEngine:
         merged_status = self._derive_symbol_result_status([previous, current])
         merged_error = self._derive_symbol_result_error([previous, current], merged_status)
         reason_result = current if current.reason_code or current.reason_family else previous
+        position_result = (
+            current if current.expected_volume is not None or current.orders or current.trades else previous
+        )
 
         return AlgorithmResult(
             orders=[*previous.orders, *current.orders],
@@ -1365,12 +1374,8 @@ class ExecutionEngine:
             target_volume=current.target_volume if current.target_volume is not None else previous.target_volume,
             sizing=current.sizing if current.sizing is not None else previous.sizing,
             start_volume=previous.start_volume,
-            expected_volume=current.expected_volume
-            if current.expected_volume is not None
-            else previous.expected_volume,
-            position_confirmed=(
-                current.position_confirmed if current.expected_volume is not None else previous.position_confirmed
-            ),
+            expected_volume=position_result.expected_volume,
+            position_confirmed=position_result.position_confirmed,
             first_tick=current.first_tick if current.first_tick is not None else previous.first_tick,
             memory=merged_memory,
             final_volume=(

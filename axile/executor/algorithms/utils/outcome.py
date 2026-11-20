@@ -36,6 +36,7 @@ def confirmed_position(start: float, orders: list[UnifiedOrder]) -> float | None
             not order.order_id
             or not order.is_completed()
             or order.status == OrderStatus.REJECTED
+            and order.filled_volume != 0
             or not isfinite(order.volume)
             or not isfinite(order.filled_volume)
             or not 0 <= order.filled_volume <= order.volume
