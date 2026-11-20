@@ -88,7 +88,9 @@ class OrderTerminalAudit:
         sink = runtime.audit_sink
         if not execution_id or account_id is None or not algorithm or sink is None:
             return False
-        origin = _OrderOrigin(str(execution_id), account_id, str(algorithm), sink, runtime.next_audit_seq, symbol)
+        origin = _OrderOrigin(
+            str(execution_id), account_id, str(algorithm), sink, runtime.audit_sequence.__next__, symbol
+        )
         with self._lock:
             if self._closed:
                 return False

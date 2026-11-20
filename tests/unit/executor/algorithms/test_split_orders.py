@@ -35,7 +35,9 @@ class _FakeTracker:
     def assert_ready_for_submission(self) -> None:
         pass
 
-    def position_for_submission(self, current: float, direction, *, needs_position_detail: bool) -> float:
+    def position_for_submission(
+        self, current: float, direction, *, needs_position_detail: bool, leg_order_ids=None
+    ) -> float:
         return current
 
     def wait_for_completion(self, timeout: float | None = None) -> bool:
@@ -78,14 +80,16 @@ _ASSETS = UnifiedAccountAssets(available_cash=0.0, total_asset=0.0, market_value
 
 @pytest.mark.parametrize("target", [-100, 100])
 @pytest.mark.parametrize(
-    ("model", "late", "submitted"),
+    ("model", "late", "bounds", "submitted"),
     [
-        (OrderParamModel.DIRECTIONAL, False, [50, 50]),
-        (OrderParamModel.OFFSET, False, [50]),
-        (OrderParamModel.DIRECTIONAL, True, [50, 70]),
+        (OrderParamModel.DIRECTIONAL, False, None, [50, 50]),
+        (OrderParamModel.OFFSET, False, (1, 25), [25, 25]),
+        (OrderParamModel.DIRECTIONAL, True, None, [50, 70]),
+        (OrderParamModel.OFFSET, True, None, [50]),
+        (OrderParamModel.POSITION_SIDE, True, None, [50]),
     ],
 )
-def test_twap_does_not_resubmit_fills_missing_from_position(monkeypatch, target, model, late, submitted):
+def test_twap_does_not_resubmit_fills_missing_from_position(monkeypatch, target, model, late, bounds, submitted):
     from axile.executor.algorithms.core.base import AlgorithmInput
     from axile.executor.algorithms.defaults.twap.impl import TwapParams, twap
     from tests.fixtures.algorithm_fakes import ClockStub
@@ -97,7 +101,7 @@ def test_twap_does_not_resubmit_fills_missing_from_position(monkeypatch, target,
     executor.sleep_or_terminate.side_effect = clock.sleep
     executor.get_market_data.return_value = _SingleMakerExecutor().get_market_data()
     executor.get_pending_orders.return_value = []
-    executor.get_order_volume_bounds.return_value = None
+    executor.get_order_volume_bounds.return_value = bounds
     executor.is_termination_requested.return_value = False
     place_order = executor.place_order.side_effect
 

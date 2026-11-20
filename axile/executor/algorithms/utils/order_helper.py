@@ -340,6 +340,7 @@ def submit_and_track_order(
     current_volume: float,
     deadline: float | None = None,
     slice_target: float | None = None,
+    leg_order_ids: set[str] | None = None,
     **kwargs: Any,
 ) -> UnifiedOrder | None:
     """
@@ -387,11 +388,13 @@ def submit_and_track_order(
     while True:
         decision = resolve_reduce_intent(executor, direction, volume, target_volume, current_volume, price)
         tracker.require_saved_orders()
-        if slice_target is None:
-            break
-        position = tracker.position_for_submission(current_volume, direction, needs_position_detail=False)
+        position = tracker.position_for_submission(
+            current_volume, direction, needs_position_detail=slice_target is None, leg_order_ids=leg_order_ids
+        )
         if position is None:
             return None
+        if slice_target is None:
+            break
         allowed = min(
             volume,
             _remaining_toward_target(direction, slice_target, position),
@@ -615,6 +618,7 @@ def _place_offset_leg(
     chunks = [
         (chunk, extra) for quantity, extra in plan for chunk in _leg_chunks(executor, order_type, quantity, trade_rule)
     ]
+    leg_order_ids: set[str] = set()
     for chunk, extra in chunks:
         order = submit_and_track_order(
             executor,
@@ -627,11 +631,13 @@ def _place_offset_leg(
             current_volume=current_volume,
             deadline=deadline,
             slice_target=None,
+            leg_order_ids=leg_order_ids,
             **{**leg_kwargs, **extra},
         )
         if order is None:
             break
         orders.append(order)
+        leg_order_ids.add(order.order_id)
     return orders
 
 
@@ -816,6 +822,7 @@ def submit_and_track_split_orders(
             current_volume=current_volume,
             deadline=deadline,
             slice_target=slice_target if model == OrderParamModel.DIRECTIONAL else None,
+            leg_order_ids=None,
             **kwargs,
         )
         return [order] if order is not None else []

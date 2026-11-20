@@ -1949,12 +1949,20 @@ class OrderTracker:
         return order_with_trade_fill(order, filled)
 
     def position_for_submission(
-        self, current: float, direction: OrderDirection, *, needs_position_detail: bool
+        self,
+        current: float,
+        direction: OrderDirection,
+        *,
+        needs_position_detail: bool,
+        leg_order_ids: set[str] | None = None,
     ) -> float | None:
         """普通买卖扣除已知成交；开平类订单须等持仓明细赶上后再拆腿。"""
         if self.start_volume is None:
             return current
         orders = self.get_all_orders(for_position=True)
+        if leg_order_ids:
+            # 该腿已发分段共用一次持仓快照，成交已包含在本腿的数量预算内。
+            orders = [order for order in orders if order.order_id not in leg_order_ids]
         if not any(order.filled_volume for order in orders):
             return current
         expected = confirmed_position(self.start_volume, orders)

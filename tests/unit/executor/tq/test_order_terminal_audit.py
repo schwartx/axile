@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import gc
 import threading
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
@@ -180,8 +182,12 @@ def test_late_callback_keeps_original_execution_sink_and_sequence(audited_execut
     instance.set_audit_context({"execution_id": "wrong", "account_id": 99, "algorithm": "wrong"})
     next_sink = RecordingSink()
     bind_execution(instance, next_sink, "execution-B")
+    previous = weakref.ref(old_runtime)
+    del old_runtime
     api.order.update(status="ALIVE", volume_left=2)
     new_order = submit(instance)
+    gc.collect()
+    assert previous() is None
     instance._on_runtime_event("order", old_row)
     instance._on_runtime_event("order", finish(api))
     instance._on_runtime_event("order", old_row)

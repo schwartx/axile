@@ -621,23 +621,27 @@ def test_trade_fill_survives_zero_fill_order_snapshot(native_database, monkeypat
     }
 
 
-def test_reversal_restores_close_trade_before_late_open_fill(native_database, monkeypatch):
+@pytest.mark.parametrize(("start", "fills"), [(900, [900]), (0.3, [0.1, 0.2])])
+def test_reversal_restores_close_trade_before_late_open_fill(native_database, monkeypatch, start, fills):
     seed_account(native_database)
     monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
     audit = ServerExecutionAuditSink()
     source = Mock(symbol=SELL, has_audit_sink=True)
     attach_audit(source, audit, "reverse", 1)
-    close = result(start=900, target=0, filled=0, status=OrderStatus.CANCELED).orders[0]
+    close = result(start=start, target=0, filled=0, status=OrderStatus.CANCELED).orders[0]
     opening = copy_data(
         result(start=0, target=-400, filled=0, status=OrderStatus.CANCELED).orders[0], update={"order_id": "open"}
     )
-    trade = TradeRecord.create(trade_id="close-fill", order_id=close.order_id, symbol=SELL, trade_volume=900)
+    trades = [
+        TradeRecord.create(trade_id=str(i), order_id=close.order_id, symbol=SELL, trade_volume=amount)
+        for i, amount in enumerate(fills)
+    ]
     assert save_position_checkpoint(source, 0, [opening])
     orders = [close, opening]
     record = AlgorithmResult(
-        **summarize_outcome(900, 0, -400, orders, [trade]),
+        **summarize_outcome(start, 0, -400, orders, trades),
         orders=orders,
-        trades=[trade],
+        trades=trades,
         symbol=SELL,
         target_volume=-400,
     )

@@ -35,6 +35,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from itertools import count
 from typing import TYPE_CHECKING
 
 from axile.domain.execution import (
@@ -119,8 +120,7 @@ class ExecutionRuntime:
         self.execution_timeout = 0
         self.memory: dict[str, object] = {}
         self.audit_context: AuditContext = dict(bindings.audit_context)
-        self._audit_seq = 0
-        self._audit_seq_lock = threading.Lock()
+        self.audit_sequence = count(1)
         self._order_audit_metadata: dict[str, OrderAuditMetadata] = {}
         self._order_audit_metadata_lock = threading.Lock()
         self._deadline_acked_at: str | None = None
@@ -311,9 +311,7 @@ class ExecutionRuntime:
 
     def next_audit_seq(self) -> int:
         """获取本次 execution 内单调递增的审计序号."""
-        with self._audit_seq_lock:
-            self._audit_seq += 1
-            return self._audit_seq
+        return next(self.audit_sequence)
 
     def register_order_audit_metadata(self, order_id: str, metadata: OrderAuditMetadata) -> None:
         """为订单注册审计关联元数据."""
@@ -351,7 +349,7 @@ class ExecutionRuntime:
             return False
 
         return audit_sink.append_event(
-            execution_id=execution_id,
+            execution_id=str(execution_id),
             account_id=int(account_id),
             channel=self.channel_type,
             algorithm=str(algorithm),

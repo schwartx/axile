@@ -113,7 +113,7 @@ pub fn page(
 
     let mut symbols: HashMap<i64, Map<String, Value>> = HashMap::new();
     let mut statement = connection.prepare(&format!("{PAGE}
-        SELECT s.record_id,s.map_key,s.node_kind,s.status,s.error,s.outcome,s.outcome_reason,s.reason_code,s.memory
+        SELECT s.record_id,s.map_key,s.node_kind,s.status,s.error,s.outcome,s.outcome_reason,s.reason_code
         FROM execution_symbol_result s JOIN selected p ON p.id=s.record_id
         ORDER BY s.record_id,s.map_key")).map_err(database)?;
     let mut rows = statement.query(args).map_err(database)?;
@@ -325,7 +325,7 @@ mod tests {
         assert_eq!(result["data"][1]["record"]["summary"]["fees"]["USD"], -0.2);
         assert_eq!(
             result["data"][1]["record"]["symbol_results"],
-            json!({"A":{"outcome":null}})
+            json!({"A":{}})
         );
         assert_eq!(
             page(&conn, 2, 1, 1, None, None).unwrap()["data"]
@@ -408,9 +408,9 @@ mod tests {
         assert_eq!(
             result["data"][1]["record"]["symbol_results"],
             json!({
-                "A":{"status":"NOOP","outcome":"completed"},
-                "empty":{"outcome":null},
-                "failed":{"status":"FAILED","outcome":"error","error":"执行失败，具体原因见执行证据"},
+                "A":{"status":"NOOP"},
+                "empty":{},
+                "failed":{"status":"FAILED"},
                 "malformed":{"outcome":null}
             })
         );
@@ -419,9 +419,7 @@ mod tests {
             "UPDATE execution_symbol_result SET memory='bad-json' WHERE map_key='A'",
         )
         .unwrap();
-        assert!(page(&conn, 2, 0, 10, None, None)
-            .unwrap_err()
-            .starts_with("JOURNAL_READ_ERROR:"));
+        assert_eq!(page(&conn, 2, 0, 10, None, None).unwrap(), result);
     }
 
     #[test]
