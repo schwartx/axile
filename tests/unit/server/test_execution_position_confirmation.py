@@ -11,10 +11,11 @@ from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionKind, ExecutionReasonFamily
 from axile.executor.algorithms.core.base import AlgorithmInput
 from axile.executor.algorithms.defaults.single_maker import impl as single_maker
-from axile.executor.algorithms.utils.final_position import read_final_position
+from axile.executor.algorithms.utils.final_position import read_final_position, save_position_checkpoint
 from axile.executor.algorithms.utils.order_tracker import OrderTracker
 from axile.executor.algorithms.utils.outcome import summarize_outcome
 from axile.executor.constants.order_status import OrderStatus
+from axile.executor.execution_runtime import ExecutionRuntime, ExecutionRuntimeBindings
 from axile.executor.models.execution_result import AlgorithmResult
 from axile.executor.models.unified_account_assets import PositionDirection
 from axile.executor.order_cancellation import CancellationResult
@@ -27,6 +28,7 @@ from axile.server.execution.worker_backend.manager import WorkerBackendManager
 from tests.conftest import native_store_call
 from tests.fixtures.algorithm_fakes import ClockStub
 from tests.unit.executor.algorithms.test_order_tracker_and_single_maker_regressions import _SingleMakerExecutor
+from tests.unit.executor.algorithms.utils.test_order_tracker import _TimeoutCancelExecutor
 from tests.unit.executor.test_base_executor_symbol_dispatch import _assets
 from tests.unit.executor.test_execution_phase_settlement import SELL, assets, engine, inputs, result
 from tests.unit.server._business_facts_test_support import read_result, seed_account
@@ -498,3 +500,177 @@ def test_reversal_reconciles_late_open_fill_ahead_of_intermediate_flat_checkpoin
         raw_result=to_payload(output, mode="json"),
     )
     assert native_store_call(native_database, "execution_read", pending_positions) == {}
+
+
+def append_terminal(audit, account_id, execution_id, order, *, seq):
+    assert audit.append_event(
+        execution_id=execution_id,
+        account_id=account_id,
+        channel=TradeChannel("gm"),
+        algorithm="TEST",
+        event_type=ExecutionEventType.ORDER_TERMINAL,
+        status=ExecutionEventStatus.SUCCESS,
+        reason_family=ExecutionReasonFamily.EXCHANGE,
+        reason_code="COMMON.ORDER_TERMINAL",
+        symbol=order.symbol,
+        order_id=order.order_id,
+        seq=seq,
+        details=order_terminal_details(order),
+    )
+
+
+def finish_terminated(account_id, execution_id, error):
+    return asyncio.run(
+        _record_terminated_execution(
+            account_id=account_id,
+            execution_id=execution_id,
+            execution_kind=ExecutionKind.REBALANCE,
+            current_state=None,
+            requested_at="2026-11-20T09:32:00",
+            finished_at="2026-11-20T09:32:05",
+            termination=_resolve_termination_snapshot(error, None),
+        )
+    )
+
+
+def test_operator_stop_before_timeout_recovers_late_fill(native_database, monkeypatch):
+    seed_account(native_database)
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    audit = ServerExecutionAuditSink()
+    execution_id = "stop-before-timeout"
+    cancel = Event()
+    controller = ExecutionTerminationController(
+        cancel_event=cancel, reason_provider=lambda: "operator", mode_provider=lambda: "graceful"
+    )
+    terminal = result().orders[0]
+    pending = copy_data(terminal, update={"status": OrderStatus.PENDING, "filled_volume": 0})
+    owner = engine([], channel="gm")._owner
+    runtime = ExecutionRuntime(
+        owner=owner,
+        bindings=ExecutionRuntimeBindings(
+            audit_context={"execution_id": execution_id, "account_id": 1, "algorithm": "TEST"},
+            audit_sink=audit,
+            termination_controller=controller,
+        ),
+    )
+    executor = _SingleMakerExecutor()
+    executor.has_audit_sink = True
+    executor.audit_context = runtime.audit_context
+    executor.emit_audit_event = runtime.emit_audit_event
+    executor.handle_termination_checkpoint = runtime.handle_termination_checkpoint
+    clock = ClockStub()
+    tracker = OrderTracker(executor=executor, clock=clock, start_volume=900)
+    tracker.add_order(pending)
+    orders_request = {"op": "pending_order_terminals", "account_id": 1}
+    groups = native_store_call(native_database, "execution_read", orders_request)
+    assert groups[0]["start_volume"] == 900 and groups[0]["pending"] == {SELL: None}
+    cancel.set()
+    with pytest.raises(ExecutionTerminated) as stopped:
+        tracker.wait_for_completion(timeout=60)
+    assert not stopped.value.forced
+    finish_terminated(1, execution_id, stopped.value)
+    append_terminal(audit, 1, execution_id, terminal, seq=99)
+
+    replacement = engine([assets(sell=900)], channel="gm")
+    attach_audit(replacement._runtime, audit, "replacement", account_id=1)
+    replacement._run_prepared_symbol_algorithms = Mock()
+    request = inputs(replacement, buy=False)
+    request.extra["pending_order_terminals"] = native_store_call(native_database, "execution_read", orders_request)
+    output = replacement.run(request)
+    assert output.status == "BLOCKED"
+    assert output.symbol_results[SELL].expected_volume == 500
+    replacement._run_prepared_symbol_algorithms.assert_not_called()
+
+
+def test_reversal_without_result_uses_latest_phase_orders(native_database, monkeypatch):
+    seed_account(native_database)
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    audit = ServerExecutionAuditSink()
+    execution_id = "reverse-killed-open-leg"
+    source = Mock()
+    source.has_audit_sink = True
+    source.symbol = SELL
+    attach_audit(source, audit, execution_id, account_id=1)
+
+    close = copy_data(result(start=900, target=0, filled=900).orders[0], update={"order_id": "close"})
+    assert save_position_checkpoint(
+        source, 900, [copy_data(close, update={"status": OrderStatus.PENDING, "filled_volume": 0})]
+    )
+    source.emit_audit_event(
+        event_type=ExecutionEventType.ORDER_TERMINAL_PENDING,
+        status=ExecutionEventStatus.WARNING,
+        reason_family=ExecutionReasonFamily.ACCOUNT_STATE,
+        reason_code="COMMON.ORDER.TERMINAL_UNCONFIRMED",
+        symbol=SELL,
+        order_id=close.order_id,
+    )
+    outside_tracker = copy_data(
+        close, update={"order_id": "outside-tracker", "status": OrderStatus.CANCELED, "filled_volume": 0}
+    )
+    source.emit_audit_event(
+        event_type=ExecutionEventType.ORDER_TERMINAL_PENDING,
+        status=ExecutionEventStatus.WARNING,
+        reason_family=ExecutionReasonFamily.ACCOUNT_STATE,
+        reason_code="COMMON.ORDER.TERMINAL_UNCONFIRMED",
+        symbol=SELL,
+        order_id=outside_tracker.order_id,
+    )
+    assert save_position_checkpoint(source, 900, [close])
+    opened = result(start=0, target=-400, filled=200, status=OrderStatus.PARTIALLY_FILLED).orders[0]
+    assert save_position_checkpoint(source, 0, [opened])
+    append_terminal(audit, 1, execution_id, close, seq=91)
+    append_terminal(audit, 1, execution_id, copy_data(opened, update={"status": OrderStatus.CANCELED}), seq=92)
+    append_terminal(audit, 1, execution_id, outside_tracker, seq=93)
+    finish_terminated(1, execution_id, ExecutionTerminated(reason="operator", mode="graceful", forced=True))
+
+    orders_request = {"op": "pending_order_terminals", "account_id": 1}
+    positions_request = {"op": "pending_positions", "account_id": 1}
+    groups = native_store_call(native_database, "execution_read", orders_request)
+    assert len(groups) == 1 and groups[0]["start_volume"] == 0
+    assert set(groups[0]["pending"]) == {opened.order_id, outside_tracker.order_id}
+
+    short = _assets(total_asset=280000, positions=[(SELL, 200, PositionDirection.SHORT)])
+    replacement = engine([short, short])
+    attach_audit(replacement._runtime, audit, "verify-short", account_id=1)
+    request = copy_data(
+        inputs(replacement, buy=False), update={"target_mode": "quantity", "curr_target": {SELL: -200.0}}
+    )
+    request.extra["pending_order_terminals"] = groups
+    request.extra["pending_positions"] = native_store_call(native_database, "execution_read", positions_request)
+    output = replacement.run(request)
+    assert output.status == "NOOP"
+    assert output.symbol_results[SELL].expected_volume == -200
+    assert output.symbol_results[SELL].position_confirmed is True
+
+
+@pytest.mark.parametrize("at_timeout", [False, True])
+def test_checkpoint_write_failure_still_cancels_known_order(native_database, monkeypatch, at_timeout):
+    seed_account(native_database)
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    audit = ServerExecutionAuditSink()
+    pending = result(filled=0, status=OrderStatus.PENDING).orders[0]
+    executor = _TimeoutCancelExecutor(pending)
+    executor.has_audit_sink = True
+    executor.audit_context = {"execution_id": "checkpoint-failure"}
+    executor.emit_audit_event = lambda **event: audit.append_event(
+        account_id=1, execution_id="checkpoint-failure", channel=TradeChannel("gm"), algorithm="TEST", **event
+    )
+    tracker = OrderTracker(executor=executor, clock=ClockStub(), start_volume=900)
+
+    async def fail_write(*args, **kwargs):
+        raise TimeoutError("writer busy")
+
+    if at_timeout:
+        tracker.add_order(pending)
+    monkeypatch.setattr("axile.server.execution_audit.native_operation", fail_write)
+    executor.get_pending_orders = Mock(side_effect=AssertionError("use the known order without a fresh lookup"))
+    with pytest.raises(RuntimeError, match="订单终态尚未确认"):
+        if at_timeout:
+            tracker.wait_for_completion(timeout=0)
+        else:
+            tracker.add_order(pending)
+
+    assert executor.cancel_calls == [pending.order_id]
+    assert tracker.explicit_error == "待核对仓位保存失败"
+    with pytest.raises(RuntimeError, match="待核对仓位保存失败"):
+        tracker.assert_ready_for_submission()

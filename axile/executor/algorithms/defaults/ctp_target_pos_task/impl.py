@@ -355,6 +355,16 @@ def _place_volume_slices(
             )
             break
         orders.append(order)
+        if tracker is not None:
+            tracker.add_order(
+                order,
+                direction=direction,
+                offset_flag=offset_flag,
+                trade_rule=trade_rule,
+                chase_enabled=order_type == OrderType.LIMIT,
+            )
+            tracker.explicit_error = None
+            tracker.explicit_blocked_error = None
         emit_audit_event = getattr(executor, "emit_audit_event", None)
         if callable(emit_audit_event):
             emit_audit_event(
@@ -374,16 +384,6 @@ def _place_volume_slices(
                     }
                 },
             )
-        if tracker is not None:
-            tracker.add_order(
-                order,
-                direction=direction,
-                offset_flag=offset_flag,
-                trade_rule=trade_rule,
-                chase_enabled=order_type == OrderType.LIMIT,
-            )
-            tracker.explicit_error = None
-            tracker.explicit_blocked_error = None
         submitted += float(chunk)
     if submitted < volume:
         executor.logger.warning(f"拆单未提交缺口: {volume - submitted}，目标 {volume}，已提交 {submitted}")

@@ -47,6 +47,7 @@ from axile.executor.order_cancellation import (
     CancelNotAllowedError,
     CancelRequestStatus,
     OrderCancellation,
+    cancel_orders,
 )
 from axile.executor.order_volume_limits import split_order_volumes
 from axile.executor.termination import ExecutionTerminated
@@ -205,6 +206,8 @@ class OrderTracker:
     price_stale_after: float = DEFAULT_QUOTE_MAX_AGE_SECONDS
     rest_price_refresh_interval: float = 1.0
     start_volume: float | None = None
+    _checkpoint_failed: bool = field(default=False, init=False)
+    _checkpoint_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _explicit_error: str | None = field(default=None, init=False)
     _order_errors: dict[str, str] = field(default_factory=dict, init=False)
     _cancel_restrictions: dict[str, str] = field(default_factory=dict, init=False)
@@ -384,6 +387,8 @@ class OrderTracker:
 
         for buffered_order in buffered_order_updates:
             self.on_order_update(buffered_order)
+
+        self._persist_accepted_orders()
 
         # 下单即探针：未收到期待的回报时报告通道可疑，由账户恢复核对。
         self._register_order_ack_probe(order.order_id)
@@ -568,6 +573,8 @@ class OrderTracker:
 
     def assert_ready_for_submission(self) -> None:
         """先对账旧单，再拒绝仍未确认终态的下单、追单或兜底。"""
+        if self._checkpoint_failed:
+            raise RuntimeError("待核对仓位保存失败")
         # 查询可能触发订单回调，必须在锁外执行；缺失终态回调时依靠 REST 恢复。
         self._query_pending_orders()
         with self.lock:
@@ -584,7 +591,7 @@ class OrderTracker:
     def _submission_expired(self, chase_info: dict[str, Any]) -> bool:
         """判断追价或兜底是否已过提交期限；缺省不额外限制。"""
         deadline = chase_info.get("submission_deadline")
-        return deadline is not None and self.clock.time() >= deadline
+        return self._checkpoint_failed or (deadline is not None and self.clock.time() >= deadline)
 
     def wait_for_completion(self, timeout: float = 120) -> bool:
         """等待当前 tracker 内所有订单收敛到终态。"""
@@ -681,20 +688,48 @@ class OrderTracker:
 
         summary = self.get_status_summary()
         self._logger.warning(f"等待订单完成超时: elapsed={timeout:.1f}s, {self._format_status_summary(summary)}")
-        with self.lock:
-            for order in self.pending_orders.values():
-                order.extra["terminal_confirmation_pending"] = True
-            orders = [copy_data(order) for order in (*self.completed_orders.values(), *self.pending_orders.values())]
-        if not save_position_checkpoint(self.executor, self.start_volume, orders):
-            raise RuntimeError("待核对仓位保存失败")
+        saved = self._save_checkpoint()
         self._logger.info(f"正在撤销所有未成交订单: pending={self.get_pending_count()}")
         self.executor.handle_termination_checkpoint()
-        self._finalize_timeout_cancellations()
+        self._finalize_timeout_cancellations(known_only=not saved)
         return False
 
-    def _finalize_timeout_cancellations(self) -> None:
+    def _save_checkpoint(self) -> bool:
+        if self.start_volume is None:
+            return True
+        # 把同一跟踪器的快照和写入排序，避免并发回调让旧快照覆盖较新的订单集合。
+        with self._checkpoint_lock:
+            with self.lock:
+                for order in self.pending_orders.values():
+                    order.extra["terminal_confirmation_pending"] = True
+                orders = [
+                    copy_data(order) for order in (*self.completed_orders.values(), *self.pending_orders.values())
+                ]
+            if save_position_checkpoint(self.executor, self.start_volume, orders):
+                return True
+            self._checkpoint_failed = True
+            self.explicit_error = "待核对仓位保存失败"
+            return False
+
+    def _persist_accepted_orders(self) -> None:
+        """受理后先留证；写入失败时处置已知委托并停止后续下单。"""
+        if not self._save_checkpoint():
+            self._finalize_timeout_cancellations(known_only=True)
+            raise RuntimeError("待核对仓位保存失败")
+
+    def _finalize_timeout_cancellations(self, *, known_only: bool = False) -> None:
         """超时后核对订单终态，收尾期间不再报单。"""
-        cancellation = cancel_pending_orders_via_query(self.executor)
+        if known_only:
+            with self.lock:
+                pending = [order for order in self.pending_orders.values() if not order.is_completed()]
+            reconcile = getattr(self.executor, "reconcile_terminal_order", None)
+            cancellation = cancel_orders(
+                pending,
+                cancel=lambda _symbol, order_id: self.executor.cancel_order(order_id),
+                reconcile=reconcile if callable(reconcile) else lambda _symbol, _order_id: None,
+            )
+        else:
+            cancellation = cancel_pending_orders_via_query(self.executor)
         self._reconcile_timeout_cancellations(cancellation)
         unconfirmed = self.record_cancellation_result(cancellation)
         for order_id, reason in unconfirmed.items():
@@ -1024,9 +1059,9 @@ class OrderTracker:
                         **kwargs,
                     )
 
-                    # 补发「追价」审计事件（复用 ORDER_SUBMITTED + 专属 reason_code），供前端逐只
-                    # 动作流呈现「挂单→追价→成交」中的每一次重挂。须在 _update_chase_info 递增
-                    # chase_count 之前取序号，与上方日志的 ``chase_count + 1`` 口径一致。
+                    chase_index = chase_info["chase_count"] + 1
+                    self._update_chase_info(order_id, new_order)
+                    self._persist_accepted_orders()
                     self.executor.emit_audit_event(
                         event_type=ExecutionEventType.ORDER_SUBMITTED,
                         status=ExecutionEventStatus.INFO,
@@ -1036,7 +1071,7 @@ class OrderTracker:
                         order_id=new_order.order_id,
                         details={
                             "chase": {
-                                "index": chase_info["chase_count"] + 1,
+                                "index": chase_index,
                                 "max": self.chase_config.max_count,
                                 "from_price": float(order.price),
                                 "to_price": float(new_price),
@@ -1045,8 +1080,6 @@ class OrderTracker:
                             }
                         },
                     )
-
-                    self._update_chase_info(order_id, new_order)
                     self._set_order_error(order_id, None)
 
             except CancelNotAllowedError as exc:

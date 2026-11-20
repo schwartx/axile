@@ -440,6 +440,18 @@ def submit_and_track_order(
         executor.logger.info(f"{symbol} {direction.value} {volume} 取整后数量为 0，跳过下单")
         return None
 
+    position_side = kwargs.get("position_side")
+    offset_flag = kwargs.get("offset_flag")
+    tracker.add_order(
+        order,
+        direction=direction,
+        target_volume=float(target_volume),
+        current_volume=float(current_volume),
+        position_side=position_side if isinstance(position_side, str) else None,
+        offset_flag=offset_flag if isinstance(offset_flag, str) else None,
+        submission_deadline=deadline,
+    )
+
     # 补发「挂单」审计事件，供前端逐只动作流呈现「决策→挂单→追价→成交」中的挂单一步。
     # 无审计上下文时 emit_audit_event 自身静默跳过，故对无上下文的渠道零影响。
     client_order_id = order.extra.get("cl_ord_id") if isinstance(order.extra, dict) else None
@@ -459,18 +471,6 @@ def submit_and_track_order(
                 "price": float(price),
             }
         },
-    )
-
-    position_side = kwargs.get("position_side")
-    offset_flag = kwargs.get("offset_flag")
-    tracker.add_order(
-        order,
-        direction=direction,
-        target_volume=float(target_volume),
-        current_volume=float(current_volume),
-        position_side=position_side if isinstance(position_side, str) else None,
-        offset_flag=offset_flag if isinstance(offset_flag, str) else None,
-        submission_deadline=deadline,
     )
 
     executor.logger.debug(f"订单已提交: {symbol} {direction.value} {volume} @{price}, 订单ID: {order.order_id}")

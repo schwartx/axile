@@ -276,10 +276,31 @@ fn pending_order_terminals(
     connection: &Connection,
     account_id: i64,
 ) -> Result<Value, AnalysisError> {
+    // 每个检查点包含该阶段的起始量和全部委托。渠道查出的额外委托可能只存在于待确认事件。
     let mut statement = connection.prepare(
-        "WITH candidates AS (
-            SELECT execution_id,algorithm,symbol,order_id
-            FROM execution_event WHERE account_id=?1 AND event_type='ORDER_TERMINAL_PENDING'
+        "WITH checkpoints AS (
+            SELECT id,execution_id,algorithm,symbol,details,
+                   row_number() OVER (PARTITION BY execution_id,symbol ORDER BY id DESC) AS rank
+            FROM execution_event WHERE account_id=?1 AND event_type='POSITION_CHECKPOINT'
+              AND json_type(details,'$.orders')='array'
+        ), candidates AS (
+            SELECT p.execution_id,p.algorithm,p.symbol,p.order_id
+            FROM execution_event p
+            WHERE p.account_id=?1 AND p.event_type='ORDER_TERMINAL_PENDING'
+              AND NOT EXISTS (
+                  SELECT 1 FROM checkpoints e
+                  WHERE e.rank=1 AND e.execution_id=p.execution_id AND e.symbol=p.symbol AND e.id>p.id
+                    AND EXISTS (
+                        SELECT 1 FROM checkpoints tracked JOIN json_each(tracked.details,'$.orders') o
+                        WHERE tracked.execution_id=p.execution_id AND tracked.symbol=p.symbol
+                          AND json_extract(o.value,'$.order_id')=p.order_id
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM json_each(e.details,'$.orders') o
+                        WHERE json_extract(o.value,'$.order_id')=p.order_id
+                          AND json_extract(o.value,'$.status') NOT IN ('已成交','已撤销','已拒绝','已过期')
+                    )
+              )
             UNION
             SELECT r.execution_id,COALESCE(s.algorithm,'SINGLE-MAKER'),s.map_key,json_extract(o.order_id,'$')
             FROM executerecord r JOIN execution_symbol_result s ON s.record_id=r.id
@@ -288,9 +309,8 @@ fn pending_order_terminals(
               AND o.status NOT IN ('已成交','已撤销','已拒绝','已过期')
             UNION
             SELECT e.execution_id,e.algorithm,e.symbol,json_extract(o.value,'$.order_id')
-            FROM execution_event e JOIN json_each(e.details,'$.orders') o
-            WHERE e.account_id=?1 AND e.event_type='POSITION_CHECKPOINT'
-              AND json_extract(o.value,'$.status') NOT IN ('已成交','已撤销','已拒绝','已过期')
+            FROM checkpoints e JOIN json_each(e.details,'$.orders') o
+            WHERE e.rank=1 AND json_extract(o.value,'$.status') NOT IN ('已成交','已撤销','已拒绝','已过期')
         )
         SELECT p.execution_id,p.algorithm,p.symbol,p.order_id,
                (SELECT json_extract(t.details,'$.order') FROM execution_event t
