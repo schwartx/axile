@@ -347,7 +347,8 @@ fn pending_order_terminals(
         SELECT p.execution_id,p.algorithm,p.symbol,json_group_object(p.order_id,json(p.terminal_body)),
                (SELECT json_object('start_volume',o.start_volume,'orders',json_group_array(json(o.body)))
                 FROM current_orders o WHERE o.execution_id=p.execution_id AND o.symbol=p.symbol
-                GROUP BY o.start_volume)
+                GROUP BY o.start_volume),
+               (SELECT COALESCE(max(id),0) FROM exchange t WHERE t.execution_id=p.execution_id AND t.symbol=p.symbol)
         FROM evidence p WHERE p.pending OR p.exchange_fill>p.known_fill
         GROUP BY p.execution_id,p.symbol
         HAVING p.checked_id IS NULL OR max(CASE WHEN p.exchange_fill>p.known_fill
@@ -362,13 +363,14 @@ fn pending_order_terminals(
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, Option<String>>(4)?,
+                row.get::<_, i64>(5)?,
             ))
         })
         .map_err(sql)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(sql)?;
     let mut groups: Vec<Value> = Vec::new();
-    for (execution, algorithm, symbol, pending, checkpoint) in rows {
+    for (execution, algorithm, symbol, pending, checkpoint, cursor) in rows {
         let recorded = recorded_order_position(connection, account_id, &execution, &symbol)?;
         let details = match checkpoint {
             Some(raw) => serde_json::from_str(&raw).map_err(|error| invalid(error.to_string()))?,
@@ -380,6 +382,9 @@ fn pending_order_terminals(
             "execution_id": execution, "algorithm": algorithm, "symbol": symbol,
             "start_volume": details["start_volume"], "orders": details["orders"], "pending": pending,
         });
+        if cursor > 0 {
+            group["terminal_cursor"] = json!(cursor);
+        }
         if !recorded.is_null() && recorded != details {
             group["recorded_position"] = recorded;
         }
@@ -399,7 +404,9 @@ fn recorded_order_position(
                     'orders',(SELECT json_group_array(json_object(
                       'order_id',json_extract(o.order_id,'$'),'symbol',o.symbol,'direction',o.direction,
                       'order_type',o.order_type,'price',o.price,'volume',o.volume,'status',o.status,
-                      'filled_volume',o.filled_volume))
+                      'filled_volume',max(o.filled_volume,COALESCE((SELECT sum(t.trade_volume)
+                         FROM business_trade t WHERE t.record_id=r.id AND t.collection_path=s.path || '/trades'
+                         AND t.order_id=o.order_id),0))))
                   FROM execution_order o WHERE o.record_id=r.id AND o.path=s.path || '/orders' AND o.kind='object'))
          FROM executerecord r JOIN execution_symbol_result s ON s.record_id=r.id
          WHERE r.account_id=?1 AND r.execution_id=?2 AND s.map_key=?3

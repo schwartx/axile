@@ -387,7 +387,8 @@ class ExecutionEngine:
         self._owner.pending_positions.update(pending)
         # 旧单的成交可能已经改变前一阶段的仓位，先收敛这些品种的委托。
         previous_orders = cast("list[ObjectDict]", standard_input.extra.get("pending_order_terminals", []))
-        blocked = [] if previous_orders else self._pending_position_results(planning.account_assets)
+        clearing = standard_input.extra.get("close_all_positions") is True
+        blocked = [] if previous_orders or clearing else self._pending_position_results(planning.account_assets)
         if blocked:
             self._account_snapshot = planning.account_assets, None
             self._emit_symbol_decision_events(standard_input, blocked)
@@ -395,9 +396,8 @@ class ExecutionEngine:
         # dispatch 阶段把计划拆成可直接返回的 NOOP、第一阶段减仓、第二阶段开仓三类。
         dispatch_phases = self._build_dispatch_phases(planning)
         has_dispatch = bool(dispatch_phases.phase_one_tasks or dispatch_phases.phase_two_plans)
-        clear_with_old_orders = standard_input.extra.get("close_all_positions") is True and bool(previous_orders)
         try:
-            if has_dispatch or clear_with_old_orders:
+            if has_dispatch or clearing:
                 self._prepare_account_for_symbol_dispatch()
         except CancelNotAllowedError as exc:
             if not has_dispatch:
@@ -561,7 +561,11 @@ class ExecutionEngine:
             reason_code="COMMON.POSITION.UNCONFIRMED",
             symbol=symbol,
             intent_id=recovery_intent,
-            details={"expected_volume": expected},
+            details={
+                "expected_volume": expected,
+                "terminal_cursor": previous.get("terminal_cursor", 0),
+                "reviewed_fills": {key: order.filled_volume for key, order in orders.items()},
+            },
             audit_context=context,
         ):
             return "旧委托核对结果保存失败，已阻断本次下单"

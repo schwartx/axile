@@ -339,6 +339,7 @@ def submit_and_track_order(
     target_volume: float,
     current_volume: float,
     deadline: float | None = None,
+    slice_target: float | None = None,
     **kwargs: Any,
 ) -> UnifiedOrder | None:
     """
@@ -383,7 +384,24 @@ def submit_and_track_order(
     """
     symbol = executor.symbol
 
-    decision = resolve_reduce_intent(executor, direction, volume, target_volume, current_volume, price)
+    while True:
+        decision = resolve_reduce_intent(executor, direction, volume, target_volume, current_volume, price)
+        tracker.require_saved_orders()
+        if slice_target is None:
+            break
+        position = tracker.position_for_submission(current_volume, direction, needs_position_detail=False)
+        if position is None:
+            return None
+        allowed = min(
+            volume,
+            _remaining_toward_target(direction, slice_target, position),
+            _remaining_toward_target(direction, target_volume, position),
+        )
+        if allowed == volume:
+            break
+        if allowed <= 0:
+            return None
+        volume, current_volume = allowed, position
     if decision.action == "SKIP":
         executor.emit_audit_event(
             event_type=ExecutionEventType.SYMBOL_SKIPPED,
@@ -406,7 +424,6 @@ def submit_and_track_order(
     if decision.reduce_only:
         kwargs["reduce_only"] = True
 
-    tracker.require_saved_orders()
     if deadline is not None and get_default_clock().time() >= deadline:
         executor.logger.info(f"{symbol} 下单时间额度已耗尽，停止提交")
         return None
@@ -609,6 +626,7 @@ def _place_offset_leg(
             target_volume=target_volume,
             current_volume=current_volume,
             deadline=deadline,
+            slice_target=None,
             **{**leg_kwargs, **extra},
         )
         if order is None:
@@ -797,6 +815,7 @@ def submit_and_track_split_orders(
             target_volume=target_volume,
             current_volume=current_volume,
             deadline=deadline,
+            slice_target=slice_target if model == OrderParamModel.DIRECTIONAL else None,
             **kwargs,
         )
         return [order] if order is not None else []

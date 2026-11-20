@@ -62,6 +62,21 @@ fn inserted(result: rusqlite::Result<usize>, tokens: &[&str]) -> Result<bool, An
 
 fn insert_event(connection: &Connection, row: &Value) -> Result<bool, AnalysisError> {
     let event_type = text(row, "event_type")?.to_ascii_uppercase();
+    if event_type == "ORDER_POSITION_RECONCILED" {
+        if let Some(cursor) = row["details"]["terminal_cursor"].as_i64() {
+            let changed: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM execution_event e WHERE e.execution_id=?1 AND e.symbol=?2
+                  AND e.id>?3 AND e.event_type='ORDER_TERMINAL' AND e.reason_family='EXCHANGE' AND e.status='SUCCESS'
+                  AND json_extract(e.details,'$.order.filled_volume') > COALESCE(
+                      (SELECT value FROM json_each(?4) WHERE key=e.order_id),-1))",
+                params![text(row,"execution_id")?,optional_text(row,"symbol")?,cursor,row["details"]["reviewed_fills"].to_string()],
+                |r| r.get(0),
+            ).map_err(sql)?;
+            if changed {
+                return Ok(false);
+            }
+        }
+    }
     inserted(
         connection.execute(
             "INSERT INTO execution_event(execution_id,account_id,channel,algorithm,schema_version,

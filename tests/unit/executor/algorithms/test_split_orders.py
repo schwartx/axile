@@ -78,9 +78,14 @@ _ASSETS = UnifiedAccountAssets(available_cash=0.0, total_asset=0.0, market_value
 
 @pytest.mark.parametrize("target", [-100, 100])
 @pytest.mark.parametrize(
-    ("model", "submitted"), [(OrderParamModel.DIRECTIONAL, [50, 50]), (OrderParamModel.OFFSET, [50])]
+    ("model", "late", "submitted"),
+    [
+        (OrderParamModel.DIRECTIONAL, False, [50, 50]),
+        (OrderParamModel.OFFSET, False, [50]),
+        (OrderParamModel.DIRECTIONAL, True, [50, 70]),
+    ],
 )
-def test_twap_does_not_resubmit_fills_missing_from_position(monkeypatch, target, model, submitted):
+def test_twap_does_not_resubmit_fills_missing_from_position(monkeypatch, target, model, late, submitted):
     from axile.executor.algorithms.core.base import AlgorithmInput
     from axile.executor.algorithms.defaults.twap.impl import TwapParams, twap
     from tests.fixtures.algorithm_fakes import ClockStub
@@ -96,8 +101,14 @@ def test_twap_does_not_resubmit_fills_missing_from_position(monkeypatch, target,
     executor.is_termination_requested.return_value = False
     place_order = executor.place_order.side_effect
 
+    from axile.executor.models.unified_order import TradeRecord
+
     def fill(*args, **kwargs):
         order = place_order(*args, **kwargs)
+        if late and executor.place_order.call_count == 1:
+            trade = TradeRecord.create(trade_id="late", order_id=order.order_id, symbol=order.symbol, trade_volume=30)
+            executor.get_min_notional.side_effect = lambda: executor.register_trade_callback.call_args.args[0](trade)
+            return copy_data(order, update={"status": OrderStatus.CANCELED})
         return copy_data(order, update={"status": OrderStatus.FILLED, "filled_volume": order.volume})
 
     executor.place_order.side_effect = fill

@@ -572,15 +572,23 @@ def test_exchange_fill_after_zero_fill_cancel_reopens_position_check(native_data
     query = {"op": "pending_order_terminals", "account_id": 1}
     assert native_store_call(native_database, "execution_read", query) == []
 
-    for seq, filled in [(80, 100), (81, 300)]:
+    for seq, filled in [(80, 100), (82, 300)]:
         append_terminal(audit, 1, "old", copy_data(canceled, update={"filled_volume": filled}), seq=seq)
         replacement = engine([assets(sell=900)])
         attach_audit(replacement._runtime, audit, f"restart-{seq}", 1)
         request = inputs(replacement, buy=False)
         request.extra["pending_order_terminals"] = native_store_call(native_database, "execution_read", query)
         replacement._run_prepared_symbol_algorithms = Mock()
+        if seq == 80:
+            append_terminal(audit, 1, "old", copy_data(canceled, update={"filled_volume": 200}), seq=81)
         output = replacement.run(request)
         replacement._run_prepared_symbol_algorithms.assert_not_called()
+        if seq == 80:
+            assert output.status == "BLOCKED"
+            assert (
+                native_store_call(native_database, "execution_read", query)[0]["pending"][SELL]["filled_volume"] == 200
+            )
+            continue
         assert output.symbol_results[SELL].expected_volume == 900 - filled
         assert native_store_call(native_database, "execution_read", query) == []
 
@@ -611,6 +619,42 @@ def test_trade_fill_survives_zero_fill_order_snapshot(native_database, monkeypat
     assert native_store_call(native_database, "execution_read", {"op": "pending_positions", "account_id": 1}) == {
         SELL: 860
     }
+
+
+def test_reversal_restores_close_trade_before_late_open_fill(native_database, monkeypatch):
+    seed_account(native_database)
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    audit = ServerExecutionAuditSink()
+    source = Mock(symbol=SELL, has_audit_sink=True)
+    attach_audit(source, audit, "reverse", 1)
+    close = result(start=900, target=0, filled=0, status=OrderStatus.CANCELED).orders[0]
+    opening = copy_data(
+        result(start=0, target=-400, filled=0, status=OrderStatus.CANCELED).orders[0], update={"order_id": "open"}
+    )
+    trade = TradeRecord.create(trade_id="close-fill", order_id=close.order_id, symbol=SELL, trade_volume=900)
+    assert save_position_checkpoint(source, 0, [opening])
+    orders = [close, opening]
+    record = AlgorithmResult(
+        **summarize_outcome(900, 0, -400, orders, [trade]),
+        orders=orders,
+        trades=[trade],
+        symbol=SELL,
+        target_volume=-400,
+    )
+    persist(native_database, execution_id="reverse", raw_result={"symbol_results": {SELL: to_payload(record)}})
+    append_terminal(audit, 1, "reverse", copy_data(opening, update={"filled_volume": 200}), seq=80)
+    short = _assets(total_asset=280000, positions=[(SELL, 200, PositionDirection.SHORT)])
+    replacement = engine([short, short])
+    attach_audit(replacement._runtime, audit, "restart", 1)
+    request = copy_data(
+        inputs(replacement, buy=False), update={"target_mode": "quantity", "curr_target": {SELL: -200.0}}
+    )
+    request.extra["pending_order_terminals"] = native_store_call(
+        native_database, "execution_read", {"op": "pending_order_terminals", "account_id": 1}
+    )
+    output = replacement.run(request)
+    assert output.status == "NOOP"
+    assert output.symbol_results[SELL].expected_volume == -200
 
 
 def finish_terminated(account_id, execution_id, error):
@@ -676,8 +720,12 @@ def test_operator_stop_before_timeout_recovers_late_fill(native_database, monkey
     replacement._run_prepared_symbol_algorithms.assert_not_called()
 
 
-@pytest.mark.parametrize(("filled", "other_pending"), [(0, False), (400, False), (0, True)])
-def test_clear_empty_snapshot_cancels_and_reconciles_old_buy(native_database, monkeypatch, filled, other_pending):
+@pytest.mark.parametrize(
+    ("filled", "other_pending", "recorded"), [(0, False, True), (400, False, True), (0, True, True), (0, True, False)]
+)
+def test_clear_empty_snapshot_cancels_and_reconciles_old_buy(
+    native_database, monkeypatch, filled, other_pending, recorded
+):
     seed_account(native_database)
     monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
     audit = ServerExecutionAuditSink()
@@ -708,7 +756,10 @@ def test_clear_empty_snapshot_cancels_and_reconciles_old_buy(native_database, mo
     owner.reconcile_terminal_order.side_effect = None
 
     output = owner.empty_positions(
-        extra={"pending_order_terminals": groups, "pending_positions": {BUY: 100} if other_pending else {}}
+        extra={
+            "pending_order_terminals": groups if recorded else [],
+            "pending_positions": {BUY: 100} if other_pending else {},
+        }
     )
     owner.cancel_order.assert_called_once_with(order.symbol, order.order_id)
     owner.reconcile_terminal_order.assert_any_call(order.symbol, order.order_id)
