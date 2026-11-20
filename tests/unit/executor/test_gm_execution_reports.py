@@ -39,6 +39,14 @@ def instance():
     )
 
 
+@pytest.mark.parametrize(
+    ("symbol", "step"),
+    [("159981.SZ", 0.001), ("SZSE.158001", 0.001), ("513880.SH", 0.001), ("000001.SZ", 0.01)],
+)
+def test_gm_stock_and_etf_price_steps(symbol, step):
+    assert instance().get_tick_size(symbol) == step
+
+
 @pytest.mark.parametrize("kind", [None, 0, 1, 5, 8, 16, 17, ExecType_CancelRejected, 999])
 def test_non_trade_reports_are_not_trades(kind):
     assert convert_gm_trade_to_trade_record(report(exec_type=kind)) is None

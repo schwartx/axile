@@ -317,6 +317,32 @@ def test_passive_order_at_best_bid_does_not_chase_on_wide_spread() -> None:
     assert tracker._get_orders_needing_chase() == []
 
 
+@pytest.mark.parametrize(("price", "should_chase"), [(1.724, False), (1.723, True)])
+def test_gm_chase_requires_more_than_one_price_tick(monkeypatch, price, should_chase):
+    executor = _ChaseExecutor()
+    monkeypatch.setattr(executor, "get_tick_size", lambda: 0.001)
+    clock = ClockStub()
+    clock.sleep(1)
+    tracker = OrderTracker(
+        executor=executor,
+        clock=clock,
+        chase_config=ChaseConfig(enabled=True, ticks=1, interval=0),
+    )
+    order = copy_data(_build_pending_order("etf-bid", "159981.SZ"), update={"price": price})
+    tracker.add_order(order, direction=OrderDirection.BUY)
+    tracker.latest_prices[order.symbol] = UnifiedPriceData(
+        symbol=order.symbol,
+        bids=[(1.725, 100)],
+        asks=[(1.726, 100)],
+        last_price=1.725,
+        volume=1000,
+        timestamp=1000,
+        update_time="1970-01-01T00:00:01+00:00",
+    )
+
+    assert bool(tracker._get_orders_needing_chase()) is should_chase
+
+
 def test_wait_for_completion_returns_immediately_when_no_orders() -> None:
     """本轮无任何挂单（例如所有品种被跳过）时应立即判定完成，而非空转到 timeout。
 
@@ -479,6 +505,7 @@ def test_timeout_cancel_reconciles_terminal_before_result(cancel_ok: bool, termi
 def test_timeout_cancel_does_not_extend_deadline_for_delayed_terminal() -> None:
     order = _build_pending_order("delayed-cancel")
     executor = _TimeoutCancelExecutor(order, confirm_after=2)
+    executor.channel_type = TradeChannel("ctp")
     executor.terminal_to_return = copy_data(order, update={"status": OrderStatus.CANCELED})
     clock = ClockStub()
     tracker = OrderTracker(executor=executor, clock=clock)
@@ -491,6 +518,41 @@ def test_timeout_cancel_does_not_extend_deadline_for_delayed_terminal() -> None:
     assert executor.cancel_calls == [order.order_id]
     assert order.order_id in tracker.pending_orders
     assert clock.time() == 0
+    assert executor._placed == 0
+
+
+@pytest.mark.parametrize("before_wait_expires", [True, False])
+def test_gm_timeout_cancel_uses_terminal_callback_in_result(monkeypatch, before_wait_expires):
+    order = _build_pending_order("gm-late-cancel")
+    executor = _TimeoutCancelExecutor(order)
+    clock = ClockStub()
+    tracker = OrderTracker(executor=executor, clock=clock)
+    tracker.add_order(order)
+    terminal = copy_data(order, update={"status": OrderStatus.CANCELED})
+
+    def wait(event, timeout):
+        if before_wait_expires:
+            clock.sleep(0.07)
+            tracker.on_order_update(terminal)
+            return event.is_set()
+        return ClockStub.event_wait(clock, event, timeout)
+
+    monkeypatch.setattr(clock, "event_wait", wait)
+    if before_wait_expires:
+        assert tracker.wait_for_completion(timeout=0) is False
+        assert clock.time() == 0.07
+    else:
+        with pytest.raises(RuntimeError, match="订单终态尚未确认") as raised:
+            tracker.wait_for_completion(timeout=0)
+        assert tracker.explicit_error == "撤单请求已提交，订单终态尚未确认"
+        tracker.on_order_update(terminal)
+        tracker.record_exception(raised.value)
+
+    assert not tracker.pending_orders
+    assert tracker.completed_orders[order.order_id].status == OrderStatus.CANCELED
+    outcome = summarize_outcome(0, 0, order.volume, tracker.get_all_orders(), [], **tracker.outcome_inputs())
+    assert outcome["reason_code"] == "COMMON.TARGET.NOT_REACHED"
+    assert executor.cancel_calls == [order.order_id]
     assert executor._placed == 0
 
 
@@ -509,7 +571,7 @@ def test_timeout_cancel_keeps_unknown_when_confirmation_unavailable(query_error:
     assert order.order_id in tracker.pending_orders
     assert not tracker.completed_orders
     assert len(executor.reconcile_calls) == 1
-    assert clock.time() == 0
+    assert clock.time() == 1.0
     outcome = summarize_outcome(0, 0, order.volume, tracker.get_all_orders(), tracker.get_all_trades())
     assert outcome["error"] == "订单最终状态尚未确认（含撤单结果未知）"
 

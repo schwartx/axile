@@ -15,6 +15,8 @@ from axile.executor.models.unified_account_assets import PositionDirection
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_input_accounts import GMAccountConfig
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
+from axile.executor.termination import ExecutionTerminated
+from tests.fixtures.algorithm_fakes import ClockStub
 from tests.unit.executor.test_base_executor_symbol_dispatch import _assets, _TestExecutor
 
 SELL = "rb2610"
@@ -377,6 +379,56 @@ def test_confirm_reduction_before_opening_without_reusing_stale_position(monkeyp
         assert output.symbol_results[SELL].position_confirmed is False
         assert "持仓尚待核对" in output.symbol_results[BUY].error
         e._runtime.sleep_or_terminate.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("confirmation_second", "execution_seconds", "waited"), [(9, None, 9), (11, None, 10), (9, 3, 2)]
+)
+def test_gm_delayed_reduction_opens_only_after_broker_confirms(
+    monkeypatch, confirmation_second, execution_seconds, waited
+):
+    clock = ClockStub()
+    monkeypatch.setattr("axile.executor.execution_engine.get_default_clock", lambda: clock)
+    opened = []
+    e = engine([], channel="gm")
+    e._runtime.sleep_or_terminate.side_effect = clock.sleep
+    if execution_seconds is not None:
+        e._runtime.deadline_remaining_seconds.side_effect = lambda: execution_seconds - clock.time()
+    monkeypatch.setattr(
+        e._owner,
+        "get_account_assets",
+        lambda: assets(sell=500 if clock.time() >= confirmation_second else 900, buy=1400 if opened else 0),
+    )
+
+    def dispatch(tasks):
+        if tasks[0].symbol == SELL:
+            return [result(observed=900)]
+        opened.append(clock.time())
+        return [buy_result()]
+
+    monkeypatch.setattr(e, "_run_prepared_symbol_algorithms", dispatch)
+    output = e.run(inputs(e))
+
+    assert clock.time() == waited
+    assert opened == ([9] if waited == 9 else [])
+    assert output.symbol_results[SELL].position_confirmed is bool(opened)
+    assert output.symbol_results[BUY].status == (ExecutionStatus.SUCCEEDED if opened else ExecutionStatus.BLOCKED)
+
+
+def test_gm_termination_during_position_confirmation_keeps_pending_fill(monkeypatch):
+    before = assets(sell=900)
+    e = engine([before, before, before], channel="gm")
+    e._runtime.sleep_or_terminate.side_effect = ExecutionTerminated(reason="停止", mode="graceful")
+    dispatch = Mock(return_value=[result(observed=900)])
+    monkeypatch.setattr(e, "_run_prepared_symbol_algorithms", dispatch)
+    request = inputs(e)
+
+    with pytest.raises(ExecutionTerminated):
+        e.run(request)
+
+    assert e._owner.pending_positions == {SELL: 500}
+    assert e.run(request).status == ExecutionStatus.BLOCKED
+    dispatch.assert_called_once()
 
 
 @pytest.mark.parametrize("restored", [False, True])

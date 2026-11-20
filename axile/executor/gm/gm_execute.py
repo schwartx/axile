@@ -1007,9 +1007,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             is_stock_market = any(suffix in symbol.upper() for suffix in [".SH", ".SZ", ".SHSE", ".SZSE"])
 
             if is_stock_market:
-                if code.startswith("5") or code.startswith("51"):
-                    return 0.001
-                if code.startswith("12"):
+                if code.startswith(("5", "12")) or (symbol.endswith(".SZ") and code.startswith(("158", "159"))):
                     return 0.001
                 return 0.01
 

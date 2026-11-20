@@ -151,6 +151,8 @@ class _SharedTickSingleMakerExecutor(_SingleMakerExecutor):
 
 
 class _RefreshingExecutor:
+    channel_type = "ctp"
+
     def __init__(self, pending_orders: list[UnifiedOrder]) -> None:
         self.symbol = "rb2610"
         self.logger = MagicMock()

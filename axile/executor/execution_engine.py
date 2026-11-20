@@ -17,6 +17,7 @@ from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, Exe
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.algorithms.core.base import AlgorithmInput, ExecutorProtocol, resolve_algorithm
 from axile.executor.algorithms.exceptions import execution_error_message
+from axile.executor.algorithms.utils.clock import get_default_clock
 from axile.executor.algorithms.utils.outcome import TARGET_NOT_REACHED, summarize_outcome
 from axile.executor.execution_runtime import ExecutionRuntime
 from axile.executor.execution_session import ExecutionSession
@@ -48,6 +49,8 @@ type AuditContext = ObjectDict
 type OrderAuditMetadata = ObjectDict
 type TradeRule = ObjectDict
 type TargetVolumeValue = int | float
+
+_GM_REDUCTION_CONFIRM_SECONDS = 10.0
 
 
 # 品种执行状态 → 审计事件状态的映射；成功/无操作记 SUCCESS，部分/阻塞记 WARNING，失败记 ERROR。
@@ -293,10 +296,14 @@ class ExecutionEngine:
             ):
                 by_symbol[symbol].expected_volume = expected
                 by_symbol[symbol].position_confirmed = True
+        self._remember_unconfirmed_positions(results)
+        return self._create_standard_output_from_results(standard_input, results)
+
+    def _remember_unconfirmed_positions(self, results: list[AlgorithmResult]) -> None:
+        """保留已成交但尚待渠道核对的持仓，阻止后续报单。"""
         for result in results:
             if result.expected_volume is not None and result.position_confirmed is False:
                 self._owner.pending_positions[result.symbol] = result.expected_volume
-        return self._create_standard_output_from_results(standard_input, results)
 
     def _run_symbol_algorithm(self, task: _PreparedSymbolAlgorithm) -> AlgorithmResult:
         """执行单个品种的算法任务."""
@@ -978,7 +985,7 @@ class ExecutionEngine:
         snapshot_error = None
         if dispatch_phases.phase_one_tasks:
             self._owner.handle_termination_checkpoint()
-            phase_one_results[:] = self._settle_result_positions(phase_one_results)
+            phase_one_results[:] = self._confirm_reduction_positions(phase_one_results)
             assert self._account_snapshot is not None
             assets, snapshot_error = self._account_snapshot
         if any(result.position_confirmed is False for result in phase_one_results):
@@ -1009,6 +1016,29 @@ class ExecutionEngine:
             self._account_snapshot = None
         phase_two_results.extend(self._run_prepared_symbol_algorithms(phase_two_tasks))
         return phase_two_results
+
+    def _confirm_reduction_positions(self, results: list[AlgorithmResult]) -> list[AlgorithmResult]:
+        """仅在 GM 减仓已成交但持仓未更新时，给渠道快照留出确认时间。"""
+        settled = self._settle_result_positions(results)
+        if self._owner.channel_type != "gm":
+            return settled
+
+        clock = get_default_clock()
+        deadline = clock.monotonic() + _GM_REDUCTION_CONFIRM_SECONDS
+        while not self._has_unsuccessful_results(settled) and any(row.position_confirmed is False for row in settled):
+            assert self._account_snapshot is not None
+            remaining = self._runtime.deadline_remaining_seconds()
+            if self._account_snapshot[1] is not None or (remaining is not None and remaining <= 1.0):
+                break
+            if clock.monotonic() + 1.0 > deadline:
+                break
+            try:
+                self._runtime.sleep_or_terminate(1.0)
+                settled = self._settle_result_positions(results)
+            except ExecutionTerminated:
+                self._remember_unconfirmed_positions(settled)
+                raise
+        return settled
 
     def _settle_result_positions(self, results: list[AlgorithmResult]) -> list[AlgorithmResult]:
         """一次账户查询核对所有品种，保留已确认的交易完成结论。"""

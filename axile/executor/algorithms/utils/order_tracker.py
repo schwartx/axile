@@ -16,6 +16,7 @@ Notes
 
 import threading
 from dataclasses import dataclass, field, is_dataclass
+from decimal import Decimal
 from typing import Any, cast
 
 from axile.common.logging import LogComponent, bind_log_context
@@ -50,6 +51,15 @@ from axile.executor.order_volume_limits import split_order_volumes
 from axile.executor.termination import ExecutionTerminated
 
 MARKET_FALLBACK_MAX_SLIPPAGE = 0.005
+_GM_TIMEOUT_CANCEL_CONFIRM_SECONDS = 1.0
+
+
+class _OrderTerminalUnconfirmedError(RuntimeError):
+    """停止后续报单，未确认原因由逐单状态维护。"""
+
+    def __init__(self, unconfirmed: dict[str, str]) -> None:
+        super().__init__(f"订单终态尚未确认: {unconfirmed}")
+        self.execution_error = "; ".join(dict.fromkeys(unconfirmed.values()))
 
 
 def _coerce_order_direction(direction: object) -> OrderDirection | None:
@@ -252,6 +262,8 @@ class OrderTracker:
 
     def record_exception(self, exc: BaseException, operation: str = "执行", *, order_id: str | None = None) -> None:
         """在捕获处保留异常含义；换单失败始终归属原订单。"""
+        if isinstance(exc, _OrderTerminalUnconfirmedError):
+            return
         reason_code, reason_family = None, None
         if isinstance(exc, MarketDataUnavailableError):
             reason_code, reason_family = exc.reason_code, ExecutionReasonFamily.MARKET_RULE
@@ -677,16 +689,28 @@ class OrderTracker:
         # 另一方面避免只清 tracker 内存态却把真实挂单留在交易通道里。
         self._logger.info(f"正在撤销所有未成交订单: pending={self.get_pending_count()}")
         self.executor.handle_termination_checkpoint()
+        self._finalize_timeout_cancellations()
+        return False
+
+    def _finalize_timeout_cancellations(self) -> None:
+        """收尾只接收已提交撤单的终态回报，不再报单。"""
         cancellation = cancel_pending_orders_via_query(self.executor)
         self._reconcile_timeout_cancellations(cancellation)
         unconfirmed = self.record_cancellation_result(cancellation)
+        if (
+            unconfirmed
+            and self.executor.channel_type == "gm"
+            and any(
+                item.request_status == CancelRequestStatus.SUBMITTED and item.terminal_order is None
+                for item in cancellation.orders.values()
+            )
+        ):
+            self.executor.handle_termination_checkpoint()
+            self.clock.event_wait(self.all_done_event, _GM_TIMEOUT_CANCEL_CONFIRM_SECONDS)
+            self.executor.handle_termination_checkpoint()
+            unconfirmed = self.record_cancellation_result(cancellation)
         if unconfirmed and not self.waiting_on_restriction():
-            message = "; ".join(dict.fromkeys(unconfirmed.values()))
-            error = RuntimeError(f"订单终态尚未确认: {unconfirmed}")
-            setattr(error, "execution_error", message)
-            raise error
-
-        return False
+            raise _OrderTerminalUnconfirmedError(unconfirmed)
 
     def record_cancellation_result(self, result: CancellationResult) -> dict[str, str]:
         """收敛真实终态并记录仍在场的委托，后续成交可清除本单撤单错误。"""
@@ -1147,23 +1171,16 @@ class OrderTracker:
 
                 direction = info["direction"]
 
-                # 追价的重挂目标是「本方盘口触点」（BUY→best bid，SELL→best ask，见 _check_and_chase），
-                # 故触发也必须量同一侧：当本方触点相对挂单已越过阈值（被超越/被压过），说明挂单已掉出触点，
-                # 需要重挂跟上。旧实现量的是「对手价」（BUY 量 ask），在 1-tick 价差平盘下恒等于价差，
-                # 永不触发——被动 maker 因此久挂不动、不发追价事件。此处改量本方触点以与重挂对齐。
+                levels = latest_price.bids if direction == OrderDirection.BUY else latest_price.asks
+                if not levels or not levels[0][0] > 0:
+                    continue
+                # 与重挂使用同侧盘口，精确区分刚好到达阈值与超过阈值。
+                best_price = Decimal(str(levels[0][0]))
+                order_price = Decimal(str(order.price))
                 tick_size = self._get_tick_size(symbol, order.price)
-                if direction == OrderDirection.BUY:
-                    if (latest_price.bids[0][0] if latest_price.bids else 0.0) > 0:
-                        # best bid 上移越过挂单价 = 被更高买价超越，需追高到新 best bid。
-                        price_diff = (latest_price.bids[0][0] if latest_price.bids else 0.0) - order.price
-                        if price_diff > self.chase_config.ticks * tick_size:
-                            result.append((order_id, order, info))
-                else:
-                    if (latest_price.asks[0][0] if latest_price.asks else 0.0) > 0:
-                        # best ask 下移越过挂单价 = 被更低卖价压过，需追低到新 best ask。
-                        price_diff = order.price - (latest_price.asks[0][0] if latest_price.asks else 0.0)
-                        if price_diff > self.chase_config.ticks * tick_size:
-                            result.append((order_id, order, info))
+                price_diff = best_price - order_price if direction == OrderDirection.BUY else order_price - best_price
+                if price_diff > self.chase_config.ticks * Decimal(str(tick_size)):
+                    result.append((order_id, order, info))
 
         return result
 
