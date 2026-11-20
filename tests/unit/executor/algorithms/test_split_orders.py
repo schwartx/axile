@@ -35,6 +35,9 @@ class _FakeTracker:
     def assert_ready_for_submission(self) -> None:
         pass
 
+    def position_for_submission(self, current: float, direction, *, needs_position_detail: bool) -> float:
+        return current
+
     def wait_for_completion(self, timeout: float | None = None) -> bool:
         _ = timeout
         self.wait_calls += 1
@@ -71,6 +74,39 @@ def _make_executor(model: OrderParamModel) -> MagicMock:
 
 
 _ASSETS = UnifiedAccountAssets(available_cash=0.0, total_asset=0.0, market_value=0.0, positions=[])
+
+
+@pytest.mark.parametrize("target", [-100, 100])
+@pytest.mark.parametrize(
+    ("model", "submitted"), [(OrderParamModel.DIRECTIONAL, [50, 50]), (OrderParamModel.OFFSET, [50])]
+)
+def test_twap_does_not_resubmit_fills_missing_from_position(monkeypatch, target, model, submitted):
+    from axile.executor.algorithms.core.base import AlgorithmInput
+    from axile.executor.algorithms.defaults.twap.impl import TwapParams, twap
+    from tests.fixtures.algorithm_fakes import ClockStub
+    from tests.unit.executor.algorithms.test_order_tracker_and_single_maker_regressions import _SingleMakerExecutor
+
+    clock = ClockStub()
+    monkeypatch.setattr("axile.executor.algorithms.utils.clock._default_clock", clock)
+    executor = _make_executor(model)
+    executor.sleep_or_terminate.side_effect = clock.sleep
+    executor.get_market_data.return_value = _SingleMakerExecutor().get_market_data()
+    executor.get_pending_orders.return_value = []
+    executor.get_order_volume_bounds.return_value = None
+    executor.is_termination_requested.return_value = False
+    place_order = executor.place_order.side_effect
+
+    def fill(*args, **kwargs):
+        order = place_order(*args, **kwargs)
+        return copy_data(order, update={"status": OrderStatus.FILLED, "filled_volume": order.volume})
+
+    executor.place_order.side_effect = fill
+    output = twap(
+        executor,
+        AlgorithmInput(executor.symbol, target, {}, params=TwapParams(total_duration=30, slices=2, max_wait_seconds=1)),
+    )
+    assert [order.volume for order in output.orders] == submitted
+    assert output.position_confirmed is False
 
 
 @pytest.mark.parametrize("algorithm", ["SINGLE-MAKER", "TWAP", "POV"])

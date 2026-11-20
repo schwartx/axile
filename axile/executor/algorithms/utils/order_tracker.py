@@ -18,7 +18,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field, is_dataclass
 from decimal import Decimal
-from math import isfinite
+from math import isclose, isfinite
 from typing import Any, cast
 
 from axile.common.logging import LogComponent, bind_log_context
@@ -33,6 +33,7 @@ from axile.executor.algorithms.exceptions import (
 )
 from axile.executor.algorithms.utils.clock import Clock, get_default_clock
 from axile.executor.algorithms.utils.final_position import save_order_changes
+from axile.executor.algorithms.utils.outcome import confirmed_position, order_with_trade_fill
 from axile.executor.algorithms.utils.trading import cancel_pending_orders_via_query
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.market_data_validation import (
@@ -54,6 +55,15 @@ from axile.executor.order_volume_limits import split_order_volumes
 from axile.executor.termination import ExecutionTerminated
 
 MARKET_FALLBACK_MAX_SLIPPAGE = 0.005
+
+
+def _chase_price(quote: UnifiedPriceData | None, direction: OrderDirection) -> float:
+    """买单跟买一，卖单跟卖一；缺少有效报价时跳过追单。"""
+    if quote is None:
+        return 0.0
+    levels = quote.bids if direction == OrderDirection.BUY else quote.asks
+    price = levels[0][0] if levels else 0.0
+    return price if isfinite(price) and price > 0 else 0.0
 
 
 class _OrderTerminalUnconfirmedError(RuntimeError):
@@ -412,10 +422,16 @@ class OrderTracker:
         with self.lock:
             tracked_order_id = self._resolve_order_target_id(order)
             if tracked_order_id is None:
-                # 已终态订单被 REST 对账反复查到（或 WS 迟到的重复帧）时，resolve 不到
-                # pending 主键。直接幂等丢弃，避免把重复回报无限缓冲成早到事件而泄漏。
-                if not self._is_already_completed(order):
+                # 迟到的终态可以上修累计成交，但不能把已结束的委托恢复成挂单。
+                completed_id = next(
+                    (key for key in self._extract_order_candidate_ids(order) if key in self.completed_orders), None
+                )
+                if completed_id is None:
                     self._buffer_early_order_update(order)
+                elif order.is_completed() and order.filled_volume > self.completed_orders[completed_id].filled_volume:
+                    updated = self._merge_order_update(completed_id, self.completed_orders[completed_id], order)
+                    updated.order_id = completed_id
+                    self.completed_orders[completed_id] = self._checkpoint_updates[completed_id] = updated
                 return
 
             tracked_order = self.pending_orders[tracked_order_id]
@@ -474,7 +490,11 @@ class OrderTracker:
                 return
 
             tracked_trades = self.order_trades.setdefault(tracked_order_id, [])
-            tracked_trades.append(copy_data(trade, deep=True))
+            tracked_trades.append(copy_data(trade, deep=True, update={"order_id": tracked_order_id}))
+            evidence = self._position_order(tracked_order)
+            if evidence is not tracked_order:
+                # 新对象可区分写库期间到达的成交，已提交的旧批次不能将其清除。
+                self._checkpoint_updates[tracked_order_id] = evidence
 
     def on_price_update(self, price_data: UnifiedPriceData) -> None:
         """接收最新盘口快照，供追单和市价兜底保护使用。"""
@@ -728,6 +748,7 @@ class OrderTracker:
                 for order in updates:
                     if not order.is_completed():
                         order.extra["terminal_confirmation_pending"] = True
+                evidence = [self._position_order(order) for order in updates]
             if not (
                 getattr(self.executor, "has_audit_sink", False) is True
                 and self.executor.audit_context.get("execution_id")
@@ -737,7 +758,7 @@ class OrderTracker:
                 return True
             if not updates:
                 return True
-            if not save_order_changes(self.executor, updates, None if self._checkpoint_started else start):
+            if not save_order_changes(self.executor, evidence, None if self._checkpoint_started else start):
                 self._checkpoint_failed = True
                 self.explicit_error = "待核对仓位保存失败"
                 return False
@@ -1018,13 +1039,7 @@ class OrderTracker:
             if latest_price is None or self._submission_expired(chase_info):
                 continue
 
-            # 追单始终向“当前最佳对手价”靠拢，而不是在旧价格上机械加减 tick。
-            # 这样可以让不同渠道在盘口缺一侧时也共享同一套兜底逻辑。
-            if direction == OrderDirection.BUY:
-                new_price = latest_price.bids[0][0] if latest_price.bids else 0.0
-            else:
-                new_price = latest_price.asks[0][0] if latest_price.asks else 0.0
-
+            new_price = _chase_price(latest_price, direction)
             if new_price <= 0 or new_price == order.price:
                 continue
 
@@ -1078,11 +1093,8 @@ class OrderTracker:
                 if remaining_volume > 0 and not self._submission_expired(chase_info):
                     # 撤单确认可能耗时并接收新行情；换单必须重新定价并携带实际报价证据。
                     latest_price = clone_price_data(self._usable_price(symbol))
-                    new_price = 0.0
-                    if latest_price is not None:
-                        levels = latest_price.bids if direction == OrderDirection.BUY else latest_price.asks
-                        new_price = levels[0][0] if levels else 0.0
-                    if not isfinite(new_price) or new_price <= 0:
+                    new_price = _chase_price(latest_price, direction)
+                    if new_price <= 0:
                         message = "追单失败：撤单确认后行情不可用或追单价格缺失"
                         self._set_order_error(order_id, message)
                         self.executor.emit_audit_event(
@@ -1193,11 +1205,11 @@ class OrderTracker:
 
                 direction = info["direction"]
 
-                levels = latest_price.bids if direction == OrderDirection.BUY else latest_price.asks
-                if not levels or levels[0][0] <= 0 or not isfinite(levels[0][0]) or not isfinite(order.price):
+                price = _chase_price(latest_price, direction)
+                if price <= 0 or not isfinite(order.price):
                     continue
                 # 与重挂使用同侧盘口，精确区分刚好到达阈值与超过阈值。
-                best_price = Decimal(str(levels[0][0]))
+                best_price = Decimal(str(price))
                 order_price = Decimal(str(order.price))
                 tick_size = self._get_tick_size(symbol, order.price)
                 price_diff = best_price - order_price if direction == OrderDirection.BUY else order_price - best_price
@@ -1650,28 +1662,6 @@ class OrderTracker:
         """返回用于追单/兜底决策的有效剩余量."""
         return max(order.volume - self._get_effective_filled_volume(order_id, order), 0.0)
 
-    def _is_already_completed(self, order: UnifiedOrder) -> bool:
-        """
-        判断订单是否已收敛为终态.
-
-        用于在 REST 高频对账下丢弃“已完成订单被反复查到”的重复回报，避免其被当作
-        早到事件无限缓冲导致内存泄漏。
-
-        Parameters
-        ----------
-        order : UnifiedOrder
-            待判定的订单更新。
-
-        Returns
-        -------
-        bool
-            该订单的任一候选主键已存在于已完成集合时返回 ``True``。
-        """
-        for candidate_id in self._extract_order_candidate_ids(order):
-            if candidate_id in self.completed_orders:
-                return True
-        return False
-
     def _buffer_early_order_update(self, order: UnifiedOrder) -> None:
         """
         缓存早于 `add_order()` 到达的同 symbol 订单更新。
@@ -1954,12 +1944,30 @@ class OrderTracker:
             f"pending={summary['pending_orders']}"
         )
 
-    def get_all_orders(self) -> list[UnifiedOrder]:
-        """获取所有订单（包括完成和未完成）."""
+    def _position_order(self, order: UnifiedOrder) -> UnifiedOrder:
+        filled, _ = _summarize_trade_records(self.order_trades.get(order.order_id, []))
+        return order_with_trade_fill(order, filled)
+
+    def position_for_submission(
+        self, current: float, direction: OrderDirection, *, needs_position_detail: bool
+    ) -> float | None:
+        """普通买卖扣除已知成交；开平类订单须等持仓明细赶上后再拆腿。"""
+        if self.start_volume is None:
+            return current
+        orders = self.get_all_orders(for_position=True)
+        if not any(order.filled_volume for order in orders):
+            return current
+        expected = confirmed_position(self.start_volume, orders)
+        if expected is None or (needs_position_detail and not isclose(current, expected, rel_tol=0, abs_tol=1e-9)):
+            return None
+        return max(current, expected) if direction == OrderDirection.BUY else min(current, expected)
+
+    def get_all_orders(self, *, for_position: bool = False) -> list[UnifiedOrder]:
+        """读取订单回报；仓位核对时同时计入已归属本单的成交明细。"""
         with self.lock:
             all_orders = list(self.completed_orders.values())
             all_orders.extend(self.pending_orders.values())
-            return all_orders
+            return [self._position_order(order) for order in all_orders] if for_position else all_orders
 
     def get_order_trades(self, order_id: str) -> list[TradeRecord]:
         """获取指定订单已跟踪的成交明细."""

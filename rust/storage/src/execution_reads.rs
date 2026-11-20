@@ -294,52 +294,65 @@ fn pending_order_terminals(
         ), current_orders AS (
             SELECT *,json_extract(body,'$.status') IN ('已成交','已撤销','已拒绝','已过期') AS terminal
             FROM changes WHERE rank=1
+        ), recorded AS (
+            SELECT r.execution_id,s.map_key AS symbol,json_extract(o.order_id,'$') AS order_id,
+                   COALESCE(s.algorithm,'SINGLE-MAKER') AS algorithm,o.filled_volume,
+                   o.status IN ('已成交','已撤销','已拒绝','已过期') AS terminal,
+                   json_extract(o.extra,'$.terminal_confirmation_pending') AS pending
+            FROM executerecord r JOIN execution_symbol_result s ON s.record_id=r.id
+            JOIN execution_order o ON o.record_id=r.id AND o.path=s.path || '/orders'
+            WHERE r.account_id=?1 AND o.kind='object'
+        ), exchange AS (
+            SELECT id,execution_id,symbol,order_id,json_extract(details,'$.order') AS body,
+                   json_extract(details,'$.order.filled_volume') AS filled,
+                   row_number() OVER (PARTITION BY execution_id,symbol,order_id
+                       ORDER BY json_extract(details,'$.order.filled_volume') DESC,id) AS rank
+            FROM execution_event WHERE account_id=?1 AND event_type='ORDER_TERMINAL'
+              AND reason_family='EXCHANGE' AND status='SUCCESS'
+              AND json_type(details,'$.order.terminal_status')='text'
+        ), checked AS (
+            SELECT execution_id,symbol,max(id) AS id FROM execution_event
+            WHERE account_id=?1 AND event_type='ORDER_POSITION_RECONCILED' GROUP BY execution_id,symbol
         ), candidates AS (
-            -- 已登记委托统一由 current_orders 处理，额外发现的旧挂单仍需核实。
-            SELECT p.execution_id,p.algorithm,p.symbol,p.order_id
-            FROM execution_event p
+            SELECT execution_id,symbol,order_id,algorithm FROM current_orders
+            UNION
+            SELECT r.execution_id,r.symbol,r.order_id,r.algorithm FROM recorded r
+            WHERE (r.pending=1 AND NOT r.terminal) OR EXISTS (
+                SELECT 1 FROM exchange t WHERE t.rank=1 AND t.execution_id=r.execution_id
+                  AND t.symbol=r.symbol AND t.order_id=r.order_id AND t.filled>r.filled_volume
+            )
+            UNION
+            SELECT p.execution_id,p.symbol,p.order_id,p.algorithm FROM execution_event p
             WHERE p.account_id=?1 AND p.event_type='ORDER_TERMINAL_PENDING'
               AND NOT EXISTS (
                   SELECT 1 FROM execution_event e JOIN json_each(e.details,'$.orders') o
                   WHERE e.account_id=?1 AND e.execution_id=p.execution_id AND e.symbol=p.symbol
                     AND e.event_type='POSITION_CHECKPOINT' AND json_extract(o.value,'$.order_id')=p.order_id
               )
-            UNION
-            SELECT r.execution_id,COALESCE(s.algorithm,'SINGLE-MAKER'),s.map_key,json_extract(o.order_id,'$')
-            FROM executerecord r JOIN execution_symbol_result s ON s.record_id=r.id
-            JOIN execution_order o ON o.record_id=r.id AND o.path=s.path || '/orders'
-            WHERE r.account_id=?1 AND json_extract(o.extra,'$.terminal_confirmation_pending')=1
-              AND o.status NOT IN ('已成交','已撤销','已拒绝','已过期')
-            UNION
-            SELECT o.execution_id,o.algorithm,o.symbol,o.order_id
-            FROM current_orders o WHERE NOT o.terminal OR (o.delta AND json_extract(o.body,'$.filled_volume')<>0)
+        ), evidence AS (
+            SELECT p.*,COALESCE(t.body,CASE WHEN o.terminal THEN
+                       json_set(o.body,'$.terminal_status',json_extract(o.body,'$.status')) END) AS terminal_body,
+                   c.id AS checked_id,t.id AS terminal_id,t.filled AS exchange_fill,
+                   max(COALESCE(json_extract(o.body,'$.filled_volume'),0),COALESCE(r.filled_volume,0)) AS known_fill,
+                   (NOT COALESCE(r.terminal,0) AND (o.order_id IS NULL OR NOT o.terminal
+                      OR (o.delta AND json_extract(o.body,'$.filled_volume')<>0))) AS pending
+            FROM candidates p
+            LEFT JOIN current_orders o USING(execution_id,symbol,order_id)
+            LEFT JOIN recorded r USING(execution_id,symbol,order_id)
+            LEFT JOIN exchange t ON t.execution_id=p.execution_id AND t.symbol=p.symbol
+                 AND t.order_id=p.order_id AND t.rank=1
+            LEFT JOIN checked c ON c.execution_id=p.execution_id AND c.symbol=p.symbol
+            WHERE p.symbol IS NOT NULL AND p.order_id IS NOT NULL
         )
-        SELECT p.execution_id,p.algorithm,p.symbol,
-               json_group_object(p.order_id,json(COALESCE(
-                   (SELECT json_extract(t.details,'$.order') FROM execution_event t
-                    WHERE t.account_id=?1 AND t.execution_id=p.execution_id AND t.symbol=p.symbol
-                      AND t.order_id=p.order_id AND t.event_type='ORDER_TERMINAL'
-                      AND t.reason_family='EXCHANGE' AND t.status='SUCCESS'
-                      AND json_type(t.details,'$.order.terminal_status')='text' ORDER BY t.id DESC LIMIT 1),
-                   (SELECT json_set(o.body,'$.terminal_status',json_extract(o.body,'$.status'))
-                    FROM current_orders o WHERE o.execution_id=p.execution_id AND o.symbol=p.symbol
-                      AND o.order_id=p.order_id AND o.terminal)
-               ))),
+        SELECT p.execution_id,p.algorithm,p.symbol,json_group_object(p.order_id,json(p.terminal_body)),
                (SELECT json_object('start_volume',o.start_volume,'orders',json_group_array(json(o.body)))
                 FROM current_orders o WHERE o.execution_id=p.execution_id AND o.symbol=p.symbol
                 GROUP BY o.start_volume)
-        FROM candidates p
-        WHERE p.symbol IS NOT NULL AND p.order_id IS NOT NULL AND NOT EXISTS (
-            SELECT 1 FROM execution_event c WHERE c.account_id=?1 AND c.execution_id=p.execution_id
-              AND c.symbol=p.symbol AND c.event_type='ORDER_POSITION_RECONCILED'
-        ) AND NOT EXISTS (
-            SELECT 1 FROM executerecord r JOIN execution_symbol_result s ON s.record_id=r.id
-            JOIN execution_order o ON o.record_id=r.id AND o.path=s.path || '/orders'
-            WHERE r.account_id=?1 AND r.execution_id=p.execution_id AND s.map_key=p.symbol
-              AND json_extract(o.order_id,'$')=p.order_id
-              AND o.status IN ('已成交','已撤销','已拒绝','已过期')
-        )
-        GROUP BY p.execution_id,p.symbol ORDER BY p.execution_id,p.symbol"
+        FROM evidence p WHERE p.pending OR p.exchange_fill>p.known_fill
+        GROUP BY p.execution_id,p.symbol
+        HAVING p.checked_id IS NULL OR max(CASE WHEN p.exchange_fill>p.known_fill
+                THEN p.terminal_id END)>p.checked_id
+        ORDER BY p.execution_id,p.symbol"
     ).map_err(sql)?;
     let rows = statement
         .query_map([account_id], |row| {

@@ -791,6 +791,12 @@ it('uses accepted orders after an interrupted execution and stops polling at a k
 
   const canceled = { ...order, status: '已撤销' }
   const settled = ev({ event_type: 'position_checkpoint', symbol: 'A', details: { orders: [canceled] } })
+  const zeroRecord = { symbol_results: { A: { orders: [canceled] } } }
+  const tradeFill = ev({ ...settled, details: { orders: [{ ...canceled, filled_volume: 40 }] } })
+  expect(buildExecutionDetail([tradeFill], [], null, zeroRecord).symbols[0]?.filled).toBe(-40)
+  expect(buildExecutionDetail([filled, staleCancel], [], null, zeroRecord).symbols[0]?.filled).toBe(-400)
+  const fullRecord = { symbol_results: { A: { orders: [{ ...order, status: '已成交', filled_volume: 400 }] } } }
+  expect(buildExecutionDetail([staleCancel], [], null, fullRecord).symbols[0]?.orders[0]?.status).toBe('已成交')
   expect(hasPendingOrderTerminals([checkpoint, settled])).toBe(false)
   expect(hasPendingOrderTerminals([checkpoint], { symbol_results: { A: { orders: [canceled] } } })).toBe(false)
 })

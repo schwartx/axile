@@ -23,7 +23,7 @@ from axile.executor.execution_runtime import ExecutionRuntime, ExecutionRuntimeB
 from axile.executor.models.execution_result import AlgorithmResult
 from axile.executor.models.unified_account_assets import PositionDirection
 from axile.executor.models.unified_input_accounts import GMAccountConfig
-from axile.executor.models.unified_order import OrderDirection
+from axile.executor.models.unified_order import OrderDirection, TradeRecord
 from axile.executor.order_cancellation import CancellationResult, CancelRequestStatus, OrderCancellation
 from axile.executor.order_terminal_audit import order_terminal_details
 from axile.executor.termination import ExecutionTerminated, ExecutionTerminationController
@@ -36,7 +36,7 @@ from tests.fixtures.algorithm_fakes import ClockStub
 from tests.unit.executor.algorithms.test_order_tracker_and_single_maker_regressions import _SingleMakerExecutor
 from tests.unit.executor.algorithms.utils.test_order_tracker import _TimeoutCancelExecutor
 from tests.unit.executor.test_base_executor_symbol_dispatch import _assets
-from tests.unit.executor.test_execution_phase_settlement import SELL, assets, engine, inputs, result
+from tests.unit.executor.test_execution_phase_settlement import BUY, SELL, assets, engine, inputs, result
 from tests.unit.server._business_facts_test_support import read_result, seed_account
 from tests.unit.server.test_execution_derived_views import persist
 from tests.unit.server.test_gm_worker_manager import _execute_request, _FakeHandle
@@ -553,6 +553,66 @@ def append_terminal(audit, account_id, execution_id, order, *, seq):
     )
 
 
+@pytest.mark.parametrize("full_checkpoint", [False, True])
+def test_exchange_fill_after_zero_fill_cancel_reopens_position_check(native_database, monkeypatch, full_checkpoint):
+    seed_account(native_database)
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    audit = ServerExecutionAuditSink()
+    source = Mock(symbol=SELL, has_audit_sink=True)
+    attach_audit(source, audit, "old", 1)
+    tracker = OrderTracker(source, start_volume=900)
+    pending = result(filled=0, status=OrderStatus.PENDING).orders[0]
+    tracker.add_order(pending)
+    canceled = copy_data(pending, update={"status": OrderStatus.CANCELED})
+    tracker.record_terminal_order(canceled)
+    if full_checkpoint:
+        assert save_position_checkpoint(source, 900, [canceled])
+        prior = result(filled=0, status=OrderStatus.CANCELED, observed=900)
+        persist(native_database, execution_id="old", raw_result={"symbol_results": {SELL: to_payload(prior)}})
+    query = {"op": "pending_order_terminals", "account_id": 1}
+    assert native_store_call(native_database, "execution_read", query) == []
+
+    for seq, filled in [(80, 100), (81, 300)]:
+        append_terminal(audit, 1, "old", copy_data(canceled, update={"filled_volume": filled}), seq=seq)
+        replacement = engine([assets(sell=900)])
+        attach_audit(replacement._runtime, audit, f"restart-{seq}", 1)
+        request = inputs(replacement, buy=False)
+        request.extra["pending_order_terminals"] = native_store_call(native_database, "execution_read", query)
+        replacement._run_prepared_symbol_algorithms = Mock()
+        output = replacement.run(request)
+        replacement._run_prepared_symbol_algorithms.assert_not_called()
+        assert output.symbol_results[SELL].expected_volume == 900 - filled
+        assert native_store_call(native_database, "execution_read", query) == []
+
+
+@pytest.mark.parametrize("trade_first", [False, True])
+def test_trade_fill_survives_zero_fill_order_snapshot(native_database, monkeypatch, trade_first):
+    seed_account(native_database)
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    source = Mock(symbol=SELL, has_audit_sink=True)
+    attach_audit(source, ServerExecutionAuditSink(), "trade", 1)
+    tracker = OrderTracker(source, start_volume=900)
+    order = result(filled=0, status=OrderStatus.PENDING).orders[0]
+    tracker.add_order(order)
+    trade = TradeRecord.create(trade_id="fill", order_id=order.order_id, symbol=SELL, trade_volume=40)
+    if trade_first:
+        tracker.on_trade_record(trade)
+    tracker.record_terminal_order(copy_data(order, update={"status": OrderStatus.CANCELED}))
+    tracker.on_trade_record(trade)
+    tracker.require_saved_orders()
+    groups = native_store_call(native_database, "execution_read", {"op": "pending_order_terminals", "account_id": 1})
+    assert groups[0]["orders"][0]["filled_volume"] == 40
+    orders = tracker.get_all_orders()
+    assert orders[0].filled_volume == 0
+    outcome = summarize_outcome(900, 900, 500, orders, tracker.get_all_trades())
+    assert outcome["expected_volume"] == 860
+    assert outcome["position_confirmed"] is False
+    assert save_position_checkpoint(source, 900, tracker.get_all_orders(for_position=True))
+    assert native_store_call(native_database, "execution_read", {"op": "pending_positions", "account_id": 1}) == {
+        SELL: 860
+    }
+
+
 def finish_terminated(account_id, execution_id, error):
     return asyncio.run(
         _record_terminated_execution(
@@ -616,8 +676,8 @@ def test_operator_stop_before_timeout_recovers_late_fill(native_database, monkey
     replacement._run_prepared_symbol_algorithms.assert_not_called()
 
 
-@pytest.mark.parametrize("filled", [0, 400])
-def test_clear_empty_snapshot_cancels_and_reconciles_old_buy(native_database, monkeypatch, filled):
+@pytest.mark.parametrize(("filled", "other_pending"), [(0, False), (400, False), (0, True)])
+def test_clear_empty_snapshot_cancels_and_reconciles_old_buy(native_database, monkeypatch, filled, other_pending):
     seed_account(native_database)
     monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
     audit = ServerExecutionAuditSink()
@@ -647,11 +707,17 @@ def test_clear_empty_snapshot_cancels_and_reconciles_old_buy(native_database, mo
     owner.reconcile_terminal_order.return_value = terminal
     owner.reconcile_terminal_order.side_effect = None
 
-    output = owner.empty_positions(extra={"pending_order_terminals": groups})
+    output = owner.empty_positions(
+        extra={"pending_order_terminals": groups, "pending_positions": {BUY: 100} if other_pending else {}}
+    )
     owner.cancel_order.assert_called_once_with(order.symbol, order.order_id)
+    owner.reconcile_terminal_order.assert_any_call(order.symbol, order.order_id)
     if filled:
         assert output.status == "BLOCKED"
         assert output.symbol_results[order.symbol].expected_volume == filled
+    elif other_pending:
+        assert output.status == "BLOCKED"
+        assert output.symbol_results[BUY].expected_volume == 100
     else:
         assert output.status == "NOOP"
 

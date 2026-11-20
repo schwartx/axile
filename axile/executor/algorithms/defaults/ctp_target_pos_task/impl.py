@@ -766,7 +766,7 @@ def ctp_target_pos_task_algorithm(executor: ExecutorProtocol, algorithm_input: A
                 if p.symbol == symbol
             ),
             start=current_net_position,
-            orders=tracker.get_all_orders(),
+            orders=tracker.get_all_orders(for_position=True),
         )
         target_reached = final_net_position == target_volume
         target_gap = target_volume - final_net_position
@@ -830,7 +830,7 @@ def ctp_target_pos_task_algorithm(executor: ExecutorProtocol, algorithm_input: A
                 if p.symbol == symbol
             ),
             start=current_net_position,
-            orders=tracker.get_all_orders(),
+            orders=tracker.get_all_orders(for_position=True),
         )
         if not tracker.explicit_error:
             tracker.record_exception(e, "持仓调整")

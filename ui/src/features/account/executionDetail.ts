@@ -311,7 +311,10 @@ function orderSettlementEvents(events: ExecutionEvent[]): Map<string, ExecutionE
     const key = orderKey(event.symbol, event.order_id)
     if (event.event_type === 'order_terminal' && event.status === 'SUCCESS' &&
         event.reason_family === 'EXCHANGE' && typeof asDict(asDict(event.details)?.order)?.terminal_status === 'string') {
-      byOrder.set(key, event)
+      const previous = byOrder.get(key)
+      const previousFill = asNum(asDict(previous?.details?.order)?.filled_volume) ?? 0
+      const fill = asNum(asDict(event.details?.order)?.filled_volume) ?? 0
+      if (previous?.event_type !== 'order_terminal' || fill >= previousFill) byOrder.set(key, event)
     } else if (event.event_type === 'order_terminal_pending' && !byOrder.has(key)) {
       byOrder.set(key, event)
     }
@@ -869,14 +872,17 @@ export function buildExecutionDetail(
       const key = orderKey(row.symbol, order.order_id)
       const settlement = settlements.get(key)
       const checkpoint = checkpoints.get(key)
+      const recordedFill = order.filled_volume ?? 0
+      const checkpointFill = asNum(checkpoint?.filled_volume) ?? 0
       let evidence = asDict(settlement?.details?.order)
       if (settlement?.event_type !== 'order_terminal') {
-        if (isTerminalOrderStatus(order.status)) return order
         if (checkpoint && isTerminalOrderStatus(checkpoint.status)) evidence = checkpoint
+        if (isTerminalOrderStatus(order.status) && (evidence !== checkpoint || checkpointFill <= recordedFill)) return order
       }
       if (!evidence) return order
       const reported = asNum(evidence.filled_volume)
-      const filled = reported == null ? order.filled_volume : Math.max(reported, order.filled_volume ?? 0, asNum(checkpoint?.filled_volume) ?? 0)
+      if (isTerminalOrderStatus(order.status) && recordedFill > (reported ?? 0) && recordedFill >= checkpointFill) return order
+      const filled = reported == null ? order.filled_volume : Math.max(reported, recordedFill, checkpointFill)
       if (filled !== order.filled_volume) quantityChanged = true
       return { ...order, status: asStr(evidence?.terminal_status ?? evidence?.status) || order.status,
         filled_volume: filled, avg_price: asNum(evidence?.avg_price) ?? order.avg_price }

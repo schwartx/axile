@@ -673,6 +673,8 @@ def _submit_close_open_orders(
             break
         account_assets = executor.get_account_assets()
         current_volume = executor.get_current_volume(account_assets)
+        if tracker.position_for_submission(current_volume, direction, needs_position_detail=True) is None:
+            break
         remaining = min(
             _remaining_toward_target(direction, target_volume, current_volume),
             _remaining_toward_target(direction, slice_target, current_volume),
@@ -753,7 +755,14 @@ def submit_and_track_split_orders(
     # 快照必须在终态确认之后读取：回调也可能先于门控到达，此时 pending 已为空。
     slice_target = current_volume + (volume if direction == OrderDirection.BUY else -volume)
     account_assets = executor.get_account_assets()
-    current_volume = executor.get_current_volume(account_assets)
+    position = tracker.position_for_submission(
+        executor.get_current_volume(account_assets),
+        direction,
+        needs_position_detail=model != OrderParamModel.DIRECTIONAL,
+    )
+    if position is None:
+        return []
+    current_volume = position
     volume = min(
         _remaining_toward_target(direction, target_volume, current_volume),
         _remaining_toward_target(direction, slice_target, current_volume),

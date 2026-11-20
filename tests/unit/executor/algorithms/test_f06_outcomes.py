@@ -69,7 +69,7 @@ def test_algorithm_outcome(monkeypatch, module, case, expected, termination_at=N
     tracker.waiting_on_restriction = MagicMock(return_value=False)
     tracker.get_pending_count = MagicMock(return_value=0)
     orders = []
-    tracker.get_all_orders = MagicMock(side_effect=lambda: orders)
+    tracker.get_all_orders = MagicMock(return_value=orders)
     tracker.get_all_trades = MagicMock(return_value=[])
     monkeypatch.setattr(module, "setup_order_tracker", lambda *args: tracker)
     monkeypatch.setattr(module, "teardown_order_tracker", lambda *args: None)
@@ -247,7 +247,7 @@ def test_algorithm_keeps_tracker_cancel_error(monkeypatch, module):
     tracker.waiting_on_restriction = MagicMock(return_value=False)
     tracker.get_pending_count = MagicMock(return_value=0)
     orders = []
-    tracker.get_all_orders = MagicMock(side_effect=lambda: orders)
+    tracker.get_all_orders = MagicMock(return_value=orders)
     tracker.get_all_trades = MagicMock(return_value=[])
     tracker.explicit_error = None
     tracker.explicit_blocked_error = None

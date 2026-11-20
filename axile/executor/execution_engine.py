@@ -387,8 +387,7 @@ class ExecutionEngine:
         self._owner.pending_positions.update(pending)
         # 旧单的成交可能已经改变前一阶段的仓位，先收敛这些品种的委托。
         previous_orders = cast("list[ObjectDict]", standard_input.extra.get("pending_order_terminals", []))
-        order_symbols = {cast("str", group["symbol"]) for group in previous_orders}
-        blocked = self._pending_position_results(planning.account_assets, skip=order_symbols)
+        blocked = [] if previous_orders else self._pending_position_results(planning.account_assets)
         if blocked:
             self._account_snapshot = planning.account_assets, None
             self._emit_symbol_decision_events(standard_input, blocked)
@@ -427,7 +426,9 @@ class ExecutionEngine:
                 ],
             ]
         blocked_orders = self._reconcile_previous_orders(standard_input, previous_orders)
-        blocked_orders = blocked_orders or self._pending_position_results(planning.account_assets)
+        blocked_orders.extend(
+            self._pending_position_results(planning.account_assets, skip={row.symbol for row in blocked_orders})
+        )
         if blocked_orders:
             self._account_snapshot = planning.account_assets, None
             self._emit_symbol_decision_events(standard_input, blocked_orders)
@@ -498,6 +499,7 @@ class ExecutionEngine:
         return start, orders
 
     def _reconcile_order_group(self, symbol: str, previous: ObjectDict) -> str | None:
+        recovery_intent = cast("str | None", self._runtime.audit_context.get("execution_id"))
         context = {
             **self._runtime.audit_context,
             "execution_id": previous["execution_id"],
@@ -538,6 +540,7 @@ class ExecutionEngine:
                 reason_code="COMMON.ORDER_TERMINAL",
                 symbol=symbol,
                 order_id=order_id,
+                intent_id=recovery_intent,
                 details=order_terminal_details(terminal),
                 audit_context=context,
             ):
@@ -557,6 +560,7 @@ class ExecutionEngine:
             reason_family=ExecutionReasonFamily.ACCOUNT_STATE,
             reason_code="COMMON.POSITION.UNCONFIRMED",
             symbol=symbol,
+            intent_id=recovery_intent,
             details={"expected_volume": expected},
             audit_context=context,
         ):

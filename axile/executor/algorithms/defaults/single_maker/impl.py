@@ -193,7 +193,9 @@ def _recover_outer_failure(
     if not tracker.explicit_error:
         tracker.record_exception(exc)
     executor.logger.exception("SINGLE-MAKER 执行失败")
-    return read_final_position(executor, executor.get_current_volume, start=start, orders=tracker.get_all_orders())
+    return read_final_position(
+        executor, executor.get_current_volume, start=start, orders=tracker.get_all_orders(for_position=True)
+    )
 
 
 @register_algorithm(
@@ -321,7 +323,10 @@ def single_maker_callback(
 
             # 重新获取账户资产
             account_assets, final_volume, explicit_error = read_final_position(
-                executor, executor.get_current_volume, start=current_volume, orders=tracker.get_all_orders()
+                executor,
+                executor.get_current_volume,
+                start=current_volume,
+                orders=tracker.get_all_orders(for_position=True),
             )
 
     except ExecutionTerminated:

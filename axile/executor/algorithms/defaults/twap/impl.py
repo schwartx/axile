@@ -350,7 +350,7 @@ def twap(
         teardown_order_tracker(executor, tracker, None)
 
     account_assets, final_volume, explicit_error = read_final_position(
-        executor, executor.get_current_volume, start=start_volume, orders=tracker.get_all_orders()
+        executor, executor.get_current_volume, start=start_volume, orders=tracker.get_all_orders(for_position=True)
     )
     orders = tracker.get_all_orders()
     trades = tracker.get_all_trades()
