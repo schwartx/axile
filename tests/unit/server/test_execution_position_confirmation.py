@@ -18,6 +18,7 @@ from axile.executor.constants.order_status import OrderStatus
 from axile.executor.execution_runtime import ExecutionRuntime, ExecutionRuntimeBindings
 from axile.executor.models.execution_result import AlgorithmResult
 from axile.executor.models.unified_account_assets import PositionDirection
+from axile.executor.models.unified_order import OrderDirection
 from axile.executor.order_cancellation import CancellationResult
 from axile.executor.order_terminal_audit import order_terminal_details
 from axile.executor.termination import ExecutionTerminated, ExecutionTerminationController
@@ -580,6 +581,75 @@ def test_operator_stop_before_timeout_recovers_late_fill(native_database, monkey
     assert output.status == "BLOCKED"
     assert output.symbol_results[SELL].expected_volume == 500
     replacement._run_prepared_symbol_algorithms.assert_not_called()
+
+
+@pytest.mark.parametrize("filled", [0, 400])
+def test_clear_empty_snapshot_cancels_and_reconciles_old_buy(native_database, monkeypatch, filled):
+    seed_account(native_database)
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    audit = ServerExecutionAuditSink()
+    order = result(
+        start=0, observed=0, target=400, filled=0, direction=OrderDirection.BUY, status=OrderStatus.PENDING
+    ).orders[0]
+    old = engine([], channel="gm")
+    attach_audit(old._runtime, audit, "old-buy", 1)
+    source = _SingleMakerExecutor()
+    source.has_audit_sink = True
+    source.audit_context = old._runtime.audit_context
+    source.emit_audit_event = old._runtime.emit_audit_event
+    assert save_position_checkpoint(source, 0, [order])
+    groups = native_store_call(native_database, "execution_read", {"op": "pending_order_terminals", "account_id": 1})
+    terminal = copy_data(
+        order,
+        update={
+            "status": OrderStatus.FILLED if filled else OrderStatus.CANCELED,
+            "filled_volume": filled,
+        },
+    )
+    owner = engine([_assets()], channel="ctp")._owner
+    owner.set_audit_context({"execution_id": "clear", "account_id": 1, "algorithm": "TEST"})
+    owner.set_audit_sink(audit)
+    monkeypatch.setattr(owner, "_get_pending_orders_impl", Mock(return_value=[order]))
+    monkeypatch.setattr(owner, "cancel_order", Mock(return_value=True))
+    owner.reconcile_terminal_order.return_value = terminal
+    owner.reconcile_terminal_order.side_effect = None
+
+    output = owner.empty_positions(extra={"pending_order_terminals": groups})
+    owner.cancel_order.assert_called_once_with(order.symbol, order.order_id)
+    if filled:
+        assert output.status == "BLOCKED"
+        assert output.symbol_results[order.symbol].expected_volume == filled
+    else:
+        assert output.status == "NOOP"
+
+
+def test_zero_fill_terminal_is_saved_before_interrupted_position_query(native_database, monkeypatch):
+    seed_account(native_database)
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    execution_id = "old-cancel"
+    audit = ServerExecutionAuditSink()
+    old = engine([], channel="ctp")
+    attach_audit(old._runtime, audit, execution_id, 1)
+    executor = _SingleMakerExecutor()
+    executor.has_audit_sink = True
+    executor.audit_context = old._runtime.audit_context
+    executor.emit_audit_event = old._runtime.emit_audit_event
+    order = result(filled=0, status=OrderStatus.PENDING).orders[0]
+    tracker = OrderTracker(executor=executor, clock=ClockStub(), start_volume=900)
+    tracker.add_order(order)
+    tracker.on_order_update(copy_data(order, update={"status": OrderStatus.CANCELED}))
+
+    monkeypatch.setattr(
+        executor, "get_account_assets", Mock(side_effect=ExecutionTerminated(reason="operator", mode="graceful"))
+    )
+    with pytest.raises(ExecutionTerminated) as stopped:
+        read_final_position(executor, lambda _: 900, start=900, orders=tracker.get_all_orders())
+    finish_terminated(1, execution_id, stopped.value)
+
+    assert (
+        native_store_call(native_database, "execution_read", {"op": "pending_order_terminals", "account_id": 1}) == []
+    )
+    assert native_store_call(native_database, "execution_read", {"op": "pending_positions", "account_id": 1}) == {}
 
 
 def test_reversal_without_result_uses_latest_phase_orders(native_database, monkeypatch):

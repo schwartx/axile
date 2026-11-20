@@ -763,3 +763,24 @@ it('late terminal evidence updates the matching recorded order only', () => {
   expect(symbol?.orders.map(({ status, filled_volume }) => [status, filled_volume])).toEqual([['已撤销', 2], ['已成交', 5]])
   expect(symbol?.filled).toBe(7)
 })
+
+it('uses accepted orders after an interrupted execution and stops polling at a known terminal', () => {
+  const order = { order_id: 'accepted', direction: 'SELL', status: '已申报', volume: 400, filled_volume: 0 }
+  const checkpoint = ev({ event_type: 'position_checkpoint', symbol: 'A', details: { orders: [order] } })
+  const summary = { symbol_results: { A: { orders: [
+    { order_id: 'earlier', direction: 'SELL', status: '已成交', filled_volume: 100 },
+  ] } } }
+  expect(hasPendingOrderTerminals([checkpoint], summary)).toBe(true)
+  expect(buildExecutionDetail([checkpoint], [], null, summary).symbols[0]?.orders.map(row => row.order_id))
+    .toEqual(['earlier', 'accepted'])
+
+  const filled = ev({ event_type: 'order_terminal', status: 'SUCCESS', reason_family: 'EXCHANGE', symbol: 'A',
+    order_id: 'accepted', details: { order: { direction: 'OrderDirection.SELL', terminal_status: '已成交', filled_volume: 400 } } })
+  expect(hasPendingOrderTerminals([filled, checkpoint], summary)).toBe(false)
+  expect(buildExecutionDetail([filled, checkpoint], [], null, summary).symbols[0]?.filled).toBe(-500)
+
+  const canceled = { ...order, status: '已撤销' }
+  const settled = ev({ event_type: 'position_checkpoint', symbol: 'A', details: { orders: [canceled] } })
+  expect(hasPendingOrderTerminals([checkpoint, settled])).toBe(false)
+  expect(hasPendingOrderTerminals([checkpoint], { symbol_results: { A: { orders: [canceled] } } })).toBe(false)
+})

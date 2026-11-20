@@ -589,11 +589,6 @@ export function ExecutionDetailPage() {
     intervalMs: awaitingOrdersId === executionId ? 2500 : pollMs,
     enabled: Boolean(executionId),
   })
-  useEffect(() => {
-    if (events.data?.complete) {
-      setAwaitingOrdersId(hasPendingOrderTerminals(events.data.data) ? executionId ?? null : null)
-    }
-  }, [events.data, executionId])
   const artifacts = usePolling(artifactsFetcher, {
     queryKey: `execution:${executionId ?? 'missing'}:artifacts`,
     intervalMs: pollMs,
@@ -603,6 +598,11 @@ export function ExecutionDetailPage() {
   const detail = usePolling(useCallback((signal: AbortSignal) => executionId ? getExecutionDetail(executionId, accountId, signal) : Promise.resolve(null), [executionId, accountId]), {
     queryKey: `execution:${executionId}:detail`, intervalMs: pollMs, enabled: Boolean(executionId),
   })
+  useEffect(() => {
+    if (events.data?.complete) {
+      setAwaitingOrdersId(hasPendingOrderTerminals(events.data.data, detail.data) ? executionId ?? null : null)
+    }
+  }, [events.data, detail.data, executionId])
   const loading = status.loading && events.loading && artifacts.loading
   const rawEvents = events.data?.data ?? []
   const hasAnyData = status.data != null || events.data != null || artifacts.data != null

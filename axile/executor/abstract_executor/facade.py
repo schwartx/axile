@@ -553,7 +553,13 @@ class AbstractExecutorFacadeMixin:
             notification_snapshot = None
         account_assets = executor.get_account_assets()
         curr_target = self._build_empty_positions_curr_target(account_assets.positions)
-        if not curr_target:
+        extra = _coerce_object_dict(kwargs.get("extra", {}))
+        if not (
+            curr_target
+            or extra.get("pending_order_terminals")
+            or extra.get("pending_positions")
+            or executor.pending_positions
+        ):
             return self._create_empty_positions_noop_output(account_assets)
 
         account_config = executor.account_config

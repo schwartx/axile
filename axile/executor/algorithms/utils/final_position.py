@@ -23,9 +23,8 @@ def save_position_checkpoint(
         and orders
         and getattr(executor, "has_audit_sink", False) is True
         and executor.audit_context.get("execution_id")
-        and any(order.filled_volume or not order.is_completed() for order in orders)
     ):
-        expected = confirmed_position(start, orders)
+        expected = confirmed_position(start, orders) if any(order.filled_volume for order in orders) else None
         return executor.emit_audit_event(
             event_type=ExecutionEventType.POSITION_CHECKPOINT,
             status=ExecutionEventStatus.INFO,

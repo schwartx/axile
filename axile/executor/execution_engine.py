@@ -395,9 +395,14 @@ class ExecutionEngine:
             return blocked
         # dispatch 阶段把计划拆成可直接返回的 NOOP、第一阶段减仓、第二阶段开仓三类。
         dispatch_phases = self._build_dispatch_phases(planning)
+        has_dispatch = bool(dispatch_phases.phase_one_tasks or dispatch_phases.phase_two_plans)
+        clear_with_old_orders = standard_input.extra.get("close_all_positions") is True and bool(previous_orders)
         try:
-            self._prepare_account_for_symbol_dispatch(dispatch_phases)
+            if has_dispatch or clear_with_old_orders:
+                self._prepare_account_for_symbol_dispatch()
         except CancelNotAllowedError as exc:
+            if not has_dispatch:
+                raise
             direct_symbols = {result.symbol for result in dispatch_phases.direct_results}
             return [
                 *planning.planning_failures,
@@ -427,7 +432,7 @@ class ExecutionEngine:
             self._account_snapshot = planning.account_assets, None
             self._emit_symbol_decision_events(standard_input, blocked_orders)
             return blocked_orders
-        if dispatch_phases.phase_one_tasks or dispatch_phases.phase_two_plans:
+        if has_dispatch:
             self._runtime.report_progress("executing")
         phase_one_results = self._run_phase_one_dispatch(dispatch_phases.phase_one_tasks)
         # 第二阶段只有在第一阶段没有未成功结果时才继续，避免边减仓失败边开新仓。
@@ -1055,10 +1060,8 @@ class ExecutionEngine:
             direct_results=direct_results,
         )
 
-    def _prepare_account_for_symbol_dispatch(self, dispatch_phases: _DispatchPhases) -> None:
-        """在真正分发 symbol 算法前完成默认账户级撤单。"""
-        if not dispatch_phases.phase_one_tasks and not dispatch_phases.phase_two_plans:
-            return
+    def _prepare_account_for_symbol_dispatch(self) -> None:
+        """撤销账户旧委托，避免成交干扰调仓或清仓。"""
         self._owner.handle_termination_checkpoint()
         self._owner.cancel_all_orders()
 
