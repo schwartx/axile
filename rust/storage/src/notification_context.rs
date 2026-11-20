@@ -59,9 +59,7 @@ pub(crate) fn preview(
         .as_object()
         .is_some_and(|context| !context.is_empty())
     {
-        let mut context = captured.clone();
-        restore_previous_target(&mut context, detail);
-        return Ok(context);
+        return Ok(captured.clone());
     }
     let mut result = detail["result"].clone();
     if !result.is_object() {
@@ -75,7 +73,6 @@ pub(crate) fn preview(
     let mut request = json!({"account_mark":account_mark,"now":now,"is_test":true,"trade_operations":[],"result":null});
     request["result"] = result;
     let mut context = build(&request)?;
-    restore_previous_target(&mut context, detail);
     context["execution"]["notified_at"] = json!(created_at);
     Ok(context)
 }
@@ -469,21 +466,6 @@ fn result_context(
     Some(context)
 }
 
-fn restore_previous_target(context: &mut Value, detail: &Value) {
-    if context
-        .pointer("/targets/previous")
-        .and_then(Value::as_object)
-        .is_some_and(Map::is_empty)
-    {
-        if let Some(previous) = detail
-            .pointer("/input/last_target")
-            .filter(|target| target.is_object())
-        {
-            context["targets"]["previous"] = previous.clone();
-        }
-    }
-}
-
 pub(crate) fn execution_context(
     row: &Value,
     account: &Value,
@@ -512,9 +494,6 @@ pub(crate) fn execution_context(
             })
         })
         .unwrap_or_else(|| empty_context(row, account));
-    if let Some(detail) = &detail {
-        restore_previous_target(&mut context, detail);
-    }
     if !context["execution"].is_object() {
         context["execution"] = json!({});
     }

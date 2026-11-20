@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 
@@ -15,6 +15,7 @@ from axile.domain.execution import ExecutionArtifactType, ExecutionEventStatus, 
 from axile.executor.abstract_executor.base import AbstractExecutor
 from axile.executor.abstract_executor.capability import AbstractExecutorCapabilityMixin
 from axile.executor.algorithms.utils.clock import clock_now_ms
+from axile.executor.feishu_notifications import build_execution_notification_context
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import ExecutionStatus, UnifiedStandardOutput
@@ -94,6 +95,8 @@ def _stub_intent_promotion(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, i
 
     async def read(name: str, request: dict[str, object]) -> dict[str, object]:
         assert name == "execution_read"
+        if request["op"] == "last_target":
+            return {"present": False, "target": None}
         assert request["op"] == "pending_positions"
         return {}
 
@@ -107,24 +110,37 @@ def test_rebalance_keeps_previous_target_out_of_tq_worker_input(monkeypatch):
         account_config={"account_mode": "kq", "tq_username": "test", "tq_password": "test"},
     )
     previous = {"c2611": -3, "fu2611": 1, "zn2611": 1}
-    manager = SimpleNamespace(execute_trade=AsyncMock(return_value=(None, None)))
+    read = AsyncMock(side_effect=[{"present": True, "target": previous}, {}])
+    append_record = AsyncMock(return_value={"record_id": 1, "is_success": 1})
+    manager = SimpleNamespace(execute_trade=AsyncMock(return_value=(None, {"curr_target": {"c2701": -3}})))
+    monkeypatch.setattr(rebalance_execution, "native_operation", read)
     monkeypatch.setattr(rebalance_execution, "get_worker_backend_manager", lambda: manager)
-    monkeypatch.setattr(
-        rebalance_execution, "load_notification_snapshot", AsyncMock(return_value={"last_target": previous})
-    )
-    monkeypatch.setattr(
-        rebalance_execution,
-        "append_execute_record_from_output",
-        AsyncMock(return_value={"record_id": 1, "is_success": 1}),
-    )
+    monkeypatch.setattr(rebalance_execution, "load_notification_snapshot", AsyncMock(return_value=None))
+    monkeypatch.setattr(rebalance_execution, "append_execute_record_from_output", append_record)
 
     asyncio.run(rebalance_execution.trade(account, {"c2701": -3}, execution_id="tq-current", target_mode="quantity"))
 
+    assert read.await_args_list == [
+        call("execution_read", {"op": "last_target", "account_id": account.id}),
+        call("execution_read", {"op": "pending_positions", "account_id": account.id}),
+    ]
     actual = manager.execute_trade.call_args.kwargs
     assert actual["standard_input_dict"]["last_target"] == {}
     assert actual["standard_input_dict"]["curr_target"] == {"c2701": -3}
     assert actual["audit_input"]["last_target"] == previous
-    assert actual["notification_snapshot"]["last_target"] == previous
+    assert append_record.await_args.kwargs["raw_input"]["last_target"] == previous
+    output = UnifiedStandardOutput(
+        account_assets=UnifiedAccountAssets.unavailable(),
+        channel_type=account.trade_channel,
+        inputs=UnifiedStandardInput.from_dict(actual["standard_input_dict"]),
+        status=ExecutionStatus.NOOP,
+    )
+    context = build_execution_notification_context(
+        SimpleNamespace(_get_account_mark=lambda: "TQ"),
+        output,
+        actual["notification_snapshot"],
+    )
+    assert context["targets"]["previous"] == previous
 
 
 def test_calculate_target_volume_does_not_restore_forbidden_symbols_from_last_target() -> None:
@@ -434,10 +450,8 @@ def test_trade_routes_gm_account_to_worker_manager(
     assert restored.execution_notification_code == (None if requested else code)
     assert bool(restored.extra.get("server_notification")) is requested
     assert restored.last_target == {}
-    assert "last_target" not in trade_call["audit_input"]
-    assert captured["raw_input"] == {
-        key: value for key, value in trade_call["standard_input_dict"].items() if key != "last_target"
-    }
+    assert trade_call["audit_input"]["last_target"] == {}
+    assert captured["raw_input"] == trade_call["standard_input_dict"]
     assert captured["execution_id"] == "exec-gm-worker-trade-1"
 
 
@@ -686,6 +700,8 @@ def test_trade_emits_execution_events_and_artifacts(
 ) -> None:
     """成功执行交易时，应写入 execution 事件与附件。"""
     account = build_account(trade_rules={"ag2612": {"min_notional": 5.0}})
+    previous = {"ag2609": 0.1}
+    monkeypatch.setattr(rebalance_execution, "_load_last_target_snapshot", AsyncMock(return_value=previous))
     captured_events: list[tuple[str, str]] = []
     captured_artifacts: list[str] = []
     artifact_versions: dict[str, int] = {}
@@ -759,6 +775,7 @@ def test_trade_emits_execution_events_and_artifacts(
     frozen_input = _worker_commands["exec-audit-1"]
     assert frozen_input["strategy_target"] == {"ag2612": 0.1}
     assert frozen_input["curr_target"] == {"ag2612": 0.1}
+    assert frozen_input["last_target"] == previous
     assert "account_target" not in frozen_input
     assert frozen_input["sizing_context"] == {
         "long_leverage": 1.0,

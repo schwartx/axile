@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.server.execution import notification_assets
 
 
@@ -58,24 +57,3 @@ def test_no_snapshot_or_failed_read_does_not_block_execution(monkeypatch, failur
         is None
     )
     latest.assert_awaited_once_with(1)
-
-
-@pytest.mark.parametrize("code", [DEFAULT_ACCOUNT_NOTIFICATION_CODE, "custom script"])
-def test_rebalance_notification_loads_previous_target_only_for_custom_code(monkeypatch, code):
-    snapshot = AsyncMock(return_value=None)
-    history = AsyncMock(return_value={"present": True, "target": {"c2611": -1}})
-    monkeypatch.setattr(notification_assets, "latest_asset_snapshot", snapshot)
-    monkeypatch.setattr(notification_assets, "native_operation", history)
-
-    result = asyncio.run(
-        notification_assets.load_notification_snapshot(
-            SimpleNamespace(id=1, execution_notification_code=code), include_previous_target=True
-        )
-    )
-
-    if code == DEFAULT_ACCOUNT_NOTIFICATION_CODE:
-        assert result is None
-        history.assert_not_awaited()
-    else:
-        assert result == {"last_target": {"c2611": -1}}
-        history.assert_awaited_once_with("execution_read", {"op": "last_target", "account_id": 1})

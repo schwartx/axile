@@ -396,22 +396,10 @@ pub(crate) fn execution_detail(
 ) -> Result<Value, AnalysisError> {
     let result = crate::business_detail::read_result(connection, account_id, record_id)
         .map_err(AnalysisError::from)?;
-    let captured = &result["extra"]["server_notification_context"];
-    let needs_input = if captured
+    let needs_input = !result["extra"]["server_notification_context"]
         .as_object()
         .is_some_and(|context| !context.is_empty())
-    {
-        captured
-            .pointer("/targets/previous")
-            .and_then(Value::as_object)
-            .is_some_and(Map::is_empty)
-    } else {
-        result.get("inputs").is_none()
-            || result
-                .pointer("/inputs/last_target")
-                .and_then(Value::as_object)
-                .is_some_and(Map::is_empty)
-    };
+        && result.get("inputs").is_none();
     let mut detail = Map::new();
     detail.insert("result".into(), result);
     let input = if needs_input {

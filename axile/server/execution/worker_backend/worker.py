@@ -68,7 +68,6 @@ from axile.server.portfolio_runner import PORTFOLIO_FUNCTION_TIMEOUT_SECONDS
 
 _SYMBOL_FIELDS = (
     "curr_target",
-    "last_target",
     "symbol_algorithms",
     "trade_rules",
     "forbidden_symbols",

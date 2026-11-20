@@ -18,7 +18,7 @@ from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.session_closed import COMMON_SESSION_CLOSED
 from axile.server._native import _core
-from axile.server.execution import input_persistence, records
+from axile.server.execution import input_persistence, rebalance, records
 from axile.server.native_store import native_operation
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database
@@ -232,11 +232,6 @@ def test_termination_preserves_original_output_and_cancellation_evidence(
     asyncio.run(scenario())
 
 
-async def _read_previous_target(account_id: int) -> object:
-    history = await native_operation("execution_read", {"op": "last_target", "account_id": account_id})
-    return history["target"] if history["present"] else {}
-
-
 def test_last_target_selects_latest_success_for_exact_account(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """失败、其他账户及非 1 成功标志都不能取代最新成功记录的目标。"""
 
@@ -263,15 +258,21 @@ def test_last_target_selects_latest_success_for_exact_account(tmp_path, monkeypa
                             "UPDATE executerecord SET is_success=2 WHERE execution_id=?",
                             (f"semantic-target-{ordinal}",),
                         )
-            assert business_evidence(await _read_previous_target(1)) == business_evidence(
+            assert business_evidence(
+                await rebalance._load_last_target_snapshot(build_account(id=1))
+            ) == business_evidence(
                 {
                     "short": -0.25,
                     "zero": 0,
                     "fraction": 0.125,
                 }
             )
-            assert business_evidence(await _read_previous_target(2)) == business_evidence({"other_account": 1})
-            assert business_evidence(await _read_previous_target(999)) == business_evidence({})
+            assert business_evidence(
+                await rebalance._load_last_target_snapshot(build_account(id=2))
+            ) == business_evidence({"other_account": 1})
+            assert business_evidence(
+                await rebalance._load_last_target_snapshot(build_account(id=999))
+            ) == business_evidence({})
             await records.append_success_execute_record(
                 build_account(),
                 _input({"noop_target": 0}),
@@ -279,7 +280,9 @@ def test_last_target_selects_latest_success_for_exact_account(tmp_path, monkeypa
                 execution_id="semantic-latest-noop",
                 execution_kind=ExecutionKind.REBALANCE,
             )
-            assert business_evidence(await _read_previous_target(1)) == business_evidence({"noop_target": 0})
+            assert business_evidence(await rebalance._load_last_target_snapshot(build_account())) == business_evidence(
+                {"noop_target": 0}
+            )
             await records.append_success_execute_record(
                 build_account(),
                 _input({}),
@@ -287,7 +290,9 @@ def test_last_target_selects_latest_success_for_exact_account(tmp_path, monkeypa
                 execution_id="semantic-latest-clear",
                 execution_kind=ExecutionKind.CLEAR_POSITIONS,
             )
-            assert business_evidence(await _read_previous_target(1)) == business_evidence({})
+            assert business_evidence(await rebalance._load_last_target_snapshot(build_account())) == business_evidence(
+                {}
+            )
 
     asyncio.run(scenario())
 
@@ -342,62 +347,44 @@ def test_latest_success_target_does_not_fall_back_to_older_nonempty_target(
                     raw_result={"status": "SUCCEEDED"},
                     is_success=1,
                 )
-            assert business_evidence(await _read_previous_target(1)) == business_evidence(
+            assert business_evidence(await rebalance._load_last_target_snapshot(build_account())) == business_evidence(
                 latest_input.get("curr_target", {})
             )
 
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("freeze_before_result", [True, False])
-def test_previous_target_is_frozen_for_reporting(
-    tmp_path, monkeypatch: pytest.MonkeyPatch, freeze_before_result: bool
-) -> None:
-    """旧合约留在对比证据中，真实的执行输入只包含本轮目标。"""
+def test_rebalance_preview_uses_frozen_previous_target(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """worker 回传省略结果输入，通知预览从冻结的审计输入读上次目标。"""
 
     async def scenario() -> None:
-        with _database(monkeypatch, tmp_path) as path:
-            account = build_account()
-            previous = {"c2611": 0.25, "fu2611": 0, "zn2611": -0.1}
-            await records.append_success_execute_record(
-                account, _input(previous), {"status": "SUCCEEDED"}, execution_id="previous"
+        with _database(monkeypatch, tmp_path):
+            previous = {"c2611": -3}
+            raw_input = {**_input({"c2701": -3}), "last_target": previous}
+            await asyncio.to_thread(
+                input_persistence.persist_pre_execute_input_sync,
+                account_id=1,
+                execution_id="current",
+                payload=raw_input,
             )
-            raw_input = {
-                "curr_target": {"c2701": 0.5},
-                "extra": {"audit": {"execution_kind": "rebalance"}},
+            result = {
+                "status": "NOOP",
+                "success": True,
+                "channel_type": "tq",
+                "account_assets": {"total_asset": 10, "available_cash": 10, "market_value": None, "positions": []},
             }
-            if freeze_before_result:
-                frozen = await asyncio.to_thread(
-                    input_persistence.persist_pre_execute_input_sync,
-                    account_id=1,
-                    execution_id="current",
-                    payload=raw_input,
-                )
-                assert (await read_execution_input(frozen))["last_target"] == previous
-            current = await records.append_success_execute_record(
-                account,
-                raw_input,
-                {
-                    "status": "NOOP",
-                    "success": True,
-                    "channel_type": "tq",
-                    "account_assets": {"total_asset": 10, "available_cash": 10, "market_value": None, "positions": []},
-                    "inputs": {**raw_input, "last_target": {}},
-                },
+            await asyncio.to_thread(
+                records.stage_execute_result_sync, account_id=1, execution_id="current", result=result
+            )
+            await records.append_execute_record_from_output(
+                account=build_account(),
+                raw_input=raw_input,
+                output=from_payload(UnifiedStandardOutput, result),
                 execution_id="current",
                 execution_kind=ExecutionKind.REBALANCE,
             )
-            stored = _persisted(path, current["record_id"])
-            assert (await read_execution_input(stored.input_id))["last_target"] == previous
             preview = await native_operation("notifications_preview", {"account_id": 1})
             assert preview["context"]["targets"]["previous"] == previous
-            if freeze_before_result:
-                assert frozen == await asyncio.to_thread(
-                    input_persistence.persist_pre_execute_input_sync,
-                    account_id=1,
-                    execution_id="current",
-                    payload=raw_input,
-                )
 
     asyncio.run(scenario())
 

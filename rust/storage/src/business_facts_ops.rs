@@ -74,46 +74,12 @@ pub fn freeze_execution_input(path: &str, request: &Value) -> Result<Value, Anal
             payload,
             created_at,
             None,
-            None,
         )?;
         if let Some(before) = before_assets {
             persist_before_assets(&connection, &input_id, before)?;
         }
         Ok(json!({"input_id": input_id}))
     })
-}
-
-/// 在既有审计事务中冻结上次目标；重试沿用原来保存的历史。
-fn capture_previous_target<'a>(
-    connection: &Connection,
-    account_id: i64,
-    frozen_input_id: Option<&str>,
-    record_id: Option<i64>,
-    payload: &'a Value,
-) -> Result<std::borrow::Cow<'a, Value>, AnalysisError> {
-    use std::borrow::Cow;
-
-    if payload.get("last_target").is_some()
-        || payload
-            .pointer("/extra/audit/execution_kind")
-            .and_then(Value::as_str)
-            != Some("rebalance")
-    {
-        return Ok(Cow::Borrowed(payload));
-    }
-    let mut captured = payload.clone();
-    let previous = if let Some(input_id) = frozen_input_id {
-        load_input_value(connection, input_id)?["last_target"].take()
-    } else {
-        crate::execution_reads::last_target_before(connection, account_id, record_id)?["target"]
-            .take()
-    };
-    captured["last_target"] = if previous.is_object() {
-        previous
-    } else {
-        json!({})
-    };
-    Ok(Cow::Owned(captured))
 }
 
 /// 在 worker 回传前冻结执行后资产观测;没有观测时返回 null。
@@ -155,7 +121,6 @@ pub(crate) fn persist_input(
     payload: &Value,
     created_at: &str,
     owner_execution_id: Option<&str>,
-    before_record_id: Option<i64>,
 ) -> Result<String, AnalysisError> {
     if let (Some(execution), Some(owner)) = (execution_id, owner_execution_id) {
         if execution != owner {
@@ -165,28 +130,19 @@ pub(crate) fn persist_input(
         }
     }
     let owner = owner_execution_id.or(execution_id);
-    let existing = execution_id
-        .map(|id| find_execution_input(connection, account_id, id))
-        .transpose()?
-        .flatten();
-    let payload = capture_previous_target(
-        connection,
-        account_id,
-        existing.as_deref(),
-        before_record_id,
-        payload,
-    )?;
-    if let Some(existing) = existing {
-        if !replay_matches(connection, &existing, &payload)? {
-            return Err(facts_error(
-                "Execution input replay differs from frozen input",
-            ));
+    if let Some(execution) = execution_id {
+        if let Some(existing) = find_execution_input(connection, account_id, execution)? {
+            if !replay_matches(connection, &existing, payload)? {
+                return Err(facts_error(
+                    "Execution input replay differs from frozen input",
+                ));
+            }
+            return Ok(existing);
         }
-        return Ok(existing);
     }
     let batch = encode_inputs(
         input_id,
-        &payload,
+        payload,
         account_id,
         execution_id,
         created_at,

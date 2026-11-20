@@ -280,7 +280,6 @@ fn attach_inputs(
                 payload,
                 created_at,
                 None,
-                Some(record_id),
             )?);
         }
     }
@@ -301,7 +300,6 @@ fn attach_inputs(
                     payload,
                     created_at,
                     execution_id,
-                    Some(record_id),
                 )?)
             }
         }
