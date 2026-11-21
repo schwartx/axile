@@ -25,6 +25,7 @@ import {
   buildExecutionDetail,
   executionHeadline,
   formatOrderTradeCounts,
+  hasPendingOrderTerminals,
   SOURCE_DEGRADED_LABEL,
   type ChainAction,
   type ExecutionDetailModel,
@@ -570,6 +571,7 @@ export function ExecutionDetailPage() {
   const running = useRunning(accountId)
   const isLive = running != null && running.executionId === executionId
   const [settledId, setSettledId] = useState<string | null>(null)
+  const [awaitingOrdersId, setAwaitingOrdersId] = useState<string | null>(null)
   const status = usePolling(statusFetcher, {
     queryKey: `execution:${executionId ?? 'missing'}:status`,
     intervalMs: settledId === executionId ? 0 : 2500,
@@ -584,7 +586,7 @@ export function ExecutionDetailPage() {
   }, [executionId, taskStatus])
   const events = usePolling(eventsFetcher, {
     queryKey: `execution:${executionId ?? 'missing'}:events`,
-    intervalMs: pollMs,
+    intervalMs: awaitingOrdersId === executionId ? 2500 : pollMs,
     enabled: Boolean(executionId),
   })
   const artifacts = usePolling(artifactsFetcher, {
@@ -596,6 +598,11 @@ export function ExecutionDetailPage() {
   const detail = usePolling(useCallback((signal: AbortSignal) => executionId ? getExecutionDetail(executionId, accountId, signal) : Promise.resolve(null), [executionId, accountId]), {
     queryKey: `execution:${executionId}:detail`, intervalMs: pollMs, enabled: Boolean(executionId),
   })
+  useEffect(() => {
+    if (events.data?.complete) {
+      setAwaitingOrdersId(hasPendingOrderTerminals(events.data.data, detail.data) ? executionId ?? null : null)
+    }
+  }, [events.data, detail.data, executionId])
   const loading = status.loading && events.loading && artifacts.loading
   const rawEvents = events.data?.data ?? []
   const hasAnyData = status.data != null || events.data != null || artifacts.data != null

@@ -282,6 +282,69 @@ interface OrderInfo {
   ts: string | null
 }
 
+function orderKey(symbol: unknown, orderId: unknown): string {
+  return JSON.stringify([symbol, orderId])
+}
+
+function isTerminalOrderStatus(status: unknown): boolean {
+  return ['已成交', '已撤销', '已拒绝', '已过期'].includes(asStr(status))
+}
+
+function checkpointOrders(events: ExecutionEvent[]): Map<string, Dict> {
+  const orders = new Map<string, Dict>()
+  for (const event of events) {
+    if (event.event_type !== 'position_checkpoint' || !event.symbol || !Array.isArray(event.details?.orders)) continue
+    for (const value of event.details.orders) {
+      const order = asDict(value)
+      if (!order || !asStr(order.order_id)) continue
+      orders.set(orderKey(event.symbol, order.order_id), { ...order, symbol: event.symbol })
+    }
+  }
+  return orders
+}
+
+/** 同一委托的真实终态优先于超时当天记录的待确认状态。 */
+function orderSettlementEvents(events: ExecutionEvent[]): Map<string, ExecutionEvent> {
+  const byOrder = new Map<string, ExecutionEvent>()
+  for (const event of events) {
+    if (!event.symbol || !event.order_id) continue
+    const key = orderKey(event.symbol, event.order_id)
+    if (event.event_type === 'order_terminal' && event.status === 'SUCCESS' &&
+        event.reason_family === 'EXCHANGE' && typeof asDict(asDict(event.details)?.order)?.terminal_status === 'string') {
+      const previous = byOrder.get(key)
+      const previousFill = asNum(asDict(previous?.details?.order)?.filled_volume) ?? 0
+      const fill = asNum(asDict(event.details?.order)?.filled_volume) ?? 0
+      if (previous?.event_type !== 'order_terminal' || fill >= previousFill) byOrder.set(key, event)
+    } else if (event.event_type === 'order_terminal_pending' && !byOrder.has(key)) {
+      byOrder.set(key, event)
+    }
+  }
+  return byOrder
+}
+
+export function hasPendingOrderTerminals(events: ExecutionEvent[], summary?: Dict | null): boolean {
+  const pending = new Set<string>()
+  const settled = new Set<string>()
+  for (const [key, order] of checkpointOrders(events)) {
+    (isTerminalOrderStatus(order.status) ? settled : pending).add(key)
+  }
+  for (const [key, event] of orderSettlementEvents(events)) {
+    (event.event_type === 'order_terminal' ? settled : pending).add(key)
+  }
+  for (const [symbol, value] of Object.entries(asDict(summary?.symbol_results) ?? {})) {
+    const recorded = asDict(value)?.orders
+    if (!Array.isArray(recorded)) continue
+    for (const value of recorded) {
+      const order = asDict(value)
+      if (!order?.order_id) continue
+      const key = orderKey(symbol, order.order_id)
+      if (isTerminalOrderStatus(order.status)) settled.add(key)
+      else if (asDict(order.extra)?.terminal_confirmation_pending === true) pending.add(key)
+    }
+  }
+  return [...pending].some(key => !settled.has(key))
+}
+
 /** 逐只聚合 `order_terminal` 事件（取最后一条终态）。 */
 function ordersBySymbol(events: ExecutionEvent[]): Map<string, OrderInfo> {
   const out = new Map<string, OrderInfo>()
@@ -679,7 +742,7 @@ function buildSpine(
 }
 
 /** 结果摘要尚未生成时，用已有目标、订单和事件建立逐只过程行。 */
-function provisionalRows(events: ExecutionEvent[], artifacts: ExecutionArtifact[], liveOrders: CurrentOrder[], before: Dict | null): Dict[] {
+function provisionalRows(events: ExecutionEvent[], artifacts: ExecutionArtifact[], liveOrders: CurrentOrder[], before: Dict | null, checkpoints: Map<string, Dict>): Dict[] {
   const input = asDict(artifactContent(artifacts, AT.standardInput)?.input)
   const target = artifactContent(artifacts, AT.target)
   const targets = asDict(target?.curr_target) ?? asDict(input?.curr_target) ?? {}
@@ -694,7 +757,7 @@ function provisionalRows(events: ExecutionEvent[], artifacts: ExecutionArtifact[
     const row = ensure(symbol)
     if (quantityMode) row.target = asNum(targets[symbol])
   }
-  const orders = new Map<string, Dict>()
+  const orders = new Map(checkpoints)
   for (const event of events) {
     if (!event.symbol) continue
     const row = ensure(event.symbol)
@@ -708,17 +771,20 @@ function provisionalRows(events: ExecutionEvent[], artifacts: ExecutionArtifact[
       row.inProgress = false
     }
     const order = asDict(details?.order)
-    if (event.order_id && order) orders.set(`${event.symbol}:${event.order_id}`, {
-      ...orders.get(`${event.symbol}:${event.order_id}`), ...order, symbol: event.symbol, order_id: event.order_id,
-      status: order.terminal_status ?? order.status,
-    })
+    if (event.order_id && order) {
+      const key = orderKey(event.symbol, event.order_id)
+      const previous = orders.get(key)
+      if (event.event_type !== 'order_terminal' && isTerminalOrderStatus(previous?.status)) continue
+      orders.set(key, { ...previous, ...order, symbol: event.symbol, order_id: event.order_id,
+        status: order.terminal_status ?? order.status ?? previous?.status })
+    }
   }
   for (const order of liveOrders) {
     ensure(order.symbol)
-    const key = `${order.symbol}:${order.order_id}`
+    const key = orderKey(order.symbol, order.order_id)
     const previous = orders.get(key)
     // 已保存的终态不被更早的运行中委托快照覆盖。
-    if (!previous || !['已成交', '已撤销', '已拒绝', '已过期'].includes(asStr(previous.status))) orders.set(key, { ...order })
+    if (!isTerminalOrderStatus(previous?.status)) orders.set(key, { ...order })
   }
   const positions = (Array.isArray(before?.positions) ? before.positions : []).filter(position => asDict(position) != null) as Position[]
   const grouped = new Map<string, Dict[]>()
@@ -774,10 +840,19 @@ export function buildExecutionDetail(
     return { ...evidence, ...result, symbol, target: result.target_volume ?? evidence?.target,
       orders: Array.isArray(result.orders) ? recordOrders(result) : evidence?.orders ?? [] }
   }) : recon?.symbols ?? []
-  const bySymbol = new Map<string, Record<string, unknown>>(
-    provisionalRows(events, artifacts, liveOrders, beforeAssets).map(row => [String(row.symbol), row]),
+  const checkpoints = checkpointOrders(events)
+  const bySymbol = new Map<string, Dict>(
+    provisionalRows(events, artifacts, liveOrders, beforeAssets, checkpoints).map(row => [String(row.symbol), row]),
   )
-  for (const row of recordedRows) bySymbol.set(row.symbol, { ...bySymbol.get(row.symbol), ...row, inProgress: false })
+  for (const row of recordedRows) {
+    const provisional = bySymbol.get(row.symbol)
+    const recorded = row.orders ?? []
+    const recordedIds = new Set(recorded.map(order => order.order_id))
+    const recovered = (provisional?.orders as ExecOrder[] | undefined)?.filter(order =>
+      checkpoints.has(orderKey(row.symbol, order.order_id)) && !recordedIds.has(order.order_id)) ?? []
+    bySymbol.set(row.symbol, { ...provisional, ...row, orders: recorded, recoveredOrders: recovered, inProgress: false })
+  }
+  const settlements = orderSettlementEvents(events)
   const symbols: SymbolChain[] = [...bySymbol.values()].map((s) => {
     const row = { ...s, inProgress: s.inProgress === true && isActiveExecution(task?.status) } as Record<string, unknown>
     if (isDegradedSnapshotSource(srcBefore)) row.before = null
@@ -790,8 +865,35 @@ export function buildExecutionDetail(
       }
       row.after = final
     }
-    const chain = buildSymbolChain(row, startedAt, orders, decisions, skips, pnlBefore, pnlAfter)
-    return chain
+    const recovered = (row.recoveredOrders as ExecOrder[] | undefined) ?? []
+    let quantityChanged = recovered.some(order => Boolean(order.filled_volume))
+    const previousOrders = Array.isArray(row.orders) ? row.orders as ExecOrder[] : []
+    const reconciled = [...previousOrders, ...recovered].map(order => {
+      const key = orderKey(row.symbol, order.order_id)
+      const settlement = settlements.get(key)
+      const checkpoint = checkpoints.get(key)
+      const recordedFill = order.filled_volume ?? 0
+      const checkpointFill = asNum(checkpoint?.filled_volume) ?? 0
+      let evidence = asDict(settlement?.details?.order)
+      if (settlement?.event_type !== 'order_terminal') {
+        if (checkpoint && isTerminalOrderStatus(checkpoint.status)) evidence = checkpoint
+        if (isTerminalOrderStatus(order.status) && (evidence !== checkpoint || checkpointFill <= recordedFill)) return order
+      }
+      if (!evidence) return order
+      const reported = asNum(evidence.filled_volume)
+      if (isTerminalOrderStatus(order.status) && recordedFill > (reported ?? 0) && recordedFill >= checkpointFill) return order
+      const filled = reported == null ? order.filled_volume : Math.max(reported, recordedFill, checkpointFill)
+      if (filled !== order.filled_volume) quantityChanged = true
+      return { ...order, status: asStr(evidence?.terminal_status ?? evidence?.status) || order.status,
+        filled_volume: filled, avg_price: asNum(evidence?.avg_price) ?? order.avg_price }
+    })
+    row.orders = reconciled
+    if (quantityChanged) {
+      row.filled = reconciled.reduce((sum, order) => sum + ({ buy: 1, sell: -1, none: 0 }[order.side]) * (order.filled_volume ?? 0), 0)
+      row.avg_price = null
+      row.filled_value = null
+    }
+    return buildSymbolChain(row, startedAt, orders, decisions, skips, pnlBefore, pnlAfter)
   })
 
   const reachedCount = symbols.filter((s) => s.reached === true).length

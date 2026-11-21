@@ -513,6 +513,12 @@ class ExecutionSession:
         """读取共享 runtime 中的订单元数据."""
         return self._owner.get_order_audit_metadata(order_id)
 
+    @property
+    def has_audit_sink(self) -> bool:
+        """运行中的执行可写入审计时启用查仓前的持久保护。"""
+        runtime = self._get_runtime()
+        return runtime is not None and runtime.audit_sink is not None
+
     def emit_audit_event(
         self,
         *,

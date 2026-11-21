@@ -146,7 +146,9 @@ def determine_order_price(
     return order_type, price
 
 
-def cancel_pending_orders_via_query(executor: ExecutorProtocol) -> CancellationResult:
+def cancel_pending_orders_via_query(
+    executor: ExecutorProtocol, *, on_terminal: Callable[[UnifiedOrder], None] | None = None
+) -> CancellationResult:
     """
     通过主动查询结果逐笔撤销当前品种的挂单。
 
@@ -154,6 +156,8 @@ def cancel_pending_orders_via_query(executor: ExecutorProtocol) -> CancellationR
     ----------
     executor : ExecutorProtocol
         当前算法绑定的执行器会话。
+    on_terminal : Callable[[UnifiedOrder], None] | None
+        每笔委托确认终态后立即通知调用方。
 
     Returns
     -------
@@ -172,4 +176,5 @@ def cancel_pending_orders_via_query(executor: ExecutorProtocol) -> CancellationR
         executor.get_pending_orders(),
         cancel=lambda _symbol, order_id: executor.cancel_order(order_id),
         reconcile=reconcile if callable(reconcile) else lambda _symbol, _order_id: None,
+        on_terminal=on_terminal,
     )

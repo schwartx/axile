@@ -591,19 +591,28 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
     # ==================== 核心交易方法 ====================
 
     def get_account_assets(self) -> UnifiedAccountAssets:
-        """获取账户资产."""
+        """获取账户资产，持仓与资金查询共用执行剩余时间。"""
         if not self.account_id:
             raise ValueError("账户ID未初始化")
+
+        runtime = self.get_active_execution_runtime()
+
+        def query_timeout() -> float:
+            if runtime is None or (remaining := runtime.deadline_remaining_seconds()) is None:
+                return 10.0
+            if remaining <= 0:
+                raise TimeoutError("GM 资产查询已到截止时间")
+            return min(10.0, remaining)
 
         logger.info(f"开始获取账户资产: account_id={self.account_id}")
         logger.info(f"准备查询持仓: account_id={self.account_id}")
         positions = cast(
             "list[Any]",
-            self._call_bridge("get_position", account_id=self.account_id, timeout=10.0),
+            self._call_bridge("get_position", account_id=self.account_id, timeout=query_timeout()),
         )
         logger.info(f"持仓查询完成: account_id={self.account_id}, positions={len(positions)}")
         logger.info(f"准备查询资金: account_id={self.account_id}")
-        raw_cash = self._call_bridge("get_cash", account_id=self.account_id, timeout=10.0)
+        raw_cash = self._call_bridge("get_cash", account_id=self.account_id, timeout=query_timeout())
         logger.info(f"资金查询完成: account_id={self.account_id}, has_cash={bool(raw_cash)}")
         total_asset, available_cash, cash_diagnostics = _gm_cash_snapshot(raw_cash)
 
@@ -1007,9 +1016,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             is_stock_market = any(suffix in symbol.upper() for suffix in [".SH", ".SZ", ".SHSE", ".SZSE"])
 
             if is_stock_market:
-                if code.startswith("5") or code.startswith("51"):
-                    return 0.001
-                if code.startswith("12"):
+                if code.startswith(("5", "12")) or (symbol.endswith(".SZ") and code.startswith(("158", "159"))):
                     return 0.001
                 return 0.01
 

@@ -10,14 +10,19 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, fields
 from math import isfinite
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from axile.common.serialization import copy_data, to_payload
-from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
+from axile.common.serialization import copy_data, from_payload, to_payload
+from axile.domain.execution import (
+    ExecutionArtifactType,
+    ExecutionEventStatus,
+    ExecutionEventType,
+    ExecutionReasonFamily,
+)
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.algorithms.core.base import AlgorithmInput, ExecutorProtocol, resolve_algorithm
 from axile.executor.algorithms.exceptions import execution_error_message
-from axile.executor.algorithms.utils.outcome import TARGET_NOT_REACHED, summarize_outcome
+from axile.executor.algorithms.utils.outcome import TARGET_NOT_REACHED, confirmed_position, summarize_outcome
 from axile.executor.execution_runtime import ExecutionRuntime
 from axile.executor.execution_session import ExecutionSession
 from axile.executor.futures_close_policy import futures_product
@@ -35,6 +40,7 @@ from axile.executor.models.unified_order import UnifiedOrder
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.models.unified_price import UnifiedPriceData, clone_price_data
 from axile.executor.order_cancellation import CancelNotAllowedError
+from axile.executor.order_terminal_audit import order_terminal_details
 from axile.executor.replay import observe, replay_enabled
 from axile.executor.session_closed import COMMON_SESSION_CLOSED, normal_session_skip
 from axile.executor.termination import ExecutionTerminated
@@ -293,10 +299,14 @@ class ExecutionEngine:
             ):
                 by_symbol[symbol].expected_volume = expected
                 by_symbol[symbol].position_confirmed = True
+        self._remember_unconfirmed_positions(results)
+        return self._create_standard_output_from_results(standard_input, results)
+
+    def _remember_unconfirmed_positions(self, results: list[AlgorithmResult]) -> None:
+        """保留已成交但尚待渠道核对的持仓，阻止后续报单。"""
         for result in results:
             if result.expected_volume is not None and result.position_confirmed is False:
                 self._owner.pending_positions[result.symbol] = result.expected_volume
-        return self._create_standard_output_from_results(standard_input, results)
 
     def _run_symbol_algorithm(self, task: _PreparedSymbolAlgorithm) -> AlgorithmResult:
         """执行单个品种的算法任务."""
@@ -375,16 +385,24 @@ class ExecutionEngine:
         ):
             raise ValueError("待核对持仓证据无效")
         self._owner.pending_positions.update(pending)
-        blocked = self._pending_position_results(planning.account_assets)
+        # 旧单的成交可能已经改变前一阶段的仓位，先收敛这些品种的委托。
+        previous_orders = cast("list[ObjectDict]", standard_input.extra.get("pending_order_terminals", []))
+        clearing = standard_input.extra.get("close_all_positions") is True
+        blocked = [] if previous_orders or clearing else self._pending_position_results(planning.account_assets)
         if blocked:
             self._account_snapshot = planning.account_assets, None
             self._emit_symbol_decision_events(standard_input, blocked)
             return blocked
         # dispatch 阶段把计划拆成可直接返回的 NOOP、第一阶段减仓、第二阶段开仓三类。
         dispatch_phases = self._build_dispatch_phases(planning)
+        has_dispatch = bool(dispatch_phases.phase_one_tasks or dispatch_phases.phase_two_plans)
+        changes = {}
         try:
-            self._prepare_account_for_symbol_dispatch(dispatch_phases)
+            if has_dispatch or clearing:
+                changes = self._prepare_account_for_symbol_dispatch()
         except CancelNotAllowedError as exc:
+            if not has_dispatch:
+                raise
             direct_symbols = {result.symbol for result in dispatch_phases.direct_results}
             return [
                 *planning.planning_failures,
@@ -408,7 +426,29 @@ class ExecutionEngine:
                     if plan.symbol not in direct_symbols
                 ],
             ]
-        if dispatch_phases.phase_one_tasks or dispatch_phases.phase_two_plans:
+        blocked_orders = self._reconcile_previous_orders(standard_input, previous_orders)
+        if clearing and changes:
+            recovered = {
+                (group["symbol"], order_id)
+                for group in previous_orders
+                for order_id in cast("dict[str, object]", group["pending"])
+            }
+            for (symbol, order_id), delta in changes.items():
+                if (symbol, order_id) not in recovered:
+                    positions = self._owner.pending_positions
+                    before = positions.get(symbol, self._owner.get_current_volume(symbol, planning.account_assets))
+                    positions[symbol] = before + delta
+            planning = self._build_symbol_algorithm_plans(standard_input)
+            dispatch_phases = self._build_dispatch_phases(planning)
+            has_dispatch = bool(dispatch_phases.phase_one_tasks or dispatch_phases.phase_two_plans)
+        blocked_orders.extend(
+            self._pending_position_results(planning.account_assets, skip={row.symbol for row in blocked_orders})
+        )
+        if blocked_orders:
+            self._account_snapshot = planning.account_assets, None
+            self._emit_symbol_decision_events(standard_input, blocked_orders)
+            return blocked_orders
+        if has_dispatch:
             self._runtime.report_progress("executing")
         phase_one_results = self._run_phase_one_dispatch(dispatch_phases.phase_one_tasks)
         # 第二阶段只有在第一阶段没有未成功结果时才继续，避免边减仓失败边开新仓。
@@ -430,13 +470,156 @@ class ExecutionEngine:
             merged_results = self._settle_result_positions(merged_results)
         else:
             merged_results = self._reconcile_result_positions(merged_results, self._account_snapshot[0])
+        if clearing:
+            self._check_remaining_clear_positions(standard_input, merged_results)
         self._emit_symbol_decision_events(standard_input, merged_results)
         return merged_results
 
-    def _pending_position_results(self, assets: UnifiedAccountAssets) -> list[AlgorithmResult]:
+    def _check_remaining_clear_positions(
+        self, standard_input: UnifiedStandardInput, results: list[AlgorithmResult]
+    ) -> None:
+        """收尾时才出现的持仓也属于清仓目标。"""
+        if self._account_snapshot is None:
+            return
+        assets, snapshot_error = self._account_snapshot
+        if snapshot_error:
+            return
+        planned = {row.symbol for row in results} | set(standard_input.forbidden_symbols)
+        for symbol in sorted({pos.symbol for pos in assets.positions if pos.volume > 0} - planned):
+            results.append(
+                self._build_failed_algorithm_result(
+                    symbol=symbol,
+                    algorithm_name=self._get_symbol_algorithm_name(standard_input, symbol),
+                    error="清仓收尾时发现未纳入计划的持仓",
+                    account_assets=assets,
+                    target_volume=0,
+                    reason_code=TARGET_NOT_REACHED,
+                )
+            )
+
+    def _reconcile_previous_orders(
+        self, standard_input: UnifiedStandardInput, pending: list[ObjectDict]
+    ) -> list[AlgorithmResult]:
+        """把历史委托终态转换成可跨 worker 恢复的仓位核对证据。"""
+        blocked: dict[str, AlgorithmResult] = {}
+        for previous in pending:
+            symbol = cast("str", previous["symbol"])
+            error = self._reconcile_order_group(symbol, previous)
+            if error is not None:
+                blocked[symbol] = self._build_failed_algorithm_result(
+                    symbol=symbol,
+                    algorithm_name=self._get_symbol_algorithm_name(standard_input, symbol),
+                    error=error,
+                    status=ExecutionStatus.BLOCKED,
+                    reason_code="COMMON.ORDER.TERMINAL_UNCONFIRMED",
+                    reason_family=ExecutionReasonFamily.ACCOUNT_STATE,
+                )
+        return list(blocked.values())
+
+    @staticmethod
+    def _order_position_basis(previous: ObjectDict) -> tuple[object, dict[str, UnifiedOrder]]:
+        """阶段快照和最终结果各自配对起点；完整结果可涵盖反手的两个阶段。"""
+
+        def orders_in(source: ObjectDict) -> dict[str, UnifiedOrder]:
+            return {order.order_id: order for order in from_payload(list[UnifiedOrder], source["orders"] or [])}
+
+        orders = orders_in(previous)
+        start = previous["start_volume"]
+        recorded = previous.get("recorded_position")
+        if isinstance(recorded, dict):
+            other = orders_in(recorded)
+            if orders.keys() <= other.keys():
+                start, orders, other = recorded["start_volume"], other, orders
+            for key in orders.keys() & other.keys():
+                order, update = orders[key], other[key]
+                if update.is_completed() and not order.is_completed():
+                    order, update = update, order
+                orders[key] = copy_data(order, update={"filled_volume": max(order.filled_volume, update.filled_volume)})
+        return start, orders
+
+    def _reconcile_order_group(self, symbol: str, previous: ObjectDict) -> str | None:
+        recovery_intent = cast("str | None", self._runtime.audit_context.get("execution_id"))
+        context = {
+            **self._runtime.audit_context,
+            "execution_id": previous["execution_id"],
+            "algorithm": previous["algorithm"],
+        }
+        start, orders = self._order_position_basis(previous)
+        pending = dict(cast("dict[str, ObjectDict | None]", previous["pending"]))
+        for order in orders.values():
+            if not order.is_completed():
+                pending.setdefault(order.order_id, None)
+        for order_id, evidence in pending.items():
+            self._owner.handle_termination_checkpoint()
+            if evidence is None:
+                terminal = self._owner.reconcile_terminal_order(symbol, order_id)
+                if terminal is None:
+                    return f"上一轮委托 {order_id} 终态尚未确认，已阻断本次下单"
+            else:
+                terminal = from_payload(
+                    UnifiedOrder,
+                    {
+                        "order_id": order_id,
+                        "symbol": symbol,
+                        "direction": str(evidence["direction"]).rsplit(".", 1)[-1],
+                        "order_type": str(evidence["order_type"]).rsplit(".", 1)[-1],
+                        "price": 0.0,
+                        "status": evidence["terminal_status"],
+                        "volume": evidence["volume"],
+                        "filled_volume": evidence["filled_volume"],
+                    },
+                )
+            known = orders.get(order_id)
+            if known is not None and terminal.filled_volume < known.filled_volume:
+                terminal = copy_data(terminal, update={"filled_volume": known.filled_volume})
+            if evidence is None and not self._runtime.emit_audit_event(
+                event_type=ExecutionEventType.ORDER_TERMINAL,
+                status=ExecutionEventStatus.SUCCESS,
+                reason_family=ExecutionReasonFamily.EXCHANGE,
+                reason_code="COMMON.ORDER_TERMINAL",
+                symbol=symbol,
+                order_id=order_id,
+                intent_id=recovery_intent,
+                details=order_terminal_details(terminal),
+                audit_context=context,
+            ):
+                return "旧委托终态保存失败，已阻断本次下单"
+            orders[order_id] = terminal
+
+        expected = None
+        if any(order.filled_volume != 0 for order in orders.values()):
+            expected = (
+                confirmed_position(float(start), list(orders.values())) if isinstance(start, (int, float)) else None
+            )
+            if expected is None:
+                return "旧委托已有成交，缺少可核对的预期持仓，已阻断本次下单"
+        if not self._runtime.emit_audit_event(
+            event_type=ExecutionEventType.ORDER_POSITION_RECONCILED,
+            status=ExecutionEventStatus.INFO,
+            reason_family=ExecutionReasonFamily.ACCOUNT_STATE,
+            reason_code="COMMON.POSITION.UNCONFIRMED",
+            symbol=symbol,
+            intent_id=recovery_intent,
+            details={
+                "expected_volume": expected,
+                "terminal_cursor": previous.get("terminal_cursor", 0),
+                "reviewed_fills": {key: order.filled_volume for key, order in orders.items()},
+            },
+            audit_context=context,
+        ):
+            return "旧委托核对结果保存失败，已阻断本次下单"
+        if expected is not None:
+            self._owner.pending_positions[symbol] = expected
+        return None
+
+    def _pending_position_results(
+        self, assets: UnifiedAccountAssets, *, skip: set[str] | None = None
+    ) -> list[AlgorithmResult]:
         """上一轮仓位未核对时阻断新单，跨执行保留成交推导证据。"""
         blocked = []
         for symbol, expected in list(self._owner.pending_positions.items()):
+            if skip and symbol in skip:
+                continue
             actual = self._owner.get_current_volume(symbol, assets)
             if not is_degraded_snapshot_source(assets.source) and self._is_same_volume(actual, expected):
                 del self._owner.pending_positions[symbol]
@@ -947,12 +1130,10 @@ class ExecutionEngine:
             direct_results=direct_results,
         )
 
-    def _prepare_account_for_symbol_dispatch(self, dispatch_phases: _DispatchPhases) -> None:
-        """在真正分发 symbol 算法前完成默认账户级撤单。"""
-        if not dispatch_phases.phase_one_tasks and not dispatch_phases.phase_two_plans:
-            return
+    def _prepare_account_for_symbol_dispatch(self) -> dict[tuple[str, str], float]:
+        """撤销账户旧委托，并保留撤单期间新增的成交。"""
         self._owner.handle_termination_checkpoint()
-        self._owner.cancel_all_orders()
+        return self._owner.cancel_all_orders()
 
     def _run_phase_one_dispatch(
         self,
@@ -977,8 +1158,7 @@ class ExecutionEngine:
         assets = planning.account_assets
         snapshot_error = None
         if dispatch_phases.phase_one_tasks:
-            self._owner.handle_termination_checkpoint()
-            phase_one_results[:] = self._settle_result_positions(phase_one_results)
+            phase_one_results[:] = self._confirm_reduction_positions(phase_one_results)
             assert self._account_snapshot is not None
             assets, snapshot_error = self._account_snapshot
         if any(result.position_confirmed is False for result in phase_one_results):
@@ -1009,6 +1189,42 @@ class ExecutionEngine:
             self._account_snapshot = None
         phase_two_results.extend(self._run_prepared_symbol_algorithms(phase_two_tasks))
         return phase_two_results
+
+    def _confirm_reduction_positions(self, results: list[AlgorithmResult]) -> list[AlgorithmResult]:
+        """在查仓前保存减仓成交推导的仓位，以便 worker 被回收后继续核对。"""
+        pending = {row.symbol: row.expected_volume for row in results if row.expected_volume is not None}
+        if (
+            pending
+            and self._runtime.audit_sink is not None
+            and self._runtime.audit_context.get("execution_id")
+            and not self._runtime.emit_audit_artifact(
+                artifact_type=ExecutionArtifactType.POSITION_CONFIRMATION,
+                content={"positions": pending},
+            )
+        ):
+            self._account_snapshot = (UnifiedAccountAssets.unavailable(), "待确认仓位保存失败，已阻断后续开仓")
+            return self._mark_positions_unconfirmed(results)
+
+        settled = None
+        try:
+            self._owner.handle_termination_checkpoint()
+            settled = self._settle_result_positions(results)
+            self._owner.handle_termination_checkpoint()
+        except ExecutionTerminated as exc:
+            if settled is None:
+                settled = self._mark_positions_unconfirmed(results)
+            self._remember_unconfirmed_positions(settled)
+            exc.raw_result = {"symbol_results": {row.symbol: to_payload(row, mode="json") for row in settled}}
+            raise
+        return settled
+
+    def _mark_positions_unconfirmed(self, results: list[AlgorithmResult]) -> list[AlgorithmResult]:
+        return [
+            copy_data(row, update={"position_confirmed": False, "final_volume": None})
+            if row.expected_volume is not None
+            else row
+            for row in results
+        ]
 
     def _settle_result_positions(self, results: list[AlgorithmResult]) -> list[AlgorithmResult]:
         """一次账户查询核对所有品种，保留已确认的交易完成结论。"""
@@ -1220,6 +1436,9 @@ class ExecutionEngine:
         merged_status = self._derive_symbol_result_status([previous, current])
         merged_error = self._derive_symbol_result_error([previous, current], merged_status)
         reason_result = current if current.reason_code or current.reason_family else previous
+        position_result = (
+            current if current.expected_volume is not None or current.orders or current.trades else previous
+        )
 
         return AlgorithmResult(
             orders=[*previous.orders, *current.orders],
@@ -1228,12 +1447,8 @@ class ExecutionEngine:
             target_volume=current.target_volume if current.target_volume is not None else previous.target_volume,
             sizing=current.sizing if current.sizing is not None else previous.sizing,
             start_volume=previous.start_volume,
-            expected_volume=current.expected_volume
-            if current.expected_volume is not None
-            else previous.expected_volume,
-            position_confirmed=(
-                current.position_confirmed if current.expected_volume is not None else previous.position_confirmed
-            ),
+            expected_volume=position_result.expected_volume,
+            position_confirmed=position_result.position_confirmed,
             first_tick=current.first_tick if current.first_tick is not None else previous.first_tick,
             memory=merged_memory,
             final_volume=(
@@ -1465,7 +1680,7 @@ class ExecutionEngine:
         if (
             explicit_error
             and not only_normal_skips
-            and not all(result.expected_volume is not None and result.success for result in results)
+            and not (results and all(result.expected_volume is not None and result.success for result in results))
             and status
             in {
                 ExecutionStatus.SUCCEEDED,
@@ -1482,9 +1697,17 @@ class ExecutionEngine:
             status = ExecutionStatus.PARTIAL if progressed else ExecutionStatus.FAILED
             error = error or explicit_error
 
+        memory = self._runtime.memory
+        if (
+            standard_input.extra.get("close_all_positions")
+            and not results
+            and not explicit_error
+            and not account_assets.positions
+        ):
+            memory = {**memory, "message": "当前账户无持仓，无需清仓"}
         return UnifiedStandardOutput(
             account_assets=account_assets,
-            memory=self._runtime.memory,
+            memory=memory,
             symbol_results=symbol_results,
             status=status,
             error=error,

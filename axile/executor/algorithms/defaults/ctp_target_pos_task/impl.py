@@ -306,6 +306,8 @@ def _place_volume_slices(
     submitted = 0.0
     for chunk in slices:
         limit_price = 0.0
+        if tracker is not None:
+            tracker.require_saved_orders()
         try:
             if (
                 isinstance(executor, ExecutionSession)
@@ -355,6 +357,16 @@ def _place_volume_slices(
             )
             break
         orders.append(order)
+        if tracker is not None:
+            tracker.add_order(
+                order,
+                direction=direction,
+                offset_flag=offset_flag,
+                trade_rule=trade_rule,
+                chase_enabled=order_type == OrderType.LIMIT,
+            )
+            tracker.explicit_error = None
+            tracker.explicit_blocked_error = None
         emit_audit_event = getattr(executor, "emit_audit_event", None)
         if callable(emit_audit_event):
             emit_audit_event(
@@ -374,16 +386,6 @@ def _place_volume_slices(
                     }
                 },
             )
-        if tracker is not None:
-            tracker.add_order(
-                order,
-                direction=direction,
-                offset_flag=offset_flag,
-                trade_rule=trade_rule,
-                chase_enabled=order_type == OrderType.LIMIT,
-            )
-            tracker.explicit_error = None
-            tracker.explicit_blocked_error = None
         submitted += float(chunk)
     if submitted < volume:
         executor.logger.warning(f"拆单未提交缺口: {volume - submitted}，目标 {volume}，已提交 {submitted}")
@@ -712,6 +714,7 @@ def ctp_target_pos_task_algorithm(executor: ExecutorProtocol, algorithm_input: A
         symbol_position_detail = position_details.get(symbol)
         if symbol_position_detail:
             current_net_position = symbol_position_detail.net_position
+        tracker.start_volume = current_net_position
 
         # 目标数量已经在通用执行层规划完成；CTP 算法这里不再重新解释组合权重，
         # 只负责把这一个 symbol 的目标落地成昨今仓友好的订单序列。
@@ -762,6 +765,8 @@ def ctp_target_pos_task_algorithm(executor: ExecutorProtocol, algorithm_input: A
                 for p in assets.positions
                 if p.symbol == symbol
             ),
+            start=current_net_position,
+            orders=tracker.get_all_orders(for_position=True),
         )
         target_reached = final_net_position == target_volume
         target_gap = target_volume - final_net_position
@@ -824,6 +829,8 @@ def ctp_target_pos_task_algorithm(executor: ExecutorProtocol, algorithm_input: A
                 for p in assets.positions
                 if p.symbol == symbol
             ),
+            start=current_net_position,
+            orders=tracker.get_all_orders(for_position=True),
         )
         if not tracker.explicit_error:
             tracker.record_exception(e, "持仓调整")

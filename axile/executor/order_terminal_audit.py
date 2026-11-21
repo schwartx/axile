@@ -21,6 +21,28 @@ if TYPE_CHECKING:
     from axile.executor.models.unified_order import UnifiedOrder
 
 
+def order_terminal_details(order: UnifiedOrder) -> dict[str, object]:
+    """将已知终态转成共享的逐单审计证据。"""
+    return {
+        "order": {
+            "direction": str(order.direction),
+            "order_type": str(order.order_type),
+            "status": order.status,
+            "terminal_status": order.status,
+            "volume": float(order.volume),
+            "filled_volume": float(order.filled_volume),
+            "remaining_volume": float(order.remaining_volume),
+            "avg_price": float(order.avg_price),
+            "filled_ratio": float(order.filled_ratio),
+            "offset": order.extra.get("offset"),
+        },
+        "exchange": {
+            "exchange_id": order.extra.get("exchange_id"),
+            "last_msg": order.extra.get("last_msg"),
+        },
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class _OrderOrigin:
     """提交前冻结归属和输出 sink，不读取下一轮 execution 的绑定。"""
@@ -34,14 +56,15 @@ class _OrderOrigin:
 
 
 class OrderTerminalAudit:
-    """在回报与主动对账之间共享订单归属，成功写入后原子消费一次。"""
+    """回报与主动对账共享订单归属，按累计成交量去重并记录迟到的成交修正。"""
 
     def __init__(self, logger: Logger, channel: TradeChannel) -> None:
         self._logger = logger
         self._channel = channel
         self._lock = threading.Lock()
         self._origins: dict[str, _OrderOrigin] = {}
-        self._pending: set[str] = set()
+        self._pending: dict[str, float] = {}
+        self._corrections: dict[str, tuple[_OrderOrigin, float]] = {}
         self._condition = threading.Condition(self._lock)
         self._queue: Queue[UnifiedOrder | None] = Queue()
         self._worker: threading.Thread | None = None
@@ -65,10 +88,13 @@ class OrderTerminalAudit:
         sink = runtime.audit_sink
         if not execution_id or account_id is None or not algorithm or sink is None:
             return False
-        origin = _OrderOrigin(str(execution_id), account_id, str(algorithm), sink, runtime.next_audit_seq, symbol)
+        origin = _OrderOrigin(
+            str(execution_id), account_id, str(algorithm), sink, runtime.audit_sequence.__next__, symbol
+        )
         with self._lock:
             if self._closed:
                 return False
+            self._corrections.pop(order_id, None)
             self._origins[order_id] = origin
             return True
 
@@ -76,6 +102,7 @@ class OrderTerminalAudit:
         """仅当确定没有报单时丢弃预注册的归属。"""
         with self._lock:
             self._origins.pop(order_id, None)
+            self._corrections.pop(order_id, None)
 
     def emit(self, order: UnifiedOrder) -> bool:
         """只排队真实终态，不在 SDK owner 线程或调用线程执行审计 IO。"""
@@ -83,11 +110,16 @@ class OrderTerminalAudit:
             return False
         with self._lock:
             origin = self._origins.get(order.order_id)
+            previous = self._corrections.get(order.order_id)
+            if previous is not None:
+                origin, written_fill = previous
+                if order.filled_volume <= written_fill:
+                    return False
             if (
                 self._closed
                 or origin is None
                 or origin.symbol not in {None, order.symbol}
-                or order.order_id in self._pending
+                or order.filled_volume <= self._pending.get(order.order_id, -1)
             ):
                 return False
             if self._worker is None:
@@ -95,7 +127,7 @@ class OrderTerminalAudit:
                     target=self._run, name=f"{str(self._channel)}-terminal-audit", daemon=True
                 )
                 self._worker.start()
-            self._pending.add(order.order_id)
+            self._pending[order.order_id] = order.filled_volume
             self._queue.put(copy_data(order, deep=True))
         return True
 
@@ -114,19 +146,29 @@ class OrderTerminalAudit:
                 self._queue.put(None)
             else:
                 self._origins.clear()
+                self._corrections.clear()
 
     def _run(self) -> None:
         while (order := self._queue.get()) is not None:
             with self._lock:
                 origin = self._origins.get(order.order_id)
+                previous = self._corrections.get(order.order_id)
+                if previous is not None:
+                    origin = previous[0]
             written = self._write(order, origin) if origin is not None else False
             with self._condition:
-                if written:
+                if written and origin is not None:
                     self._origins.pop(order.order_id, None)
-                self._pending.discard(order.order_id)
+                    if order.filled_volume < order.volume:
+                        self._corrections[order.order_id] = (origin, order.filled_volume)
+                    else:
+                        self._corrections.pop(order.order_id, None)
+                if self._pending.get(order.order_id) == order.filled_volume:
+                    del self._pending[order.order_id]
                 self._condition.notify_all()
         with self._lock:
             self._origins.clear()
+            self._corrections.clear()
 
     def _write(self, order: UnifiedOrder, origin: _OrderOrigin) -> bool:
         """独立线程写入；失败保留原归属，后续回报或快照可重新排队。"""
@@ -143,24 +185,7 @@ class OrderTerminalAudit:
                 symbol=order.symbol,
                 order_id=order.order_id,
                 seq=origin.next_seq(),
-                details={
-                    "order": {
-                        "direction": str(order.direction),
-                        "order_type": str(order.order_type),
-                        "status": order.status,
-                        "terminal_status": order.status,
-                        "volume": float(order.volume),
-                        "filled_volume": float(order.filled_volume),
-                        "remaining_volume": float(order.remaining_volume),
-                        "avg_price": float(order.avg_price),
-                        "filled_ratio": float(order.filled_ratio),
-                        "offset": order.extra.get("offset"),
-                    },
-                    "exchange": {
-                        "exchange_id": order.extra.get("exchange_id"),
-                        "last_msg": order.extra.get("last_msg"),
-                    },
-                },
+                details=order_terminal_details(order),
             )
         except Exception:
             self._logger.exception("{} 订单终态审计写入失败 order_id={}", str(self._channel), order.order_id)

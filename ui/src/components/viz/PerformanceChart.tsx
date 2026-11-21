@@ -143,9 +143,11 @@ function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, sca
     const gaps = times.slice(0, -1).map((time, index) => closedDaysBetween(time, times[index + 1], wider.calendar.closed_ranges))
     const motionScene = { ...tradingScene, times, data: { ...wider, points },
       executionIndex: rangeExecutions(executionIndex, target.execution_index), scale: zoom.scale,
-      domain: zoom.domain, tickDomain: zoom.domain, fixedAxis: chartAxis(tradingScene), closedGapDays: gaps }
-    return { finish: rangeTarget.finish, draw: (canvas, frame, progress) =>
-      drawScene(canvas, { ...motionScene, width: frame.width, theme: frame.theme, viewport: zoom.viewport(progress) }) }
+      tickDomain: zoom.domain, fixedAxis: chartAxis(tradingScene), closedGapDays: gaps }
+    return { finish: rangeTarget.finish, draw: (canvas, frame, progress) => {
+      const { width, theme } = frame
+      drawScene(canvas, { ...motionScene, width, theme, viewport: zoom.viewport(progress) }, { ...tradingScene, width, theme })
+    } }
   }, [rangeTarget, data, executionIndex, viewport, scaleMode, full, tradingScene])
   useEffect(() => { if (rangeTarget && !windowMotion) rangeTarget.finish() }, [rangeTarget, windowMotion])
 

@@ -69,7 +69,7 @@ def test_algorithm_outcome(monkeypatch, module, case, expected, termination_at=N
     tracker.waiting_on_restriction = MagicMock(return_value=False)
     tracker.get_pending_count = MagicMock(return_value=0)
     orders = []
-    tracker.get_all_orders = MagicMock(side_effect=lambda: orders)
+    tracker.get_all_orders = MagicMock(return_value=orders)
     tracker.get_all_trades = MagicMock(return_value=[])
     monkeypatch.setattr(module, "setup_order_tracker", lambda *args: tracker)
     monkeypatch.setattr(module, "teardown_order_tracker", lambda *args: None)
@@ -129,7 +129,7 @@ def test_algorithm_outcome(monkeypatch, module, case, expected, termination_at=N
         monkeypatch.setattr(
             order_helper,
             "cancel_pending_orders_via_query",
-            lambda _: CancellationResult(
+            lambda _, **_kwargs: CancellationResult(
                 orders={
                     (executor.symbol, "1"): OrderCancellation(CancelRequestStatus.UNKNOWN, "撤单失败，订单终态尚未确认")
                 }
@@ -247,7 +247,7 @@ def test_algorithm_keeps_tracker_cancel_error(monkeypatch, module):
     tracker.waiting_on_restriction = MagicMock(return_value=False)
     tracker.get_pending_count = MagicMock(return_value=0)
     orders = []
-    tracker.get_all_orders = MagicMock(side_effect=lambda: orders)
+    tracker.get_all_orders = MagicMock(return_value=orders)
     tracker.get_all_trades = MagicMock(return_value=[])
     tracker.explicit_error = None
     tracker.explicit_blocked_error = None
@@ -284,7 +284,7 @@ def test_algorithm_keeps_tracker_cancel_error(monkeypatch, module):
 
     monkeypatch.setattr(order_module, "submit_and_track_split_orders", split_submit)
     if module is not maker:
-        monkeypatch.setattr(order_helper, "cancel_pending_orders_via_query", lambda _: CancellationResult())
+        monkeypatch.setattr(order_helper, "cancel_pending_orders_via_query", lambda _, **_kwargs: CancellationResult())
     if module is maker:
         entry, params = maker.single_maker_callback, maker.SingleMakerParams(max_wait_seconds=1)
     elif module is twap:

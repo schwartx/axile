@@ -293,6 +293,7 @@ def twap(
     executor.logger.info(f"{symbol} 开始执行: 目标={target_volume}, 当前={start_volume}, 增量={delta}, {params}")
 
     tracker = setup_order_tracker(executor, executor.get_market_data(), None)
+    tracker.start_volume = start_volume
     slice_details: list[dict[str, Any]] = []
 
     started = clock.time()
@@ -348,7 +349,9 @@ def twap(
     finally:
         teardown_order_tracker(executor, tracker, None)
 
-    account_assets, final_volume, explicit_error = read_final_position(executor, executor.get_current_volume)
+    account_assets, final_volume, explicit_error = read_final_position(
+        executor, executor.get_current_volume, start=start_volume, orders=tracker.get_all_orders(for_position=True)
+    )
     orders = tracker.get_all_orders()
     trades = tracker.get_all_trades()
 

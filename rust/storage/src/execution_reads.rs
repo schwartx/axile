@@ -272,20 +272,183 @@ pub(crate) fn target_sizing_on(
     )
 }
 
+fn pending_order_terminals(
+    connection: &Connection,
+    account_id: i64,
+) -> Result<Value, AnalysisError> {
+    // 阶段首批和全量快照都带 start_volume。从最近的起点按订单号折叠后续变化。
+    let mut statement = connection.prepare(
+        "WITH checkpoints AS (
+            SELECT id,execution_id,symbol,json_extract(details,'$.start_volume') AS start_volume,
+                   row_number() OVER (PARTITION BY execution_id,symbol ORDER BY id DESC) AS rank
+            FROM execution_event WHERE account_id=?1 AND event_type='POSITION_CHECKPOINT'
+              AND json_type(details,'$.start_volume') IN ('integer','real')
+        ), changes AS (
+            SELECT e.execution_id,e.algorithm,e.symbol,json_extract(o.value,'$.order_id') AS order_id,
+                   s.start_volume,o.value AS body,json_type(e.details,'$.expected_volume') IS NULL AS delta,
+                   row_number() OVER (PARTITION BY e.execution_id,e.symbol,json_extract(o.value,'$.order_id')
+                                      ORDER BY e.id DESC) AS rank
+            FROM checkpoints s JOIN execution_event e ON e.execution_id=s.execution_id AND e.symbol=s.symbol
+            JOIN json_each(e.details,'$.orders') o
+            WHERE s.rank=1 AND e.id>=s.id AND e.account_id=?1 AND e.event_type='POSITION_CHECKPOINT'
+        ), current_orders AS (
+            SELECT *,json_extract(body,'$.status') IN ('已成交','已撤销','已拒绝','已过期') AS terminal
+            FROM changes WHERE rank=1
+        ), recorded AS (
+            SELECT r.execution_id,s.map_key AS symbol,json_extract(o.order_id,'$') AS order_id,
+                   COALESCE(s.algorithm,'SINGLE-MAKER') AS algorithm,o.filled_volume,
+                   o.status IN ('已成交','已撤销','已拒绝','已过期') AS terminal,
+                   json_extract(o.extra,'$.terminal_confirmation_pending') AS pending
+            FROM executerecord r JOIN execution_symbol_result s ON s.record_id=r.id
+            JOIN execution_order o ON o.record_id=r.id AND o.path=s.path || '/orders'
+            WHERE r.account_id=?1 AND o.kind='object'
+        ), exchange AS (
+            SELECT id,execution_id,symbol,order_id,json_extract(details,'$.order') AS body,
+                   json_extract(details,'$.order.filled_volume') AS filled,
+                   row_number() OVER (PARTITION BY execution_id,symbol,order_id
+                       ORDER BY json_extract(details,'$.order.filled_volume') DESC,id) AS rank
+            FROM execution_event WHERE account_id=?1 AND event_type='ORDER_TERMINAL'
+              AND reason_family='EXCHANGE' AND status='SUCCESS'
+              AND json_type(details,'$.order.terminal_status')='text'
+        ), checked AS (
+            SELECT execution_id,symbol,max(id) AS id FROM execution_event
+            WHERE account_id=?1 AND event_type='ORDER_POSITION_RECONCILED' GROUP BY execution_id,symbol
+        ), candidates AS (
+            SELECT execution_id,symbol,order_id,algorithm FROM current_orders
+            UNION
+            SELECT r.execution_id,r.symbol,r.order_id,r.algorithm FROM recorded r
+            WHERE (r.pending=1 AND NOT r.terminal) OR EXISTS (
+                SELECT 1 FROM exchange t WHERE t.rank=1 AND t.execution_id=r.execution_id
+                  AND t.symbol=r.symbol AND t.order_id=r.order_id AND t.filled>r.filled_volume
+            )
+            UNION
+            SELECT p.execution_id,p.symbol,p.order_id,p.algorithm FROM execution_event p
+            WHERE p.account_id=?1 AND p.event_type='ORDER_TERMINAL_PENDING'
+              AND NOT EXISTS (
+                  SELECT 1 FROM execution_event e JOIN json_each(e.details,'$.orders') o
+                  WHERE e.account_id=?1 AND e.execution_id=p.execution_id AND e.symbol=p.symbol
+                    AND e.event_type='POSITION_CHECKPOINT' AND json_extract(o.value,'$.order_id')=p.order_id
+              )
+        ), evidence AS (
+            SELECT p.*,COALESCE(t.body,CASE WHEN o.terminal THEN
+                       json_set(o.body,'$.terminal_status',json_extract(o.body,'$.status')) END) AS terminal_body,
+                   c.id AS checked_id,t.id AS terminal_id,t.filled AS exchange_fill,
+                   max(COALESCE(json_extract(o.body,'$.filled_volume'),0),COALESCE(r.filled_volume,0)) AS known_fill,
+                   (NOT COALESCE(r.terminal,0) AND (o.order_id IS NULL OR NOT o.terminal
+                      OR (o.delta AND json_extract(o.body,'$.filled_volume')<>0))) AS pending
+            FROM candidates p
+            LEFT JOIN current_orders o USING(execution_id,symbol,order_id)
+            LEFT JOIN recorded r USING(execution_id,symbol,order_id)
+            LEFT JOIN exchange t ON t.execution_id=p.execution_id AND t.symbol=p.symbol
+                 AND t.order_id=p.order_id AND t.rank=1
+            LEFT JOIN checked c ON c.execution_id=p.execution_id AND c.symbol=p.symbol
+            WHERE p.symbol IS NOT NULL AND p.order_id IS NOT NULL
+        )
+        SELECT p.execution_id,p.algorithm,p.symbol,json_group_object(p.order_id,json(p.terminal_body)),
+               (SELECT json_object('start_volume',o.start_volume,'orders',json_group_array(json(o.body)))
+                FROM current_orders o WHERE o.execution_id=p.execution_id AND o.symbol=p.symbol
+                GROUP BY o.start_volume),
+               (SELECT COALESCE(max(id),0) FROM exchange t WHERE t.execution_id=p.execution_id AND t.symbol=p.symbol)
+        FROM evidence p WHERE p.pending OR p.exchange_fill>p.known_fill
+        GROUP BY p.execution_id,p.symbol
+        HAVING p.checked_id IS NULL OR max(CASE WHEN p.exchange_fill>p.known_fill
+                THEN p.terminal_id END)>p.checked_id
+        ORDER BY p.execution_id,p.symbol"
+    ).map_err(sql)?;
+    let rows = statement
+        .query_map([account_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })
+        .map_err(sql)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql)?;
+    let mut groups: Vec<Value> = Vec::new();
+    for (execution, algorithm, symbol, pending, checkpoint, cursor) in rows {
+        let recorded = recorded_order_position(connection, account_id, &execution, &symbol)?;
+        let details = match checkpoint {
+            Some(raw) => serde_json::from_str(&raw).map_err(|error| invalid(error.to_string()))?,
+            None => recorded.clone(),
+        };
+        let pending: Value =
+            serde_json::from_str(&pending).map_err(|error| invalid(error.to_string()))?;
+        let mut group = json!({
+            "execution_id": execution, "algorithm": algorithm, "symbol": symbol,
+            "start_volume": details["start_volume"], "orders": details["orders"], "pending": pending,
+        });
+        if cursor > 0 {
+            group["terminal_cursor"] = json!(cursor);
+        }
+        if !recorded.is_null() && recorded != details {
+            group["recorded_position"] = recorded;
+        }
+        groups.push(group);
+    }
+    Ok(Value::Array(groups))
+}
+
+fn recorded_order_position(
+    connection: &Connection,
+    account_id: i64,
+    execution: &str,
+    symbol: &str,
+) -> Result<Value, AnalysisError> {
+    let recorded = connection.query_row(
+        "SELECT json_object('start_volume',json_extract(s.audit_evidence,'$.unrecognized_fields.start_volume'),
+                    'orders',(SELECT json_group_array(json_object(
+                      'order_id',json_extract(o.order_id,'$'),'symbol',o.symbol,'direction',o.direction,
+                      'order_type',o.order_type,'price',o.price,'volume',o.volume,'status',o.status,
+                      'filled_volume',max(o.filled_volume,COALESCE((SELECT sum(t.trade_volume)
+                         FROM business_trade t WHERE t.record_id=r.id AND t.collection_path=s.path || '/trades'
+                         AND t.order_id=o.order_id),0))))
+                  FROM execution_order o WHERE o.record_id=r.id AND o.path=s.path || '/orders' AND o.kind='object'))
+         FROM executerecord r JOIN execution_symbol_result s ON s.record_id=r.id
+         WHERE r.account_id=?1 AND r.execution_id=?2 AND s.map_key=?3
+           AND json_type(s.audit_evidence,'$.unrecognized_fields.start_volume') IN ('integer','real')",
+        params![account_id, execution, symbol], |row| row.get::<_, String>(0),
+    ).optional().map_err(sql)?;
+    recorded
+        .map(|raw| serde_json::from_str(&raw))
+        .transpose()
+        .map(|value| value.unwrap_or(Value::Null))
+        .map_err(|error| invalid(error.to_string()))
+}
+
 fn read_on(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {
     match text(request, "op")? {
         "pending_positions" => {
             // 新字段由既有审计证据无损保存；每个品种只采用最近一次持仓核对结论。
             let mut statement = connection.prepare(
-                "WITH latest AS (
-                    SELECT s.map_key,s.audit_evidence,
-                           row_number() OVER (PARTITION BY s.map_key ORDER BY r.id DESC) AS rank
+                "WITH evidence AS (
+                    SELECT s.map_key AS symbol,
+                           json_extract(s.audit_evidence,'$.unrecognized_fields.expected_volume') AS expected,
+                           json_extract(s.audit_evidence,'$.unrecognized_fields.position_confirmed') AS confirmed,
+                           r.created_at_us AS observed_at,r.id AS record_id
                     FROM executerecord r JOIN execution_symbol_result s ON s.record_id=r.id
                     WHERE r.account_id=?1 AND s.node_kind='object'
                       AND json_type(s.audit_evidence,'$.unrecognized_fields.expected_volume') IN ('integer','real')
-                ) SELECT map_key,json_extract(audit_evidence,'$.unrecognized_fields.expected_volume')
-                  FROM latest WHERE rank=1
-                    AND json_extract(audit_evidence,'$.unrecognized_fields.position_confirmed')=0"
+                    UNION ALL
+                    SELECT p.key,p.value,0,a.created_at_us,0
+                    FROM execution_intent i JOIN execution_artifact a ON a.execution_id=i.execution_id
+                    JOIN json_each(a.content,'$.positions') p
+                    WHERE i.account_id=?1 AND a.artifact_type='POSITION_CONFIRMATION'
+                      AND p.type IN ('integer','real')
+                    UNION ALL
+                    SELECT symbol,json_extract(details,'$.expected_volume'),0,ts_persisted_us,0
+                    FROM execution_event WHERE account_id=?1
+                      AND event_type IN ('POSITION_CHECKPOINT','ORDER_POSITION_RECONCILED')
+                      AND json_type(details,'$.expected_volume') IN ('integer','real')
+                ), latest AS (
+                    SELECT *,row_number() OVER (
+                        PARTITION BY symbol ORDER BY observed_at DESC,record_id DESC
+                    ) AS rank FROM evidence
+                ) SELECT symbol,expected FROM latest WHERE rank=1 AND confirmed=0"
             ).map_err(sql)?;
             let rows = statement
                 .query_map([integer(request, "account_id")?], |row| {
@@ -295,6 +458,9 @@ fn read_on(connection: &Connection, request: &Value) -> Result<Value, AnalysisEr
                 .collect::<Result<Map<_, _>, _>>()
                 .map_err(sql)?;
             Ok(Value::Object(rows))
+        }
+        "pending_order_terminals" => {
+            pending_order_terminals(connection, integer(request, "account_id")?)
         }
         "detail" => {
             let Some(record) = record_on(

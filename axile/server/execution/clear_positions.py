@@ -76,6 +76,9 @@ async def _run_clear_positions(
                 "short_leverage": account.short_leverage,
             },
             "extra": {
+                "pending_order_terminals": await native_operation(
+                    "execution_read", {"op": "pending_order_terminals", "account_id": account.id}
+                ),
                 "pending_positions": await native_operation(
                     "execution_read", {"op": "pending_positions", "account_id": account.id}
                 ),

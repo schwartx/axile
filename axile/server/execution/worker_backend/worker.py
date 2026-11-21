@@ -30,6 +30,7 @@ from axile.server.db.models import now_str
 from axile.server.db.models.account import AccountSnapshot
 from axile.server.execution.execution_algorithms import resolve_account_leverages, resolve_execution_algorithm_name
 from axile.server.execution.input_persistence import sanitize_execution_input
+from axile.server.execution.records import stage_execute_result_sync
 from axile.server.execution.resident_connection import disconnect_resident_executor, executor_config_signature
 from axile.server.execution.worker_backend.catalog import RemoteCatalogProvider
 from axile.server.execution.worker_backend.protocol import (
@@ -449,6 +450,12 @@ def _handle_execute_trade(
         )
     except ExecutionTerminated as exc:
         replay_end_reason = "terminated"
+        if request.execution_id and exc.raw_result is not None:
+            stage_execute_result_sync(
+                account_id=cast(int, account.id),
+                execution_id=request.execution_id,
+                result={**exc.raw_result, "outcome": "terminated"},
+            )
         return _build_terminated_response(
             request_id=request.request_id,
             account=account,

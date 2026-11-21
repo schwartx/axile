@@ -169,11 +169,11 @@ function drawNavigator(ctx: CanvasRenderingContext2D, scene: ChartScene) {
   for (const x of [a, b]) { ctx.fillStyle = theme.accent; ctx.fillRect(x - 2, PLOT.navTop + 8, 4, 18) }
 }
 
-export function drawScene(canvas: HTMLCanvasElement, scene: ChartScene) {
+export function drawScene(canvas: HTMLCanvasElement, scene: ChartScene, navigatorScene = scene) {
   const ctx = prepareCanvas(canvas, scene.width, CHART_HEIGHT)
   if (!ctx) return
   ctx.font = `11px ${scene.theme.font}`
-  drawCalendar(ctx, scene); drawReturns(ctx, scene); if (scene.showExecutions !== false && scene.executionIndex) drawExecutionMarkers(ctx, plotBounds(scene.width), scene.theme, scene.executionIndex, row => executionMarkerPoint(scene, row)); drawBindings(ctx, scene); drawTimeAxis(ctx, scene); drawNavigator(ctx, scene); drawCalendarMarks(ctx, scene)
+  drawCalendar(ctx, scene); drawReturns(ctx, scene); if (scene.showExecutions !== false && scene.executionIndex) drawExecutionMarkers(ctx, plotBounds(scene.width), scene.theme, scene.executionIndex, row => executionMarkerPoint(scene, row)); drawBindings(ctx, scene); drawTimeAxis(ctx, scene); drawNavigator(ctx, navigatorScene); drawCalendarMarks(ctx, scene)
 }
 
 function drawCalendar(ctx: CanvasRenderingContext2D, scene: ChartScene) {

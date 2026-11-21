@@ -62,6 +62,21 @@ fn inserted(result: rusqlite::Result<usize>, tokens: &[&str]) -> Result<bool, An
 
 fn insert_event(connection: &Connection, row: &Value) -> Result<bool, AnalysisError> {
     let event_type = text(row, "event_type")?.to_ascii_uppercase();
+    if event_type == "ORDER_POSITION_RECONCILED" {
+        if let Some(cursor) = row["details"]["terminal_cursor"].as_i64() {
+            let changed: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM execution_event e WHERE e.execution_id=?1 AND e.symbol=?2
+                  AND e.id>?3 AND e.event_type='ORDER_TERMINAL' AND e.reason_family='EXCHANGE' AND e.status='SUCCESS'
+                  AND json_extract(e.details,'$.order.filled_volume') > COALESCE(
+                      (SELECT value FROM json_each(?4) WHERE key=e.order_id),-1))",
+                params![text(row,"execution_id")?,optional_text(row,"symbol")?,cursor,row["details"]["reviewed_fills"].to_string()],
+                |r| r.get(0),
+            ).map_err(sql)?;
+            if changed {
+                return Ok(false);
+            }
+        }
+    }
     inserted(
         connection.execute(
             "INSERT INTO execution_event(execution_id,account_id,channel,algorithm,schema_version,
@@ -275,7 +290,7 @@ fn list(connection: &Connection, request: &Value, table: &str) -> Result<Value, 
             public_event(&mut item)?;
         } else {
             item["content"] = summary_refs::resolve_artifact_content(connection, &item, None)?;
-            enum_field(&item, "artifact_type", "standard_input|target_snapshot|account_snapshot|account_snapshot_before|trade_rules_snapshot|market_snapshot|environment_snapshot")?;
+            enum_field(&item, "artifact_type", "standard_input|target_snapshot|account_snapshot|account_snapshot_before|position_confirmation|trade_rules_snapshot|market_snapshot|environment_snapshot")?;
             if !item["content"].is_object() {
                 return Err(invalid("附件内容必须是对象"));
             }
@@ -299,7 +314,7 @@ fn enum_field(item: &Value, key: &str, choices: &str) -> Result<(), AnalysisErro
 fn public_event(item: &mut Value) -> Result<(), AnalysisError> {
     integer(item, "account_id")?;
     integer(item, "seq")?;
-    enum_field(item, "event_type", "execution_started|execution_termination_requested|execution_termination_acked|execution_terminated|input_snapshotted|instruments_waiting|instruments_ready|instruments_failed|target_computed|futures_close_planned|symbol_decision_made|symbol_skipped|order_submitted|order_acknowledged|order_terminal|execution_completed|execution_failed")?;
+    enum_field(item, "event_type", "execution_started|execution_termination_requested|execution_termination_acked|execution_terminated|input_snapshotted|instruments_waiting|instruments_ready|instruments_failed|target_computed|futures_close_planned|symbol_decision_made|symbol_skipped|order_submitted|order_acknowledged|order_terminal|order_terminal_pending|position_checkpoint|order_position_reconciled|execution_completed|execution_failed")?;
     enum_field(item, "status", "INFO|SUCCESS|WARNING|ERROR")?;
     enum_field(
         item,
