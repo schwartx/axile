@@ -184,7 +184,21 @@ fn records(c: &Connection, s: &State, only: Option<i64>) -> Result<Vec<Record>, 
     Ok(out)
 }
 fn execution_summary(r: &Record) -> Value {
-    json!({"record_id":r.head["id"],"execution_id":r.head["execution_id"],"time_ms":ms(r.time),"created_at":r.head["created_at"],"is_success":r.head["is_success"],"noop":r.noop,"has_transactions":r.trades.iter().any(|t|t.quantity.is_some()),"duration_sec":r.head["execution_time"],"symbol_count":r.trades.iter().filter(|t|t.quantity.is_some()).map(|t|&t.symbol).collect::<BTreeSet<_>>().len(),"position_count":r.positions,"positions_present":r.positions.is_some(),"reason":r.head["display_error"],"summary":summary(&r.trades).output()})
+    let trade_symbols: BTreeSet<_> = r
+        .trades
+        .iter()
+        .filter(|trade| trade.quantity.is_some())
+        .map(|trade| trade.symbol.as_str())
+        .collect();
+    json!({
+        "record_id": r.head["id"], "execution_id": r.head["execution_id"],
+        "time_ms": ms(r.time), "created_at": r.head["created_at"], "is_success": r.head["is_success"],
+        "noop": r.noop, "has_transactions": !trade_symbols.is_empty(),
+        "duration_sec": r.head["execution_time"], "symbol_count": trade_symbols.len(),
+        "trade_symbols": trade_symbols, "position_count": r.positions,
+        "positions_present": r.positions.is_some(), "reason": r.head["display_error"],
+        "summary": summary(&r.trades).output(),
+    })
 }
 fn events(c: &Connection, s: &State) -> Result<(Vec<Value>, usize), AnalysisError> {
     let start = s.baseline_time.unwrap_or(s.start);

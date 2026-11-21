@@ -6,7 +6,7 @@ import { xPosition, xTime } from '@/components/viz/performanceCanvas'
 import type { AnalysisExecutionSummary } from '@/lib/api/performance'
 
 const point = (date: string, value: number | null, observed_at = `${date}T17:00:00`): PerformancePoint => ({ date, observed_at, account_return: value, portfolio_return: value, account_daily_return: null, portfolio_daily_return: null, difference: null })
-const indexedRow = (record_id: number, time_ms: number): AnalysisExecutionSummary => ({ record_id, execution_id: `exec-${record_id}`, time_ms, created_at: '', is_success: 1, noop: true, has_transactions: false, duration_sec: null, symbol_count: 0, position_count: null, positions_present: false, reason: null, summary: { value: null, cost: null, lossBp: null, coverage: null, count: 0, covered: 0, amountComplete: true, fees: {}, feeCovered: 0 } })
+const indexedRow = (record_id: number, time_ms: number): AnalysisExecutionSummary => ({ record_id, execution_id: `exec-${record_id}`, time_ms, created_at: '', is_success: 1, noop: true, has_transactions: false, trade_symbols: [], duration_sec: null, symbol_count: 0, position_count: null, positions_present: false, reason: null, summary: { value: null, cost: null, lossBp: null, coverage: null, count: 0, covered: 0, amountComplete: true, fees: {}, feeCovered: 0 } })
 
 test('绑定时段仅选择内部观测，切换时刻属于下一段，末段包含末次观测', () => {
   expect(bindingSelection([10, 20, 30, 40], 15, 40)).toEqual({ kind: 'interval', start: 20, end: 30 })

@@ -12,3 +12,13 @@ export function executionSelection(row: CostExecutionRow | AnalysisExecutionSumm
 export function executionState(row: CostExecutionRow): string {
   return executionOutcome(row.record.raw_result).text
 }
+
+export function executionAt(rows: AnalysisExecutionSummary[], time: number): AnalysisExecutionSummary | null {
+  let low = 0, high = rows.length
+  while (low < high) {
+    const mid = (low + high) >>> 1
+    if (rows[mid].time_ms <= time) low = mid + 1
+    else high = mid
+  }
+  return rows[low - 1] ?? null
+}

@@ -1,11 +1,11 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { CHART_HEIGHT, PLOT, plotRight } from '@/components/viz/performanceCanvas'
 import { curvePath, sparklineCoordinates } from '@/components/viz/sparklineGeometry'
 import { cancelAccountCurveTransition, curvePreviewPoints, registerCurveEndpoint } from '@/features/history/curveTransition'
 
 /** 加载与错误均保留图槽。来源线只用于短暂预览，不提供收益轴、读数或交互。 */
-export function PerformanceChartPlaceholder({ accountId, controls, loading, failed, message }: {
-  accountId: number; controls: ReactNode; loading: boolean; failed: boolean; message?: string
+export function PerformanceChartPlaceholder({ accountId, loading, failed, message }: {
+  accountId: number; loading: boolean; failed: boolean; message?: string
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const path = useRef<SVGPathElement>(null)
@@ -28,16 +28,13 @@ export function PerformanceChartPlaceholder({ accountId, controls, loading, fail
     }, 850)
     return () => { unregister(); clearTimeout(timer) }
   }, [accountId, points, loading, failed])
-  return <div className="pb-4" data-testid="performance-placeholder">
-    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-      <div role="status" className="flex min-h-9 min-w-0 flex-1 basis-[32rem] items-center py-1 text-xs text-ink-3">
-        {message ?? (failed ? '绩效读取失败' : loading ? '正在准备绩效' : '暂无有效绩效观测')}
-      </div>
-      <div className="flex flex-wrap items-center gap-2">{controls}</div>
+  return <div data-testid="performance-placeholder">
+    <div role="status" className="flex min-h-36 min-w-0 items-center py-1 text-xs text-ink-3 @min-[40rem]:min-h-28 @min-[56rem]:min-h-16">
+      {message ?? (failed ? '绩效读取失败' : loading ? '正在准备绩效' : '暂无有效绩效观测')}
     </div>
     <div ref={ref} className="relative w-full min-w-0" style={{ height: CHART_HEIGHT }}>
       {loading && !failed && <svg aria-hidden="true" className="absolute inset-0 h-full w-full"><path ref={path} className="transition-opacity duration-150 motion-reduce:transition-none" fill="none" stroke="var(--color-accent)" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" /></svg>}
     </div>
-    <div className="h-[67px]" aria-hidden="true" />
+    <div className="h-7" aria-hidden="true" />
   </div>
 }

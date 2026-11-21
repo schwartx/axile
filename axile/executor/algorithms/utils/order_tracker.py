@@ -52,7 +52,7 @@ from axile.executor.order_cancellation import (
     cancel_orders,
 )
 from axile.executor.order_volume_limits import split_order_volumes
-from axile.executor.termination import ExecutionTerminated
+from axile.executor.termination import TERMINATION_TRIGGER_TIMEOUT, ExecutionTerminated
 
 MARKET_FALLBACK_MAX_SLIPPAGE = 0.005
 
@@ -1981,6 +1981,53 @@ class OrderTracker:
         """获取指定订单已跟踪的成交明细."""
         with self.lock:
             return [copy_data(trade, deep=True) for trade in self.order_trades.get(order_id, [])]
+
+    def _terminal_orders_missing_trades(self) -> list[str]:
+        with self.lock:
+            return [
+                order.order_id
+                for key, order in self.completed_orders.items()
+                if order.filled_volume - sum(trade.trade_volume for trade in self.order_trades.get(key, [])) > 1e-9
+            ]
+
+    def reconcile_terminal_trades(self, *, deadline: float) -> None:
+        """收尾时按订单补查缺少的逐笔成交，复用回调去重。"""
+        try:
+            self._fetch_missing_terminal_trades(deadline)
+        except ExecutionTerminated as exc:
+            # 只有补查撞上总超时且下单已收尾时，继续返回已确认的执行结果。
+            with self.lock:
+                if (
+                    exc.trigger != TERMINATION_TRIGGER_TIMEOUT
+                    or self.pending_orders
+                    or self._chasing_order_id is not None
+                    or self._fallback_submitting
+                ):
+                    raise
+        if missing := self._terminal_orders_missing_trades():
+            self._logger.warning(f"订单成交明细仍未齐: {', '.join(missing)}")
+
+    def _fetch_missing_terminal_trades(self, deadline: float) -> None:
+        for wait in (0, 0.2):
+            missing = self._terminal_orders_missing_trades()
+            if not missing or self.clock.time() + wait >= deadline:
+                return
+            if wait:
+                self.executor.sleep_or_terminate(wait)
+                missing = self._terminal_orders_missing_trades()
+            for order_id in missing:
+                if self.clock.time() >= deadline:
+                    return
+                self.executor.handle_termination_checkpoint()
+                try:
+                    trades = self.executor.query_trades(order_id)
+                except (MemoryError, ExecutionTerminated):
+                    raise
+                except Exception as exc:  # noqa: BLE001 - 渠道 SDK 补查失败不覆盖已确认的订单结果。
+                    self._logger.warning(f"订单 {order_id} 成交明细补查失败: {format_exception_message(exc)}")
+                    continue
+                for trade in trades:
+                    self.on_trade_record(trade)
 
     def get_all_trades(self) -> list[TradeRecord]:
         """获取当前跟踪器内所有已收集的成交明细."""

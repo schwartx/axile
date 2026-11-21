@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
-import { bindingAtObservation, bindingObservationSpan, chartAxis, executionMarkerPoint, executionMarkerTone, hasExecutionMarker, returnY, seriesKeys, type CanvasTheme, type ChartScene } from '@/components/viz/performanceCanvas'
+import { executionMarkerTone, hasExecutionMarker, snapExecution } from '@/features/history/executionMarkers'
+import { bindingAtObservation, bindingObservationSpan, chartAxis, executionMarkerPoint, returnY, seriesKeys, type CanvasTheme, type ChartScene } from '@/components/viz/performanceCanvas'
 import { pointTime } from '@/features/history/chartModel'
 import { shanghaiTime } from '@/features/history/costs'
 import type { AccountPerformance } from '@/types/api'
@@ -11,8 +12,22 @@ const trade = (time = 0): TransactionPreview => ({ symbol: 'A', side: 'buy', qua
 const row = (over: Partial<CostExecutionRow> = {}): CostExecutionRow => ({ key: '1', record: record(), summary, noop: false, symbolCount: 1, transactions: [trade()], positions: [], ...over })
 const indexRow = (over: Partial<AnalysisExecutionSummary> = {}): AnalysisExecutionSummary => ({
   record_id: 1, execution_id: 'exec-1', time_ms: 0, created_at: null,
-  is_success: 1, noop: false, has_transactions: true, duration_sec: null,
+  is_success: 1, noop: false, has_transactions: true, trade_symbols: ['rb'], duration_sec: null,
   symbol_count: null, position_count: null, positions_present: false, reason: null, summary, ...over,
+})
+
+test('执行点按横轴吸附，保留已吸附点直到越过退出阈值', () => {
+  const first = indexRow({ record_id: 1, time_ms: 20 })
+  const second = indexRow({ record_id: 2, time_ms: 37 })
+  const unfilled = indexRow({ record_id: 3, time_ms: 40, has_transactions: false })
+  const candidates = [first, second, unfilled]
+  const viewport = { start: 10, end: 50 }
+  const xAtTime = (time: number) => time
+  expect(snapExecution(candidates, viewport, xAtTime, 32, null)).toBe(second)
+  expect(snapExecution(candidates, viewport, xAtTime, 38, 1)).toBe(first)
+  expect(snapExecution(candidates, viewport, xAtTime, 39, 1)).toBe(second)
+  expect(snapExecution(candidates, viewport, xAtTime, 37, 3)).toBe(second)
+  expect(snapExecution(candidates, { start: 25, end: 50 }, xAtTime, 25, 1)).toBe(second)
 })
 
 test('轻索引只认实际成交标志，摘要覆盖率和执行质量保留原语义', () => {
@@ -96,7 +111,7 @@ function markerScene(returns: number[]): ChartScene {
   return {
     data, times, width: 900,
     viewport: { start: shanghaiTime('2025-12-31T04:00:00Z'), end: shanghaiTime('2026-01-05T04:00:00Z') },
-    daily: false, portfolioNames: new Map(), costs: null, theme,
+    daily: false, portfolioNames: new Map(), theme,
   }
 }
 

@@ -6,7 +6,7 @@ import { snapshotPositions, quantityUnit } from '@/features/history/executionEvi
 import type { ExecutionArtifact } from '@/types/api'
 
 const row = (patch: Partial<CostExecutionRow> = {}): CostExecutionRow => ({ key: '7', record: { id: 7, execution_id: 'exec-7', created_at: '2026-09-08T23:59:00', is_success: 1, raw_result: {} }, noop: true, symbolCount: 0, summary: { value: null, cost: null, lossBp: null, coverage: null, count: 0, covered: 0, amountComplete: true, fees: {}, feeCovered: 0 }, ...patch })
-const indexedRow = (patch: Partial<AnalysisExecutionSummary> = {}): AnalysisExecutionSummary => ({ record_id: 7, execution_id: 'exec-7', time_ms: 1234, created_at: '', is_success: 1, noop: true, has_transactions: false, duration_sec: null, symbol_count: 0, position_count: null, positions_present: false, reason: null, summary: row().summary, ...patch })
+const indexedRow = (patch: Partial<AnalysisExecutionSummary> = {}): AnalysisExecutionSummary => ({ record_id: 7, execution_id: 'exec-7', time_ms: 1234, created_at: '', is_success: 1, noop: true, has_transactions: false, trade_symbols: [], duration_sec: null, symbol_count: 0, position_count: null, positions_present: false, reason: null, summary: row().summary, ...patch })
 test('单次执行按记录身份筛选，不带日期以保留跨日成交', () => {
   expect(selectionQuery(executionSelection(row()))).toEqual({ record_id: 7 })
   expect(executionSelection(row()).kind).toBe('execution')

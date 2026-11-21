@@ -28,7 +28,9 @@ test('不完整的毛盈亏汇总明确标识，保留待核对与费用缺失�
   expect(html).toContain('数据缺口后重新归零')
   expect(html).not.toContain('选择品种查看曲线')
   expect(html).toContain('data-chart="time-series"')
-  expect(html).toContain('contribution-chart-hint')
+  const hintId = html.match(/<canvas[^>]*data-testid="contribution-chart"[^>]*aria-describedby="[^"]+ ([^"]+)"/)?.[1]
+  expect(hintId).toBeDefined()
+  expect(html).toContain(`id="${hintId}" class="sr-only">方向键查看`)
   expect(html).toContain('Ctrl + 滚轮或加减号缩放')
 })
 

@@ -71,14 +71,16 @@ export function drawValueAxis(ctx: CanvasRenderingContext2D, plot: PlotBounds, a
   }
 }
 
-export function drawTimeAxis(ctx: CanvasRenderingContext2D, plot: PlotBounds, view: Viewport, theme: CanvasTheme, y: number, format: (time: number, intraday: boolean) => string, scale?: TimeScale, exclude?: { left: number; right: number }) {
+export function drawTimeAxis(ctx: CanvasRenderingContext2D, plot: PlotBounds, view: Viewport, theme: CanvasTheme, y: number, format: (time: number, intraday: boolean) => string, scale?: TimeScale, exclude?: { left: number; right: number }, tickDomain = view) {
   const available = plot.right - plot.left, count = Math.max(1, Math.floor(available / 145))
   const project = scale?.project ?? ((value: number) => value)
-  const intraday = project(view.end) - project(view.start) < 864e5
+  const intraday = project(tickDomain.end) - project(tickDomain.start) < 864e5
   ctx.fillStyle = theme.muted
   for (let i = 0; i <= count; i++) {
-    const x = plot.left + available * i / count
-    const label = format(timeAtX(x, plot, view, scale), intraday)
+    const time = timeAtX(plot.left + available * i / count, plot, tickDomain, scale)
+    const x = timeX(time, plot, view, scale)
+    if (x < plot.left - 0.01 || x > plot.right + 0.01) continue
+    const label = format(time, intraday)
     ctx.textAlign = i === 0 ? 'left' : i === count ? 'right' : 'center'
     const textWidth = ctx.measureText(label).width
     const left = x - (i === 0 ? 0 : i === count ? textWidth : textWidth / 2)

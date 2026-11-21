@@ -14,7 +14,7 @@ const times = points.map(pointTime)
 const scene: ChartScene = {
   data: { points } as AccountPerformance, times, width: 900,
   viewport: { start: times[0] - 864e5, end: times.at(-1)! + 864e5 }, daily: false,
-  costs: null, portfolioNames: new Map(),
+  portfolioNames: new Map(),
   theme: { bg: '', surface: '', ink: '', muted: '', line: '', accent: '', warn: '', fill: '', font: '' },
 }
 

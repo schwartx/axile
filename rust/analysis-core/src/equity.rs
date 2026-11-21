@@ -267,6 +267,17 @@ pub fn preview(
     fee: f64,
     target_weight: bool,
 ) -> Result<PreviewMode, String> {
+    replay_observations(items, equity, fee, target_weight, |_, _| Ok(()))
+}
+
+/// Observe the incoming portfolio before settling and replacing its positions.
+pub fn replay_observations(
+    items: &[Observation],
+    equity: f64,
+    fee: f64,
+    target_weight: bool,
+    mut observe: impl FnMut(&ReplayLedger, &Observation) -> Result<(), String>,
+) -> Result<PreviewMode, String> {
     let mut ledger = ReplayLedger::new(equity, fee, target_weight)?;
     let mut previous = std::collections::BTreeSet::new();
     let mut start = None;
@@ -286,6 +297,7 @@ pub fn preview(
             .iter()
             .filter_map(|(s, w)| (*w != 0.0).then_some(s.clone()))
             .collect();
+        observe(&ledger, item)?;
         ledger.push(item)?;
         start.get_or_insert(item.time);
         used += 1;

@@ -53,6 +53,7 @@ pub struct Query {
     pub symbol: Option<String>,
     pub side: Option<String>,
     pub fee_rate: Option<f64>,
+    pub contribution: Option<(String, bool)>,
 }
 struct Trade {
     record: String,
@@ -149,9 +150,28 @@ impl Account {
             {
                 return Err("费率试算不接受成本筛选条件".into());
             }
+            if let Some((symbol, target_weight)) = q.contribution {
+                let mut gross = 0.0;
+                let mut samples = Vec::new();
+                equity::replay_observations(
+                    &self.observations,
+                    self.equity.ok_or("此窗口没有有效的回测权益基线")?,
+                    q.fee_rate.ok_or("fee_rate is required")?,
+                    target_weight,
+                    |ledger, item| {
+                        if let Some(holding) = ledger.positions.get(&symbol) {
+                            let mark = item.prices.get(&symbol).ok_or("缺少持仓估值价格")?;
+                            gross += holding.units * (mark - holding.mark);
+                        }
+                        samples.push((item.time, gross));
+                        Ok(())
+                    },
+                )?;
+                return Ok(json!(samples));
+            }
             return self.preview(q.fee_rate.ok_or("fee_rate is required")?);
         }
-        if q.fee_rate.is_some() {
+        if q.fee_rate.is_some() || q.contribution.is_some() {
             return Err("请先加载费率试算观测".into());
         }
         self.costs(&q)
@@ -279,6 +299,33 @@ mod tests {
                 ..q(0.005)
             })
             .is_err());
+    }
+
+    #[test]
+    fn symbol_contribution_uses_positions_sized_from_the_whole_portfolio() {
+        let records: Vec<_> = [(100, 100), (100, 200), (120, 200)]
+            .into_iter()
+            .enumerate()
+            .map(|(i, (a, b))| {
+                json!({
+                    "record_id": i.to_string(), "trades": [],
+                    "observation": {"id": i, "time": i + 1, "sizing_fallback": false,
+                        "quantity_target": false, "prices": {"A": a, "B": b},
+                        "target": {"A": 0.5, "B": 0.5}}
+                })
+            })
+            .collect();
+        let input = json!({"protocol": PROTOCOL, "kind": "fees", "algorithm": ALGORITHM,
+            "initial_equity": 100, "records": records});
+        let mut account = Account::new(serde_json::from_value(input).unwrap()).unwrap();
+        let result = account
+            .query(Query {
+                contribution: Some(("A".into(), false)),
+                fee_rate: Some(0.0),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(result, json!([[1, 0.0], [2, 0.0], [3, 15.0]]));
     }
 
     #[test]

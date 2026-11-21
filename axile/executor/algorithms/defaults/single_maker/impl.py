@@ -328,6 +328,7 @@ def single_maker_callback(
                 start=current_volume,
                 orders=tracker.get_all_orders(for_position=True),
             )
+            tracker.reconcile_terminal_trades(deadline=deadline)
 
     except ExecutionTerminated:
         raise

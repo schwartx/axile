@@ -100,6 +100,7 @@ export interface AnalysisExecutionSummary {
   is_success: number | null
   noop: boolean
   has_transactions: boolean
+  trade_symbols: string[]
   duration_sec: number | null
   symbol_count: number | null
   position_count: number | null

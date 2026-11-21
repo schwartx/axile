@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
-import { aggregateTransactions, executionAnnotations, executionAt, groupAnnotations, holdingAt } from '@/features/history/tradeAnnotations'
+import { executionAt } from '@/features/history/executionSelection'
+import { aggregateTransactions, executionAnnotations, groupAnnotations, holdingAt } from '@/features/history/tradeAnnotations'
 import type { AnalysisExecutionSummary, CostExecutionRow, TransactionPreview } from '@/lib/api/performance'
 import type { ChartScene } from '@/components/viz/performanceCanvas'
 import { chartAxis } from '@/components/viz/performanceCanvas'
@@ -7,9 +8,9 @@ import { chartAxis } from '@/components/viz/performanceCanvas'
 const summary = { value: 100, cost: 1, lossBp: 100, coverage: 1, covered: 1, count: 1, amountComplete: true, fees: {}, feeCovered: 0 }
 const trade = (time: number, side: TransactionPreview['side'] = 'buy'): TransactionPreview => ({ symbol: 'A', side, quantity: 1, price: 100, reference: 99, referenceSource: 'mid', time, endTime: time, timeEstimated: false, before: 0, target: 1, summary })
 const row = (id: number, transactions: TransactionPreview[] = [], success = 1): CostExecutionRow => ({ key: String(id), record: { id, execution_id: `exec-${id}`, created_at: new Date(id * 1000).toISOString(), is_success: success, raw_result: {} }, summary, noop: !transactions.length, symbolCount: transactions.length, transactions, positions: [] })
-const indexedRow = (record_id: number, time_ms: number): AnalysisExecutionSummary => ({ record_id, execution_id: `exec-${record_id}`, time_ms, created_at: '', is_success: 1, noop: true, has_transactions: false, duration_sec: null, symbol_count: 0, position_count: null, positions_present: false, reason: null, summary })
+const indexedRow = (record_id: number, time_ms: number): AnalysisExecutionSummary => ({ record_id, execution_id: `exec-${record_id}`, time_ms, created_at: '', is_success: 1, noop: true, has_transactions: false, trade_symbols: [], duration_sec: null, symbol_count: 0, position_count: null, positions_present: false, reason: null, summary })
 function scene(start = 0, end = 100000): ChartScene {
-  return { width: 1000, viewport: { start, end }, times: [0, 100000], daily: false, costs: null, portfolioNames: new Map(), theme: { bg: '', surface: '', ink: '', muted: '', line: '', accent: '', warn: '', fill: '', font: '' }, data: { points: [{ date: '1970-01-01T00:00:00Z', observed_at: '1970-01-01T00:00:00Z', account_return: 0.1, portfolio_return: 0.1, account_daily_return: 0, portfolio_daily_return: 0, difference: 0 }, { date: '1970-01-01T00:01:40Z', observed_at: '1970-01-01T00:01:40Z', account_return: 0.2, portfolio_return: 0.2, account_daily_return: 0.1, portfolio_daily_return: 0.1, difference: 0 }], bindings: [] } as unknown as ChartScene['data'] }
+  return { width: 1000, viewport: { start, end }, times: [0, 100000], daily: false, portfolioNames: new Map(), theme: { bg: '', surface: '', ink: '', muted: '', line: '', accent: '', warn: '', fill: '', font: '' }, data: { points: [{ date: '1970-01-01T00:00:00Z', observed_at: '1970-01-01T00:00:00Z', account_return: 0.1, portfolio_return: 0.1, account_daily_return: 0, portfolio_daily_return: 0, difference: 0 }, { date: '1970-01-01T00:01:40Z', observed_at: '1970-01-01T00:01:40Z', account_return: 0.2, portfolio_return: 0.2, account_daily_return: 0.1, portfolio_daily_return: 0.1, difference: 0 }], bindings: [] } as unknown as ChartScene['data'] }
 }
 test('只有真实成交与异常有标记，正常空跑不画点', () => {
   const items = executionAnnotations([row(1), row(2, [trade(2100), trade(2200, 'sell')]), row(3, [], 0)])

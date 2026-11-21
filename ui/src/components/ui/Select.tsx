@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, ReactElement } from 'react'
+import { ExternalLink, GripHorizontal, LoaderCircle, X } from 'lucide-react'
 import { createPortal } from 'react-dom'
 
 import { OverflowText } from '@/components/ui/OverflowText'
@@ -9,6 +10,7 @@ export interface SelectOption<T> {
   value: T
   label: string
   description?: string
+  content?: ReactNode
   hint?: string
   /** 相邻同组的选项共用一条分隔说明；不参与键盘选项索引。 */
   groupLabel?: string
@@ -64,10 +66,15 @@ export function Select<T>({
   className,
   ariaLabel,
   disabled = false,
+  busy = false,
   selectedValue,
   appearance = 'boxed',
+  floatingTitle, menuHeader, menuWidth,
 }: {
   value: T
+  floatingTitle?: string
+  menuHeader?: ReactNode
+  menuWidth?: number
   options: SelectOption<T>[]
   onChange: (value: T) => void
   searchable?: boolean
@@ -75,6 +82,7 @@ export function Select<T>({
   className?: string
   ariaLabel?: string
   disabled?: boolean
+  busy?: boolean
   /** 需要把选中值的局部文字单独作为共享元素时，由调用方提供触发器内容。 */
   selectedValue?: ReactNode
   /** 行内设置使用轻量触发器，仅悬停和聚焦提示交互。 */
@@ -93,6 +101,15 @@ export function Select<T>({
   const [pos, setPos] = useState<MenuPos | null>(null)
   const [query, setQuery] = useState('')
   const [highlight, setHighlight] = useState(0)
+
+  const [floating, setFloating] = useState<{ left: number; top: number } | null>(null)
+  const floatingButton = useRef<HTMLButtonElement>(null)
+  const isFloating = floating !== null
+  const drag = useRef<{ x: number; y: number } | null>(null)
+  const clampPosition = useCallback((left: number, top: number) => ({
+    left: Math.max(4, Math.min(left, window.innerWidth - (menuRef.current?.offsetWidth ?? menuWidth ?? 0) - 4)),
+    top: Math.max(4, Math.min(top, window.innerHeight - (menuRef.current?.offsetHeight ?? 180) - 4)),
+  }), [menuWidth])
 
   const filtered =
     searchable && query
@@ -114,16 +131,17 @@ export function Select<T>({
     const placement: 'down' | 'up' = spaceBelow < 220 && spaceAbove > spaceBelow ? 'up' : 'down'
     const avail = (placement === 'up' ? spaceAbove : spaceBelow) - GAP - 8
     setPos({
-      left: r.left,
-      minWidth: r.width,
+      left: menuWidth ? Math.max(4, Math.min(r.left, window.innerWidth - menuWidth - 4)) : r.left,
+      minWidth: menuWidth ? Math.min(menuWidth, window.innerWidth - 8) : r.width,
       maxHeight: Math.max(140, Math.min(320, avail)),
       placement,
       anchorTop: r.top,
       anchorBottom: r.bottom,
     })
-  }, [])
+  }, [menuWidth])
 
   const close = useCallback((refocus: boolean) => {
+    setFloating(null)
     setOpen(false)
     setQuery('')
     if (refocus) triggerRef.current?.focus()
@@ -139,6 +157,26 @@ export function Select<T>({
     setMounted(true)
     setOpen(true)
   }, [disabled, place, options, value])
+
+  const detach = () => {
+    const rect = (menuRef.current ?? triggerRef.current)?.getBoundingClientRect()
+    if (!rect) return
+    if (!open) openMenu()
+    setFloating(clampPosition(rect.left, open ? rect.top : rect.bottom + GAP))
+    inputRef.current?.focus()
+  }
+  useLayoutEffect(() => {
+    if (!isFloating || !menuRef.current) return
+    const fit = () => setFloating(current => {
+      if (!current) return null
+      const next = clampPosition(current.left, current.top)
+      return next.left === current.left && next.top === current.top ? current : next
+    })
+    const observer = new ResizeObserver(fit)
+    observer.observe(menuRef.current)
+    window.addEventListener('resize', fit)
+    return () => { observer.disconnect(); window.removeEventListener('resize', fit) }
+  }, [isFloating, clampPosition])
 
   // 打开时：定位随滚动/缩放实时重算（capture 捕获任意祖先滚动）。
   useLayoutEffect(() => {
@@ -160,15 +198,15 @@ export function Select<T>({
 
   // 外部点击关闭（触发器与菜单内部不算外部）。
   useEffect(() => {
-    if (!open) return
+    if (!open || isFloating) return
     const onDown = (e: MouseEvent) => {
       const t = e.target as Node
-      if (triggerRef.current?.contains(t) || menuRef.current?.contains(t)) return
+      if (triggerRef.current?.contains(t) || floatingButton.current?.contains(t) || menuRef.current?.contains(t)) return
       close(false)
     }
     document.addEventListener('mousedown', onDown)
     return () => document.removeEventListener('mousedown', onDown)
-  }, [open, close])
+  }, [open, isFloating, close])
 
   // 打开时居中，键盘和搜索仅确保可见；鼠标悬停不驱动滚动。
   useLayoutEffect(() => {
@@ -180,7 +218,8 @@ export function Select<T>({
 
   const choose = (opt: SelectOption<T>) => {
     onChange(opt.value)
-    close(true)
+    if (floating) inputRef.current?.focus()
+    else close(true)
   }
 
   /** 打开态的键盘导航；触发器（非搜索）与搜索输入框共用。 */
@@ -207,7 +246,7 @@ export function Select<T>({
     } else if (e.key === 'Escape') {
       e.preventDefault()
       close(true)
-    } else if (e.key === 'Tab') {
+    } else if (e.key === 'Tab' && !floating) {
       close(false)
     }
   }
@@ -234,6 +273,7 @@ export function Select<T>({
         disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-busy={busy || undefined}
         aria-label={ariaLabel}
         aria-activedescendant={!searchable ? activeDesc : undefined}
         className={`${appearance === 'inline' ? TRIGGER_INLINE : TRIGGER_BASE} ${className ?? TRIGGER_LAYOUT_DEFAULT}`}
@@ -246,7 +286,7 @@ export function Select<T>({
             <OverflowText text={selected.description} className="mt-0.5 text-[13px] font-normal text-ink-3" />
           )}
         </span>
-        <svg
+        {busy ? <LoaderCircle aria-hidden className="ml-auto size-3 flex-none animate-spin text-ink-3 motion-reduce:animate-none" /> : <svg
           viewBox="0 0 12 12"
           aria-hidden
           className={`ml-auto h-3 w-3 flex-none text-ink-3 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
@@ -259,29 +299,44 @@ export function Select<T>({
             strokeLinecap="round"
             strokeLinejoin="round"
           />
-        </svg>
+        </svg>}
       </button>
 
+      {floatingTitle && <button ref={floatingButton} type="button" aria-label={`浮动显示${floatingTitle}`} title={`浮动显示${floatingTitle}`} aria-pressed={!!floating}
+        className="inline-grid size-7 min-h-0! place-items-center rounded text-ink-2 hover:bg-fill hover:text-accent focus-visible:outline-accent"
+        onClick={() => floating ? inputRef.current?.focus() : detach()}><ExternalLink size={14} /></button>}
       {mounted &&
         pos &&
         createPortal(
           <div
             ref={menuRef}
+            role={floating ? 'dialog' : undefined}
+            aria-label={floating ? floatingTitle : undefined}
+            onKeyDown={event => { if (floating && event.key === 'Escape') close(true) }}
             className={`${open ? 'select-pop-in' : 'select-pop-out'} fixed z-50 flex flex-col overflow-hidden rounded-[11px] border border-line contrast:border-border-strong bg-surface shadow-card`}
             onAnimationEnd={() => {
               if (!open) setMounted(false)
             }}
             style={{
-              left: pos.left,
+              left: floating?.left ?? pos.left,
               minWidth: pos.minWidth,
-              maxHeight: pos.maxHeight,
-              ...(pos.placement === 'down'
+              maxHeight: floating ? 'min(22rem, calc(100dvh - 8px))' : pos.maxHeight,
+              ...(floating ? { top: floating.top } : pos.placement === 'down'
                 ? { top: pos.anchorBottom + GAP }
                 : { bottom: window.innerHeight - pos.anchorTop + GAP }),
             }}
           >
+            {floating && <div className="flex items-center justify-between border-b border-line px-2 py-1">
+              <div className="flex flex-1 touch-none cursor-move select-none items-center gap-2 text-xs font-medium"
+                onPointerDown={e => { if (e.button === 0) { drag.current = { x: e.clientX - floating.left, y: e.clientY - floating.top }; e.currentTarget.setPointerCapture(e.pointerId) } }}
+                onPointerMove={e => { if (drag.current) setFloating(clampPosition(e.clientX - drag.current.x, e.clientY - drag.current.y)) }}
+                onLostPointerCapture={() => { drag.current = null }}>
+                <GripHorizontal size={14} />{floatingTitle}
+              </div>
+              <button type="button" aria-label="关闭浮窗" className="grid size-6 place-items-center rounded hover:bg-fill" onClick={() => close(true)}><X size={14} /></button>
+            </div>}
             {searchable && (
-              <div className="p-1 pb-0">
+              <div className="flex items-center gap-1 p-1 pb-0">
                 <input
                   ref={inputRef}
                   value={query}
@@ -296,8 +351,10 @@ export function Select<T>({
                   aria-activedescendant={activeDesc}
                   className="w-full rounded-[7px] border border-ink-3/25 contrast:border-border-strong bg-bg-subtle px-2.5 py-1.5 text-[14px] outline-none focus:border-accent"
                 />
+                {floatingTitle && !floating && <button type="button" aria-label="转为浮窗" title="转为浮窗" className="grid size-8 shrink-0 place-items-center rounded text-ink-2 hover:bg-fill" onClick={detach}><ExternalLink size={14} /></button>}
               </div>
             )}
+            {menuHeader}
             <ul id={listId} role="listbox" className="min-h-0 flex-1 overflow-y-auto p-1">
               {filtered.length === 0 && (
                 <li className="px-2.5 py-2 text-[14px] text-ink-3">无匹配</li>
@@ -341,7 +398,7 @@ export function Select<T>({
                         />
                       </svg>
                       <span className="min-w-0 flex-1">
-                        <OverflowText text={o.label} />
+                        {o.content ?? <OverflowText text={o.label} />}
                         {o.description && (
                           <OverflowText text={o.description} className="mt-0.5 text-[13px] font-normal text-ink-3" />
                         )}

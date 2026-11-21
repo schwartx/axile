@@ -511,6 +511,58 @@
   }
 }
 
+@media (prefers-reduced-motion: no-preference) {
+  :root:active-view-transition-type(performance-symbol, performance-symbol-slide),
+  :root:active-view-transition-type(performance-symbol, performance-symbol-slide) .app-workspace {
+    view-transition-name: none;
+  }
+  :root:active-view-transition-type(performance-symbol, performance-symbol-slide) .performance-chart-stage [data-chart-series] {
+    view-transition-name: var(--chart-series-name);
+    view-transition-class: performance-series;
+  }
+  :root:active-view-transition-type(performance-symbol) .performance-chart-stage [data-chart-series] ~ [data-chart-overlay] {
+    view-transition-name: contribution-markers;
+    view-transition-class: performance-series;
+  }
+  :root:active-view-transition-type(performance-symbol-slide) .performance-chart-stage [data-chart-overlay] {
+    visibility: hidden;
+  }
+  :root:active-view-transition-type(performance-symbol, performance-symbol-slide)::view-transition {
+    pointer-events: none;
+  }
+  ::view-transition-group(.performance-series) {
+    animation: none;
+  }
+  :root:active-view-transition-type(performance-symbol)::view-transition-new(.performance-series) {
+    animation: performance-series-enter 280ms cubic-bezier(.25, .65, .4, 1) both;
+  }
+  :root:active-view-transition-type(performance-symbol-slide)::view-transition-old(.performance-series) {
+    animation: performance-series-slide-out 240ms cubic-bezier(.25, .65, .4, 1) both;
+    mix-blend-mode: normal;
+  }
+  :root:active-view-transition-type(performance-symbol-slide)::view-transition-new(.performance-series) {
+    animation: performance-series-slide-in 240ms cubic-bezier(.25, .65, .4, 1) both;
+    mix-blend-mode: normal;
+  }
+}
+
+@keyframes performance-series-enter {
+  from { clip-path: inset(0 100% 0 0); }
+  to { clip-path: inset(0 0 0 0); }
+}
+
+@keyframes performance-series-slide-out {
+  from { transform: translateY(0); }
+  0%, 20% { opacity: 1; }
+  to { transform: translateY(-14px); opacity: 0; }
+}
+
+@keyframes performance-series-slide-in {
+  from { transform: translateY(14px); opacity: 0; }
+  45%, 100% { opacity: 1; }
+  to { transform: translateY(0); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   ::view-transition-group(*),
   ::view-transition-old(*),

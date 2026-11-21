@@ -16,6 +16,7 @@ from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
+from axile.executor.termination import ExecutionTerminated
 from tests.fixtures.algorithm_fakes import ClockStub as _ClockStub
 from tests.fixtures.algorithm_fakes import build_fallback_tracker as _build_tracker
 
@@ -129,6 +130,99 @@ class _SingleMakerExecutor:
 
     def handle_termination_checkpoint(self) -> None:
         return None
+
+
+@pytest.mark.parametrize(
+    ("received", "query_count", "recovered", "retry_stop"),
+    [
+        (0, 2, True, None),
+        (1, 1, True, None),
+        (2, 0, True, None),
+        (1, 2, False, None),
+        (1, 1, False, "deadline"),
+        (1, 1, False, "timeout"),
+        (1, 1, False, "operator"),
+    ],
+)
+def test_single_maker_reconciles_fills_before_removing_callbacks(
+    monkeypatch, received: int, query_count: int, recovered: bool, retry_stop: str | None
+) -> None:
+    executor = _SingleMakerExecutor()
+    clock = _ClockStub()
+    params = single_maker_impl.SingleMakerParams()
+    tracker = OrderTracker(executor=cast("ExecutorProtocol", executor), clock=clock)
+    order = UnifiedOrder(
+        order_id="filled-order",
+        symbol=executor.symbol,
+        direction=OrderDirection.BUY,
+        order_type=OrderType.LIMIT,
+        volume=2,
+        price=100,
+        status=OrderStatus.PENDING,
+    )
+    fills = [
+        TradeRecord(
+            trade_id=str(index),
+            order_id=order.order_id,
+            symbol=order.symbol,
+            trade_volume=1,
+            trade_price=100,
+            trade_value=100,
+            trade_time="2026-03-21T00:00:00",
+        )
+        for index in (1, 2)
+    ]
+
+    def submit(*_args, **_kwargs):
+        tracker.add_order(order)
+        tracker.on_order_update(copy_data(order, update={"status": OrderStatus.FILLED, "filled_volume": 2}))
+        for fill in fills[:received]:
+            tracker.on_trade_record(fill)
+        return [order]
+
+    expected_ids = ["1", "2"] if recovered else ["1"]
+    query = MagicMock(
+        side_effect=([[], fills] if received == 0 else [fills]) if recovered else [Exception("SDK 查询失败"), []]
+    )
+    wait = MagicMock()
+    if retry_stop == "deadline":
+
+        def exhaust_retry_budget(_order_id):
+            clock.current = params.max_wait_seconds - 0.1
+            return []
+
+        query.side_effect = exhaust_retry_budget
+    elif retry_stop:
+        wait.side_effect = ExecutionTerminated(reason=None, mode="graceful", trigger=retry_stop)
+
+    def check_trades_before_teardown(*_args):
+        assert [fill.trade_id for fill in tracker.get_all_trades()] == expected_ids
+
+    teardown = MagicMock(side_effect=check_trades_before_teardown)
+
+    monkeypatch.setattr(executor, "query_trades", query, raising=False)
+    monkeypatch.setattr(executor, "sleep_or_terminate", wait, raising=False)
+    monkeypatch.setattr(executor, "get_current_volume", MagicMock(side_effect=[0.0, 2.0]))
+    monkeypatch.setattr(single_maker_impl, "setup_order_tracker", lambda *_: tracker)
+    monkeypatch.setattr(single_maker_impl, "submit_and_track_split_orders", submit)
+    monkeypatch.setattr(single_maker_impl, "teardown_order_tracker", teardown)
+    monkeypatch.setattr(single_maker_impl, "get_default_clock", lambda: clock)
+
+    algorithm_input = AlgorithmInput(symbol=executor.symbol, target_volume=2, params=params, trade_rule={})
+    if retry_stop == "operator":
+        with pytest.raises(ExecutionTerminated, match="execution terminated"):
+            single_maker_impl.single_maker_callback(cast("ExecutorProtocol", executor), algorithm_input)
+    else:
+        result = single_maker_impl.single_maker_callback(cast("ExecutorProtocol", executor), algorithm_input)
+        assert result.status is ExecutionStatus.SUCCEEDED
+        assert result.final_volume == 2
+        assert [fill.trade_id for fill in result.trades] == expected_ids
+        assert result.orders[0].filled_volume == 2
+
+    assert query.call_count == query_count
+    assert all(call.args == (order.order_id,) for call in query.call_args_list)
+    assert wait.call_count == int(query_count == 2 or retry_stop in {"timeout", "operator"})
+    teardown.assert_called_once()
 
 
 class _SharedTickSingleMakerExecutor(_SingleMakerExecutor):
