@@ -10,10 +10,12 @@ import pytest
 from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor.base import AbstractExecutor
 from axile.executor.algorithms.core.base import AlgorithmInput
-from axile.executor.ctp.ctp_execute import CtpSessionRecoveryRequired
+from axile.executor.algorithms.utils import clock_now_ms
+from axile.executor.ctp.ctp_execute import CTPExecutor, CtpSessionRecoveryRequired
 from axile.executor.execution_engine import ExecutionEngine, _PreparedSymbolAlgorithm
+from axile.executor.feishu_notifications import build_execution_notification_context
 from axile.executor.models.execution_result import AlgorithmResult, ExecutionStatus, TargetSizingDecision
-from axile.executor.models.unified_account_assets import UnifiedAccountAssets
+from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_input import CTPAccountConfig, UnifiedStandardInput
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_output import UnifiedStandardOutput
@@ -446,3 +448,70 @@ def test_server_notification_captures_without_sending_or_changing_trade(monkeypa
     assert sent == []
     if not capture_fails:
         assert result.extra["server_notification_context"]["account"]["mark"] == "original-channel-mark"
+
+
+@pytest.mark.parametrize("server_notification", [True, False])
+def test_ctp_notification_reprices_only_closed_holdings_with_a_valid_snapshot(monkeypatch, server_notification):
+    """两条飞书路径复用上一份快照，执行结果仍保留原始持仓观测。"""
+    from axile.executor.abstract_executor import execution_lifecycle
+
+    class CtpNotificationExecutor(_LifecycleRecorderExecutor):
+        _notification_valuation_assets = CTPExecutor._notification_valuation_assets
+
+        def _get_ctp_session_block_reason(self, symbol):
+            return None if symbol == "rb2610" else "CTP.SESSION.CLOSED"
+
+    output = _output()
+    symbols = ["SF609", "rb2610", "SM609"]
+    output.account_assets.market_value = None
+    output.account_assets.positions = [
+        Position(
+            symbol=symbol,
+            direction=PositionDirection.LONG,
+            volume=2,
+            available_volume=2,
+            market_value=None,
+            extra={"valuation_reason": "missing_quote", "volume_multiple": 10},
+        )
+        for symbol in symbols
+    ]
+    now = clock_now_ms()
+    previous = output.account_assets.model_copy(
+        update={
+            "positions": [
+                position.model_copy(
+                    update={
+                        "volume": 1,
+                        "market_value": 500,
+                        "extra": {"last_price": 100, "quote_timestamp": timestamp},
+                    }
+                )
+                for position, timestamp in zip(
+                    output.account_assets.positions, [now, now, now - 2 * 86400_000], strict=True
+                )
+            ]
+        }
+    )
+    executor = CtpNotificationExecutor()
+    monkeypatch.setattr(executor, "_execution_engine", lambda: type("Engine", (), {"run": lambda *_: output})())
+    contexts = []
+
+    def enqueue(source, notification_output, _key, _code, snapshot):
+        contexts.append(build_execution_notification_context(source, notification_output, snapshot))
+
+    monkeypatch.setattr(execution_lifecycle, "enqueue_execute_results_to_feishu", enqueue)
+    inputs = _standard_input()
+    inputs.extra["server_notification"] = server_notification
+    inputs.execution_notification_code = "def notify(context): pass"
+    result = executor.execute(inputs, notification_snapshot={"assets": previous.model_dump()})
+
+    context = result.extra["server_notification_context"] if server_notification else contexts[0]
+    assert [row["market_value"] for row in context["default_feishu_variables"]["positions"]] == [
+        "2000.00",
+        "暂无有效行情",
+        "暂无有效行情",
+    ]
+    assert context["positions"][0]["valuation_source"] == "ctp_previous_asset_snapshot"
+    assert context["assets"]["market_value"] is None
+    assert result.account_assets.market_value is None
+    assert all(position.market_value is None for position in result.account_assets.positions)
