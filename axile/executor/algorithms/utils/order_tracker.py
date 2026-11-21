@@ -1946,6 +1946,37 @@ class OrderTracker:
         with self.lock:
             return [copy_data(trade, deep=True) for trade in self.order_trades.get(order_id, [])]
 
+    def _terminal_orders_missing_trades(self) -> list[str]:
+        with self.lock:
+            return [
+                order.order_id
+                for key, order in self.completed_orders.items()
+                if order.filled_volume - sum(trade.trade_volume for trade in self.order_trades.get(key, [])) > 1e-9
+            ]
+
+    def reconcile_terminal_trades(self) -> None:
+        """收尾时按订单补查缺少的逐笔成交，复用回调去重。"""
+        for wait in (0, 0.2):
+            missing = self._terminal_orders_missing_trades()
+            if not missing:
+                return
+            if wait:
+                self.executor.sleep_or_terminate(wait)
+                missing = self._terminal_orders_missing_trades()
+            for order_id in missing:
+                self.executor.handle_termination_checkpoint()
+                try:
+                    trades = self.executor.query_trades(order_id)
+                except (MemoryError, ExecutionTerminated):
+                    raise
+                except Exception as exc:  # noqa: BLE001 - 渠道 SDK 补查失败不覆盖已确认的订单结果。
+                    self._logger.warning(f"订单 {order_id} 成交明细补查失败: {format_exception_message(exc)}")
+                    continue
+                for trade in trades:
+                    self.on_trade_record(trade)
+        if missing := self._terminal_orders_missing_trades():
+            self._logger.warning(f"订单成交明细仍未齐: {', '.join(missing)}")
+
     def get_all_trades(self) -> list[TradeRecord]:
         """获取当前跟踪器内所有已收集的成交明细."""
         with self.lock:

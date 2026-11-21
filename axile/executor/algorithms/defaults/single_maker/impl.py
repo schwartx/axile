@@ -326,6 +326,8 @@ def single_maker_callback(
         if getattr(exc, "requires_session_recovery", False):
             raise
         account_assets, final_volume, explicit_error = _recover_outer_failure(executor, tracker, exc)
+    else:
+        tracker.reconcile_terminal_trades()
     finally:
         # 使用工具函数清理订单跟踪器
         teardown_order_tracker(executor, tracker, chase_config)

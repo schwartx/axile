@@ -131,6 +131,76 @@ class _SingleMakerExecutor:
         return None
 
 
+@pytest.mark.parametrize(
+    ("received", "query_count", "recovered"), [(0, 2, True), (1, 1, True), (2, 0, True), (1, 2, False)]
+)
+def test_single_maker_reconciles_fills_before_removing_callbacks(
+    monkeypatch, received: int, query_count: int, recovered: bool
+) -> None:
+    executor = _SingleMakerExecutor()
+    tracker = OrderTracker(executor=cast("ExecutorProtocol", executor), clock=_ClockStub())
+    order = UnifiedOrder(
+        order_id="filled-order",
+        symbol=executor.symbol,
+        direction=OrderDirection.BUY,
+        order_type=OrderType.LIMIT,
+        volume=2,
+        price=100,
+        status=OrderStatus.PENDING,
+    )
+    fills = [
+        TradeRecord(
+            trade_id=str(index),
+            order_id=order.order_id,
+            symbol=order.symbol,
+            trade_volume=1,
+            trade_price=100,
+            trade_value=100,
+            trade_time="2026-03-21T00:00:00",
+        )
+        for index in (1, 2)
+    ]
+
+    def submit(*_args, **_kwargs):
+        tracker.add_order(order)
+        tracker.on_order_update(copy_data(order, update={"status": OrderStatus.FILLED, "filled_volume": 2}))
+        for fill in fills[:received]:
+            tracker.on_trade_record(fill)
+        return [order]
+
+    expected_ids = ["1", "2"] if recovered else ["1"]
+    query = MagicMock(
+        side_effect=([[], fills] if received == 0 else [fills]) if recovered else [Exception("SDK 查询失败"), []]
+    )
+    wait = MagicMock()
+
+    def check_trades_before_teardown(*_args):
+        assert [fill.trade_id for fill in tracker.get_all_trades()] == expected_ids
+
+    teardown = MagicMock(side_effect=check_trades_before_teardown)
+
+    monkeypatch.setattr(executor, "query_trades", query, raising=False)
+    monkeypatch.setattr(executor, "sleep_or_terminate", wait, raising=False)
+    monkeypatch.setattr(single_maker_impl, "setup_order_tracker", lambda *_: tracker)
+    monkeypatch.setattr(single_maker_impl, "submit_and_track_split_orders", submit)
+    monkeypatch.setattr(single_maker_impl, "teardown_order_tracker", teardown)
+    monkeypatch.setattr(single_maker_impl, "get_default_clock", lambda: _ClockStub())
+
+    result = single_maker_impl.single_maker_callback(
+        cast("ExecutorProtocol", executor),
+        AlgorithmInput(
+            symbol=executor.symbol, target_volume=2, params=single_maker_impl.SingleMakerParams(), trade_rule={}
+        ),
+    )
+
+    assert [fill.trade_id for fill in result.trades] == expected_ids
+    assert result.orders[0].filled_volume == 2
+    assert query.call_count == query_count
+    assert all(call.args == (order.order_id,) for call in query.call_args_list)
+    assert wait.call_count == int(query_count == 2)
+    teardown.assert_called_once()
+
+
 class _SharedTickSingleMakerExecutor(_SingleMakerExecutor):
     def __init__(self) -> None:
         super().__init__()
