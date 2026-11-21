@@ -197,6 +197,11 @@ def _structured_template_variables(
     positions = [
         {
             **position.model_dump(mode="json", exclude={"extra"}),
+            **(
+                {"valuation_reference": True, "valuation_source": position.extra["valuation_source"]}
+                if position.extra.get("valuation_source") == "ctp_previous_asset_snapshot"
+                else {}
+            ),
             "target_volume": output.target_volume.get(position.symbol, 0),
             "target_weight": inputs.curr_target.get(position.symbol) if inputs else None,
             "rate": (

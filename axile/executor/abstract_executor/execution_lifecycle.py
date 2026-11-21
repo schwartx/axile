@@ -24,6 +24,7 @@ from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.termination import ExecutionTerminated
 
 if TYPE_CHECKING:
+    from axile.executor.models.unified_account_assets import UnifiedAccountAssets
     from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
     from axile.executor.models.unified_output import UnifiedStandardOutput
 
@@ -105,22 +106,30 @@ class AbstractExecutorExecutionLifecycleMixin(AbstractExecutorExecutionRuntimeFa
 
             # 通知是尾部副作用，不影响主执行结果的返回；投递到有界后台队列，
             # 统一经有界后台队列发送，隔离飞书网络延迟且避免线程随执行次数增长。
-            if standard_input.extra.get("server_notification"):
+            server_notification = standard_input.extra.get("server_notification")
+            if server_notification or standard_input.execution_notification_code:
                 try:
-                    output.extra["server_notification_context"] = build_execution_notification_context(
-                        cast("FeishuNotificationSource", executor), output, notification_snapshot
-                    )
+                    notification_output = output
+                    if notification_snapshot is not None:
+                        assets = self._notification_valuation_assets(output.account_assets, notification_snapshot)
+                        if assets is not output.account_assets:
+                            notification_output = output.model_copy(update={"account_assets": assets})
+                    source = cast("FeishuNotificationSource", executor)
+                    if server_notification:
+                        output.extra["server_notification_context"] = build_execution_notification_context(
+                            source, notification_output, notification_snapshot
+                        )
+                    else:
+                        executor.logger.info("异步处理执行通知")
+                        enqueue_execute_results_to_feishu(
+                            source,
+                            notification_output,
+                            standard_input.feishu_key,
+                            standard_input.execution_notification_code,
+                            notification_snapshot,
+                        )
                 except Exception as exc:
-                    executor.logger.error(f"保存服务端通知快照失败: {exc}")
-            elif standard_input.execution_notification_code:
-                executor.logger.info("异步处理执行通知")
-                enqueue_execute_results_to_feishu(
-                    cast("FeishuNotificationSource", executor),
-                    output,
-                    standard_input.feishu_key,
-                    standard_input.execution_notification_code,
-                    notification_snapshot,
-                )
+                    executor.logger.error(f"准备执行通知失败: {exc}")
 
             executor.logger.debug(f"交易执行完成 - 成功: {output.success}")
             return output
@@ -138,6 +147,12 @@ class AbstractExecutorExecutionLifecycleMixin(AbstractExecutorExecutionRuntimeFa
                 executor._cleanup()
             if not retain_runtime:
                 executor.clear_execution_runtime()
+
+    def _notification_valuation_assets(
+        self, assets: UnifiedAccountAssets, snapshot: dict[str, object]
+    ) -> UnifiedAccountAssets:
+        """返回用于本次通知的估值视图。"""
+        return assets
 
     def _execution_engine(self) -> ExecutionEngine:
         """创建本次执行使用的通用编排器."""
