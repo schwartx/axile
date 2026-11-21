@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, ReactElement } from 'react'
-import { ExternalLink, GripHorizontal, X } from 'lucide-react'
+import { ExternalLink, GripHorizontal, LoaderCircle, X } from 'lucide-react'
 import { createPortal } from 'react-dom'
 
 import { OverflowText } from '@/components/ui/OverflowText'
@@ -66,6 +66,7 @@ export function Select<T>({
   className,
   ariaLabel,
   disabled = false,
+  busy = false,
   selectedValue,
   appearance = 'boxed',
   floatingTitle, menuHeader, menuWidth,
@@ -81,6 +82,7 @@ export function Select<T>({
   className?: string
   ariaLabel?: string
   disabled?: boolean
+  busy?: boolean
   /** 需要把选中值的局部文字单独作为共享元素时，由调用方提供触发器内容。 */
   selectedValue?: ReactNode
   /** 行内设置使用轻量触发器，仅悬停和聚焦提示交互。 */
@@ -271,6 +273,7 @@ export function Select<T>({
         disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-busy={busy || undefined}
         aria-label={ariaLabel}
         aria-activedescendant={!searchable ? activeDesc : undefined}
         className={`${appearance === 'inline' ? TRIGGER_INLINE : TRIGGER_BASE} ${className ?? TRIGGER_LAYOUT_DEFAULT}`}
@@ -283,7 +286,7 @@ export function Select<T>({
             <OverflowText text={selected.description} className="mt-0.5 text-[13px] font-normal text-ink-3" />
           )}
         </span>
-        <svg
+        {busy ? <LoaderCircle aria-hidden className="ml-auto size-3 flex-none animate-spin text-ink-3 motion-reduce:animate-none" /> : <svg
           viewBox="0 0 12 12"
           aria-hidden
           className={`ml-auto h-3 w-3 flex-none text-ink-3 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
@@ -296,7 +299,7 @@ export function Select<T>({
             strokeLinecap="round"
             strokeLinejoin="round"
           />
-        </svg>
+        </svg>}
       </button>
 
       {floatingTitle && <button ref={floatingButton} type="button" aria-label={`浮动显示${floatingTitle}`} title={`浮动显示${floatingTitle}`} aria-pressed={!!floating}

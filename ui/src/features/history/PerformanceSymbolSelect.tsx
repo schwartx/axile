@@ -1,20 +1,21 @@
 import { Fragment, useState } from 'react'
 import { ChevronRight } from 'lucide-react'
 import { Select } from '@/components/ui/Select'
+import { OverflowText } from '@/components/ui/OverflowText'
 import { amount, lossClass } from './costs'
 import type { CostView } from './localAnalysis'
 
 const columns = 'grid grid-cols-[minmax(0,1fr)_5ch_5ch_5ch_5ch] items-baseline gap-x-2 text-xs tabular-nums'
 
-export function PerformanceSymbolSelect({ result, scope, symbols, symbol, onChange }: {
-  result: CostView | null; scope: string; symbols: string[]; symbol: string; onChange: (value: string) => void
+export function PerformanceSymbolSelect({ result, scope, symbols, symbol, busy, onChange }: {
+  result: CostView | null; scope: string; symbols: string[]; symbol: string; busy: boolean; onChange: (value: string) => void
 }) {
   const [previous, setPrevious] = useState({ scope, result })
   if (scope !== previous.scope || (result && previous.result !== result)) setPrevious({ scope, result })
   const view = result ?? (scope === previous.scope ? previous.result : null)
   const rows = new Map(view?.rows.map(row => [row.symbol, row]))
-  return <Select ariaLabel="绩效图品种" searchable floatingTitle="品种列表" menuWidth={402} appearance="inline"
-    className="min-h-7! px-2 text-xs" value={symbol} selectedValue={symbol || '全部品种'} onChange={onChange}
+  return <Select ariaLabel="绩效图品种" searchable floatingTitle="品种列表" menuWidth={402} appearance="inline" busy={busy}
+    className="min-h-7! w-36 gap-1 px-2 text-xs" value={symbol} selectedValue={<OverflowText text={symbol || '全部品种'} />} onChange={onChange}
     menuHeader={<div className={`${columns} ml-[34px] mr-[14px] border-b border-line py-1 text-ink-2`}>
       <span>品种</span><span className="col-span-2 text-right">买入滑点 BP</span><span className="col-span-2 text-right">卖出滑点 BP</span>
     </div>}

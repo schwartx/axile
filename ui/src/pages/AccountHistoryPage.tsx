@@ -10,28 +10,28 @@ import { useNavigate } from '@/components/ui/nav'
 import { SectionLabel } from '@/components/ui/Card'
 import { Segmented } from '@/components/ui/Segmented'
 import { Tooltip } from '@/components/ui/Tooltip'
-import { Select } from '@/components/ui/Select'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { PerformanceChart } from '@/components/viz/PerformanceChart'
 import { PerformanceChartPlaceholder } from '@/features/history/PerformanceChartPlaceholder'
+import { ObservationEndpointPicker } from '@/features/history/ObservationEndpointPicker'
 import { AccountPageTitle } from '@/features/account/pageHead'
 import { FeeControl } from '@/features/history/FeeControl'
 import { getAccount } from '@/lib/api/accounts'
 import { getPortfolios } from '@/lib/api/portfolios'
 import { shanghaiLabel } from '@/features/history/costs'
 import { intervalSelection, pointTime, reconcileSelection, type ChartSelection } from '@/features/history/chartModel'
-import { loadPerformanceView, performanceViews, savePerformanceView, type BacktestMode } from '@/features/history/viewState'
+import { loadPerformanceView, performanceViewports, performanceViews, savePerformanceView, type BacktestMode } from '@/features/history/viewState'
 import { getPerformanceCosts, selectionQuery, savePerformanceSettings, type AnalysisMetadata } from '@/lib/api/performance'
 import { usePerformanceSnapshot } from '@/features/history/usePerformanceSnapshot'
 import { usePolling } from '@/lib/hooks/usePolling'
 import { withViewTransition } from '@/lib/viewTransition'
+import type { RangeTarget } from '@/features/history/rangeZoom'
 import { useDomainStore } from '@/stores/domain'
 import { type RangeKey } from '@/features/history/derive'
 import { settingsFromDraft } from '@/features/history/performance'
 import type { PerformanceSettings } from '@/types/api'
 import type { TimeScaleMode } from '@/features/history/timeScale'
 import { useWasmResource } from '@/lib/wasmResources'
-import { WasmDownloadProgress, downloadSize } from '@/components/ui/WasmDownloadProgress'
 
 const RANGES: Array<{ value: RangeKey; label: string }> = [
   { value: '30', label: '30 天' }, { value: '90', label: '90 天' }, { value: 'all', label: '全部' },
@@ -68,13 +68,14 @@ function AccountHistory({ accountId }: { accountId: number }) {
   const [range, setRange] = useState<RangeKey>(() => performanceViews.get(accountId)?.range ?? 'all')
   const [view, setView] = useState<'cumulative' | 'daily'>(() => performanceViews.get(accountId)?.view ?? 'cumulative')
   const [scale, setScale] = useState<TimeScaleMode>(() => performanceViews.get(accountId)?.scale ?? loadPerformanceView(accountId).scale ?? 'observations')
-  const [selection, setSelection] = useState<ChartSelection>(() => performanceViews.get(accountId)?.selection ?? null)
+  const [selection, setSelection] = useState<ChartSelection>(() => {
+    const saved = performanceViews.get(accountId)?.selection
+    return saved?.kind === 'execution' ? null : saved ?? null
+  })
+  const [pickerSelection, setPickerSelection] = useState<ChartSelection>(null)
+  const slideInterval = pickerSelection != null && pickerSelection === selection
   const [markers, setMarkers] = useState(() => performanceViews.get(accountId)?.markers ?? loadPerformanceView(accountId).markers ?? true)
   const [backtestMode, setBacktestMode] = useState<BacktestMode>(() => performanceViews.get(accountId)?.backtestMode ?? loadPerformanceView(accountId).backtestMode ?? 'sized')
-  useEffect(() => {
-    performanceViews.set(accountId, { ...performanceViews.get(accountId), range, view, scale, selection, markers, backtestMode })
-    savePerformanceView(accountId, { scale, markers, backtestMode })
-  }, [accountId, range, view, scale, selection, markers, backtestMode])
   const [showEvents, setShowEvents] = useState(false)
   const [draft, setDraft] = useState<{ fee: string } | null>(null)
   const [saved, setSaved] = useState<PerformanceSettings | null>(null)
@@ -89,10 +90,37 @@ function AccountHistory({ accountId }: { accountId: number }) {
   const refreshPerformance = useRef(performance.refresh)
   useEffect(() => { refreshPerformance.current = performance.refresh }, [performance.refresh])
   const metadata = performance.metadata
-  const snapshot = performance.displayed
+  const [lastSnapshot, setLastSnapshot] = useState(performance.displayed)
+  const [selectionNotice, setSelectionNotice] = useState(false)
+  const nextSnapshot = performance.displayed
+  const rangeChanged = !!nextSnapshot && !!lastSnapshot && nextSnapshot.range !== lastSnapshot.range
+  const pendingTarget = rangeChanged && nextSnapshot.range === range
+    && lastSnapshot.result.observation_count >= 2 && lastSnapshot.result.points.length >= 2
+    && !window.matchMedia('(prefers-reduced-motion: reduce)').matches ? nextSnapshot : null
+  if (nextSnapshot && nextSnapshot !== lastSnapshot && !pendingTarget) {
+    if (rangeChanged) {
+      setSelection(null)
+      setSelectionNotice(false)
+    }
+    setLastSnapshot(nextSnapshot)
+  }
+  const rangeTarget = useMemo<RangeTarget | undefined>(() => pendingTarget ? {
+    chart: pendingTarget,
+    finish: () => {
+      performanceViewports.delete(`${accountId}:${pendingTarget.range}`)
+      setSelection(null)
+      setSelectionNotice(false)
+      setLastSnapshot(pendingTarget)
+    },
+  } : undefined, [accountId, pendingTarget])
+  const snapshot = lastSnapshot
+  const displayedRange = snapshot?.range ?? range
   const data = snapshot?.result
   const restoreScroll = useRef(performanceViews.get(accountId)?.scroll ?? null)
-  const [selectionNotice, setSelectionNotice] = useState(false)
+  useEffect(() => {
+    performanceViews.set(accountId, { ...performanceViews.get(accountId), range: displayedRange, view, scale, selection, markers, backtestMode })
+    savePerformanceView(accountId, { scale, markers, backtestMode })
+  }, [accountId, displayedRange, view, scale, selection, markers, backtestMode])
   useEffect(() => {
     const main = document.querySelector('main.app-workspace')
     const save = () => {
@@ -121,7 +149,6 @@ function AccountHistory({ accountId }: { accountId: number }) {
     })
   }, [snapshot])
   const selectionKey = JSON.stringify(selectionQuery(selection))
-  const displayedRange = snapshot?.range ?? range
   const portfolios = usePolling(useCallback((s: AbortSignal) => getPortfolios(s, 'all'), []), { queryKey: 'performance-portfolios', intervalMs: 0 })
   const portfolioNames = useMemo(() => new Map(portfolios.data?.data.flatMap(p => p.id == null ? [] : [[p.id, p.name] as const]) ?? []), [portfolios.data])
   const settings = saved ?? account.data ?? data?.settings
@@ -130,60 +157,83 @@ function AccountHistory({ accountId }: { accountId: number }) {
   const dirty = parsed != null && parsed.backtest_fee_rate !== settings?.backtest_fee_rate
   const [costSymbol, setCostSymbol] = useState('')
   const [costSide, setCostSide] = useState('')
+  const [chartSymbol, setChartSymbol] = useState('')
+  const requestedSymbol = useRef('')
+  const symbolTransition = useRef<ViewTransition | undefined>(undefined)
+  const chartKey = `${displayedRange}:${chartSymbol ? 'symbol' : 'account'}`
   const { resource: analysisWasm, state: analysisDownload } = useWasmResource('analysis')
   const analysisReady = analysisDownload.phase === 'cached'
-  const [trialEnabled, setTrialEnabled] = useState(true)
-  const [downloadOwner, setDownloadOwner] = useState<'cost' | 'trial' | null>(null)
-  const startAnalysis = (owner: 'cost' | 'trial') => {
-    setTrialEnabled(true)
-    if (analysisDownload.phase === 'downloading') return
-    setDownloadOwner(owner)
-    void analysisWasm.download()
-  }
-  const cancelAnalysis = () => { analysisWasm.cancel(); setTrialEnabled(false) }
-  useEffect(() => () => analysisWasm.cancel(), [analysisWasm])
+  useEffect(() => {
+    if (analysisDownload.phase === 'missing') void analysisWasm.download()
+  }, [analysisDownload.phase, analysisWasm])
+  const analysisError = useMemo(() => analysisDownload.error ? new Error(analysisDownload.error) : null, [analysisDownload.error])
   const inputs = usePolling(useCallback((signal: AbortSignal) => loadAnalysisInputs(accountId, snapshot!.version, displayedRange, 'costs', signal, JSON.parse(selectionKey)), [accountId, snapshot?.version, displayedRange, selectionKey]), {
     queryKey: `analysis-inputs:${accountId}:${snapshot?.version}:${displayedRange}:${selectionKey}`, intervalMs: 0, enabled: !!snapshot?.version && analysisReady, manual: true, retainDataWhenDisabled: true,
   })
-  const downloadInCosts = downloadOwner !== 'trial'
-  const downloadProgress = analysisDownload.phase === 'downloading' || analysisDownload.phase === 'error'
-    ? <WasmDownloadProgress state={analysisDownload} onCancel={cancelAnalysis} onRetry={() => startAnalysis(downloadOwner ?? 'trial')} />
-    : null
   const refreshInputs = inputs.refresh
   useEffect(() => {
     if (analysisReady && !inputs.data && !inputs.error && !inputs.loading && !inputs.refreshing) void refreshInputs()
   }, [analysisReady, inputs.data, inputs.error, inputs.loading, inputs.refreshing, refreshInputs])
   const inputData = analysisReady && inputs.data?.version === snapshot?.version && inputs.data?.range === displayedRange ? inputs.data : null
-  const localQuery = useMemo<CostViewQuery>(() => ({ window: { ...selectionQuery(selection), record_id: selection?.kind === 'execution' ? String(selection.recordId) : undefined }, symbol: costSymbol, side: costSide }), [selection, costSymbol, costSide])
+  const localQuery = useMemo<CostViewQuery>(() => {
+    const { day, start, end } = selectionQuery(selection)
+    return { window: { day, start, end }, symbol: costSymbol, side: costSide }
+  }, [selection, costSymbol, costSide])
   const local = useLocalAnalysis<typeof localQuery, CostView>(inputData, localQuery)
-  const needsReplay = dirty || (!!costSymbol && !!data?.backtest_included)
-  const feeInputs = usePolling(useCallback((signal: AbortSignal) => loadAnalysisInputs(accountId, snapshot!.version, displayedRange, 'fees', signal), [accountId, snapshot?.version, displayedRange]), {
-    queryKey: `analysis-fees:${accountId}:${snapshot?.version}:${displayedRange}`, intervalMs: 0, enabled: !!snapshot?.version && needsReplay && analysisReady && trialEnabled, manual: true, retainDataWhenDisabled: true,
+  const replaySnapshot = chartSymbol ? pendingTarget ?? snapshot : snapshot
+  const replaySymbol = pendingTarget && chartSymbol ? chartSymbol : costSymbol
+  const replayData = replaySnapshot?.result
+  const needsReplay = dirty || (!!replaySymbol && !!replayData?.backtest_included)
+  const feeInputs = usePolling(useCallback((signal: AbortSignal) => loadAnalysisInputs(accountId, replaySnapshot!.version, replaySnapshot!.range, 'fees', signal), [accountId, replaySnapshot?.version, replaySnapshot?.range]), {
+    queryKey: `analysis-fees:${accountId}:${replaySnapshot?.version}:${replaySnapshot?.range}`, intervalMs: 0, enabled: !!replaySnapshot?.version && needsReplay && analysisReady, manual: true, retainDataWhenDisabled: true,
   })
   const refreshFeeInputs = feeInputs.refresh
   useEffect(() => {
-    if (needsReplay && analysisReady && trialEnabled && !feeInputs.data && !feeInputs.error && !feeInputs.loading && !feeInputs.refreshing) void refreshFeeInputs()
-  }, [needsReplay, analysisReady, trialEnabled, feeInputs.data, feeInputs.error, feeInputs.loading, feeInputs.refreshing, refreshFeeInputs])
-  const feeData = analysisReady && trialEnabled && feeInputs.data?.version === snapshot?.version && feeInputs.data?.range === displayedRange ? feeInputs.data : null
+    if (needsReplay && analysisReady && !feeInputs.data && !feeInputs.error && !feeInputs.loading && !feeInputs.refreshing) void refreshFeeInputs()
+  }, [needsReplay, analysisReady, feeInputs.data, feeInputs.error, feeInputs.loading, feeInputs.refreshing, refreshFeeInputs])
+  const feeData = analysisReady && feeInputs.data?.version === replaySnapshot?.version && feeInputs.data?.range === replaySnapshot?.range ? feeInputs.data : null
   const feeQuery = useMemo(() => dirty && parsed ? { fee_rate: parsed.backtest_fee_rate } : null, [dirty, parsed])
   const trial = useLocalAnalysis<typeof feeQuery, FeeResult>(feeQuery ? feeData : null, feeQuery)
-  const contributionQuery = useMemo(() => costSymbol && data?.backtest_included ? {
-    contribution: [costSymbol, backtestMode === 'target'] as [string, boolean],
-    fee_rate: dirty && parsed ? parsed.backtest_fee_rate : data.settings.backtest_fee_rate,
-  } : null, [costSymbol, backtestMode, dirty, parsed, data])
+  const contributionQuery = useMemo(() => replaySymbol && replayData?.backtest_included ? {
+    contribution: [replaySymbol, backtestMode === 'target'] as [string, boolean],
+    fee_rate: dirty && parsed ? parsed.backtest_fee_rate : replayData.settings.backtest_fee_rate,
+  } : null, [replaySymbol, backtestMode, dirty, parsed, replayData])
   const replay = useLocalAnalysis<typeof contributionQuery, [number, number][]>(contributionQuery ? feeData : null, contributionQuery)
+  const replayScope = `${snapshot?.version}:${displayedRange}:${backtestMode}:${dirty && parsed ? parsed.backtest_fee_rate : data?.settings.backtest_fee_rate}`
+  const [displayedReplay, setDisplayedReplay] = useState<{ symbol: string; scope: string; samples: [number, number][] } | null>(null)
+  if (replaySnapshot === snapshot && chartSymbol === costSymbol && replay.value && replay.value !== displayedReplay?.samples) {
+    setDisplayedReplay({ symbol: chartSymbol, scope: replayScope, samples: replay.value })
+  }
+  const cachedSamples = displayedReplay?.symbol === chartSymbol && displayedReplay.scope === replayScope ? displayedReplay.samples : null
+  const chartSamples = replaySnapshot === snapshot && chartSymbol === costSymbol ? replay.value ?? cachedSamples : cachedSamples
+  const symbolReady = !contributionQuery || replay.value != null || !!(analysisError || feeInputs.error || replay.error)
+  const symbolRange = rangeTarget && (replaySnapshot === snapshot || symbolReady) ? rangeTarget : undefined
+  useEffect(() => {
+    if (chartSymbol === costSymbol || !symbolReady || rangeTarget) return
+    if (!costSymbol) {
+      setChartSymbol('')
+      return
+    }
+    let current = true
+    symbolTransition.current = withViewTransition(() => {
+      if (current && requestedSymbol.current === costSymbol) setChartSymbol(costSymbol)
+    }, chartSymbol ? 'performance-symbol-slide' : 'performance-symbol')
+    return () => { current = false }
+  }, [chartSymbol, costSymbol, symbolReady, rangeTarget])
   const listedSymbols = useMemo(() => {
     const names = new Set(snapshot?.contributions?.map(row => row.symbol))
-    for (const record of inputData?.records ?? []) {
-      for (const trade of record.trades) names.add((trade as { symbol: string }).symbol)
+    for (const row of snapshot?.execution_index ?? []) {
+      for (const symbol of row.trade_symbols) names.add(symbol)
     }
     return [...names].sort()
-  }, [snapshot, inputData])
+  }, [snapshot])
   const selectSymbol = (symbol: string, side = '') => {
+    if (symbol !== requestedSymbol.current) symbolTransition.current?.skipTransition()
+    requestedSymbol.current = symbol
     setCostSymbol(symbol)
     setCostSide(side)
   }
-  const trialMessage = costSymbol && parsed ? `品种回测按 ${fee} BP 试算` : !analysisReady || !trialEnabled ? '本地试算尚未启用，当前显示正式曲线' : trial.value?.preview_error ?? (feeInputs.error || trial.error ? '试算不可用，当前显示正式曲线' : trial.value?.preview ? '图中回测曲线为本地试算；账户收益仍为正式记录' : '正在准备完整窗口，当前仍显示正式曲线')
+  const trialMessage = costSymbol && parsed ? `品种回测按 ${fee} BP 试算` : trial.value?.preview_error ?? (analysisError || feeInputs.error || trial.error ? '试算不可用，当前显示正式曲线' : trial.value?.preview ? '图中回测曲线为本地试算；账户收益仍为正式记录' : '正在准备完整窗口，当前仍显示正式曲线')
   const chartData = useMemo(() => snapshot && dirty && parsed && trial.value?.preview ? previewPerformance(snapshot, trial.value.preview, parsed.backtest_fee_rate) : data, [snapshot, dirty, parsed, trial.value?.preview, data])
   const intervalCosts = usePolling(useCallback((s: AbortSignal) => getPerformanceCosts(accountId, { version: snapshot!.version, range: displayedRange, dimension: 'summary', ...JSON.parse(selectionKey) }, s), [accountId, snapshot?.version, displayedRange, selectionKey]), {
     queryKey: `performance-summary:${accountId}:${snapshot?.version}:${displayedRange}:${selectionKey}`, intervalMs: 0, enabled: !!snapshot?.version && selection?.kind === 'interval' && (!analysisReady || !!inputs.error || !!local.error),
@@ -210,23 +260,23 @@ function AccountHistory({ accountId }: { accountId: number }) {
   }
 
   const computing = metadata?.status === 'pending' || metadata?.status === 'stale' || metadata?.status === 'failed' && metadata.retry_at != null
-  const backtestBusy = computing || performance.checking || performance.loadingResult
-  const active = data?.points[data.points.length - 1]
   const daily = view === 'daily'
-  const accountReturn = active?.account_return
-  const portfolioReturn = backtestMode === 'target' ? active?.target_portfolio_return : active?.portfolio_return
-  const difference = accountReturn != null && portfolioReturn != null ? portfolioReturn - accountReturn : null
   const costs = useMemo(() => snapshot?.result ? new Map(Object.entries(snapshot.daily_costs)) : null, [snapshot?.result, snapshot?.daily_costs])
   const events = snapshot?.events ?? []
   const calculationError = useMemo(() => metadata?.error ? new Error(metadata.error) : null, [metadata?.error])
-  const loadingMessage = historyLoadingMessage(metadata, !!data, performance.loadingResult)
   const initialError = calculationError || performance.statusError || performance.resultError || performance.refreshError
+  const showingPreviousRange = displayedRange !== range
+  const waitingForRange = showingPreviousRange && !initialError
+  const loadingMessage = (chartSymbol ? symbolRange : rangeTarget) ? '正在切换所选范围' : showingPreviousRange
+    ? waitingForRange ? '正在读取所选范围，当前保留原图' : '当前仍显示上一范围的绩效'
+    : historyLoadingMessage(metadata, !!data, performance.loadingResult)
+  const backtestBusy = computing || performance.checking || performance.loadingResult || waitingForRange
   const pendingSettings = !!data && settings?.backtest_fee_rate !== data.settings.backtest_fee_rate
-  const intervalOptions = useMemo(() => data?.points.map(point => ({ value: pointTime(point), label: point.observed_at ? shanghaiLabel(point.observed_at) : point.date })) ?? [], [data?.points])
-  const intervalStart = selection?.kind === 'interval' ? selection.start : intervalOptions[0]?.value
-  const intervalEnd = selection?.kind === 'interval' ? selection.end : intervalOptions.at(-1)?.value
+  const intervalTimes = useMemo(() => [...new Set(data?.points.filter(point => point.observed_at).map(pointTime).filter(Number.isFinite))], [data?.points])
+  const intervalStart = selection?.kind === 'interval' ? selection.start : intervalTimes[0]
+  const intervalEnd = selection?.kind === 'interval' ? selection.end : intervalTimes.at(-1)
 
-  const controls = <div data-testid="performance-controls" className="flex min-w-0 flex-wrap items-center gap-2 sm:ml-auto sm:justify-end">
+  const controls = <div data-testid="performance-controls" className="flex w-full min-w-0 flex-wrap items-center gap-2 py-1">
         <fieldset disabled={saving || !settings || !!account.data?.archived_at} className="flex min-w-0 flex-wrap items-center gap-2 disabled:opacity-60">
           <FeeControl fee={fee} onChange={value => setDraft({ fee: value })} onEditingChange={setEditingFee} />
         </fieldset>
@@ -235,18 +285,20 @@ function AccountHistory({ accountId }: { accountId: number }) {
           <button type="button" aria-label="刷新绩效与成本" title="刷新绩效与成本" disabled={saving || backtestBusy} onClick={() => void performance.refresh()} className="flex h-9 w-9 items-center justify-center rounded border border-line disabled:opacity-40"><RefreshCw size={14} className={backtestBusy ? 'animate-spin motion-reduce:animate-none' : ''} /></button>
           <span role="status" className="sr-only">{dirty && !saving ? '参数已修改，待计算' : ''}</span>
         </div>
-        {!costSymbol && <Segmented size="sm" value={view} options={VIEWS} onChange={value => withViewTransition(() => setView(value))} />}
         <fieldset><legend className="sr-only">回测口径</legend><Segmented size="sm" value={backtestMode} options={BACKTEST_MODES} onChange={setBacktestMode} trailing={
           <Tooltip content={<div className="space-y-1"><p><b>数量换算后：</b>按数量换算目标敞口，并非实际成交持仓。</p><p><b>目标权重：</b>直接按目标权重计算回测收益。</p></div>} arrow>
             <button type="button" aria-label="回测口径说明" className="flex h-9 w-8 items-center justify-center rounded text-ink-3 hover:text-ink-1 focus-visible:outline-accent"><CircleHelp size={15} aria-hidden="true" /></button>
           </Tooltip>
         } /></fieldset>
         <fieldset><legend className="sr-only">成交点</legend><Segmented size="sm" value={markers ? 'on' : 'off'} options={MARKERS} onChange={value => setMarkers(value === 'on')} /></fieldset>
+        <div className={chartSymbol ? 'invisible' : undefined} inert={!!chartSymbol}>
+          <Segmented size="sm" value={view} options={VIEWS} onChange={setView} />
+        </div>
         </div>
 
   return <section className="min-w-0 [&_button]:min-h-9">
     <div data-testid="performance-sticky-header" className="sticky top-0 z-30 flex flex-wrap items-center gap-x-1 gap-y-1 border-b border-line bg-bg py-1">
-    <div className="flex shrink-0 items-center [&_h1]:text-sm!">
+    <div className="flex w-full min-w-0 items-center [&_h1]:text-sm!">
       <div className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-1 [&>div]:gap-1!">
         <AccountPageTitle
           accountId={accountId}
@@ -255,7 +307,7 @@ function AccountHistory({ accountId }: { accountId: number }) {
           channel={account.data?.trade_channel ?? item?.trade_channel}
           market={account.data?.market ?? item?.market}
         />
-        {snapshot && <PerformanceSymbolSelect scope={`${snapshot.version}:${displayedRange}:${selectionKey}`} result={local.value} symbols={listedSymbols} symbol={costSymbol} onChange={selectSymbol} />}
+        {snapshot && <PerformanceSymbolSelect scope={`${snapshot.version}:${displayedRange}:${selectionKey}`} result={local.value} symbols={listedSymbols} symbol={costSymbol} busy={costSymbol !== chartSymbol} onChange={selectSymbol} />}
         <Tooltip content={data ? <dl className="space-y-1 text-xs">
           <div><dt className="inline text-ink-3">数据覆盖：</dt><dd className="inline">{data.baseline ? shanghaiLabel(data.baseline) : '—'} → {data.end ? shanghaiLabel(data.end) : '—'}</dd></div>
           <div><dt className="inline text-ink-3">有效回测记录：</dt><dd className="inline">{data.backtest_included ? `${backtestMode === 'target' ? data.target_used_record_count ?? 0 : data.used_record_count}/${data.observation_count}` : 0}</dd></div>
@@ -265,33 +317,25 @@ function AccountHistory({ accountId }: { accountId: number }) {
         </Tooltip>
       </div>
     </div>
-    <div role="group" aria-label="绩效与品种贡献共用筛选" data-testid="performance-shared-controls" className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-1 text-xs text-ink-2 [&_button]:min-h-0!">
-      <fieldset><legend className="sr-only">绩效时间范围</legend><Segmented size="sm" className="rounded-md! [&_button]:h-[26px] [&_button]:px-2 [&_button]:py-0" value={range} options={RANGES} onChange={value => withViewTransition(() => { setSelectionNotice(false); setSelection(null); setRange(value) })} /></fieldset>
+    <div role="group" aria-label="绩效与品种贡献共用筛选" data-testid="performance-shared-controls" className="flex w-full min-w-0 flex-wrap items-center gap-x-1 gap-y-1 text-xs text-ink-2 [&_button]:min-h-0!">
+      <fieldset><legend className="sr-only">绩效时间范围</legend><Segmented size="sm" className="rounded-md! [&_button]:h-[26px] [&_button]:px-2 [&_button]:py-0" value={range} options={RANGES} onChange={setRange} /></fieldset>
       <div className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-1" role="group" aria-label="分析区间">
-        {(['start', 'end'] as const).map(edge => <label key={edge} className="flex min-w-0 items-center gap-1">
-          <span className="shrink-0 text-ink-3">{edge === 'start' ? '起点' : '终点'}</span>
-          <Select<number> ariaLabel={edge === 'start' ? '比较起点' : '比较终点'} appearance="inline" className="h-[30px] w-auto min-w-0 gap-1! px-1 text-xs"
-            disabled={intervalOptions.length < 2} value={(edge === 'start' ? intervalStart : intervalEnd) ?? 0}
-            options={intervalOptions.filter(option => option.value !== (edge === 'start' ? intervalEnd : intervalStart))}
-            placeholder="暂无观测"
-            selectedValue={(() => {
-              const option = intervalOptions.find(option => option.value === (edge === 'start' ? intervalStart : intervalEnd))
-              return option ? <Tooltip content={option.label}><span>{option.label.slice(0, 16)}</span></Tooltip> : undefined
-            })()}
-            onChange={value => {
-              const other = edge === 'start' ? intervalEnd : intervalStart
+        {[{ label: '起点', value: intervalStart, other: intervalEnd }, { label: '终点', value: intervalEnd, other: intervalStart }]
+          .map(({ label, value, other }) => <ObservationEndpointPicker key={label} label={label} value={value} other={other}
+            times={intervalTimes} onChange={time => {
               if (other == null) return
               setSelectionNotice(false)
-              setSelection(intervalSelection(value, other))
-            }} />
-        </label>)}
+              const interval = intervalSelection(time, other)
+              setPickerSelection(interval)
+              setSelection(interval)
+            }} />)}
         <button type="button" aria-label="取消选择" disabled={!selection} onClick={() => { setSelectionNotice(false); setSelection(null) }} className="inline-flex h-[30px] w-6 shrink-0 items-center justify-center rounded hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40"><X size={15} aria-hidden="true" /></button>
       </div>
       <fieldset><legend className="sr-only">横轴尺度</legend><Segmented size="sm" className="rounded-md! [&_button]:h-[26px] [&_button]:px-2 [&_button]:py-0" value={scale} options={SCALES} onChange={setScale} /></fieldset>
     </div>
+    {controls}
     </div>
     <div className="pt-2">
-      {difference != null && difference < 0 && <p className="mt-1 text-xs text-warn">账户收益高于回测，待核对差异</p>}
       {data && data.observation_count > 0 && (data.calendar.status === 'partial' || data.calendar.status === 'unavailable') && <p role="status" className="mt-1 text-xs text-warn">部分日期交易日历不可用，休市标记可能不完整</p>}
       {!parsed && !editingFee && <p role="alert" className="mt-2 text-xs text-warn">费率须大于等于 0 且小于 10000 BP</p>}
       <ErrorNotice intent="mutation" title="参数保存失败" error={saveError} />
@@ -304,38 +348,29 @@ function AccountHistory({ accountId }: { accountId: number }) {
     <ErrorNotice intent="read" title={data ? '新版绩效读取失败，保留上次结果' : '绩效结果读取失败'} error={performance.resultError} hasData={data != null} variant="compact" onRetry={performance.check} />
     <ErrorNotice intent="read" title={data ? '绩效计算失败，保留上次结果' : '绩效计算失败'} error={calculationError} hasData={data != null} variant="compact" onRetry={() => void performance.refresh()} />
     <ErrorNotice intent="mutation" title="刷新请求失败" error={performance.refreshError} variant="compact" onRetry={() => void performance.refresh()} />
-    <div className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${loadingMessage ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-      <div className="min-h-0 overflow-hidden" inert={!loadingMessage} aria-hidden={!loadingMessage}>
-        <p role="status" className="py-1 text-xs text-ink-3" data-testid="performance-loading-status">{loadingMessage}</p>
-      </div>
-    </div>
+    <p role="status" className="flex min-h-5 items-center text-xs text-ink-3" data-testid="performance-loading-status">{snapshot && loadingMessage}</p>
     {selectionNotice && <p role="status" className="py-1 text-xs text-ink-3">数据已更新，原选区已失效，请重新选择。</p>}
     <ErrorNotice intent="read" title="区间成本读取失败" error={intervalCosts.error} hasData={intervalCosts.data != null} variant="compact" onRetry={intervalCosts.refresh} />
-    {!data && <PerformanceChartPlaceholder accountId={accountId} controls={controls} loading={backtestBusy || !metadata && !initialError} failed={!!initialError} message={loadingMessage} />}
     <ErrorNotice intent="read" title="费率试算不可用，当前保留正式曲线" error={dirty ? feeInputs.error ?? trial.error : null} variant="compact" onRetry={refreshFeeInputs} />
     {dirty && <p role="status" className="py-2 text-xs text-warn">费率试算 {fee} BP · 未保存 · {trialMessage}<button type="button" className="ml-3 text-accent hover:underline" onClick={() => setDraft(null)}>取消试算</button></p>}
-    {data && snapshot && <div data-testid="symbol-workbench" className="min-w-0 pb-4">
-      <ErrorNotice intent="read" error={inputs.error ?? local.error} title="滑点数据读取失败" onRetry={refreshInputs} variant="compact" />
-      {downloadInCosts && downloadProgress}
-      {!analysisReady && !downloadProgress && <button type="button" className="text-xs text-accent" onClick={() => startAnalysis('cost')}>加载分析组件（{downloadSize(analysisWasm.bytes)}）</button>}
-      {costSymbol ? <>
-        <div className="mb-1 flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
-          <div className="flex min-h-10 flex-wrap items-center gap-x-3">
-            <h2 className="font-medium">{costSymbol} · 绩效贡献</h2>
-            <SymbolSlippage key={costSymbol} result={local.value} symbol={costSymbol} side={costSide} onSelect={selectSymbol} />
-          </div>
-          {controls}
-        </div>
-        <SymbolPerformance chart={snapshot} selection={selection} symbol={costSymbol} samples={replay.value} currency={item?.currency ?? null} scaleMode={scale}
-          inputs={markers ? inputData : null} onInterval={(start, end) => setSelection({ kind: 'interval', start, end })} />
-        <ErrorNotice intent="read" error={feeInputs.error ?? replay.error} title="品种回测读取失败" onRetry={refreshFeeInputs} variant="compact" />
-        {contributionQuery && !replay.error && !feeInputs.error && <p role="status" className="text-xs text-ink-2">{replay.value?.length === 0 ? '区间内无有效回测观测' : !replay.value && analysisReady ? '正在读取品种回测' : ''}</p>}
-      </> : (
-            <PerformanceChart key={displayedRange} accountId={accountId} snapshotId={snapshot?.version} viewKey={`${accountId}:${displayedRange}`} data={chartData!} executionIndex={snapshot!.execution_index} daily={daily} backtestMode={backtestMode} scaleMode={scale} costs={costs} intervalCost={local.value?.summary ?? (intervalCosts.error || intervalCosts.loading ? null : intervalCosts.data?.summary ?? null)} onSelect={value => { setSelectionNotice(false); setSelection(value) }} selection={selection} portfolioNames={portfolioNames} controls={controls} showExecutions={markers} />
-      )}
-    </div>}
-    {dirty && (!analysisReady || !trialEnabled) && !downloadProgress && <button type="button" className="py-2 text-xs text-accent focus-visible:outline-accent" onClick={() => startAnalysis('trial')}>启用本地试算{!analysisReady && `（下载 ${downloadSize(analysisWasm.bytes)}）`}</button>}
-    {!downloadInCosts && downloadProgress}
+    <ErrorNotice intent="read" error={inputs.error ?? local.error} title="滑点数据读取失败" onRetry={refreshInputs} variant="compact" />
+    <ErrorNotice intent="read" error={analysisError} title="分析组件加载失败" onRetry={() => void analysisWasm.download()} variant="compact" />
+    <div data-testid="symbol-workbench" className="min-w-0 pb-4">
+      <div key={chartKey} data-testid="performance-chart-stage" className="performance-chart-stage @container">
+        {!snapshot || !chartData ? <PerformanceChartPlaceholder accountId={accountId} loading={backtestBusy || !metadata && !initialError} failed={!!initialError} message={loadingMessage} />
+        : chartSymbol ? <SymbolPerformance chart={snapshot} rangeTarget={symbolRange} targetSamples={replaySnapshot === pendingTarget ? replay.value : null} selection={selection} slideInterval={slideInterval} symbol={chartSymbol} samples={chartSamples} currency={item?.currency ?? null} scaleMode={scale}
+          accountId={accountId} channel={account.data?.trade_channel ?? item?.trade_channel} showExecutions={markers}
+          heading={<div className="flex flex-wrap items-center gap-x-3">
+            <h2 className="font-medium">{chartSymbol} · 绩效贡献</h2>
+            <SymbolSlippage result={local.value} symbol={chartSymbol} side={costSide} onSelect={selectSymbol} />
+          </div>}
+          onInterval={(start, end) => setSelection({ kind: 'interval', start, end })} />
+        : <PerformanceChart accountId={accountId} rangeTarget={rangeTarget} snapshotId={snapshot.version} viewKey={`${accountId}:${displayedRange}`} data={chartData} executionIndex={snapshot.execution_index} daily={daily} backtestMode={backtestMode} scaleMode={scale} costs={costs} intervalCost={local.value?.summary ?? (intervalCosts.error || intervalCosts.loading ? null : intervalCosts.data?.summary ?? null)} onSelect={value => { setSelectionNotice(false); setSelection(value) }} selection={selection} slideInterval={slideInterval} portfolioNames={portfolioNames} showExecutions={markers} />}
+      </div>
+      {costSymbol && <ErrorNotice intent="read" error={feeInputs.error ?? replay.error} title="品种回测读取失败" onRetry={refreshFeeInputs} variant="compact" />}
+      <p role="status" className="min-h-5 text-xs text-ink-2">{costSymbol === chartSymbol && contributionQuery && !replay.error && !feeInputs.error
+        && (replay.value?.length === 0 ? '区间内无有效回测观测' : !replay.value && analysisReady ? '正在读取品种回测' : '')}</p>
+    </div>
     {snapshot && <ContributionPanel key={accountId} chart={snapshot} selection={selection} scaleMode={scale} />}
     <div className="border-t border-line py-4">
       <SectionLabel>账户时间线</SectionLabel>

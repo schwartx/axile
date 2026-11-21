@@ -491,6 +491,19 @@ def test_position_validity_is_shared_by_summary_and_detail(account, volume, know
     assert len(detail["tables"]["positions"]["rows"]) == (count or 0)
 
 
+def test_execution_index_lists_only_symbols_with_positive_fills(account):
+    empty = append(account, 1)
+    filled = append(account, 2)
+    sql(account, f"UPDATE business_trade SET trade_volume=0 WHERE record_id={empty['id']}")
+    update(account)
+
+    summaries = {row["record_id"]: row for row in query(account)["execution_index"]}
+    assert summaries[empty["id"]]["trade_symbols"] == []
+    assert not summaries[empty["id"]]["has_transactions"]
+    assert summaries[filled["id"]]["trade_symbols"] == ["A"]
+    assert summaries[filled["id"]]["has_transactions"]
+
+
 def test_old_logic_is_invalidated_and_rebuilt_without_new_facts(account):
     append(account, 1)
     append(account, 2)

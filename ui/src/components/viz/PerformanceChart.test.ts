@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { PerformanceChart } from '@/components/viz/PerformanceChart'
+import { ContributionChart } from '@/features/history/ContributionChart'
 import type { AnalysisChart, AnalysisExecutionSummary } from '@/lib/api/performance'
 
 test('首屏图表仅凭轻量曲线和执行摘要显示读数与键盘操作', () => {
@@ -19,7 +20,7 @@ test('首屏图表仅凭轻量曲线和执行摘要显示读数与键盘操作',
   Object.defineProperty(data, 'executions', { get: () => { throw new Error('完整执行记录不属于图表输入') } })
   const execution: AnalysisExecutionSummary = {
     record_id: 2, execution_id: 'execution-2', time_ms: Date.parse('2026-01-02T00:00:00Z'),
-    created_at: null, is_success: 1, noop: false, has_transactions: true,
+    created_at: null, is_success: 1, noop: false, has_transactions: true, trade_symbols: ['rb'],
     duration_sec: null, symbol_count: null, position_count: null, positions_present: false, reason: null,
     summary: { value: 123.4, cost: null, lossBp: null, coverage: null, count: 1, covered: 0, amountComplete: true, fees: {}, feeCovered: 0 },
   }
@@ -34,4 +35,21 @@ test('首屏图表仅凭轻量曲线和执行摘要显示读数与键盘操作',
   expect(html).toContain('data-chart="time-series"')
   expect(html).toContain('Enter / 空格选择')
   expect(html).not.toContain('持仓状态未知')
+})
+
+test('单品种曲线层与网格画布分离，仅主图参与品种切换', () => {
+  const props = {
+    rows: [], currency: 'USDT', scaleMode: 'natural' as const,
+    points: ['2026-01-01', '2026-01-02'].map(date => ({
+      date, account_return: null, portfolio_return: null,
+      account_daily_return: null, portfolio_daily_return: null, difference: null,
+    })),
+  }
+  const main = renderToStaticMarkup(createElement(ContributionChart, {
+    ...props, executions: { rows: [], symbol: 'BTCUSDT', accountId: 7, snapshotId: 's1', range: 'all', visible: true },
+  }))
+  expect(main).toMatch(/<canvas aria-hidden="true"[^>]*><\/canvas><canvas aria-hidden="true"[^>]*data-chart-series="contribution-series"/)
+  expect(main).toMatch(/data-chart-series="contribution-series"[^>]*><\/canvas>.*<canvas[^>]*data-chart-overlay=""/)
+  const panel = renderToStaticMarkup(createElement(ContributionChart, props))
+  expect(panel).not.toContain('data-chart-series')
 })

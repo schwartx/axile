@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 
 // Module stubs stay in a child process so this page test cannot replace the API
 // or hooks used by the cache/chart tests in the main Bun test process.
-function renderPage(options: { displayed?: boolean; marker?: number; status?: string; loadingResult?: boolean; errors?: boolean; retries?: string[]; selected?: boolean; inputsError?: boolean; analysisPhase?: 'cached' | 'downloading' } = {}) {
+function renderPage(options: { displayed?: boolean; marker?: number; status?: string; loadingResult?: boolean; errors?: boolean; retries?: string[]; selected?: boolean; savedExecution?: boolean; inputsError?: boolean; analysisPhase?: 'cached' | 'downloading'; sameDayExtra?: boolean } = {}) {
   const script = `
     import { mock } from 'bun:test'
     import { createElement } from 'react'
@@ -13,7 +13,8 @@ function renderPage(options: { displayed?: boolean; marker?: number; status?: st
     let checks = 0, refreshes = 0
     const metadata = { schema_version: 1, status: options.status ?? 'ready', source_version: 2, version: 's2', logic_version: 'logic', engine_version: 'engine', computed_at: '2026-10-20T12:00:00', data_until: null, error: options.errors ? 'calculation failed' : null, retry_at: null }
     const result = { range: '90', settings: { backtest_fee_rate: 0, backtest_weight_type: 'cs' }, backtest_included: true, engine_version: 'engine', baseline: '1970-01-01T00:00:00Z', end: '1970-01-01T00:00:01Z', record_count: 1, observation_count: 2, used_record_count: 1, invalid_asset_count: 0, skips: null, points: [{ date: '1970-01-01', observed_at: '1970-01-01T00:00:00Z', account_return: 0, portfolio_return: 0 }, { date: '1970-01-01', observed_at: '1970-01-01T00:00:01Z', account_return: 0.1, portfolio_return: 0.1 }], bindings: [], calendar: { status: 'available', calendar_id: 'test', label: 'fixture', closed_ranges: [], unavailable_ranges: [] } }
-    const displayed = options.displayed === false ? null : { version: 's1', range: '90', computed_at: null, data_until: null, result, daily_costs: {}, events: [], event_count: 0, execution_index: [{ record_id: 11, time_ms: 1000, has_transactions: false }] }
+    if (options.sameDayExtra) result.points.push({ ...result.points[1], observed_at: '1970-01-01T00:00:42Z' })
+    const displayed = options.displayed === false ? null : { version: 's1', range: '90', computed_at: null, data_until: null, result, daily_costs: {}, events: [], event_count: 0, execution_index: [{ record_id: 11, time_ms: 1000, has_transactions: false, trade_symbols: [] }] }
     mock.module('react-router', () => ({ useParams: () => ({ id: '7' }) }))
     mock.module('@/components/ui/nav', () => ({ useNavigate: () => () => {} }))
     mock.module('@/lib/wasmResources', () => ({ wasmResource: () => ({}), useWasmResource: () => ({ resource: { bytes: 100, check: async () => {}, cancel: () => {}, download: async () => true }, state: { phase: options.analysisPhase ?? 'missing', loaded: 0, total: 100, error: null } }) }))
@@ -23,22 +24,23 @@ function renderPage(options: { displayed?: boolean; marker?: number; status?: st
     mock.module('@/components/ui/Tooltip', () => ({ Tooltip: ({ children }) => children }))
     mock.module('@/features/history/FeeControl', () => ({ FeeControl: () => null }))
     mock.module('@/components/ui/ErrorNotice', () => ({ ErrorNotice: ({ title, error, onRetry }) => { if (!error) return null; notices.push(title); retryHandlers.set(title, onRetry); return createElement('p', { role: 'status' }, title, ': ', error.message) } }))
-    mock.module('@/components/viz/PerformanceChart', () => ({ PerformanceChart: props => { charts.push({ snapshotId: props.snapshotId, executionIndex: props.executionIndex, hasFullExecutions: 'executions' in props.data, daily: props.daily, backtestMode: props.backtestMode, scaleMode: props.scaleMode, showExecutions: props.showExecutions }); return createElement('div', { 'data-chart-snapshot': props.snapshotId }, props.controls) } }))
-    mock.module('@/features/history/PerformanceChartPlaceholder', () => ({ PerformanceChartPlaceholder: props => createElement('div', { 'data-placeholder-loading': String(props.loading), 'data-placeholder-failed': String(props.failed) }, props.message, props.controls) }))
+    mock.module('@/components/viz/PerformanceChart', () => ({ PerformanceChart: props => { charts.push({ snapshotId: props.snapshotId, executionIndex: props.executionIndex, hasFullExecutions: 'executions' in props.data, daily: props.daily, backtestMode: props.backtestMode, scaleMode: props.scaleMode, showExecutions: props.showExecutions }); return createElement('div', { 'data-chart-snapshot': props.snapshotId }) } }))
+    mock.module('@/features/history/ChartTradingOverlay', () => ({ ChartTradingOverlay: () => null }))
+    mock.module('@/features/history/PerformanceChartPlaceholder', () => ({ PerformanceChartPlaceholder: props => createElement('div', { 'data-placeholder-loading': String(props.loading), 'data-placeholder-failed': String(props.failed) }, props.message) }))
     mock.module('@/lib/api/performance', () => ({
       getPerformanceCosts: async (accountId, query) => { queries.push({ accountId, ...query }); return { version: query.version, summary: {} } },
-      selectionQuery: selection => selection?.kind === 'interval' ? { start: selection.start, end: selection.end } : {},
+      selectionQuery: selection => selection?.kind === 'interval' ? { start: selection.start, end: selection.end } : selection?.kind === 'execution' ? { record_id: selection.recordId } : {},
       savePerformanceSettings: async () => ({ backtest_fee_rate: 0, backtest_weight_type: 'cs' }),
     }))
     mock.module('@/features/history/useLocalAnalysis', () => ({ useLocalAnalysis: () => ({ value: null, error: null, initializing: true }) }))
-    mock.module('@/features/history/localAnalysis', () => ({ loadAnalysisInputs: async (accountId,version,range,kind) => { inputs.push({accountId,version,range,kind}); return null }, previewPerformance: chart => chart.result }))
+    mock.module('@/features/history/localAnalysis', () => ({ loadAnalysisInputs: async (accountId,version,range,kind,signal,scope) => { inputs.push({accountId,version,range,kind,scope}); return null }, previewPerformance: chart => chart.result }))
     mock.module('@/lib/hooks/usePolling', () => ({ usePolling: (fetcher, { queryKey, enabled = true }) => {
       if ((queryKey.startsWith('performance-summary:') || queryKey.startsWith('analysis-inputs:')) && enabled) void fetcher(new AbortController().signal)
       return { data: queryKey.startsWith('account:') ? { name: 'fixture', backtest_fee_rate: 0, backtest_weight_type: 'cs' } : queryKey === 'performance-portfolios' ? { data: [] } : null, loading: false, error: options.inputsError && queryKey.startsWith('analysis-inputs:') ? new Error('window limit') : null, refresh: async () => {} }
     } }))
     mock.module('@/features/history/usePerformanceSnapshot', () => ({ usePerformanceSnapshot: () => ({ metadata, displayed, statusError: options.errors ? new Error('status failed') : null, resultError: options.errors ? new Error('result failed') : null, refreshError: options.errors ? new Error('refresh failed') : null, checking: false, loadingResult: options.loadingResult ?? false, check: async () => { checks++ }, refresh: async () => { refreshes++; return true } }) }))
     const { performanceViews } = await import('@/features/history/viewState')
-    performanceViews.set(7, { range: '90', view: 'daily', scale: 'natural', markers: false, backtestMode: 'target', selection: options.selected === false ? null : { kind: 'interval', start: 0, end: 1000 } })
+    performanceViews.set(7, { range: '90', view: 'daily', scale: 'natural', markers: false, backtestMode: 'target', selection: options.savedExecution ? { kind: 'execution', recordId: 11, time: 1000 } : options.selected === false ? null : { kind: 'interval', start: 0, end: 1000 } })
     const { AccountHistoryPage } = await import('@/pages/AccountHistoryPage')
     const html = renderToStaticMarkup(createElement(AccountHistoryPage))
     for (const title of options.retries ?? []) await retryHandlers.get(title)?.()
@@ -50,12 +52,12 @@ function renderPage(options: { displayed?: boolean; marker?: number; status?: st
     encoding: 'utf8', timeout: 20_000,
   })
   if (child.status !== 0) throw new Error(child.error?.message ?? child.stderr ?? `Child exited ${child.status}`)
-  return JSON.parse(child.stdout) as { html: string; charts: Array<{ snapshotId: string; executionIndex: Array<{ record_id: number; time_ms: number; has_transactions: boolean }>; hasFullExecutions: boolean; daily: boolean; backtestMode: string; scaleMode: string; showExecutions: boolean }>; queries: Array<{ version: string; range: string; accountId: number; dimension: string; start: number; end: number }>; inputs: Array<{ accountId: number; version: string; range: string; kind: string }>; notices: string[]; checks: number; refreshes: number }
+  return JSON.parse(child.stdout) as { html: string; charts: Array<{ snapshotId: string; executionIndex: Array<{ record_id: number; time_ms: number; has_transactions: boolean; trade_symbols: string[] }>; hasFullExecutions: boolean; daily: boolean; backtestMode: string; scaleMode: string; showExecutions: boolean }>; queries: Array<{ version: string; range: string; accountId: number; dimension: string; start: number; end: number }>; inputs: Array<{ accountId: number; version: string; range: string; kind: string; scope: Record<string, number> }>; notices: string[]; checks: number; refreshes: number }
 }
 
 test('新版结果未齐时图表、成本查询和浏览偏好仍绑定完整旧版', () => {
   const page = renderPage({ loadingResult: true, inputsError: true })
-  expect(page.charts).toEqual([{ snapshotId: 's1', executionIndex: [{ record_id: 11, time_ms: 1000, has_transactions: false }], hasFullExecutions: false, daily: true, backtestMode: 'target', scaleMode: 'natural', showExecutions: false }])
+  expect(page.charts).toEqual([{ snapshotId: 's1', executionIndex: [{ record_id: 11, time_ms: 1000, has_transactions: false, trade_symbols: [] }], hasFullExecutions: false, daily: true, backtestMode: 'target', scaleMode: 'natural', showExecutions: false }])
   expect(page.inputs).toEqual([])
   expect(page.queries).toEqual([{ accountId: 7, version: 's1', range: '90', dimension: 'summary', start: 0, end: 1000 }])
   expect(page.html).toContain('正在读取新版绩效，当前保留上次结果')
@@ -83,8 +85,8 @@ test('共用筛选集中在吸顶栏，空选区也可从起止观测建立区�
   expect(page.html).toMatch(/data-testid="performance-sticky-header" class="sticky top-0/)
   expect(toolbar).toContain('data-segment="90"')
   expect(toolbar).toContain('data-segment="natural"')
-  for (const label of ['比较起点', '比较终点']) {
-    const button = toolbar.match(new RegExp(`<button[^>]*aria-label="${label}"[^>]*>`))?.[0]
+  for (const label of ['比较起点日期', '比较终点日期']) {
+    const button = toolbar.match(new RegExp(`<button[^>]*aria-label="${label}[^"]*"[^>]*>`))?.[0]
     expect(button).toBeDefined()
     expect(button).not.toContain('disabled=""')
   }
@@ -95,10 +97,28 @@ test('共用筛选集中在吸顶栏，空选区也可从起止观测建立区�
 test('未加载观测时保留公共时间范围，禁用区间选择', () => {
   const page = renderPage({ displayed: false, selected: false })
   expect(page.html).toContain('data-testid="performance-shared-controls"')
-  for (const label of ['比较起点', '比较终点']) {
-    const button = page.html.match(new RegExp(`<button[^>]*aria-label="${label}"[^>]*>`))?.[0]
+  for (const label of ['比较起点日期', '比较终点日期']) {
+    const button = page.html.match(new RegExp(`<button[^>]*aria-label="${label}[^"]*"[^>]*>`))?.[0]
     expect(button).toContain('disabled=""')
   }
+})
+
+test('共用工具栏位于图表动效区域外，首屏不淡入', () => {
+  for (const displayed of [true, false]) {
+    const { html } = renderPage({ displayed, selected: false })
+    expect(html.indexOf('data-testid="performance-controls"')).toBeLessThan(html.indexOf('data-testid="performance-chart-stage"'))
+    expect(html).toContain('data-testid="performance-chart-stage" class="performance-chart-stage @container">')
+    expect(html.match(/data-testid="performance-controls"/g)).toHaveLength(1)
+  }
+})
+
+test('端点有多个可选观测时显示时刻选择器，当前时刻精确到秒', () => {
+  const single = renderPage({ selected: false })
+  expect(single.html).not.toContain('aria-label="比较终点时刻"')
+  expect(single.html).toContain('08:00:01')
+  const multiple = renderPage({ selected: false, sameDayExtra: true })
+  expect(multiple.html).toContain('aria-label="比较终点时刻"')
+  expect(multiple.html).toContain('08:00:42')
 })
 
 test('品种列表与主图一起显示，组件未下载时不读取成本输入', () => {
@@ -111,10 +131,14 @@ test('品种列表与主图一起显示，组件未下载时不读取成本输�
   expect(page.charts[0].snapshotId).toBe('s1')
 })
 
-test('组件已缓存时直接加载品种数据，下载进度显示在主图区域', () => {
-  expect(renderPage({ analysisPhase: 'cached' }).inputs).toEqual([{ accountId: 7, version: 's1', range: '90', kind: 'costs' }])
-  const html = renderPage({ analysisPhase: 'downloading' }).html
-  const list = html.indexOf('aria-label="绩效图品种"')
-  expect(html.indexOf('正在下载组件')).toBeGreaterThan(list)
-  expect(html).not.toContain('aria-label="品种明细"')
+test('组件已缓存时直接加载品种数据，后台下载期间主图仍可使用', () => {
+  expect(renderPage({ analysisPhase: 'cached' }).inputs).toEqual([{ accountId: 7, version: 's1', range: '90', kind: 'costs', scope: { start: 0, end: 1000 } }])
+  const page = renderPage({ analysisPhase: 'downloading' })
+  expect(page.charts[0].snapshotId).toBe('s1')
+  expect(page.html).not.toContain('加载分析组件')
+})
+
+test('旧页面留下的执行详情选择不限制品种成本统计', () => {
+  const page = renderPage({ analysisPhase: 'cached', savedExecution: true })
+  expect(page.inputs).toEqual([{ accountId: 7, version: 's1', range: '90', kind: 'costs', scope: {} }])
 })

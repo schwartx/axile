@@ -12,11 +12,13 @@ interface Props {
   disabled?: boolean
   required?: boolean
   className?: string
+  /** 提供可选日期时，使用只允许从日历选值的紧凑触发器。 */
+  availableDays?: readonly string[]
 }
 const ICON_BUTTON = 'inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md text-ink-3 outline-none hover:bg-fill hover:text-ink-1 focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-default disabled:opacity-30'
 
 /** 主题日历：popover 顶层避免裁剪，DOM 留在原表单中，沿用弹窗的焦点管理。 */
-export function DatePicker({ value, onChange, ariaLabel, describedBy, min, max, disabled, required, className = '' }: Props) {
+export function DatePicker({ value, onChange, ariaLabel, describedBy, min, max, disabled, required, className = '', availableDays }: Props) {
   const id = useId()
   const root = useRef<HTMLDivElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
@@ -28,7 +30,9 @@ export function DatePicker({ value, onChange, ariaLabel, describedBy, min, max, 
   const [month, setMonth] = useState(today.slice(0, 7))
   const monthLabel = month.slice(0, 4) + ' 年 ' + Number(month.slice(5)) + ' 月'
   const days = monthDays(month)
-  const allowed = (day: string) => parseDay(day) != null && (!min || parseDay(min) == null || day >= min) && (!max || parseDay(max) == null || day <= max)
+  const inBounds = (day: string) => parseDay(day) != null && (!min || parseDay(min) == null || day >= min) && (!max || parseDay(max) == null || day <= max)
+  const selectable = availableDays?.filter(inBounds).sort()
+  const allowed = (day: string) => selectable ? selectable.includes(day) : inBounds(day)
 
   const place = useCallback(() => {
     if (!root.current || !panel.current) return
@@ -52,7 +56,10 @@ export function DatePicker({ value, onChange, ariaLabel, describedBy, min, max, 
   const show = () => {
     // fieldset.disabled 也必须生效，不能只检查组件自己的 disabled。
     if (disabled || trigger.current?.matches(':disabled')) return
-    const day = clampDay(parseDay(value) != null ? value : today, min, max)
+    const day = selectable
+      ? (selectable.find(date => date >= value) ?? selectable.at(-1))
+      : clampDay(parseDay(value) != null ? value : today, min, max)
+    if (!day) return
     setActive(day)
     setMonth(day.slice(0, 7))
     focusWanted.current = true
@@ -78,14 +85,19 @@ export function DatePicker({ value, onChange, ariaLabel, describedBy, min, max, 
   }, [open, place])
 
   const choose = (day: string) => { onChange(day); close(true) }
-  const navigateMonth = (offset: number) => {
-    const day = clampDay(moveMonth(active, offset), min, max)
+  const focusDay = (day: string) => {
     focusWanted.current = true
     setActive(day)
     setMonth(day.slice(0, 7))
   }
-  const monthAvailable = (offset: number) => monthDays(moveMonth(month + '-01', offset).slice(0, 7))
-    .some(day => day.slice(0, 7) === moveMonth(month + '-01', offset).slice(0, 7) && allowed(day))
+  const monthTarget = (offset: number) => {
+    if (selectable) {
+      return offset < 0 ? selectable.findLast(day => day.slice(0, 7) < month) : selectable.find(day => day.slice(0, 7) > month)
+    }
+    const target = moveMonth(month + '-01', offset).slice(0, 7)
+    if (monthDays(target).some(day => day.startsWith(target) && allowed(day))) return clampDay(moveMonth(active, offset), min, max)
+  }
+  const previousMonth = monthTarget(-1), nextMonth = monthTarget(1)
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.key === 'Escape') {
       event.preventDefault()
@@ -97,10 +109,11 @@ export function DatePicker({ value, onChange, ariaLabel, describedBy, min, max, 
     const next = calendarKeyDay(active, event.key)
     if (!next) return
     event.preventDefault()
-    const day = clampDay(next, min, max)
-    focusWanted.current = true
-    setActive(day)
-    setMonth(day.slice(0, 7))
+    if (!selectable) { focusDay(clampDay(next, min, max)); return }
+    const day = event.key === 'PageUp' ? previousMonth : event.key === 'PageDown' ? nextMonth
+      : (event.key === 'Home' || (event.key !== 'End' && next >= active))
+        ? selectable.find(date => date >= next) : selectable.findLast(date => date <= next)
+    if (day) focusDay(day)
   }
 
   return <div ref={root} className={'relative flex min-w-0 items-center rounded-lg border border-line bg-surface text-ink-1 focus-within:border-accent ' + className}
@@ -109,6 +122,11 @@ export function DatePicker({ value, onChange, ariaLabel, describedBy, min, max, 
       // 真正移出组件才关闭；点击空白由原生 popover 的 light-dismiss 处理。
       if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node)) close()
     }}>
+    {selectable ? <button ref={trigger} type="button" disabled={disabled || selectable.length === 0}
+      aria-label={ariaLabel + (value ? ' ' + value : '') + '，打开日历'} aria-describedby={describedBy}
+      aria-haspopup="dialog" aria-expanded={open} aria-controls={id}
+      className="num flex h-7 w-full items-center gap-1.5 rounded-lg px-2 text-xs outline-none hover:bg-fill focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
+      onClick={() => open ? close() : show()}><CalendarDays size={14} aria-hidden />{value || '暂无观测'}</button> : <>
     <input type="text" inputMode="numeric" value={value} placeholder="YYYY-MM-DD" disabled={disabled} required={required}
       aria-label={ariaLabel} aria-describedby={describedBy} autoComplete="off" spellCheck={false}
       onChange={event => onChange(event.target.value)}
@@ -117,14 +135,15 @@ export function DatePicker({ value, onChange, ariaLabel, describedBy, min, max, 
     <button ref={trigger} type="button" disabled={disabled} aria-label={ariaLabel + '，打开日历'}
       aria-haspopup="dialog" aria-expanded={open} aria-controls={id}
       className={ICON_BUTTON + ' mr-1'} onClick={() => open ? close() : show()}><CalendarDays size={16} aria-hidden /></button>
+    </>}
     <div ref={panel} id={id} popover="auto" role="dialog" aria-label={ariaLabel + '日历'}
       onToggle={event => setOpen(event.newState === 'open')} onKeyDown={onKeyDown}
       className="fixed inset-auto m-0 overflow-y-auto rounded-xl border border-line bg-surface p-3 text-ink-1 shadow-card">
       <div className="mb-2 flex items-center justify-between gap-2">
         <span aria-live="polite" className="pl-1 text-[13px] font-medium">{monthLabel}</span>
         <div className="flex gap-1">
-          <button type="button" aria-label="上个月" className={ICON_BUTTON} disabled={!monthAvailable(-1)} onClick={() => navigateMonth(-1)}><ChevronLeft size={16} aria-hidden /></button>
-          <button type="button" aria-label="下个月" className={ICON_BUTTON} disabled={!monthAvailable(1)} onClick={() => navigateMonth(1)}><ChevronRight size={16} aria-hidden /></button>
+          <button type="button" aria-label="上个月" className={ICON_BUTTON} disabled={!previousMonth} onClick={() => focusDay(previousMonth!)}><ChevronLeft size={16} aria-hidden /></button>
+          <button type="button" aria-label="下个月" className={ICON_BUTTON} disabled={!nextMonth} onClick={() => focusDay(nextMonth!)}><ChevronRight size={16} aria-hidden /></button>
         </div>
       </div>
       <table role="grid" aria-label={monthLabel} className="w-full table-fixed border-separate border-spacing-0 text-center text-xs">
@@ -139,10 +158,10 @@ export function DatePicker({ value, onChange, ariaLabel, describedBy, min, max, 
           </button>
         </td>)}</tr>)}</tbody>
       </table>
-      <div className="mt-2 flex items-center justify-between border-t border-line pt-2 text-xs">
+      {!selectable && <div className="mt-2 flex items-center justify-between border-t border-line pt-2 text-xs">
         <button type="button" className="cursor-pointer rounded-md px-2 py-1.5 text-ink-3 outline-none hover:bg-fill hover:text-ink-1 focus-visible:ring-2 focus-visible:ring-accent" onClick={() => choose('')}>清空</button>
         <button type="button" disabled={!allowed(today)} className="cursor-pointer rounded-md px-2 py-1.5 text-accent outline-none hover:bg-accent-soft focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-default disabled:opacity-30" onClick={() => choose(today)}>今天</button>
-      </div>
+      </div>}
     </div>
   </div>
 }

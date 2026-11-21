@@ -6,14 +6,12 @@ import { ChartTradingOverlay } from './ChartTradingOverlay'
 import { executionDetailEntry, type ExecutionEvidence } from './analysisExecutionDetail'
 import { ApiError } from '@/lib/api/client'
 import type { AnalysisExecutionSummary } from '@/lib/api/performance'
-import type { ChartScene } from '@/components/viz/performanceCanvas'
 
 const summary = { value: null, cost: null, lossBp: null, coverage: null, covered: 0, count: 0, amountComplete: true, feeCovered: 0, fees: {} }
-const rows: AnalysisExecutionSummary[] = [1, 2].map(record_id => ({ record_id, execution_id: `exec-${record_id}`, time_ms: 1000, created_at: null, is_success: 1, noop: false, has_transactions: true, duration_sec: null, symbol_count: null, position_count: null, positions_present: true, reason: `执行${record_id}原因`, summary }))
-const scene = { data: { range: 'all' }, width: 600, viewport: { start: 0, end: 2000 } } as ChartScene
-function overlay(snapshotId: string, pinned = true, recordId = 1) {
+const rows: AnalysisExecutionSummary[] = [1, 2].map(record_id => ({ record_id, execution_id: `exec-${record_id}`, time_ms: 1000, created_at: null, is_success: 1, noop: false, has_transactions: true, trade_symbols: ['rb'], duration_sec: null, symbol_count: null, position_count: null, positions_present: true, reason: `执行${record_id}原因`, summary }))
+function overlay(snapshotId: string, pinned = true, recordId = 1, symbol?: string) {
   return renderToStaticMarkup(createElement(MemoryRouter, null, createElement(ChartTradingOverlay, {
-    scene, rows, snapshotId, accountId: 81, currency: 'CNY', cursor: { time: 1000, x: 100, y: 100, recordId },
+    width: 600, range: 'all', xAtTime: () => 100, rows, snapshotId, accountId: 81, currency: 'CNY', symbol, cursor: { time: 1000, x: 100, y: 100, recordId },
     selection: pinned ? { kind: 'execution', recordId, time: 1000 } : null, onSelect: () => {}, onInspect: () => {},
   })))
 }
@@ -21,6 +19,21 @@ function evidence(overrides: Partial<ExecutionEvidence> = {}): ExecutionEvidence
   return { recordId: 1, executionId: 'exec-1', createdAt: null, isSuccess: 1, rawResult: { status: 'SUCCEEDED' }, noop: false, reason: null, summary,
     positions: [], attempts: [], transactions: [], positionsComplete: true, symbolsComplete: true, transactionTotal: 0, nextOffset: null, ...overrides }
 }
+
+test('a symbol execution card shows only that symbol’s fills', () => {
+  const entry = executionDetailEntry(81, 'symbol-card', 1)
+  const transactions = ['rb', 'OTHER_FILL'].map((symbol, idx) => ({
+    idx, symbol, side: 'buy', quantity: 1, price: 100, reference: null, referenceSource: null,
+    time: null, endTime: null, timeEstimated: false, before: null, target: null, summary,
+  }))
+  entry.state = { data: evidence({ transactions, transactionTotal: 2, reason: 'OTHER_REASON',
+    attempts: [{ idx: 0, symbol: 'OTHER_ATTEMPT', planned: 1, filled: 0, reason: null }],
+  }), loading: false, error: null, expired: false }
+  const html = overlay('symbol-card', true, 1, 'rb')
+  expect(html).toContain('品种成交详情')
+  expect(html).toContain('买入 1')
+  expect(html).not.toMatch(/OTHER_|执行1原因|持仓明细|执行详情/)
+})
 
 test('same-time hover respects record identity and shows summary without cached detail', () => {
   executionDetailEntry(81, 'hover', 1).state = { data: evidence({ positions: [{ idx: 0, symbol: 'SECRET_DETAIL', quantity: 1, direction: 'long' }] }), error: null, expired: false, loading: false }
