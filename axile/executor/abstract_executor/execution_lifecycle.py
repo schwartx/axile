@@ -13,6 +13,7 @@ from axile.executor.abstract_executor.execution_runtime_facade import (
     AbstractExecutorExecutionRuntimeFacadeMixin,
 )
 from axile.executor.abstract_executor.execution_runtime_host import _executor
+from axile.executor.algorithms.utils.clock import clock_monotonic
 from axile.executor.execution_engine import ExecutionEngine
 from axile.executor.execution_query_runtime import ExecutionQueryRuntime
 from axile.executor.feishu_notifications import (
@@ -177,13 +178,26 @@ class AbstractExecutorExecutionLifecycleMixin(AbstractExecutorExecutionRuntimeFa
         self,
     ) -> Callable[[str], list[UnifiedOrder]] | None:
         """返回 execution 级按 symbol 挂单查询 fetcher."""
+        return self._fetch_execution_pending_orders
+
+    def _fetch_execution_pending_orders(self, symbol: str, *, deadline: float | None = None) -> list[UnifiedOrder]:
         executor = _executor(self)
-        return lambda symbol: executor._run_execution_shared_fetch(
+
+        def fetch() -> list[UnifiedOrder]:
+            if deadline is None:
+                return executor._get_pending_orders_impl(symbol)
+            remaining = deadline - clock_monotonic()
+            if remaining <= 0:
+                raise TimeoutError("撤单前查询挂单超时")
+            query = cast("Callable[..., list[UnifiedOrder]]", executor._get_pending_orders_impl)
+            return query(symbol, timeout=remaining)
+
+        return executor._run_execution_shared_fetch(
             operation="query_order",
             shared_query_key=("query_order", symbol),
             query_scope="narrow",
             symbol=symbol,
-            fetcher=lambda: executor._get_pending_orders_impl(symbol),
+            fetcher=fetch,
         )
 
     def _get_execution_trades_snapshot_fetcher(
@@ -207,10 +221,13 @@ class AbstractExecutorExecutionLifecycleMixin(AbstractExecutorExecutionRuntimeFa
             success_outcome="fetched",
         )
 
-    def _get_pending_orders_for_execution(self, symbol: str) -> list[UnifiedOrder]:
+    def _get_pending_orders_for_execution(self, symbol: str, *, timeout: float | None = None) -> list[UnifiedOrder]:
         """execution-internal 挂单查询入口."""
         executor = _executor(self)
         symbol = executor._normalize_symbol(symbol)
+        if timeout is not None:
+            # 收尾不加入可能无时间上限的共享查询。
+            return self._fetch_execution_pending_orders(symbol, deadline=clock_monotonic() + timeout)
         return cast("list[UnifiedOrder]", executor.require_execution_runtime().get_pending_orders_for_execution(symbol))
 
     def _query_trades_for_execution(self, symbol: str, order_id: str) -> list[TradeRecord]:

@@ -2404,8 +2404,12 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         return True
 
     @override
-    def _get_pending_orders_impl(self, symbol=None):
-        orders = self._query_recent_orders_impl(symbol)
+    def _get_pending_orders_impl(self, symbol=None, *, timeout: float | None = None):
+        orders = (
+            self._query_recent_orders_impl(symbol)
+            if timeout is None
+            else self._query_recent_orders_impl(symbol, timeout=timeout)
+        )
         self._replay_unassociated_trades()
         return [o for o in orders if o.is_active() and (not symbol or o.symbol == symbol)]
 
@@ -2417,14 +2421,17 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         ts = [self._convert_trade(x, receipt=receipt) for x in self._query("ReqQryTrade", r)]
         return [x for x in ts if x.order_id == order_id]
 
-    def _query_recent_orders_impl(self, symbol=None):
+    def _query_recent_orders_impl(self, symbol=None, *, timeout: float | None = None):
         """查询当前交易日柜台委托，包含真实终态。"""
         receipt = capture_command_receipt(self)
         if symbol is not None:
             validate_instrument(symbol, allow_all=True)
         replay_query = replay_capture.begin_query(self, symbol)
         try:
-            rows = self._query("ReqQryOrder", build_query_orders(self._config(), symbol))
+            req = build_query_orders(self._config(), symbol)
+            rows = (
+                self._query("ReqQryOrder", req) if timeout is None else self._query("ReqQryOrder", req, timeout=timeout)
+            )
             replay_capture.capture(
                 self,
                 "/order_set",

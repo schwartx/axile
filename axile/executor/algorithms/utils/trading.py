@@ -199,8 +199,19 @@ def cancel_pending_orders_via_query(
     该辅助函数用于超时或终止等兜底场景。这里显式先 query 再 cancel，而不是依赖
     tracker 内存态，是为了尽量收敛执行器侧真实仍然挂着的订单。
     """
+    timeout = remaining() if remaining is not None else None
+    query_pending = cast("Callable[..., list[UnifiedOrder]]", executor.get_pending_orders)
+    try:
+        pending = query_pending() if timeout is None else query_pending(timeout=timeout)
+    except TimeoutError:
+        if timeout is None:
+            raise
+        executor.handle_termination_checkpoint()
+        executor.logger.warning("撤单前查询挂单超时，继续核对已知委托终态")
+        pending = []
+
     return cancel_orders(
-        executor.get_pending_orders(),
+        pending,
         cancel=lambda _symbol, order_id: executor.cancel_order(order_id),
         reconcile=terminal_order_reconciler(executor, remaining),
         on_terminal=on_terminal,

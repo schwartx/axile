@@ -659,10 +659,12 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
         return self._require_runtime().call(query)
 
     @override
-    def _get_pending_orders_impl(self, symbol: str | None = None) -> list[UnifiedOrder]:
+    def _get_pending_orders_impl(
+        self, symbol: str | None = None, *, timeout: float | None = None
+    ) -> list[UnifiedOrder]:
         runtime = self._require_runtime()
         symbol = normalize_catalog_symbol(symbol) if symbol is not None else None
-        rows = self._query_order_rows()
+        rows = self._query_order_rows() if timeout is None else self._query_order_rows(timeout=timeout)
         orders = [order_to_unified(row, runtime.resolver) for row in rows]
         for order in orders:
             self._terminal_audit.emit(order)
