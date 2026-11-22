@@ -89,6 +89,7 @@ def test_first_cancellation_query_stops_at_execution_deadline(executor, monkeypa
     assert stopped.value.cancel_unconfirmed
     assert set(stopped.value.cancel_details) == {f"{order.symbol}:{order.order_id}"}
     assert api.canceled == []
+    assert call(lambda _api: "ready") == "ready"
 
 
 def test_unknown_native_order_is_retained_and_never_confirmed_as_canceled(executor):

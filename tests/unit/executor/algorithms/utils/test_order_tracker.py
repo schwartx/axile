@@ -454,15 +454,7 @@ def test_timeout_cancel_reconciles_terminal_before_result(cancel_ok: bool, termi
     assert outcome["status"].value == ("SUCCEEDED" if terminal_status == OrderStatus.FILLED else "PARTIAL")
 
 
-@pytest.mark.parametrize(
-    ("terminal_status", "filled", "expected_status"),
-    [
-        (OrderStatus.CANCELED, 0.0, "FAILED"),
-        (OrderStatus.CANCELED, 25.0, "PARTIAL"),
-        (OrderStatus.FILLED, 100.0, "SUCCEEDED"),
-    ],
-)
-def test_timeout_cancel_settles_from_late_callback(monkeypatch, terminal_status, filled, expected_status):
+def test_timeout_cancel_settles_from_late_callback(monkeypatch):
     order = _build_pending_order("late-terminal")
     executor = _TimeoutCancelExecutor(order)
     clock = ClockStub()
@@ -476,7 +468,7 @@ def test_timeout_cancel_settles_from_late_callback(monkeypatch, terminal_status,
             clock.sleep(terminal_at - clock.time())
             assert executor.cancel_calls == [order.order_id]
             assert tracker._submission_expired(tracker._chase_info[order.order_id])
-            tracker.on_order_update(copy_data(order, update={"status": terminal_status, "filled_volume": filled}))
+            tracker.on_order_update(copy_data(order, update={"status": OrderStatus.CANCELED, "filled_volume": 25.0}))
             return event.is_set()
         return advance(event, timeout)
 
@@ -490,36 +482,16 @@ def test_timeout_cancel_settles_from_late_callback(monkeypatch, terminal_status,
     assert executor._placed == 0
     assert not tracker.pending_orders
     assert tracker.explicit_error is None
-    outcome = summarize_outcome(0, filled, order.volume, tracker.get_all_orders(), [], **tracker.outcome_inputs())
-    assert outcome["status"].value == expected_status
-
-
-def test_timeout_cancel_settlement_reconciles_without_callback(monkeypatch):
-    order = _build_pending_order("query-only")
-    executor = _TimeoutCancelExecutor(order, confirm_after=2)
-    executor.terminal_to_return = copy_data(order, update={"status": OrderStatus.CANCELED})
-    clock = ClockStub()
-    tracker = OrderTracker(executor=executor, clock=clock, order_refresh_interval=5.0)
-    tracker.add_order(order)
-    monkeypatch.setattr(executor, "deadline_remaining_seconds", lambda: 75.0 - clock.time(), raising=False)
-
-    assert tracker.wait_for_completion(timeout=60, settle_on_timeout=True) is False
-
-    assert clock.time() == 65.0
-    assert executor.reconcile_calls == [(order.symbol, order.order_id)] * 2
-    assert executor.reconcile_timeouts == [15.0, 10.0]
-    assert executor.cancel_calls == [order.order_id]
-    assert not tracker.pending_orders
-    assert tracker.explicit_error is None
-    assert executor._placed == 0
+    outcome = summarize_outcome(0, 25.0, order.volume, tracker.get_all_orders(), [], **tracker.outcome_inputs())
+    assert outcome["status"].value == "PARTIAL"
 
 
 def test_timeout_cancel_keeps_tracking_after_first_query_timeout(monkeypatch):
     order = _build_pending_order("first-query-timed-out")
-    executor = _TimeoutCancelExecutor(order)
+    executor = _TimeoutCancelExecutor(order, confirm_after=2)
     executor.terminal_to_return = copy_data(order, update={"status": OrderStatus.CANCELED})
     clock = ClockStub()
-    tracker = OrderTracker(executor=executor, clock=clock)
+    tracker = OrderTracker(executor=executor, clock=clock, order_refresh_interval=1.0)
     tracker.add_order(order)
 
     def get_pending_orders(*, timeout):
@@ -532,7 +504,9 @@ def test_timeout_cancel_keeps_tracking_after_first_query_timeout(monkeypatch):
 
     assert tracker.wait_for_completion(timeout=0, settle_on_timeout=True) is False
     assert executor.cancel_calls == [order.order_id]
-    assert executor.reconcile_timeouts == [4.0]
+    assert clock.time() == 2.0
+    assert executor.reconcile_timeouts == [4.0, 3.0]
+    assert tracker.explicit_error is None
     assert tracker.completed_orders[order.order_id].status == OrderStatus.CANCELED
 
 

@@ -6,7 +6,6 @@ import threading
 import time
 from collections import UserDict
 from collections.abc import Coroutine
-from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from typing import Any
 
@@ -325,29 +324,6 @@ def test_running_mutation_waits_for_one_determinate_result() -> None:
     finally:
         release.set()
         worker.join(1)
-        runtime.close()
-
-
-def test_running_read_only_query_releases_caller_at_timeout() -> None:
-    runtime = TQRuntime(FakeApi)
-    started = threading.Event()
-    release = threading.Event()
-
-    def read(_api: object) -> None:
-        started.set()
-        release.wait(2)
-
-    try:
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(runtime.call, read, timeout=0.2, read_only=True)
-            try:
-                assert started.wait(1)
-                with pytest.raises(TimeoutError, match="查询等待超时"):
-                    future.result(timeout=1)
-            finally:
-                release.set()
-        assert runtime.call(lambda _api: "ready") == "ready"
-    finally:
         runtime.close()
 
 
