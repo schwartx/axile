@@ -243,6 +243,11 @@ class ExecutionSession:
                 exc.cancel_unconfirmed = not result.query_complete or result.unconfirmed
             raise
 
+    def deadline_remaining_seconds(self) -> float | None:
+        """读取整轮执行剩余时间，未设置截止时间时返回 None。"""
+        runtime = self._get_runtime()
+        return runtime.deadline_remaining_seconds() if runtime is not None else None
+
     def sleep_or_terminate(self, seconds: float) -> None:
         """协作式片间等待：睡满 ``seconds``，或收到 terminate 请求 / 触及总超时时立即中断.
 

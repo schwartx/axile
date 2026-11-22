@@ -627,21 +627,23 @@ class OrderTracker:
         deadline = chase_info.get("submission_deadline")
         return self._checkpoint_failed or (deadline is not None and self.clock.time() >= deadline)
 
-    def wait_for_completion(self, timeout: float = 120) -> bool:
-        """等待当前 tracker 内所有订单收敛到终态。"""
+    def wait_for_completion(self, timeout: float = 120, *, settle_on_timeout: bool = False) -> bool:
+        """等待成交，按需在成交超时后继续确认撤单终态。"""
         try:
-            return self._wait_callback(timeout)
+            return self._wait_callback(timeout, settle_on_timeout=settle_on_timeout)
         finally:
             self._save_checkpoint(new_terminals_only=True)
 
-    def _wait_callback(self, timeout: float) -> bool:
+    def _wait_callback(self, timeout: float, *, settle_on_timeout: bool) -> bool:
         """
         以事件驱动为主、主动查询为辅地等待订单完成。
 
         Parameters
         ----------
         timeout : float
-            本次等待允许的最长时长，单位为秒。
+            成交等待上限，单位为秒。
+        settle_on_timeout : bool
+            超时撤单后是否继续确认终态，确认受整轮执行截止时间约束。
 
         Returns
         -------
@@ -728,7 +730,9 @@ class OrderTracker:
         saved = self._save_checkpoint(refresh_pending=True)
         self._logger.info(f"正在撤销所有未成交订单: pending={self.get_pending_count()}")
         self.executor.handle_termination_checkpoint()
-        self._finalize_timeout_cancellations(known_only=not saved)
+        self._finalize_timeout_cancellations(
+            known_only=not saved, settlement_check_interval=check_interval if settle_on_timeout else None
+        )
         return False
 
     def _save_checkpoint(self, *, new_terminals_only: bool = False, refresh_pending: bool = False) -> bool:
@@ -774,7 +778,9 @@ class OrderTracker:
         if not self._save_checkpoint() or self._checkpoint_failed:
             raise RuntimeError("待核对仓位保存失败")
 
-    def _finalize_timeout_cancellations(self, *, known_only: bool = False) -> None:
+    def _finalize_timeout_cancellations(
+        self, *, known_only: bool = False, settlement_check_interval: float | None = None
+    ) -> None:
         """超时后核对订单终态，收尾期间不再报单。"""
         if known_only:
             with self.lock:
@@ -793,6 +799,9 @@ class OrderTracker:
             cancellation = cancel_pending_orders_via_query(self.executor, on_terminal=self.record_terminal_order)
         self._reconcile_timeout_cancellations(cancellation)
         unconfirmed = self.record_cancellation_result(cancellation)
+        if unconfirmed and settlement_check_interval is not None and not known_only:
+            self._wait_for_cancellation_terminals(settlement_check_interval)
+            unconfirmed = self.record_cancellation_result(cancellation)
         for order_id, reason in unconfirmed.items():
             self.executor.emit_audit_event(
                 event_type=ExecutionEventType.ORDER_TERMINAL_PENDING,
@@ -805,6 +814,23 @@ class OrderTracker:
             )
         if unconfirmed and not self.waiting_on_restriction():
             raise _OrderTerminalUnconfirmedError(unconfirmed)
+
+    def _wait_for_cancellation_terminals(self, check_interval: float) -> None:
+        """保留订单回调，按整轮剩余时间等待撤单终态。"""
+        remaining = cast(
+            "Callable[[], float | None] | None", getattr(self.executor, "deadline_remaining_seconds", None)
+        )
+        if remaining is None:
+            return
+        while self.get_pending_count() and not self.waiting_on_restriction():
+            self.executor.handle_termination_checkpoint()
+            seconds = remaining()
+            if seconds is None or seconds <= 0:
+                return
+            done = self.clock.event_wait(self.all_done_event, min(check_interval, seconds))
+            self.executor.handle_termination_checkpoint()
+            if done:
+                return
 
     def record_terminal_order(self, order: UnifiedOrder) -> None:
         """在执行线程写入已核对的终态，再继续下一笔渠道调用。"""
