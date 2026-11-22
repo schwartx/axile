@@ -172,9 +172,6 @@ def cancel_pending_orders_via_query(
     executor: ExecutorProtocol,
     *,
     on_terminal: Callable[[UnifiedOrder], None] | None = None,
-    result: CancellationResult | None = None,
-    remaining: Callable[[], float | None] | None = None,
-    known_pending: Callable[[], list[UnifiedOrder]] | None = None,
 ) -> CancellationResult:
     """
     通过主动查询结果逐笔撤销当前品种的挂单。
@@ -185,12 +182,6 @@ def cancel_pending_orders_via_query(
         当前算法绑定的执行器会话。
     on_terminal : Callable[[UnifiedOrder], None] | None
         每笔委托确认终态后立即通知调用方。
-    result : CancellationResult | None
-        调用方提供的逐笔结果，终止中断时可保留已完成的操作。
-    remaining : Callable[[], float | None] | None
-        撤单收尾查询终态时可用的整轮剩余时间。
-    known_pending : Callable[[], list[UnifiedOrder]] | None
-        首次挂单查询超时后读取仍在跟踪的委托。
 
     Returns
     -------
@@ -202,22 +193,9 @@ def cancel_pending_orders_via_query(
     该辅助函数用于超时或终止等兜底场景。这里显式先 query 再 cancel，而不是依赖
     tracker 内存态，是为了尽量收敛执行器侧真实仍然挂着的订单。
     """
-    timeout = remaining() if remaining is not None else None
-    query_pending = cast("Callable[..., list[UnifiedOrder]]", executor.get_pending_orders)
-    try:
-        pending = query_pending() if timeout is None else query_pending(timeout=timeout)
-    except TimeoutError:
-        if timeout is None:
-            raise
-        executor.handle_termination_checkpoint()
-        executor.logger.warning("撤单前查询挂单超时，撤销仍在跟踪的委托")
-        pending = known_pending() if known_pending is not None else []
-
     return cancel_orders(
-        pending,
+        executor.get_pending_orders(),
         cancel=lambda _symbol, order_id: executor.cancel_order(order_id),
-        reconcile=terminal_order_reconciler(executor, remaining),
+        reconcile=terminal_order_reconciler(executor),
         on_terminal=on_terminal,
-        result=result,
-        before_cancel=executor.handle_termination_checkpoint if remaining is not None else None,
     )

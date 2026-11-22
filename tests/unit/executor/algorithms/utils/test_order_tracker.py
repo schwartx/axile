@@ -359,19 +359,10 @@ def test_wait_for_completion_returns_immediately_when_no_orders() -> None:
     assert tracker.wait_for_completion(timeout=3600) is True
 
 
-def test_wait_for_completion_cancel_failure_keeps_execution_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    tracker = OrderTracker(executor=_FakeExecutor())
-    tracker.add_order(_build_pending_order("gm-order-1"))
-    monkeypatch.setattr(
-        "axile.executor.algorithms.utils.order_tracker.cancel_pending_orders_via_query",
-        lambda _executor, **_kwargs: CancellationResult(
-            orders={
-                ("SHSE.600000", "gm-order-1"): OrderCancellation(
-                    CancelRequestStatus.FAILED, "撤单失败，订单终态尚未确认"
-                )
-            }
-        ),
-    )
+def test_wait_for_completion_cancel_failure_keeps_execution_error() -> None:
+    order = _build_pending_order("gm-order-1")
+    tracker = OrderTracker(executor=_TimeoutCancelExecutor(order, cancel_ok=False))
+    tracker.add_order(order)
     with pytest.raises(RuntimeError, match="订单终态尚未确认") as raised:
         tracker.wait_for_completion(timeout=0)
     assert raised.value.execution_error == "撤单失败，订单终态尚未确认"

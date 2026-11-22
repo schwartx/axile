@@ -280,7 +280,7 @@ def test_order_query_carries_the_capture_prefix_without_more_requests(broker, mo
     observed, requests, scopes = [], [], []
     set_replay_observer(executor, lambda topic, data: observed.append((topic, data)))
     monkeypatch.setattr(common, "begin_query", lambda _owner, scope: scopes.append(scope) or token)
-    monkeypatch.setattr(executor, "_query", lambda name, _req: requests.append(name) or [broker.order])
+    monkeypatch.setattr(executor, "_query", lambda name, _req, *, timeout: requests.append(name) or [broker.order])
     assert executor._get_pending_orders_impl("ag2612") == []
     event = next(data for topic, data in observed if topic == "/order_set")
     assert scopes == [["ag2612"]]

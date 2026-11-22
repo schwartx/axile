@@ -2364,7 +2364,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         matched = None
         replay_query = replay_capture.begin_query(self, symbol)
         try:
-            rows = self._query("ReqQryOrder", r) if timeout is None else self._query("ReqQryOrder", r, timeout=timeout)
+            rows = self._query("ReqQryOrder", r, timeout=timeout)
             replay_capture.capture(
                 self,
                 "/order_set",
@@ -2407,11 +2407,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     @override
     def _get_pending_orders_impl(self, symbol=None, *, timeout: float | None = None):
-        orders = (
-            self._query_recent_orders_impl(symbol)
-            if timeout is None
-            else self._query_recent_orders_impl(symbol, timeout=timeout)
-        )
+        orders = self._query_recent_orders_impl(symbol, timeout=timeout)
         self._replay_unassociated_trades()
         return [o for o in orders if o.is_active() and (not symbol or o.symbol == symbol)]
 
@@ -2431,9 +2427,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         replay_query = replay_capture.begin_query(self, symbol)
         try:
             req = build_query_orders(self._config(), symbol)
-            rows = (
-                self._query("ReqQryOrder", req) if timeout is None else self._query("ReqQryOrder", req, timeout=timeout)
-            )
+            rows = self._query("ReqQryOrder", req, timeout=timeout)
             replay_capture.capture(
                 self,
                 "/order_set",

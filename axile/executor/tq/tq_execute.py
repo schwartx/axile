@@ -664,7 +664,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
     ) -> list[UnifiedOrder]:
         runtime = self._require_runtime()
         symbol = normalize_catalog_symbol(symbol) if symbol is not None else None
-        rows = self._query_order_rows() if timeout is None else self._query_order_rows(timeout=timeout)
+        rows = self._query_order_rows(timeout=timeout)
         orders = [order_to_unified(row, runtime.resolver) for row in rows]
         for order in orders:
             self._terminal_audit.emit(order)
@@ -684,7 +684,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
     ) -> UnifiedOrder | None:
         """读取 SDK 订单真实终态；缺失订单保持未知。"""
         runtime = self._require_runtime()
-        rows = self._query_order_rows() if timeout is None else self._query_order_rows(timeout=timeout)
+        rows = self._query_order_rows(timeout=timeout)
         for row in rows:
             order = order_to_unified(row, runtime.resolver)
             if order.order_id == order_id and order.symbol == symbol and order.is_completed():
