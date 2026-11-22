@@ -7,7 +7,8 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, cast
 
@@ -192,9 +193,12 @@ class ExecutionSession:
             order = self._owner.place_order(self.symbol, direction, order_type, volume, price, **kwargs)
         return order
 
-    def get_pending_orders(self) -> list[UnifiedOrder]:
+    def get_pending_orders(self, *, timeout: float | None = None) -> list[UnifiedOrder]:
         """获取当前 symbol 的未完成订单."""
-        return self._owner._get_pending_orders_for_execution(self.symbol)
+        with self._cleanup_on_termination():
+            if timeout is None:
+                return self._owner._get_pending_orders_for_execution(self.symbol)
+            return self._owner._get_pending_orders_for_execution(self.symbol, timeout=timeout)
 
     def query_trades(self, order_id: str) -> list[TradeRecord]:
         """获取当前 symbol 下指定订单的成交明细."""
@@ -223,13 +227,19 @@ class ExecutionSession:
         elif not self._owner.is_termination_requested():
             return
 
-        try:
+        with self._cleanup_on_termination():
             if runtime is not None:
                 runtime.handle_termination_checkpoint(self.symbol)
             else:
                 self._owner.handle_termination_checkpoint(self.symbol)
+
+    @contextmanager
+    def _cleanup_on_termination(self) -> Iterator[None]:
+        """渠道抛出终止后，退出渠道及查询锁再清理当前品种。"""
+        try:
+            yield
         except ExecutionTerminated as exc:
-            target = runtime if runtime is not None else self._owner
+            target = self._get_runtime() or self._owner
             # 先记录 ACK，再进入有界清理；重入的终止检查点直接抛出，不能递归清理。
             if exc.mode == "cancel_pending" and not cleanup_query_allowed(target):
                 getter = getattr(self._owner, "get_account_control_guard", None)
@@ -242,6 +252,11 @@ class ExecutionSession:
                 exc.cancel_outcomes = result.cancel_outcomes
                 exc.cancel_unconfirmed = not result.query_complete or result.unconfirmed
             raise
+
+    def deadline_remaining_seconds(self) -> float | None:
+        """读取整轮执行剩余时间，未设置截止时间时返回 None。"""
+        runtime = self._get_runtime()
+        return runtime.deadline_remaining_seconds() if runtime is not None else None
 
     def sleep_or_terminate(self, seconds: float) -> None:
         """协作式片间等待：睡满 ``seconds``，或收到 terminate 请求 / 触及总超时时立即中断.
@@ -386,9 +401,12 @@ class ExecutionSession:
 
     def cancel_order(self, order_id: str) -> bool:
         """撤销当前 symbol 的指定订单."""
-        return self._owner.cancel_order(self.symbol, order_id)
+        with self._cleanup_on_termination():
+            return self._owner.cancel_order(self.symbol, order_id)
 
-    def reconcile_terminal_order(self, symbol: str, order_id: str) -> UnifiedOrder | None:
+    def reconcile_terminal_order(
+        self, symbol: str, order_id: str, *, timeout: float | None = None
+    ) -> UnifiedOrder | None:
         """
         REST 对账兜底：查询单个订单的真实终态，若已终态则补发终态事件.
 
@@ -403,6 +421,8 @@ class ExecutionSession:
             交易对代码。
         order_id : str
             订单 ID。
+        timeout : float | None
+            撤单确认阶段传给 CTP / TQ 的查询剩余时间。
 
         Returns
         -------
@@ -412,7 +432,13 @@ class ExecutionSession:
         owner_reconcile = getattr(self._owner, "reconcile_terminal_order", None)
         if not callable(owner_reconcile):
             return None
-        terminal = cast("UnifiedOrder | None", owner_reconcile(symbol, order_id))
+        with self._cleanup_on_termination():
+            terminal = cast(
+                "UnifiedOrder | None",
+                owner_reconcile(symbol, order_id)
+                if timeout is None
+                else owner_reconcile(symbol, order_id, timeout=timeout),
+            )
         if terminal is not None and terminal.is_completed():
             book = getattr(self._owner, "account_orders", None)
             if book is not None:

@@ -23,7 +23,7 @@ from loguru import logger
 
 from axile.common.serialization import copy_data, to_payload
 from axile.common.trade_channel import TradeChannel
-from axile.executor.account_control.context import controlled_source
+from axile.executor.account_control.context import controlled_source, quota_wait_remaining
 from axile.executor.account_control.diagnostics import AccountControlHit, operation_label
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.account_control.models import (
@@ -1182,12 +1182,18 @@ class AccountControlGuard:
         return max(int((next_day - local_now).total_seconds() * 1000), 0)
 
     def _wait_for_quota(self, wait_ms: int, symbol: str | None, operation: str = "") -> None:
+        budget = quota_wait_remaining.get()
         remaining_ms = wait_ms
         while remaining_ms > 0:
             if not cleanup_guard_allowed(self, operation, symbol):
                 self._run_termination_checkpoint(symbol)
             sleep_ms = min(remaining_ms, self._wait_poll_interval_ms)
-            self._sleep(sleep_ms / 1000)
+            delay = sleep_ms / 1000
+            if budget is not None:
+                delay = min(delay, max(0.0, budget()))
+            self._sleep(delay)
+            if budget is not None and budget() <= 0:
+                raise TimeoutError("等待账户流控额度超时")
             remaining_ms -= sleep_ms
         if not cleanup_guard_allowed(self, operation, symbol):
             self._run_termination_checkpoint(symbol)

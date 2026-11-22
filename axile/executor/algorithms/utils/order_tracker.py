@@ -34,7 +34,7 @@ from axile.executor.algorithms.exceptions import (
 from axile.executor.algorithms.utils.clock import Clock, get_default_clock
 from axile.executor.algorithms.utils.final_position import save_order_changes
 from axile.executor.algorithms.utils.outcome import confirmed_position, order_with_trade_fill
-from axile.executor.algorithms.utils.trading import cancel_pending_orders_via_query
+from axile.executor.algorithms.utils.trading import terminal_order_reconciler
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.market_data_validation import (
     DEFAULT_QUOTE_MAX_AGE_SECONDS,
@@ -50,6 +50,7 @@ from axile.executor.order_cancellation import (
     CancelRequestStatus,
     OrderCancellation,
     cancel_orders,
+    reconcile_cancellation,
 )
 from axile.executor.order_volume_limits import split_order_volumes
 from axile.executor.termination import TERMINATION_TRIGGER_TIMEOUT, ExecutionTerminated
@@ -627,21 +628,23 @@ class OrderTracker:
         deadline = chase_info.get("submission_deadline")
         return self._checkpoint_failed or (deadline is not None and self.clock.time() >= deadline)
 
-    def wait_for_completion(self, timeout: float = 120) -> bool:
-        """等待当前 tracker 内所有订单收敛到终态。"""
+    def wait_for_completion(self, timeout: float = 120, *, settle_on_timeout: bool = False) -> bool:
+        """等待成交，按需在成交超时后继续确认撤单终态。"""
         try:
-            return self._wait_callback(timeout)
+            return self._wait_callback(timeout, settle_on_timeout=settle_on_timeout)
         finally:
             self._save_checkpoint(new_terminals_only=True)
 
-    def _wait_callback(self, timeout: float) -> bool:
+    def _wait_callback(self, timeout: float, *, settle_on_timeout: bool) -> bool:
         """
         以事件驱动为主、主动查询为辅地等待订单完成。
 
         Parameters
         ----------
         timeout : float
-            本次等待允许的最长时长，单位为秒。
+            成交等待上限，单位为秒。
+        settle_on_timeout : bool
+            超时撤单后是否继续确认终态，确认受整轮执行截止时间约束。
 
         Returns
         -------
@@ -728,7 +731,9 @@ class OrderTracker:
         saved = self._save_checkpoint(refresh_pending=True)
         self._logger.info(f"正在撤销所有未成交订单: pending={self.get_pending_count()}")
         self.executor.handle_termination_checkpoint()
-        self._finalize_timeout_cancellations(known_only=not saved)
+        self._finalize_timeout_cancellations(
+            known_only=not saved, settlement_check_interval=check_interval if settle_on_timeout else None
+        )
         return False
 
     def _save_checkpoint(self, *, new_terminals_only: bool = False, refresh_pending: bool = False) -> bool:
@@ -774,25 +779,38 @@ class OrderTracker:
         if not self._save_checkpoint() or self._checkpoint_failed:
             raise RuntimeError("待核对仓位保存失败")
 
-    def _finalize_timeout_cancellations(self, *, known_only: bool = False) -> None:
+    def _finalize_timeout_cancellations(
+        self, *, known_only: bool = False, settlement_check_interval: float | None = None
+    ) -> None:
         """超时后核对订单终态，收尾期间不再报单。"""
-        if known_only:
-            with self.lock:
-                pending = [order for order in self.pending_orders.values() if not order.is_completed()]
-            reconcile = cast(
-                "Callable[[str, str], UnifiedOrder | None] | None",
-                getattr(self.executor, "reconcile_terminal_order", None),
+        cancellation = CancellationResult()
+        remaining = None
+        if settlement_check_interval is not None:
+            remaining = cast(
+                "Callable[[], float | None] | None", getattr(self.executor, "deadline_remaining_seconds", None)
             )
-            cancellation = cancel_orders(
-                pending,
+        reconcile = terminal_order_reconciler(self.executor, remaining)
+        try:
+            orders = self._pending_for_cancellation(known_only, remaining)
+            cancel_orders(
+                orders,
                 cancel=lambda _symbol, order_id: self.executor.cancel_order(order_id),
-                reconcile=reconcile if callable(reconcile) else lambda _symbol, _order_id: None,
+                reconcile=reconcile,
                 on_terminal=self.record_terminal_order,
+                result=cancellation,
+                before_cancel=self.executor.handle_termination_checkpoint if remaining is not None else None,
             )
-        else:
-            cancellation = cancel_pending_orders_via_query(self.executor, on_terminal=self.record_terminal_order)
-        self._reconcile_timeout_cancellations(cancellation)
-        unconfirmed = self.record_cancellation_result(cancellation)
+            self._reconcile_timeout_cancellations(cancellation, reconcile)
+            if remaining is not None:
+                self.executor.handle_termination_checkpoint()
+            unconfirmed = self.record_cancellation_result(cancellation)
+            if unconfirmed and settlement_check_interval is not None and remaining is not None and not known_only:
+                self._wait_for_cancellation_terminals(settlement_check_interval, remaining, reconcile, cancellation)
+                unconfirmed = self.record_cancellation_result(cancellation)
+        except ExecutionTerminated as exc:
+            if settlement_check_interval is not None:
+                self._attach_cancellation_evidence(exc, cancellation)
+            raise
         for order_id, reason in unconfirmed.items():
             self.executor.emit_audit_event(
                 event_type=ExecutionEventType.ORDER_TERMINAL_PENDING,
@@ -805,6 +823,129 @@ class OrderTracker:
             )
         if unconfirmed and not self.waiting_on_restriction():
             raise _OrderTerminalUnconfirmedError(unconfirmed)
+
+    def _pending_for_cancellation(
+        self, known_only: bool, remaining: Callable[[], float | None] | None
+    ) -> list[UnifiedOrder]:
+        if not known_only:
+            timeout = remaining() if remaining is not None else None
+            if timeout is None:
+                return self.executor.get_pending_orders()
+            query_pending = cast("Callable[..., list[UnifiedOrder]]", self.executor.get_pending_orders)
+            try:
+                return query_pending(timeout=timeout)
+            except TimeoutError:
+                self.executor.handle_termination_checkpoint()
+                self._logger.warning("撤单前查询挂单超时，撤销仍在跟踪的委托")
+        with self.lock:
+            return [order for order in self.pending_orders.values() if not order.is_completed()]
+
+    def _wait_for_cancellation_terminals(
+        self,
+        check_interval: float,
+        remaining: Callable[[], float | None],
+        reconcile: Callable[[str, str], UnifiedOrder | None],
+        cancellation: CancellationResult,
+    ) -> None:
+        """保留回调并限频补查旧单，等待受整轮截止时间约束。"""
+        if (seconds := remaining()) is None:
+            return
+        query_interval = self._get_effective_refresh_interval(seconds, check_interval)
+        next_query = self.clock.monotonic() + query_interval
+        tracked = {
+            (order.symbol, alias)
+            for order in self.get_all_orders()
+            for alias in self._extract_order_candidate_ids(order)
+        }
+        external = cancellation.unconfirmed.keys() - tracked
+        while True:
+            self._apply_buffered_cancellation_terminals(cancellation, external)
+            external.intersection_update(cancellation.unconfirmed)
+            if not external and (not self.get_pending_count() or self.waiting_on_restriction()):
+                return
+            self.executor.handle_termination_checkpoint()
+            seconds = remaining()
+            if seconds is None or seconds <= 0:
+                return
+            until_query = next_query - self.clock.monotonic()
+            if until_query <= 0:
+                for symbol, order_id in sorted(external):
+                    item = cancellation.orders[symbol, order_id]
+                    reconcile_cancellation(symbol, order_id, item, reconcile)
+                self._reconcile_missing_pending([], reconcile=reconcile)
+                self.executor.handle_termination_checkpoint()
+                next_query = self.clock.monotonic() + query_interval
+                continue
+            delay = min(check_interval, seconds, until_query)
+            if external:
+                # 本轮订单结束时 all_done_event 已置位，旧单仍按查询间隔等待。
+                self.clock.sleep(delay)
+                done = False
+            else:
+                done = self.clock.event_wait(self.all_done_event, delay)
+            self.executor.handle_termination_checkpoint()
+            if done:
+                return
+
+    def _apply_buffered_cancellation_terminals(
+        self, result: CancellationResult, identities: set[tuple[str, str]]
+    ) -> None:
+        """柜台旧单只核对撤单结果，成交不计入本轮仓位。"""
+        with self.lock:
+            for symbol, order_id in identities:
+                item = result.orders[symbol, order_id]
+                if item.terminal_order is None:
+                    item.terminal_order = next(
+                        (
+                            order
+                            for order in reversed(self._early_order_updates.get(order_id, ()))
+                            if order.symbol == symbol and order.is_completed()
+                        ),
+                        None,
+                    )
+                if item.terminal_order is not None:
+                    item.query_error = None
+                    self._order_errors.pop(order_id, None)
+                    self._cancel_restrictions.pop(order_id, None)
+
+    def _attach_cancellation_evidence(self, exc: ExecutionTerminated, cancellation: CancellationResult) -> None:
+        """只用已取得的证据补齐终止结果，保留追踪期间确认的终态。"""
+        self._apply_buffered_cancellation_terminals(cancellation, set(cancellation.unconfirmed))
+        outcomes = cancellation.outcomes
+        confirmed = {
+            key
+            for source in (outcomes, exc.cancel_outcomes)
+            for key, value in source.items()
+            if value.get("terminal") is True
+        }
+        with self.lock:
+            for order in self.completed_orders.values():
+                confirmed.update(
+                    f"{order.symbol}:{candidate}" for candidate in self._extract_order_candidate_ids(order)
+                )
+            pending = {}
+            for order_id, order in self.pending_orders.items():
+                aliases = {f"{order.symbol}:{candidate}" for candidate in self._extract_order_candidate_ids(order)}
+                if aliases & confirmed:
+                    confirmed.update(aliases)
+                else:
+                    reason = self._cancel_restrictions.get(order_id) or self._order_errors.get(order_id)
+                    pending[f"{order.symbol}:{order_id}"] = reason or "订单终态尚未确认"
+        exc.cancel_outcomes = outcomes | exc.cancel_outcomes
+        for key in confirmed & exc.cancel_outcomes.keys():
+            exc.cancel_outcomes[key] = {**exc.cancel_outcomes[key], "terminal": True, "query_error": None}
+        query_unconfirmed = exc.cancel_unconfirmed and not exc.cancel_details
+        details = pending | cancellation.details | exc.cancel_details
+        exc.cancel_details = {key: reason for key, reason in details.items() if key not in confirmed}
+        exc.cancel_unconfirmed = query_unconfirmed or bool(exc.cancel_details)
+        if cancellation.attempted:
+            exc.cancel_attempted = True
+        failed_orders = [
+            order_id
+            for (_, order_id), item in cancellation.orders.items()
+            if item.request_status == CancelRequestStatus.FAILED
+        ]
+        exc.cancel_failed_order_ids = list(dict.fromkeys([*exc.cancel_failed_order_ids, *failed_orders]))
 
     def record_terminal_order(self, order: UnifiedOrder) -> None:
         """在执行线程写入已核对的终态，再继续下一笔渠道调用。"""
@@ -886,7 +1027,9 @@ class OrderTracker:
                 self._cancel_restrictions[order_id] = exc.execution_error
         self._logger.warning(f"撤单受限，保留原委托 {order_id}: {exc.execution_error}")
 
-    def _reconcile_timeout_cancellations(self, result: CancellationResult) -> None:
+    def _reconcile_timeout_cancellations(
+        self, result: CancellationResult, reconcile: Callable[[str, str], UnifiedOrder | None]
+    ) -> None:
         """核对未出现在挂单查询中的委托。"""
         if not callable(getattr(self.executor, "reconcile_terminal_order", None)):
             return
@@ -895,7 +1038,7 @@ class OrderTracker:
         checked.update(order.order_id for order in result.terminal_orders)
         with self.lock:
             already_checked = [order for order_id, order in self.pending_orders.items() if order_id in checked]
-        self._reconcile_missing_pending(already_checked)
+        self._reconcile_missing_pending(already_checked, reconcile=reconcile)
 
     def _get_effective_refresh_interval(
         self,
@@ -980,7 +1123,12 @@ class OrderTracker:
         summary = self.get_status_summary()
         self._logger.info(f"定时查询完成: queried={queried_count}, {self._format_status_summary(summary)}")
 
-    def _reconcile_missing_pending(self, open_orders: list[UnifiedOrder]) -> None:
+    def _reconcile_missing_pending(
+        self,
+        open_orders: list[UnifiedOrder],
+        *,
+        reconcile: Callable[[str, str], UnifiedOrder | None] | None = None,
+    ) -> None:
         """
         对账已从挂单列表消失、但本地仍视为 pending 的订单.
 
@@ -994,10 +1142,11 @@ class OrderTracker:
         ----------
         open_orders : list[UnifiedOrder]
             本次查询到的交易所仍在挂的订单。
+        reconcile : Callable[[str, str], UnifiedOrder | None] | None
+            撤单收尾提供带整轮剩余时间的终态查询。
         """
-        reconcile = getattr(self.executor, "reconcile_terminal_order", None)
-        if not callable(reconcile):
-            return
+        if reconcile is None:
+            reconcile = terminal_order_reconciler(self.executor)
 
         open_ids = {order.order_id for order in open_orders}
         with self.lock:
@@ -1005,7 +1154,7 @@ class OrderTracker:
 
         for order_id, symbol in missing:
             try:
-                terminal_order = cast("UnifiedOrder | None", reconcile(symbol, order_id))
+                terminal_order = reconcile(symbol, order_id)
             except Exception as exc:  # noqa: BLE001
                 if isinstance(exc, (MemoryError, ExecutionTerminated)) or getattr(
                     exc, "requires_session_recovery", False

@@ -743,8 +743,9 @@ def test_target_pos_task_forwards_tracker_cancel_error(monkeypatch):
     tracker.explicit_error = None
     tracker.explicit_blocked_error = None
 
-    def wait_and_fail(timeout):
+    def wait_and_fail(timeout, *, settle_on_timeout):
         _ = timeout
+        assert settle_on_timeout
         tracker.explicit_error = "撤单失败，订单终态尚未确认"
         raise RuntimeError("部分订单撤销失败: 1")
 

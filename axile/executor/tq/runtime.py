@@ -185,8 +185,8 @@ class TQRuntime:
         """返回 owner thread 是否仍在运行."""
         return self._thread.is_alive() and not self._stopped.is_set()
 
-    def call(self, operation: Callable[[object], T], *, timeout: float | None = None) -> T:
-        """在 owner thread 执行同步操作并返回复制后的结果."""
+    def call(self, operation: Callable[[object], T], *, timeout: float | None = None, read_only: bool = False) -> T:
+        """在 owner thread 执行命令，只读查询可在截止时放弃等待。"""
         if self._stopped.is_set():
             if self._runtime_error is not None:
                 raise RuntimeError(f"TqSdk 运行时异常停止: {self._runtime_error}") from self._runtime_error
@@ -196,9 +196,13 @@ class TQRuntime:
         if self._stopped.is_set():
             command.fail_pending(self._stopped_error())
         wait_timeout = self._command_timeout if timeout is None else timeout
+        if read_only:
+            wait_timeout = min(wait_timeout, self._command_timeout)
         if not command.done.wait(wait_timeout):
             if command.cancel():
                 raise TimeoutError("TqSdk 命令排队超时")
+            if read_only:
+                raise TimeoutError("TqSdk 查询等待超时")
             command.done.wait()
         if command.error is not None:
             if isinstance(command.error, MarketDataUnavailableError):

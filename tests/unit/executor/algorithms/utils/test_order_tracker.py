@@ -359,19 +359,10 @@ def test_wait_for_completion_returns_immediately_when_no_orders() -> None:
     assert tracker.wait_for_completion(timeout=3600) is True
 
 
-def test_wait_for_completion_cancel_failure_keeps_execution_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    tracker = OrderTracker(executor=_FakeExecutor())
-    tracker.add_order(_build_pending_order("gm-order-1"))
-    monkeypatch.setattr(
-        "axile.executor.algorithms.utils.order_tracker.cancel_pending_orders_via_query",
-        lambda _executor, **_kwargs: CancellationResult(
-            orders={
-                ("SHSE.600000", "gm-order-1"): OrderCancellation(
-                    CancelRequestStatus.FAILED, "撤单失败，订单终态尚未确认"
-                )
-            }
-        ),
-    )
+def test_wait_for_completion_cancel_failure_keeps_execution_error() -> None:
+    order = _build_pending_order("gm-order-1")
+    tracker = OrderTracker(executor=_TimeoutCancelExecutor(order, cancel_ok=False))
+    tracker.add_order(order)
     with pytest.raises(RuntimeError, match="订单终态尚未确认") as raised:
         tracker.wait_for_completion(timeout=0)
     assert raised.value.execution_error == "撤单失败，订单终态尚未确认"
@@ -414,9 +405,10 @@ class _TimeoutCancelExecutor(_ReconcileExecutor):
         self.cancel_ok = cancel_ok
         self.confirm_after = confirm_after
         self.cancel_calls: list[str] = []
+        self.reconcile_timeouts: list[float | None] = []
         self.query_error = False
 
-    def get_pending_orders(self) -> list[UnifiedOrder]:
+    def get_pending_orders(self, *, timeout: float | None = None) -> list[UnifiedOrder]:
         if not self.cancel_calls:
             return [self.order]
         if self.query_error:
@@ -427,8 +419,11 @@ class _TimeoutCancelExecutor(_ReconcileExecutor):
         self.cancel_calls.append(order_id)
         return self.cancel_ok
 
-    def reconcile_terminal_order(self, symbol: str, order_id: str) -> UnifiedOrder | None:
+    def reconcile_terminal_order(
+        self, symbol: str, order_id: str, *, timeout: float | None = None
+    ) -> UnifiedOrder | None:
         self.reconcile_calls.append((symbol, order_id))
+        self.reconcile_timeouts.append(timeout)
         if len(self.reconcile_calls) < self.confirm_after:
             return None
         return self.terminal_to_return
@@ -444,17 +439,221 @@ def test_timeout_cancel_reconciles_terminal_before_result(cancel_ok: bool, termi
     executor.terminal_to_return = copy_data(
         order, update={"status": terminal_status, "filled_volume": filled, "avg_price": order.price}
     )
-    tracker = OrderTracker(executor=executor, clock=ClockStub())
+    clock = ClockStub()
+    tracker = OrderTracker(executor=executor, clock=clock)
     tracker.add_order(order)
 
-    tracker.wait_for_completion(timeout=0)
+    tracker.wait_for_completion(timeout=0, settle_on_timeout=True)
 
+    assert clock.time() == 0
     assert executor.cancel_calls == [order.order_id]
     assert not tracker.pending_orders
     assert tracker.completed_orders[order.order_id].filled_volume == filled
     outcome = summarize_outcome(0, filled, order.volume, tracker.get_all_orders(), tracker.get_all_trades())
     assert outcome["error"] != "订单最终状态尚未确认（含撤单结果未知）"
     assert outcome["status"].value == ("SUCCEEDED" if terminal_status == OrderStatus.FILLED else "PARTIAL")
+
+
+def test_timeout_cancel_settles_from_late_callback(monkeypatch):
+    order = _build_pending_order("late-terminal")
+    executor = _TimeoutCancelExecutor(order)
+    clock = ClockStub()
+    tracker = OrderTracker(executor=executor, clock=clock, chase_config=ChaseConfig())
+    tracker.add_order(order, direction=order.direction)
+    terminal_at = 62.4
+    advance = clock.event_wait
+
+    def wait(event, timeout):
+        if clock.time() < terminal_at <= clock.time() + timeout:
+            clock.sleep(terminal_at - clock.time())
+            assert executor.cancel_calls == [order.order_id]
+            assert tracker._submission_expired(tracker._chase_info[order.order_id])
+            tracker.on_order_update(copy_data(order, update={"status": OrderStatus.CANCELED, "filled_volume": 25.0}))
+            return event.is_set()
+        return advance(event, timeout)
+
+    monkeypatch.setattr(clock, "event_wait", wait)
+    monkeypatch.setattr(executor, "deadline_remaining_seconds", lambda: 65.0 - clock.time(), raising=False)
+
+    assert tracker.wait_for_completion(timeout=60, settle_on_timeout=True) is False
+
+    assert clock.time() == pytest.approx(terminal_at)
+    assert executor.cancel_calls == [order.order_id]
+    assert executor._placed == 0
+    assert not tracker.pending_orders
+    assert tracker.explicit_error is None
+    outcome = summarize_outcome(0, 25.0, order.volume, tracker.get_all_orders(), [], **tracker.outcome_inputs())
+    assert outcome["status"].value == "PARTIAL"
+
+
+def test_timeout_cancel_keeps_tracking_after_first_query_timeout(monkeypatch):
+    order = _build_pending_order("first-query-timed-out")
+    executor = _TimeoutCancelExecutor(order, confirm_after=2)
+    executor.terminal_to_return = copy_data(order, update={"status": OrderStatus.CANCELED})
+    clock = ClockStub()
+    tracker = OrderTracker(executor=executor, clock=clock, order_refresh_interval=1.0)
+    tracker.add_order(order)
+
+    def get_pending_orders(*, timeout):
+        assert timeout == 5.0
+        clock.sleep(1.0)
+        raise TimeoutError("挂单查询超时")
+
+    monkeypatch.setattr(executor, "get_pending_orders", get_pending_orders)
+    monkeypatch.setattr(executor, "deadline_remaining_seconds", lambda: 5.0 - clock.time(), raising=False)
+
+    assert tracker.wait_for_completion(timeout=0, settle_on_timeout=True) is False
+    assert executor.cancel_calls == [order.order_id]
+    assert clock.time() == 2.0
+    assert executor.reconcile_timeouts == [4.0, 3.0]
+    assert tracker.explicit_error is None
+    assert tracker.completed_orders[order.order_id].status == OrderStatus.CANCELED
+
+
+@pytest.mark.parametrize("callback", [False, True])
+def test_timeout_cancel_settles_previous_order_without_counting_its_fill(monkeypatch, callback):
+    current = _build_pending_order("current")
+    previous = _build_pending_order("previous")
+    filled = copy_data(previous, update={"status": OrderStatus.FILLED, "filled_volume": previous.volume})
+    executor = _TimeoutCancelExecutor(current)
+    clock = ClockStub()
+    tracker = OrderTracker(executor, clock=clock, order_refresh_interval=1)
+    tracker.add_order(current)
+    monkeypatch.setattr(executor, "get_pending_orders", lambda **_: [current, previous])
+    monkeypatch.setattr(executor, "deadline_remaining_seconds", lambda: 5 - clock.time(), raising=False)
+
+    def reconcile(symbol, order_id, *, timeout):
+        if order_id == current.order_id:
+            return copy_data(current, update={"status": OrderStatus.CANCELED})
+        if callback:
+            tracker.on_order_update(filled)
+            return None
+        return filled if clock.time() >= 1 else None
+
+    monkeypatch.setattr(executor, "reconcile_terminal_order", reconcile)
+    tracker.wait_for_completion(timeout=0, settle_on_timeout=True)
+    assert clock.time() == (0 if callback else 1)
+    assert executor.cancel_calls == ["current", "previous"]
+    assert tracker.explicit_error is None
+    assert [order.order_id for order in tracker.get_all_orders(for_position=True)] == ["current"]
+
+
+@pytest.mark.parametrize(("confirm_after", "query_duration"), [(1, 6.0), (2, 4.0)])
+def test_timeout_cancel_retains_terminal_from_query_that_crosses_deadline(monkeypatch, confirm_after, query_duration):
+    order = _build_pending_order("late-query")
+    executor = _TimeoutCancelExecutor(order, confirm_after=confirm_after)
+    executor.terminal_to_return = copy_data(order, update={"status": OrderStatus.CANCELED})
+    clock = ClockStub()
+    tracker = OrderTracker(executor=executor, clock=clock, order_refresh_interval=2.0)
+    tracker.add_order(order)
+    reconcile = executor.reconcile_terminal_order
+
+    def query(symbol, order_id, *, timeout=None):
+        terminal = reconcile(symbol, order_id, timeout=timeout)
+        if terminal is not None:
+            clock.sleep(query_duration)
+        return terminal
+
+    def checkpoint():
+        if clock.time() >= 65.5:
+            raise ExecutionTerminated(reason=None, mode="graceful", trigger="timeout")
+
+    monkeypatch.setattr(executor, "deadline_remaining_seconds", lambda: 65.5 - clock.time(), raising=False)
+    monkeypatch.setattr(executor, "handle_termination_checkpoint", checkpoint)
+    monkeypatch.setattr(executor, "reconcile_terminal_order", query)
+
+    with pytest.raises(ExecutionTerminated) as stopped:
+        tracker.wait_for_completion(timeout=60, settle_on_timeout=True)
+
+    assert clock.time() == 66.0
+    assert executor.reconcile_timeouts == ([5.5] if confirm_after == 1 else [5.5, 3.5])
+    assert executor.cancel_calls == [order.order_id]
+    assert stopped.value.cancel_attempted is True
+    assert stopped.value.cancel_unconfirmed is False
+    assert stopped.value.cancel_outcomes[f"{order.symbol}:{order.order_id}"]["terminal"] is True
+    assert tracker.completed_orders[order.order_id].status == OrderStatus.CANCELED
+
+
+def test_timeout_cancel_retains_first_request_when_batch_is_interrupted(monkeypatch):
+    first = _build_pending_order("first")
+    second = _build_pending_order("second")
+    executor = _TimeoutCancelExecutor(first)
+    clock = ClockStub()
+    tracker = OrderTracker(executor=executor, clock=clock)
+    tracker.add_order(first)
+    tracker.add_order(second)
+
+    def checkpoint():
+        if clock.time() >= 61.0:
+            raise ExecutionTerminated(reason=None, mode="graceful", trigger="timeout")
+
+    def query(_symbol, _order_id, *, timeout=None):
+        assert timeout == 1.0
+        clock.sleep(timeout)
+        return None
+
+    monkeypatch.setattr(executor, "deadline_remaining_seconds", lambda: 61.0 - clock.time(), raising=False)
+    monkeypatch.setattr(executor, "handle_termination_checkpoint", checkpoint)
+    monkeypatch.setattr(executor, "get_pending_orders", lambda *, timeout=None: [first, second])
+    monkeypatch.setattr(executor, "reconcile_terminal_order", query)
+
+    with pytest.raises(ExecutionTerminated) as stopped:
+        tracker.wait_for_completion(timeout=60, settle_on_timeout=True)
+
+    assert executor.cancel_calls == [first.order_id]
+    assert stopped.value.cancel_attempted is True
+    assert stopped.value.cancel_unconfirmed is True
+    first_key = f"{first.symbol}:{first.order_id}"
+    second_key = f"{second.symbol}:{second.order_id}"
+    assert set(stopped.value.cancel_details) == {first_key, second_key}
+    assert set(stopped.value.cancel_outcomes) == {first_key}
+    assert stopped.value.cancel_outcomes[first_key]["request_status"] == "submitted"
+    assert stopped.value.cancel_outcomes[first_key]["terminal"] is False
+
+
+@pytest.mark.parametrize(
+    ("trigger", "stop_at", "cleanup_confirmed"),
+    [("timeout", 2.4, False), ("operator", 1.0, False), ("operator", 1.0, True)],
+)
+def test_timeout_cancel_settlement_honors_execution_termination(monkeypatch, trigger, stop_at, cleanup_confirmed):
+    order = _build_pending_order("unconfirmed")
+    order.extra["exchange_order_id"] = "exchange-order"
+    executor = _TimeoutCancelExecutor(order)
+    clock = ClockStub()
+    tracker = OrderTracker(executor=executor, clock=clock)
+    tracker.add_order(order)
+    key = f"{order.symbol}:{order.order_id}"
+
+    def checkpoint():
+        if clock.time() >= stop_at:
+            if cleanup_confirmed:
+                raise ExecutionTerminated(
+                    reason=None,
+                    mode="cancel_pending",
+                    trigger=trigger,
+                    cancel_attempted=True,
+                    cancel_outcomes={
+                        f"{order.symbol}:exchange-order": {"request_status": "submitted", "terminal": True}
+                    },
+                )
+            raise ExecutionTerminated(reason=None, mode="graceful", trigger=trigger)
+
+    monkeypatch.setattr(executor, "deadline_remaining_seconds", lambda: 2.4 - clock.time(), raising=False)
+    monkeypatch.setattr(executor, "handle_termination_checkpoint", checkpoint)
+
+    with pytest.raises(ExecutionTerminated) as stopped:
+        tracker.wait_for_completion(timeout=0, settle_on_timeout=True)
+
+    assert stopped.value.trigger == trigger
+    assert stopped.value.cancel_attempted is True
+    assert stopped.value.cancel_unconfirmed is not cleanup_confirmed
+    assert stopped.value.cancel_outcomes[key]["terminal"] is cleanup_confirmed
+    assert (key in stopped.value.cancel_details) is not cleanup_confirmed
+    assert clock.time() == pytest.approx(stop_at)
+    assert len(executor.reconcile_calls) == (2 if trigger == "timeout" else 1)
+    assert executor.cancel_calls == [order.order_id]
+    assert executor._placed == 0
+    assert tracker.pending_orders[order.order_id].extra["terminal_confirmation_pending"] is True
 
 
 def test_timeout_cancel_does_not_extend_deadline_for_delayed_terminal() -> None:

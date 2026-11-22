@@ -146,8 +146,32 @@ def determine_order_price(
     return order_type, price
 
 
+def terminal_order_reconciler(
+    executor: ExecutorProtocol, remaining: Callable[[], float | None] | None = None
+) -> Callable[[str, str], UnifiedOrder | None]:
+    """取得终态查询方法，收尾时逐笔使用整轮剩余时间。"""
+    reconcile = getattr(executor, "reconcile_terminal_order", None)
+    if not callable(reconcile):
+        return lambda _symbol, _order_id: None
+    if remaining is None:
+        return cast("Callable[[str, str], UnifiedOrder | None]", reconcile)
+
+    def query(symbol: str, order_id: str) -> UnifiedOrder | None:
+        executor.handle_termination_checkpoint()
+        timeout = remaining()
+        if timeout is None:
+            return cast("UnifiedOrder | None", reconcile(symbol, order_id))
+        if timeout <= 0:
+            return None
+        return cast("UnifiedOrder | None", reconcile(symbol, order_id, timeout=timeout))
+
+    return query
+
+
 def cancel_pending_orders_via_query(
-    executor: ExecutorProtocol, *, on_terminal: Callable[[UnifiedOrder], None] | None = None
+    executor: ExecutorProtocol,
+    *,
+    on_terminal: Callable[[UnifiedOrder], None] | None = None,
 ) -> CancellationResult:
     """
     通过主动查询结果逐笔撤销当前品种的挂单。
@@ -169,12 +193,9 @@ def cancel_pending_orders_via_query(
     该辅助函数用于超时或终止等兜底场景。这里显式先 query 再 cancel，而不是依赖
     tracker 内存态，是为了尽量收敛执行器侧真实仍然挂着的订单。
     """
-    reconcile = cast(
-        "Callable[[str, str], UnifiedOrder | None] | None", getattr(executor, "reconcile_terminal_order", None)
-    )
     return cancel_orders(
         executor.get_pending_orders(),
         cancel=lambda _symbol, order_id: executor.cancel_order(order_id),
-        reconcile=reconcile if callable(reconcile) else lambda _symbol, _order_id: None,
+        reconcile=terminal_order_reconciler(executor),
         on_terminal=on_terminal,
     )

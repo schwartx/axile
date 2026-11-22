@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Coroutine
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
+from threading import Event
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
@@ -10,11 +12,14 @@ from unittest.mock import Mock
 import pytest
 
 from axile.executor.algorithms.utils.clock import clock_now
+from axile.executor.algorithms.utils.order_tracker import OrderTracker
+from axile.executor.execution_session import ExecutionSession
 from axile.executor.instrument_catalog import InstrumentCatalog, LocalInstrumentCatalogProvider
 from axile.executor.instrument_catalog_records import Instrument
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import TQAccountConfig
 from axile.executor.models.unified_order import OrderDirection, OrderType
+from axile.executor.termination import ExecutionTerminated
 from axile.executor.tq import TQExecutor
 from axile.executor.tq.tq_execute import TQTradingTimeCheck, TQTradingTimeStatus
 from tests.unit.executor.tq._catalog_test_support import CatalogApiMixin
@@ -35,14 +40,56 @@ def test_injected_catalog_registers_existing_tq_connection_once(executor, monkey
     assert provider.ensure(["SHFE.rb2610"])["SHFE.rb2610"].multiplier is None
 
 
-def test_reconcile_terminal_order_requires_matching_actual_terminal(executor):
+def test_reconcile_terminal_order_requires_matching_actual_terminal(executor, monkeypatch):
     instance, api = executor
     assert instance.reconcile_terminal_order("rb2610", "o1") is None
     api.order.update(status="FINISHED", volume_left=1)
-    actual = instance.reconcile_terminal_order("rb2610", "o1")
+    runtime = instance._require_runtime()
+    call = Mock(wraps=runtime.call)
+    monkeypatch.setattr(runtime, "call", call)
+    session = ExecutionSession(owner=instance, symbol="rb2610")
+    actual = session.reconcile_terminal_order("rb2610", "o1", timeout=0.5)
+    assert call.call_args.kwargs == {"timeout": 0.5, "read_only": True}
     assert actual is not None and actual.status == "已撤销" and actual.filled_volume == 1
     assert instance.reconcile_terminal_order("rb2610", "missing") is None
     assert instance.reconcile_terminal_order("ag2612", "o1") is None
+
+
+def test_first_cancellation_query_stops_at_execution_deadline(executor, monkeypatch):
+    owner, api = executor
+    runtime = owner.prepare_execution_runtime()
+    session = ExecutionSession(owner=owner, symbol="rb2610", runtime=runtime)
+    tracker = OrderTracker(session)
+    order = session.get_pending_orders()[0]
+    tracker.add_order(order)
+    sdk = owner._require_runtime()
+    call = sdk.call
+    started, release = Event(), Event()
+
+    def delayed_call(operation, **kwargs):
+        def delayed(api):
+            started.set()
+            release.wait(2)
+            return operation(api)
+
+        return call(delayed, **kwargs)
+
+    monkeypatch.setattr(sdk, "call", delayed_call)
+    runtime.reset_for_execute(execution_timeout=1)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(tracker.wait_for_completion, timeout=0, settle_on_timeout=True)
+        try:
+            assert started.wait(0.5)
+            with pytest.raises(ExecutionTerminated) as stopped:
+                future.result(timeout=1.5)
+        finally:
+            release.set()
+
+    assert stopped.value.trigger == "timeout"
+    assert stopped.value.cancel_unconfirmed
+    assert set(stopped.value.cancel_details) == {f"{order.symbol}:{order.order_id}"}
+    assert api.canceled == []
+    assert call(lambda _api: "ready") == "ready"
 
 
 def test_unknown_native_order_is_retained_and_never_confirmed_as_canceled(executor):
@@ -307,8 +354,6 @@ def test_executor_uses_contract_multiplier_and_rejects_fractional_lots(
 
 
 def test_stale_market_refresh_reuses_snapshot_and_remains_stale(executor: tuple[TQExecutor, FakeApi]) -> None:
-    from axile.executor.algorithms.utils.order_tracker import OrderTracker
-
     instance, api = executor
     first = instance.get_market_data(["rb2610"])["rb2610"]
     # 算法侧使用 symbol 级代理；刷新仍走真实 TQ 取价路径。

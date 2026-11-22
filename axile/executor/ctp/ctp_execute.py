@@ -25,6 +25,7 @@ from axile.common.serialization import copy_data, parse_input
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
 from axile.executor.abstract_executor.base import AbstractExecutor
+from axile.executor.account_control.context import quota_wait_budget
 from axile.executor.account_control.decorators import run_controlled_call
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.account_control.guard import AccountControlGuard
@@ -1356,6 +1357,10 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     def _query_connected(self, name, req, *, symbol=None, timeout=None):
         wait_seconds = self._timeout if timeout is None else timeout
+        order_deadline = None
+        if name == "ReqQryOrder" and timeout is not None:
+            wait_seconds = min(wait_seconds, self._timeout)
+            order_deadline = clock_monotonic() + wait_seconds
         state = self._catalog_query_state
         slot_timeout = None if getattr(state, "active", False) and state.deadline is None else wait_seconds
         with self._query_slot(slot_timeout), self._catalog_query_control():
@@ -1380,13 +1385,16 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
             def register_pending(rid):
                 nonlocal pending_rid
+                if order_deadline is not None and clock_monotonic() >= order_deadline:
+                    raise TimeoutError("CTP 委托查询超时")
                 pending_rid = rid
                 if pending.idle is not None:
                     pending.idle.sent()
                 self._pending_queries[rid] = pending
 
             try:
-                self._send_trader_request(operation, name, req, symbol=symbol, before_send=register_pending)
+                with quota_wait_budget(order_deadline, clock_monotonic):
+                    self._send_trader_request(operation, name, req, symbol=symbol, before_send=register_pending)
                 if pending.idle is not None:
                     pending.idle.sent()
             except Exception:
@@ -1395,6 +1403,8 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 raise
             assert pending_rid is not None
             try:
+                if order_deadline is not None:
+                    wait_seconds = max(0.0, order_deadline - clock_monotonic())
                 self._wait_query(pending, name, timeout=wait_seconds)
                 if pending.error:
                     raise pending.error
@@ -1408,7 +1418,10 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         wait_seconds = self._timeout if timeout is None else timeout
         deadline = clock_monotonic() + wait_seconds
         if pending.idle is None:
-            while not pending.done.is_set() and not get_default_clock().event_wait(pending.done, 0.05):
+            while not pending.done.is_set():
+                remaining = max(0.0, deadline - clock_monotonic())
+                if get_default_clock().event_wait(pending.done, min(0.05, remaining)):
+                    break
                 self._catalog_checkpoint()
                 if clock_monotonic() >= deadline:
                     raise TimeoutError(f"{name}超时")
@@ -2343,7 +2356,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         self.account_orders.apply(rejected)
         self._dispatch(self._order_callbacks, rejected)
 
-    def reconcile_terminal_order(self, symbol: str, order_id: str):
+    def reconcile_terminal_order(self, symbol: str, order_id: str, *, timeout: float | None = None):
         """查询单订单终态；查不到时返回 None，不把缺失当成已撤。"""
         receipt = capture_command_receipt(self)
         validate_instrument(symbol)
@@ -2351,7 +2364,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         matched = None
         replay_query = replay_capture.begin_query(self, symbol)
         try:
-            rows = self._query("ReqQryOrder", r)
+            rows = self._query("ReqQryOrder", r, timeout=timeout)
             replay_capture.capture(
                 self,
                 "/order_set",
@@ -2393,8 +2406,8 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         return True
 
     @override
-    def _get_pending_orders_impl(self, symbol=None):
-        orders = self._query_recent_orders_impl(symbol)
+    def _get_pending_orders_impl(self, symbol=None, *, timeout: float | None = None):
+        orders = self._query_recent_orders_impl(symbol, timeout=timeout)
         self._replay_unassociated_trades()
         return [o for o in orders if o.is_active() and (not symbol or o.symbol == symbol)]
 
@@ -2406,14 +2419,15 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         ts = [self._convert_trade(x, receipt=receipt) for x in self._query("ReqQryTrade", r)]
         return [x for x in ts if x.order_id == order_id]
 
-    def _query_recent_orders_impl(self, symbol=None):
+    def _query_recent_orders_impl(self, symbol=None, *, timeout: float | None = None):
         """查询当前交易日柜台委托，包含真实终态。"""
         receipt = capture_command_receipt(self)
         if symbol is not None:
             validate_instrument(symbol, allow_all=True)
         replay_query = replay_capture.begin_query(self, symbol)
         try:
-            rows = self._query("ReqQryOrder", build_query_orders(self._config(), symbol))
+            req = build_query_orders(self._config(), symbol)
+            rows = self._query("ReqQryOrder", req, timeout=timeout)
             replay_capture.capture(
                 self,
                 "/order_set",

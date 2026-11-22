@@ -755,7 +755,7 @@ def ctp_target_pos_task_algorithm(executor: ExecutorProtocol, algorithm_input: A
 
         if tracker.get_pending_count() > 0:
             executor.logger.info(f"等待 {tracker.get_pending_count()} 个订单完成...")
-            tracker.wait_for_completion(timeout=max_wait_seconds)
+            tracker.wait_for_completion(timeout=max_wait_seconds, settle_on_timeout=True)
 
         # 持仓快照与订单成交分别核对，渠道快照不能覆盖已确认成交。
         final_account_assets, final_net_position, explicit_error = read_final_position(

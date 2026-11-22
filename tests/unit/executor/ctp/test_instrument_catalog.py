@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 from datetime import datetime
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -14,7 +15,9 @@ from axile.executor.account_control.guard import AccountControlGuard
 from axile.executor.account_control.models import AccountControlOverride
 from axile.executor.account_control.presets import resolve_account_control_policy
 from axile.executor.account_control.snapshot import AccountControlCounterSnapshot
+from axile.executor.algorithms.utils.order_tracker import OrderTracker
 from axile.executor.ctp.ctp_execute import CTPExecutor
+from axile.executor.execution_session import ExecutionSession
 from axile.executor.futures_close_policy import FuturesClosePolicy
 from axile.executor.instrument_catalog import (
     CatalogError,
@@ -25,6 +28,8 @@ from axile.executor.instrument_catalog import (
 )
 from axile.executor.instrument_catalog_records import Instrument
 from axile.executor.models.unified_input import CTPAccountConfig, UnifiedStandardInput
+from axile.executor.termination import ExecutionTerminated, ExecutionTerminationController
+from tests.unit.executor.algorithms.utils.test_order_tracker import _build_pending_order
 from tests.unit.executor.test_account_control_guard import _AdvancingClock
 from tests.unit.server._execution_test_support import build_account
 
@@ -168,6 +173,89 @@ def test_ctp_no_response_times_out_after_sending_and_releases_query_slot(monkeyp
     assert executor._query_lock.acquire(blocking=False)
     executor._query_lock.release()
     assert executor._catalog_query_state.active is False
+
+
+@pytest.mark.parametrize(("send_at", "sent"), [(0.15, True), (0.2, False)])
+def test_ctp_terminal_query_shares_budget_with_request_queue(monkeypatch, send_at, sent):
+    executor, clock, _, _ = _controlled_executor(monkeypatch, respond=False)
+    native_query = Mock(return_value=0)
+    executor._trader_api.ReqQryOrder = native_query
+    send = executor._send_trader_request
+
+    def delayed_send(*args, **kwargs):
+        clock.sleep(send_at)
+        return send(*args, **kwargs)
+
+    monkeypatch.setattr(executor, "_send_trader_request", delayed_send)
+    start = clock.time()
+
+    with pytest.raises(TimeoutError, match="超时"):
+        executor._query("ReqQryOrder", td.CThostFtdcQryOrderField(), timeout=0.2)
+
+    assert clock.time() - start == pytest.approx(0.2, abs=1e-6)
+    assert native_query.call_count == int(sent)
+    assert not executor._pending_queries
+
+
+def test_ctp_order_query_deadline_interrupts_quota_wait(monkeypatch):
+    executor, clock, _, _ = _controlled_executor(monkeypatch, respond=False)
+    query = Mock(return_value=0)
+    executor._trader_api.ReqQryOrder = query
+    with executor._catalog_control_factory(executor._catalog_checkpoint) as guard:
+        executor.set_account_control_guard(guard)
+        start = clock.time()
+        with pytest.raises(TimeoutError, match="流控额度超时"):
+            executor._query("ReqQryOrder", td.CThostFtdcQryOrderField(), timeout=0.2)
+        assert clock.time() - start == pytest.approx(0.2, abs=1e-6)
+        assert not guard._wait_queue
+    query.assert_not_called()
+    assert not executor._pending_queries
+    with executor._query_slot(0):
+        pass
+
+
+def test_ctp_terminal_query_operator_stop_runs_cancel_cleanup(monkeypatch):
+    owner, clock, _, _ = _controlled_executor(monkeypatch, respond=False)
+    owner.account_config = CTPAccountConfig(
+        broker_id="9999",
+        investor_id="test",
+        password="fake",
+        td_front="tcp://127.0.0.1:3001",
+        md_front="tcp://127.0.0.1:3002",
+        auth_code="fake",
+        app_id="test",
+    )
+    requested = Event()
+    owner.set_termination_controller(ExecutionTerminationController(requested, mode_provider=lambda: "cancel_pending"))
+    runtime = owner.prepare_execution_runtime()
+    runtime.reset_for_execute(execution_timeout=90)
+    session = ExecutionSession(owner=owner, symbol="rb2701", runtime=runtime)
+    order = _build_pending_order("old", session.symbol)
+    tracker = OrderTracker(session, clock=clock, order_refresh_interval=2.0)
+    tracker.add_order(order)
+    monkeypatch.setattr(session, "get_pending_orders", lambda *, timeout=None: [order])
+    cancel = Mock(return_value=True)
+    monkeypatch.setattr(owner, "cancel_order", cancel)
+    queries = []
+
+    def native_query(_request, rid):
+        queries.append(rid)
+        if len(queries) == 2:
+            requested.set()
+        else:
+            owner._query_response(None, None, rid, True)
+        return 0
+
+    owner._trader_api.ReqQryOrder = native_query
+    with pytest.raises(ExecutionTerminated) as stopped:
+        tracker.wait_for_completion(timeout=0, settle_on_timeout=True)
+
+    assert stopped.value.trigger == "operator" and stopped.value.mode == "cancel_pending"
+    assert stopped.value.cancel_attempted
+    assert stopped.value.cancel_unconfirmed
+    assert len(queries) == 3
+    assert cancel.call_count == 2
+    assert not owner._pending_queries
 
 
 def test_catalog_native_query_uses_execution_group_usage_before_sending(monkeypatch):
