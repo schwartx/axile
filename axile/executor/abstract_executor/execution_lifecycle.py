@@ -13,6 +13,7 @@ from axile.executor.abstract_executor.execution_runtime_facade import (
     AbstractExecutorExecutionRuntimeFacadeMixin,
 )
 from axile.executor.abstract_executor.execution_runtime_host import _executor
+from axile.executor.account_control.context import quota_wait_budget
 from axile.executor.algorithms.utils.clock import clock_monotonic
 from axile.executor.execution_engine import ExecutionEngine
 from axile.executor.execution_query_runtime import ExecutionQueryRuntime
@@ -192,13 +193,14 @@ class AbstractExecutorExecutionLifecycleMixin(AbstractExecutorExecutionRuntimeFa
             query = cast("Callable[..., list[UnifiedOrder]]", executor._get_pending_orders_impl)
             return query(symbol, timeout=remaining)
 
-        return executor._run_execution_shared_fetch(
-            operation="query_order",
-            shared_query_key=("query_order", symbol),
-            query_scope="narrow",
-            symbol=symbol,
-            fetcher=fetch,
-        )
+        with quota_wait_budget(deadline, clock_monotonic):
+            return executor._run_execution_shared_fetch(
+                operation="query_order",
+                shared_query_key=("query_order", symbol),
+                query_scope="narrow",
+                symbol=symbol,
+                fetcher=fetch,
+            )
 
     def _get_execution_trades_snapshot_fetcher(
         self,

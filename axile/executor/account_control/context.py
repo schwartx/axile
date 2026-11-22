@@ -1,12 +1,15 @@
 """账户控制来源在调用上下文中隔离，不修改正在共享的 guard。"""
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 
 from axile.executor.account_control.models import AccountControlSource
 
 _source: ContextVar[tuple[object, AccountControlSource] | None] = ContextVar("account_control_source", default=None)
+
+
+quota_wait_remaining: ContextVar[Callable[[], float] | None] = ContextVar("quota_wait_remaining", default=None)
 
 
 def controlled_source(guard: object, fallback: AccountControlSource) -> AccountControlSource:
@@ -26,3 +29,16 @@ def control_source_scope(guard: object, source: AccountControlSource | None) -> 
         yield
     finally:
         _source.reset(token)
+
+
+@contextmanager
+def quota_wait_budget(deadline: float | None, now: Callable[[], float]) -> Iterator[None]:
+    """让本次查询的流控排队与渠道响应共用截止时间。"""
+    if deadline is None:
+        yield
+        return
+    token = quota_wait_remaining.set(lambda: deadline - now())
+    try:
+        yield
+    finally:
+        quota_wait_remaining.reset(token)

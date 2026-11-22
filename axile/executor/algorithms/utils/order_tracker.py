@@ -50,6 +50,7 @@ from axile.executor.order_cancellation import (
     CancelRequestStatus,
     OrderCancellation,
     cancel_orders,
+    reconcile_cancellation,
 )
 from axile.executor.order_volume_limits import split_order_volumes
 from axile.executor.termination import TERMINATION_TRIGGER_TIMEOUT, ExecutionTerminated
@@ -791,10 +792,8 @@ class OrderTracker:
         reconcile = terminal_order_reconciler(self.executor, remaining)
         try:
             if known_only:
-                with self.lock:
-                    pending = [order for order in self.pending_orders.values() if not order.is_completed()]
                 cancellation = cancel_orders(
-                    pending,
+                    self._pending_for_cancellation(),
                     cancel=lambda _symbol, order_id: self.executor.cancel_order(order_id),
                     reconcile=reconcile,
                     on_terminal=self.record_terminal_order,
@@ -803,14 +802,18 @@ class OrderTracker:
                 )
             else:
                 cancellation = cancel_pending_orders_via_query(
-                    self.executor, on_terminal=self.record_terminal_order, result=cancellation, remaining=remaining
+                    self.executor,
+                    on_terminal=self.record_terminal_order,
+                    result=cancellation,
+                    remaining=remaining,
+                    known_pending=self._pending_for_cancellation,
                 )
             self._reconcile_timeout_cancellations(cancellation, reconcile)
             if remaining is not None:
                 self.executor.handle_termination_checkpoint()
             unconfirmed = self.record_cancellation_result(cancellation)
             if unconfirmed and settlement_check_interval is not None and remaining is not None and not known_only:
-                self._wait_for_cancellation_terminals(settlement_check_interval, remaining, reconcile)
+                self._wait_for_cancellation_terminals(settlement_check_interval, remaining, reconcile, cancellation)
                 unconfirmed = self.record_cancellation_result(cancellation)
         except ExecutionTerminated as exc:
             if settlement_check_interval is not None:
@@ -829,35 +832,84 @@ class OrderTracker:
         if unconfirmed and not self.waiting_on_restriction():
             raise _OrderTerminalUnconfirmedError(unconfirmed)
 
+    def _pending_for_cancellation(self) -> list[UnifiedOrder]:
+        with self.lock:
+            return [order for order in self.pending_orders.values() if not order.is_completed()]
+
     def _wait_for_cancellation_terminals(
         self,
         check_interval: float,
         remaining: Callable[[], float | None],
         reconcile: Callable[[str, str], UnifiedOrder | None],
+        cancellation: CancellationResult,
     ) -> None:
         """保留回调并限频补查旧单，等待受整轮截止时间约束。"""
         if (seconds := remaining()) is None:
             return
         query_interval = self._get_effective_refresh_interval(seconds, check_interval)
         next_query = self.clock.monotonic() + query_interval
-        while self.get_pending_count() and not self.waiting_on_restriction():
+        tracked = {
+            (order.symbol, alias)
+            for order in self.get_all_orders()
+            for alias in self._extract_order_candidate_ids(order)
+        }
+        external = cancellation.unconfirmed.keys() - tracked
+        while True:
+            external = self._unconfirmed_external_orders(cancellation, external)
+            if not external and (not self.get_pending_count() or self.waiting_on_restriction()):
+                return
             self.executor.handle_termination_checkpoint()
             seconds = remaining()
             if seconds is None or seconds <= 0:
                 return
             until_query = next_query - self.clock.monotonic()
             if until_query <= 0:
+                for symbol, order_id in sorted(external):
+                    item = cancellation.orders[symbol, order_id]
+                    reconcile_cancellation(symbol, order_id, item, reconcile)
                 self._reconcile_missing_pending([], reconcile=reconcile)
                 self.executor.handle_termination_checkpoint()
                 next_query = self.clock.monotonic() + query_interval
                 continue
-            done = self.clock.event_wait(self.all_done_event, min(check_interval, seconds, until_query))
+            delay = min(check_interval, seconds, until_query)
+            if external:
+                # 本轮订单结束时 all_done_event 已置位，旧单仍按查询间隔等待。
+                self.clock.sleep(delay)
+                done = False
+            else:
+                done = self.clock.event_wait(self.all_done_event, delay)
             self.executor.handle_termination_checkpoint()
             if done:
                 return
 
+    def _unconfirmed_external_orders(
+        self, result: CancellationResult, external: set[tuple[str, str]]
+    ) -> set[tuple[str, str]]:
+        """柜台旧单只核对撤单结果，成交不计入本轮仓位。"""
+        unresolved = set()
+        with self.lock:
+            for symbol, order_id in external:
+                item = result.orders[symbol, order_id]
+                if item.terminal_order is None:
+                    item.terminal_order = next(
+                        (
+                            order
+                            for order in reversed(self._early_order_updates.get(order_id, ()))
+                            if order.symbol == symbol and order.is_completed()
+                        ),
+                        None,
+                    )
+                if item.terminal_order is None:
+                    unresolved.add((symbol, order_id))
+                else:
+                    item.query_error = None
+                    self._order_errors.pop(order_id, None)
+                    self._cancel_restrictions.pop(order_id, None)
+        return unresolved
+
     def _attach_cancellation_evidence(self, exc: ExecutionTerminated, cancellation: CancellationResult) -> None:
         """只用已取得的证据补齐终止结果，保留追踪期间确认的终态。"""
+        self._unconfirmed_external_orders(cancellation, set(cancellation.unconfirmed))
         outcomes = cancellation.outcomes
         confirmed = {
             key

@@ -197,6 +197,23 @@ def test_ctp_terminal_query_shares_budget_with_request_queue(monkeypatch, send_a
     assert not executor._pending_queries
 
 
+def test_ctp_order_query_deadline_interrupts_quota_wait(monkeypatch):
+    executor, clock, _, _ = _controlled_executor(monkeypatch, respond=False)
+    query = Mock(return_value=0)
+    executor._trader_api.ReqQryOrder = query
+    with executor._catalog_control_factory(executor._catalog_checkpoint) as guard:
+        executor.set_account_control_guard(guard)
+        start = clock.time()
+        with pytest.raises(TimeoutError, match="流控额度超时"):
+            executor._query("ReqQryOrder", td.CThostFtdcQryOrderField(), timeout=0.2)
+        assert clock.time() - start == pytest.approx(0.2, abs=1e-6)
+        assert not guard._wait_queue
+    query.assert_not_called()
+    assert not executor._pending_queries
+    with executor._query_slot(0):
+        pass
+
+
 def test_ctp_terminal_query_operator_stop_runs_cancel_cleanup(monkeypatch):
     owner, clock, _, _ = _controlled_executor(monkeypatch, respond=False)
     owner.account_config = CTPAccountConfig(

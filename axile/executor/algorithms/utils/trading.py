@@ -174,6 +174,7 @@ def cancel_pending_orders_via_query(
     on_terminal: Callable[[UnifiedOrder], None] | None = None,
     result: CancellationResult | None = None,
     remaining: Callable[[], float | None] | None = None,
+    known_pending: Callable[[], list[UnifiedOrder]] | None = None,
 ) -> CancellationResult:
     """
     通过主动查询结果逐笔撤销当前品种的挂单。
@@ -188,6 +189,8 @@ def cancel_pending_orders_via_query(
         调用方提供的逐笔结果，终止中断时可保留已完成的操作。
     remaining : Callable[[], float | None] | None
         撤单收尾查询终态时可用的整轮剩余时间。
+    known_pending : Callable[[], list[UnifiedOrder]] | None
+        首次挂单查询超时后读取仍在跟踪的委托。
 
     Returns
     -------
@@ -207,8 +210,8 @@ def cancel_pending_orders_via_query(
         if timeout is None:
             raise
         executor.handle_termination_checkpoint()
-        executor.logger.warning("撤单前查询挂单超时，继续核对已知委托终态")
-        pending = []
+        executor.logger.warning("撤单前查询挂单超时，撤销仍在跟踪的委托")
+        pending = known_pending() if known_pending is not None else []
 
     return cancel_orders(
         pending,

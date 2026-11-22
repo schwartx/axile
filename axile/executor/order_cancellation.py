@@ -119,19 +119,25 @@ def cancel_orders(
                 CancelRequestStatus.UNKNOWN, getattr(exc, "execution_error", None) or "撤单请求结果未知"
             )
         result.orders[(order.symbol, order.order_id)] = item
-        try:
-            terminal = reconcile(order.symbol, order.order_id)
-        except Exception as exc:
-            _raise_if_fatal(exc)
-            terminal = None
-            item.query_error = "订单终态查询失败"
-        if (
-            terminal is not None
-            and terminal.order_id == order.order_id
-            and terminal.symbol == order.symbol
-            and terminal.is_completed()
-        ):
-            item.terminal_order = terminal
-            if on_terminal is not None:
-                on_terminal(terminal)
+        reconcile_cancellation(order.symbol, order.order_id, item, reconcile)
+        if item.terminal_order is not None and on_terminal is not None:
+            on_terminal(item.terminal_order)
     return result
+
+
+def reconcile_cancellation(
+    symbol: str,
+    order_id: str,
+    item: OrderCancellation,
+    reconcile: Callable[[str, str], UnifiedOrder | None],
+) -> None:
+    """补齐单笔撤单的终态证据，保留提交结果。"""
+    try:
+        terminal = reconcile(symbol, order_id)
+    except Exception as exc:
+        _raise_if_fatal(exc)
+        terminal = None
+        item.query_error = "订单终态查询失败"
+    if terminal is not None and terminal.order_id == order_id and terminal.symbol == symbol and terminal.is_completed():
+        item.terminal_order = terminal
+        item.query_error = None

@@ -25,6 +25,7 @@ from axile.common.serialization import copy_data, parse_input
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
 from axile.executor.abstract_executor.base import AbstractExecutor
+from axile.executor.account_control.context import quota_wait_budget
 from axile.executor.account_control.decorators import run_controlled_call
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.account_control.guard import AccountControlGuard
@@ -1392,7 +1393,8 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 self._pending_queries[rid] = pending
 
             try:
-                self._send_trader_request(operation, name, req, symbol=symbol, before_send=register_pending)
+                with quota_wait_budget(order_deadline, clock_monotonic):
+                    self._send_trader_request(operation, name, req, symbol=symbol, before_send=register_pending)
                 if pending.idle is not None:
                     pending.idle.sent()
             except Exception:

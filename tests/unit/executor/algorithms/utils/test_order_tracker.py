@@ -540,9 +540,37 @@ def test_timeout_cancel_keeps_tracking_after_first_query_timeout(monkeypatch):
     monkeypatch.setattr(executor, "deadline_remaining_seconds", lambda: 5.0 - clock.time(), raising=False)
 
     assert tracker.wait_for_completion(timeout=0, settle_on_timeout=True) is False
-    assert executor.cancel_calls == []
+    assert executor.cancel_calls == [order.order_id]
     assert executor.reconcile_timeouts == [4.0]
     assert tracker.completed_orders[order.order_id].status == OrderStatus.CANCELED
+
+
+@pytest.mark.parametrize("callback", [False, True])
+def test_timeout_cancel_settles_previous_order_without_counting_its_fill(monkeypatch, callback):
+    current = _build_pending_order("current")
+    previous = _build_pending_order("previous")
+    filled = copy_data(previous, update={"status": OrderStatus.FILLED, "filled_volume": previous.volume})
+    executor = _TimeoutCancelExecutor(current)
+    clock = ClockStub()
+    tracker = OrderTracker(executor, clock=clock, order_refresh_interval=1)
+    tracker.add_order(current)
+    monkeypatch.setattr(executor, "get_pending_orders", lambda **_: [current, previous])
+    monkeypatch.setattr(executor, "deadline_remaining_seconds", lambda: 5 - clock.time(), raising=False)
+
+    def reconcile(symbol, order_id, *, timeout):
+        if order_id == current.order_id:
+            return copy_data(current, update={"status": OrderStatus.CANCELED})
+        if callback:
+            tracker.on_order_update(filled)
+            return None
+        return filled if clock.time() >= 1 else None
+
+    monkeypatch.setattr(executor, "reconcile_terminal_order", reconcile)
+    tracker.wait_for_completion(timeout=0, settle_on_timeout=True)
+    assert clock.time() == (0 if callback else 1)
+    assert executor.cancel_calls == ["current", "previous"]
+    assert tracker.explicit_error is None
+    assert [order.order_id for order in tracker.get_all_orders(for_position=True)] == ["current"]
 
 
 @pytest.mark.parametrize(("confirm_after", "query_duration"), [(1, 6.0), (2, 4.0)])
