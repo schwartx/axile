@@ -170,6 +170,28 @@ def test_ctp_no_response_times_out_after_sending_and_releases_query_slot(monkeyp
     assert executor._catalog_query_state.active is False
 
 
+@pytest.mark.parametrize(("send_at", "sent"), [(0.15, True), (0.2, False)])
+def test_ctp_terminal_query_shares_budget_with_request_queue(monkeypatch, send_at, sent):
+    executor, clock, _, _ = _controlled_executor(monkeypatch, respond=False)
+    native_query = Mock(return_value=0)
+    executor._trader_api.ReqQryOrder = native_query
+    send = executor._send_trader_request
+
+    def delayed_send(*args, **kwargs):
+        clock.sleep(send_at)
+        return send(*args, **kwargs)
+
+    monkeypatch.setattr(executor, "_send_trader_request", delayed_send)
+    start = clock.time()
+
+    with pytest.raises(TimeoutError, match="超时"):
+        executor._query("ReqQryOrder", td.CThostFtdcQryOrderField(), timeout=0.2)
+
+    assert clock.time() - start == pytest.approx(0.2, abs=1e-6)
+    assert native_query.call_count == int(sent)
+    assert not executor._pending_queries
+
+
 def test_catalog_native_query_uses_execution_group_usage_before_sending(monkeypatch):
     from axile.executor.account_control.exceptions import AccountControlBlockedError
 

@@ -10,6 +10,7 @@ from unittest.mock import Mock
 import pytest
 
 from axile.executor.algorithms.utils.clock import clock_now
+from axile.executor.execution_session import ExecutionSession
 from axile.executor.instrument_catalog import InstrumentCatalog, LocalInstrumentCatalogProvider
 from axile.executor.instrument_catalog_records import Instrument
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
@@ -35,11 +36,16 @@ def test_injected_catalog_registers_existing_tq_connection_once(executor, monkey
     assert provider.ensure(["SHFE.rb2610"])["SHFE.rb2610"].multiplier is None
 
 
-def test_reconcile_terminal_order_requires_matching_actual_terminal(executor):
+def test_reconcile_terminal_order_requires_matching_actual_terminal(executor, monkeypatch):
     instance, api = executor
     assert instance.reconcile_terminal_order("rb2610", "o1") is None
     api.order.update(status="FINISHED", volume_left=1)
-    actual = instance.reconcile_terminal_order("rb2610", "o1")
+    runtime = instance._require_runtime()
+    call = Mock(wraps=runtime.call)
+    monkeypatch.setattr(runtime, "call", call)
+    session = ExecutionSession(owner=instance, symbol="rb2610")
+    actual = session.reconcile_terminal_order("rb2610", "o1", timeout=0.5)
+    assert call.call_args.kwargs == {"timeout": 0.5, "read_only": True}
     assert actual is not None and actual.status == "已撤销" and actual.filled_volume == 1
     assert instance.reconcile_terminal_order("rb2610", "missing") is None
     assert instance.reconcile_terminal_order("ag2612", "o1") is None

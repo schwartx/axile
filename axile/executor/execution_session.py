@@ -393,7 +393,9 @@ class ExecutionSession:
         """撤销当前 symbol 的指定订单."""
         return self._owner.cancel_order(self.symbol, order_id)
 
-    def reconcile_terminal_order(self, symbol: str, order_id: str) -> UnifiedOrder | None:
+    def reconcile_terminal_order(
+        self, symbol: str, order_id: str, *, timeout: float | None = None
+    ) -> UnifiedOrder | None:
         """
         REST 对账兜底：查询单个订单的真实终态，若已终态则补发终态事件.
 
@@ -408,6 +410,8 @@ class ExecutionSession:
             交易对代码。
         order_id : str
             订单 ID。
+        timeout : float | None
+            撤单确认阶段传给 CTP / TQ 的查询剩余时间。
 
         Returns
         -------
@@ -417,7 +421,12 @@ class ExecutionSession:
         owner_reconcile = getattr(self._owner, "reconcile_terminal_order", None)
         if not callable(owner_reconcile):
             return None
-        terminal = cast("UnifiedOrder | None", owner_reconcile(symbol, order_id))
+        terminal = cast(
+            "UnifiedOrder | None",
+            owner_reconcile(symbol, order_id)
+            if timeout is None
+            else owner_reconcile(symbol, order_id, timeout=timeout),
+        )
         if terminal is not None and terminal.is_completed():
             book = getattr(self._owner, "account_orders", None)
             if book is not None:

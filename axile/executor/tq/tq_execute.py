@@ -623,7 +623,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
         runtime.call(cancel)
         return True
 
-    def _query_order_rows(self) -> list[dict[str, object]]:
+    def _query_order_rows(self, *, timeout: float | None = None) -> list[dict[str, object]]:
         """复用正常账户查询，完整性证明在 owner 冻结快照前取得。"""
         runtime = self._require_runtime()
         receipt = recording.capture_receipt(self)
@@ -642,7 +642,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
             finally:
                 recording.finish_query(self, token)
 
-        return runtime.call(query)
+        return runtime.call(query) if timeout is None else runtime.call(query, timeout=timeout, read_only=True)
 
     def _query_trade_rows(self) -> list[dict[str, object]]:
         """正常成交查询也保存原始观察，推送与查询共用稳定身份。"""
@@ -677,10 +677,12 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
             )
         ]
 
-    def reconcile_terminal_order(self, symbol: str, order_id: str) -> UnifiedOrder | None:
+    def reconcile_terminal_order(
+        self, symbol: str, order_id: str, *, timeout: float | None = None
+    ) -> UnifiedOrder | None:
         """读取 SDK 订单真实终态；缺失订单保持未知。"""
         runtime = self._require_runtime()
-        rows = self._query_order_rows()
+        rows = self._query_order_rows() if timeout is None else self._query_order_rows(timeout=timeout)
         for row in rows:
             order = order_to_unified(row, runtime.resolver)
             if order.order_id == order_id and order.symbol == symbol and order.is_completed():

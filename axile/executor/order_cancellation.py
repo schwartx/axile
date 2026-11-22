@@ -96,10 +96,15 @@ def cancel_orders(
     cancel: Callable[[str, str], bool],
     reconcile: Callable[[str, str], UnifiedOrder | None],
     on_terminal: Callable[[UnifiedOrder], None] | None = None,
+    result: CancellationResult | None = None,
+    before_cancel: Callable[[], None] | None = None,
 ) -> CancellationResult:
     """逐笔请求并核实；异常无法证明请求是否到达上游，因而记为未知。"""
-    result = CancellationResult()
+    if result is None:
+        result = CancellationResult()
     for order in orders:
+        if before_cancel is not None:
+            before_cancel()
         try:
             submitted = cancel(order.symbol, order.order_id)
             item = OrderCancellation(
