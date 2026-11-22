@@ -797,11 +797,16 @@ class OrderTracker:
             )
         else:
             cancellation = cancel_pending_orders_via_query(self.executor, on_terminal=self.record_terminal_order)
-        self._reconcile_timeout_cancellations(cancellation)
-        unconfirmed = self.record_cancellation_result(cancellation)
-        if unconfirmed and settlement_check_interval is not None and not known_only:
-            self._wait_for_cancellation_terminals(settlement_check_interval)
+        try:
+            self._reconcile_timeout_cancellations(cancellation)
             unconfirmed = self.record_cancellation_result(cancellation)
+            if unconfirmed and settlement_check_interval is not None and not known_only:
+                self._wait_for_cancellation_terminals(settlement_check_interval)
+                unconfirmed = self.record_cancellation_result(cancellation)
+        except ExecutionTerminated as exc:
+            if settlement_check_interval is not None:
+                self._attach_cancellation_evidence(exc, cancellation)
+            raise
         for order_id, reason in unconfirmed.items():
             self.executor.emit_audit_event(
                 event_type=ExecutionEventType.ORDER_TERMINAL_PENDING,
@@ -816,21 +821,66 @@ class OrderTracker:
             raise _OrderTerminalUnconfirmedError(unconfirmed)
 
     def _wait_for_cancellation_terminals(self, check_interval: float) -> None:
-        """保留订单回调，按整轮剩余时间等待撤单终态。"""
+        """保留回调并限频补查旧单，等待受整轮截止时间约束。"""
         remaining = cast(
             "Callable[[], float | None] | None", getattr(self.executor, "deadline_remaining_seconds", None)
         )
-        if remaining is None:
+        if remaining is None or (seconds := remaining()) is None:
             return
+        query_interval = self._get_effective_refresh_interval(seconds, check_interval)
+        next_query = self.clock.monotonic() + query_interval
         while self.get_pending_count() and not self.waiting_on_restriction():
             self.executor.handle_termination_checkpoint()
             seconds = remaining()
             if seconds is None or seconds <= 0:
                 return
-            done = self.clock.event_wait(self.all_done_event, min(check_interval, seconds))
+            until_query = next_query - self.clock.monotonic()
+            if until_query <= 0:
+                self._reconcile_missing_pending([], check_termination=True)
+                next_query = self.clock.monotonic() + query_interval
+                continue
+            done = self.clock.event_wait(self.all_done_event, min(check_interval, seconds, until_query))
             self.executor.handle_termination_checkpoint()
             if done:
                 return
+
+    def _attach_cancellation_evidence(self, exc: ExecutionTerminated, cancellation: CancellationResult) -> None:
+        """只用已取得的证据补齐终止结果，保留追踪期间确认的终态。"""
+        outcomes = cancellation.outcomes
+        confirmed = {
+            key
+            for source in (outcomes, exc.cancel_outcomes)
+            for key, value in source.items()
+            if value.get("terminal") is True
+        }
+        with self.lock:
+            for order in self.completed_orders.values():
+                confirmed.update(
+                    f"{order.symbol}:{candidate}" for candidate in self._extract_order_candidate_ids(order)
+                )
+            pending = {}
+            for order_id, order in self.pending_orders.items():
+                aliases = {f"{order.symbol}:{candidate}" for candidate in self._extract_order_candidate_ids(order)}
+                if aliases & confirmed:
+                    confirmed.update(aliases)
+                else:
+                    reason = self._cancel_restrictions.get(order_id) or self._order_errors.get(order_id)
+                    pending[f"{order.symbol}:{order_id}"] = reason or "订单终态尚未确认"
+        exc.cancel_outcomes = outcomes | exc.cancel_outcomes
+        for key in confirmed & exc.cancel_outcomes.keys():
+            exc.cancel_outcomes[key] = {**exc.cancel_outcomes[key], "terminal": True, "query_error": None}
+        query_unconfirmed = exc.cancel_unconfirmed and not exc.cancel_details
+        details = pending | cancellation.details | exc.cancel_details
+        exc.cancel_details = {key: reason for key, reason in details.items() if key not in confirmed}
+        exc.cancel_unconfirmed = query_unconfirmed or bool(exc.cancel_details)
+        if cancellation.attempted:
+            exc.cancel_attempted = True
+        failed_orders = [
+            order_id
+            for (_, order_id), item in cancellation.orders.items()
+            if item.request_status == CancelRequestStatus.FAILED
+        ]
+        exc.cancel_failed_order_ids = list(dict.fromkeys([*exc.cancel_failed_order_ids, *failed_orders]))
 
     def record_terminal_order(self, order: UnifiedOrder) -> None:
         """在执行线程写入已核对的终态，再继续下一笔渠道调用。"""
@@ -1006,7 +1056,7 @@ class OrderTracker:
         summary = self.get_status_summary()
         self._logger.info(f"定时查询完成: queried={queried_count}, {self._format_status_summary(summary)}")
 
-    def _reconcile_missing_pending(self, open_orders: list[UnifiedOrder]) -> None:
+    def _reconcile_missing_pending(self, open_orders: list[UnifiedOrder], *, check_termination: bool = False) -> None:
         """
         对账已从挂单列表消失、但本地仍视为 pending 的订单.
 
@@ -1020,6 +1070,8 @@ class OrderTracker:
         ----------
         open_orders : list[UnifiedOrder]
             本次查询到的交易所仍在挂的订单。
+        check_termination : bool
+            在撤单确认等待中，每笔补查前检查整轮截止时间和终止请求。
         """
         reconcile = getattr(self.executor, "reconcile_terminal_order", None)
         if not callable(reconcile):
@@ -1030,6 +1082,8 @@ class OrderTracker:
             missing = [(oid, order.symbol) for oid, order in self.pending_orders.items() if oid not in open_ids]
 
         for order_id, symbol in missing:
+            if check_termination:
+                self.executor.handle_termination_checkpoint()
             try:
                 terminal_order = cast("UnifiedOrder | None", reconcile(symbol, order_id))
             except Exception as exc:  # noqa: BLE001

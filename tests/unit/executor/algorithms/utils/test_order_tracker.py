@@ -499,16 +499,50 @@ def test_timeout_cancel_settles_from_late_callback(monkeypatch, terminal_status,
     assert outcome["status"].value == expected_status
 
 
-@pytest.mark.parametrize(("trigger", "stop_at"), [("timeout", 2.4), ("operator", 1.0)])
-def test_timeout_cancel_settlement_honors_execution_termination(monkeypatch, trigger, stop_at):
+def test_timeout_cancel_settlement_reconciles_without_callback(monkeypatch):
+    order = _build_pending_order("query-only")
+    executor = _TimeoutCancelExecutor(order, confirm_after=2)
+    executor.terminal_to_return = copy_data(order, update={"status": OrderStatus.CANCELED})
+    clock = ClockStub()
+    tracker = OrderTracker(executor=executor, clock=clock, order_refresh_interval=5.0)
+    tracker.add_order(order)
+    monkeypatch.setattr(executor, "deadline_remaining_seconds", lambda: 75.0 - clock.time(), raising=False)
+
+    assert tracker.wait_for_completion(timeout=60, settle_on_timeout=True) is False
+
+    assert clock.time() == 65.0
+    assert executor.reconcile_calls == [(order.symbol, order.order_id)] * 2
+    assert executor.cancel_calls == [order.order_id]
+    assert not tracker.pending_orders
+    assert tracker.explicit_error is None
+    assert executor._placed == 0
+
+
+@pytest.mark.parametrize(
+    ("trigger", "stop_at", "cleanup_confirmed"),
+    [("timeout", 2.4, False), ("operator", 1.0, False), ("operator", 1.0, True)],
+)
+def test_timeout_cancel_settlement_honors_execution_termination(monkeypatch, trigger, stop_at, cleanup_confirmed):
     order = _build_pending_order("unconfirmed")
+    order.extra["exchange_order_id"] = "exchange-order"
     executor = _TimeoutCancelExecutor(order)
     clock = ClockStub()
     tracker = OrderTracker(executor=executor, clock=clock)
     tracker.add_order(order)
+    key = f"{order.symbol}:{order.order_id}"
 
     def checkpoint():
         if clock.time() >= stop_at:
+            if cleanup_confirmed:
+                raise ExecutionTerminated(
+                    reason=None,
+                    mode="cancel_pending",
+                    trigger=trigger,
+                    cancel_attempted=True,
+                    cancel_outcomes={
+                        f"{order.symbol}:exchange-order": {"request_status": "submitted", "terminal": True}
+                    },
+                )
             raise ExecutionTerminated(reason=None, mode="graceful", trigger=trigger)
 
     monkeypatch.setattr(executor, "deadline_remaining_seconds", lambda: 2.4 - clock.time(), raising=False)
@@ -518,7 +552,12 @@ def test_timeout_cancel_settlement_honors_execution_termination(monkeypatch, tri
         tracker.wait_for_completion(timeout=0, settle_on_timeout=True)
 
     assert stopped.value.trigger == trigger
+    assert stopped.value.cancel_attempted is True
+    assert stopped.value.cancel_unconfirmed is not cleanup_confirmed
+    assert stopped.value.cancel_outcomes[key]["terminal"] is cleanup_confirmed
+    assert (key in stopped.value.cancel_details) is not cleanup_confirmed
     assert clock.time() == pytest.approx(stop_at)
+    assert len(executor.reconcile_calls) == (2 if trigger == "timeout" else 1)
     assert executor.cancel_calls == [order.order_id]
     assert executor._placed == 0
     assert tracker.pending_orders[order.order_id].extra["terminal_confirmation_pending"] is True
