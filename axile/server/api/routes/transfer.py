@@ -145,7 +145,7 @@ async def check_source(plan: dict):
 async def pull(plan: dict):
     """主动从来源端拉取数据并交回接收确认。"""
     try:
-        return await service.pull(_plan(plan))
+        return await service.move(_plan(plan))
     except Exception as exc:
         raise HTTPException(409, "拉取未完成，请检查来源端；源数据仅在确认后清理") from exc
 
@@ -158,3 +158,25 @@ async def acknowledge(receipt: dict, plan: dict):
             return await native_call(service.acknowledge, receipt, _plan(plan))
     except Exception as exc:
         raise HTTPException(409, "接收确认无效或清理未完成") from exc
+
+
+@router.post("/move", response_model=None)
+async def prepare_move(plan: dict, requester: str = ""):
+    """生成唯一的迁移清单和本批业务数据。"""
+    try:
+        async with service._lock:
+            return await native_call(
+                service._operation, "prepare_direct", requester=requester, **service._plan_request(_plan(plan))
+            )
+    except ValueError as exc:
+        raise HTTPException(409, "无法创建在线迁移清单") from exc
+
+
+@router.get("/move/{batch}/{name:path}", response_model=None)
+async def move_file(batch: str, name: str):
+    """直接从原始录制读取，支持按 Range 续传。"""
+    try:
+        value = await native_call(service._operation, "direct_file", batch=batch, name=name)
+    except ValueError as exc:
+        raise HTTPException(404, "迁移录制不可用") from exc
+    return FileResponse(value["path"], media_type="application/octet-stream")

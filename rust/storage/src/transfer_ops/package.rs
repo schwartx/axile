@@ -55,6 +55,12 @@ pub(super) struct Manifest {
     pub start: Option<String>,
     pub end: String,
     pub executions: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub execution_digests: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub recording_stamps: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub requester: String,
     pub files: BTreeMap<String, Entry>,
 }
 impl Manifest {
@@ -62,7 +68,7 @@ impl Manifest {
         let manifest: Self = serde_json::from_value(value.clone()).map_err(invalid)?;
         files::identity(&manifest.batch)?;
         files::identity(&manifest.source_id)?;
-        if manifest.format != 2
+        if !matches!(manifest.format, 2 | 3)
             || !manifest.files.contains_key("database.sqlite3")
             || manifest.files.len() > MAX_FILES
         {
@@ -74,7 +80,7 @@ impl Manifest {
             size = size
                 .checked_add(entry.size)
                 .ok_or_else(|| invalid("数据包超过预算"))?;
-            if size > MAX_BYTES
+            if (manifest.format == 2 && size > MAX_BYTES)
                 || entry.sha256.len() != 64
                 || !entry
                     .sha256
@@ -87,7 +93,7 @@ impl Manifest {
         Ok(manifest)
     }
 }
-fn validate_name(name: &str) -> Result<()> {
+pub(super) fn validate_name(name: &str) -> Result<()> {
     let parts = name.split('/').collect::<Vec<_>>();
     if name.contains('\\')
         || name.contains('\0')
@@ -262,6 +268,9 @@ pub(super) fn export(database: &str, request: &Value) -> Result<Value> {
     let batch = uuid::Uuid::new_v4().simple().to_string();
     let manifest = serde_json::to_value(Manifest {
         format: 2,
+        execution_digests: BTreeMap::new(),
+        recording_stamps: BTreeMap::new(),
+        requester: String::new(),
         batch: batch.clone(),
         source_id: source.to_owned(),
         start: plan.start.map(iso),
@@ -342,6 +351,9 @@ fn unpack(package: &Path, directory: &Path) -> Result<(Value, Manifest)> {
     }
     let value: Value = serde_json::from_slice(&raw).map_err(invalid)?;
     let manifest = Manifest::parse(&value)?;
+    if manifest.format != 2 {
+        return Err(invalid("无效离线传送格式"));
+    }
     if archive.len() != manifest.files.len() + 1 {
         return Err(invalid("数据包文件清单不一致"));
     }
@@ -392,7 +404,6 @@ fn destination(base: &Path, root: &Path, manifest: &Manifest, name: &str) -> Pat
 }
 pub(super) fn import(database: &str, request: &Value) -> Result<Value> {
     let root = files::root(database)?;
-    let base = files::base(database)?;
     let temporary = tempfile::Builder::new()
         .prefix("receive-")
         .tempdir_in(&root)
@@ -401,6 +412,17 @@ pub(super) fn import(database: &str, request: &Value) -> Result<Value> {
         Path::new(super::text(request, "package")?),
         temporary.path(),
     )?;
+    install(database, temporary.path(), value, manifest)
+}
+
+pub(super) fn install(
+    database: &str,
+    staging: &Path,
+    value: Value,
+    manifest: Manifest,
+) -> Result<Value> {
+    let root = files::root(database)?;
+    let base = files::base(database)?;
     for (name, entry) in &manifest.files {
         if name == "database.sqlite3" || name.starts_with("replay/") {
             continue;
@@ -411,11 +433,11 @@ pub(super) fn import(database: &str, request: &Value) -> Result<Value> {
             return Err(invalid("同名录制内容冲突"));
         }
     }
-    super::raw::validate(temporary.path(), &manifest)?;
-    super::raw::check_destination(&base, temporary.path(), &manifest)?;
+    super::raw::validate(staging, &manifest)?;
+    super::raw::check_destination(&base, staging, &manifest)?;
     super::import_snapshot(
         database,
-        &json!({"source_id":manifest.source_id,"snapshot":temporary.path().join("database.sqlite3")}),
+        &json!({"source_id":manifest.source_id,"snapshot":staging.join("database.sqlite3")}),
     )?;
     let mut code_roots = BTreeSet::new();
     for name in manifest.files.keys() {
@@ -425,7 +447,7 @@ pub(super) fn import(database: &str, request: &Value) -> Result<Value> {
         let target = destination(&base, &root, &manifest, name);
         files::mkdir(target.parent().unwrap())?;
         if !target.exists() {
-            fs::rename(temporary.path().join(name), &target).map_err(invalid)?;
+            fs::rename(staging.join(name), &target).map_err(invalid)?;
             files::sync_directory(target.parent().unwrap())?;
         }
         if name.starts_with("code/") {
@@ -437,13 +459,18 @@ pub(super) fn import(database: &str, request: &Value) -> Result<Value> {
             );
         }
     }
-    super::raw::install(&base, temporary.path(), &manifest)?;
-    let receipt = json!({"batch":manifest.batch,"source_id":manifest.source_id,"manifest_sha256":files::manifest_hash(&value)?});
+    super::raw::install(&base, staging, &manifest)?;
+    let receipt = record_receipt(&root, &value, &manifest)?;
+    Ok(json!({"receipt":receipt,"algorithm_directories":code_roots,"source_id":manifest.source_id}))
+}
+
+pub(super) fn record_receipt(root: &Path, value: &Value, manifest: &Manifest) -> Result<Value> {
+    let receipt = json!({"batch":manifest.batch,"source_id":manifest.source_id,"manifest_sha256":files::manifest_hash(value)?});
     files::write_json(
         &root.join(format!("receipt-{}.json", manifest.batch)),
         &receipt,
     )?;
-    Ok(json!({"receipt":receipt,"algorithm_directories":code_roots,"source_id":manifest.source_id}))
+    Ok(receipt)
 }
 
 #[cfg(test)]

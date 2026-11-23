@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
+mod direct;
 mod files;
 mod package;
 mod raw;
@@ -87,6 +88,9 @@ pub fn transfer(path: &str, request: &Value) -> Result<Value, AnalysisError> {
         }
     }
     match text(request, "action")? {
+        "prepare_direct" => direct::prepare(path, request),
+        "direct_file" => direct::file(path, request),
+        "import_direct" => direct::receive(path, request),
         "export_package" => package::export(path, request),
         "import_package" => package::import(path, request),
         "acknowledge" => state::acknowledge(path, request),
@@ -345,7 +349,7 @@ fn import_snapshot(path: &str, request: &Value) -> Result<Value, AnalysisError> 
 }
 
 fn prune_history(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    let c = Connection::open(path).map_err(err)?;
+    let mut c = Connection::open(path).map_err(err)?;
     c.execute_batch("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000")
         .map_err(err)?;
     let cutoff = request["cutoff_us"]
@@ -354,12 +358,22 @@ fn prune_history(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let ids = request["executions"]
         .as_array()
         .ok_or_else(|| err("缺少接收确认"))?;
-    let tx = c.unchecked_transaction().map_err(err)?;
+    let tx = c
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(err)?;
     let c = &tx;
     idle(c)?;
     let mut removed = 0;
     for id in ids {
         let id = id.as_str().ok_or_else(|| err("无效执行 ID"))?;
+        if let Some(revisions) = request["execution_digests"].as_object() {
+            let Some(expected) = revisions.get(id).and_then(Value::as_str) else {
+                continue;
+            };
+            if direct::execution_digest(c, "main", id)? != expected {
+                continue;
+            }
+        }
         let count=c.execute("DELETE FROM executerecord WHERE execution_id=?1 AND id<(SELECT MAX(id) FROM executerecord) AND created_at_us<?2 AND NOT EXISTS(SELECT 1 FROM execution_intent WHERE execution_id=?1 AND finished_at_us IS NULL)",params![id,cutoff]).map_err(err)?;
         if count > 0 {
             for table in ["execution_event", "execution_artifact", "execution_intent"] {
