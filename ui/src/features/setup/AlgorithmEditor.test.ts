@@ -27,6 +27,24 @@ test('关闭追单仍完整显示可编辑字段，文案随服务端改变', ()
   expect(render('服务端说明乙')).toContain('服务端说明乙')
 })
 
+test('追单市价兜底独立显示开关，追单关闭时提示当前不生效', () => {
+  const info = metadata('说明')
+  const properties = info.params_schema.properties as Record<string, unknown>
+  properties.market_fallback_enabled = {
+    type: 'boolean', title: '追单市价兜底', description: '追满后允许请求市价单。', default: true,
+  }
+  const render = (chase: boolean, fallback: boolean) => renderToStaticMarkup(createElement(SchemaEditor, {
+    info, params: { chase_enabled: chase, market_fallback_enabled: fallback }, onChange: () => {},
+  }))
+  const inactive = render(false, true)
+  expect(inactive).toContain('aria-pressed="true" aria-label="追单市价兜底" aria-describedby=')
+  expect(inactive).toContain('开启追单后生效')
+  const limitOnly = render(true, false)
+  expect(limitOnly).toContain('aria-pressed="true" aria-label="后端追单标题"')
+  expect(limitOnly).toContain('aria-pressed="false" aria-label="追单市价兜底" aria-describedby=')
+  expect(limitOnly).toContain('追满后允许请求市价单。')
+})
+
 test('服务端提示决定控件，百分比历史精度不按滑块步长取整', () => {
   const info = metadata('说明')
   info.params_schema = { type: 'object', properties: {

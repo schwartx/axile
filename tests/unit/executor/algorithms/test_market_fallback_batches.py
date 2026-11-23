@@ -2,11 +2,42 @@
 
 import pytest
 
-from axile.common.serialization import copy_data
+from axile.common.serialization import copy_data, parse_input
+from axile.executor.algorithms.defaults.single_maker.impl import SingleMakerParams
+from axile.executor.algorithms.utils.order_tracker import ChaseConfig
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.ctp.ctp_execute import CtpSessionRecoveryRequired
 from axile.executor.models.unified_order import OrderType, TradeRecord
 from tests.fixtures.algorithm_fakes import ClockStub, build_fallback_tracker
+
+
+def test_single_maker_can_chase_to_limit_without_market_fallback(monkeypatch):
+    params = parse_input(
+        SingleMakerParams,
+        {"chase_enabled": True, "max_chase_count": 1, "market_fallback_enabled": False},
+    )
+    executor, tracker, parent = build_fallback_tracker()
+    tracker.chase_config = ChaseConfig.from_params(params)
+    tracker._chase_info[parent.order_id]["chase_count"] = 0
+    quote = tracker.latest_prices[parent.symbol]
+    quote.bids = [(100.05, 1.0)]
+    monkeypatch.setattr(tracker, "_usable_price", lambda _symbol: quote)
+    canceled_ids = []
+
+    def cancel(order_id):
+        canceled_ids.append(order_id)
+        tracker.on_order_update(copy_data(parent, update={"status": OrderStatus.CANCELED}))
+        return True
+
+    monkeypatch.setattr(executor, "cancel_order", cancel)
+
+    tracker._check_and_chase()
+    tracker._fallback_to_market_order()
+
+    assert canceled_ids == [parent.order_id]
+    assert [(call["order_type"], call["price"]) for call in executor.place_calls] == [(OrderType.LIMIT, 100.05)]
+    (child_id,) = tracker.pending_orders
+    assert tracker._chase_info[child_id]["chase_count"] == 1
 
 
 @pytest.mark.parametrize("early_status", [None, OrderStatus.FILLED, OrderStatus.REJECTED])

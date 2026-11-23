@@ -279,7 +279,8 @@ export function SchemaFieldRow({ field, value, onChange }: {
       onChange={(next) => onChange(next === '' ? null : next === 'true')} /></div>
   )
   if (spec.type === 'boolean') return (
-    <div className={ROW}>{heading}<Toggle on={value === true} ariaLabel={label} onClick={() => onChange(value !== true)} /></div>
+    <div className={ROW}>{heading}<Toggle on={value === true} ariaLabel={label}
+      describedBy={hint ? hintId : undefined} onClick={() => onChange(value !== true)} /></div>
   )
   if (!spec.decimal && (spec.type === 'integer' || spec.type === 'number')) {
     if ((spec.type === 'integer' && spec['x-unit'] === '秒') || spec.nullable || ['stepper', 'numberflow', 'presets', 'slider'].includes(spec['x-control'] ?? '')) return (
@@ -311,8 +312,14 @@ export function SchemaEditor({ info, params, onChange, onValidationError }: {
   if (!info || !fields) return <GenericEditor params={params} onChange={onChange} onValidationError={onValidationError} />
   return (
     <div className="max-w-[720px]">
-      {fields.map((field) => <SchemaFieldRow key={field.name} field={field} value={effective[field.name]}
-        onChange={(value) => onChange({ ...params, [field.name]: value })} />)}
+      {fields.map((field) => {
+        const fallbackInactive = info.name === 'SINGLE-MAKER' && field.name === 'market_fallback_enabled' && effective.chase_enabled === false
+        const row = fallbackInactive
+          ? { ...field, schema: { ...field.schema, description: '当前追单已关闭。可预设市价兜底，开启追单后生效。' } }
+          : field
+        return <SchemaFieldRow key={field.name} field={row} value={effective[field.name]}
+          onChange={(value) => onChange({ ...params, [field.name]: value })} />
+      })}
       {info.name === 'TWAP' && Number(effective.slices) > 0 && (
         <div className="text-xs text-ink-3">{Number(effective.total_duration) / Number(effective.slices)} 秒 / 片</div>
       )}
