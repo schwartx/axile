@@ -157,10 +157,12 @@ export function Toggle({
   on,
   onClick,
   ariaLabel,
+  describedBy,
 }: {
   on: boolean
   onClick: () => void
   ariaLabel?: string
+  describedBy?: string
 }) {
   return (
     <button
@@ -171,6 +173,7 @@ export function Toggle({
       onClick={onClick}
       aria-pressed={on}
       aria-label={ariaLabel}
+      aria-describedby={describedBy}
     >
       <span
         className={`absolute top-[3px] h-[20px] w-[20px] rounded-full bg-surface shadow transition-all ${

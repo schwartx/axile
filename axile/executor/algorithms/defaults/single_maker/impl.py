@@ -86,6 +86,14 @@ class SingleMakerParams(BaseAlgorithmParams, ChaseParamsMixin):
             },
         ),
     ] = field(default="skip")
+    market_fallback_enabled: Annotated[
+        bool,
+        Meta(
+            title="追单市价兜底",
+            description="开启追单且达到追单次数上限后，允许对未成交部分请求市价单。关闭后继续等待限价单成交至超时。",
+            extra_json_schema={"x-order": 90},
+        ),
+    ] = field(default=True)
 
     def __str__(self) -> str:
         """便于记录日志的字符串表示."""

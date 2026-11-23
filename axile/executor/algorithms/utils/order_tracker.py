@@ -131,6 +131,8 @@ class ChaseConfig:
     cancel_confirm_timeout : float
         追价换单前等待旧单撤单生效的最长秒数。超时则放弃本次换单（保留旧单），
         绝不在未确认的情况下发出新单——宁可少挂一次，也不能新旧单同时在场。
+    market_fallback_enabled : bool
+        达到追单次数上限后是否允许市价兜底。
     """
 
     enabled: bool = False
@@ -138,6 +140,7 @@ class ChaseConfig:
     max_count: int = 5
     interval: float = 5.0
     cancel_confirm_timeout: float = 3.0
+    market_fallback_enabled: bool = True
 
     @classmethod
     def from_params(cls, params: object) -> "ChaseConfig | None":
@@ -171,6 +174,7 @@ class ChaseConfig:
             ticks=getattr(params, "chase_ticks", 1),
             max_count=getattr(params, "max_chase_count", 5),
             interval=getattr(params, "chase_interval", 5.0),
+            market_fallback_enabled=getattr(params, "market_fallback_enabled", True),
         )
 
 
@@ -711,7 +715,12 @@ class OrderTracker:
             # 市价兜底只在真正接近超时时触发，避免一开始就把“追单但仍想控制价格”
             # 的策略退化成无保护的立即扫单。
             remaining_time = timeout - (self.clock.time() - start_time)
-            if not fallback_triggered and 0 < remaining_time <= fallback_threshold and self.chase_config:
+            if (
+                not fallback_triggered
+                and 0 < remaining_time <= fallback_threshold
+                and self.chase_config
+                and self.chase_config.market_fallback_enabled
+            ):
                 fallback_triggered = True
                 self._logger.info(f"距离超时还有 {remaining_time:.1f} 秒，对达到最大追单次数的订单使用市价单兜底")
                 self.executor.handle_termination_checkpoint()
@@ -1428,7 +1437,7 @@ class OrderTracker:
         则先请求撤销原限价单，并在收到旧单终态回调后，
         仅对剩余未成交部分补市价单，避免重复下单。
         """
-        if not self.chase_config:
+        if not self.chase_config or not self.chase_config.market_fallback_enabled:
             return
 
         orders_to_fallback: list[tuple[str, UnifiedOrder, dict[str, Any]]] = []
