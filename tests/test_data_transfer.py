@@ -1,6 +1,7 @@
 """传送的累积、去重、回执和破损包边界。"""
 
 import asyncio
+import base64
 import hashlib
 import json
 import sqlite3
@@ -782,3 +783,177 @@ def test_invalid_archive_never_commits_or_issues_receipt(peers, monkeypatch, tmp
         assert c.execute("SELECT count(*) FROM account").fetchone() == (0,)
     assert not list(transfer.root().glob("receipt-*.json"))
     assert not (target.parent / "outside").exists()
+
+
+def test_online_move_streams_original_and_requires_verified_receipt(peers, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from axile.server.api.routes.transfer import router
+
+    source, target = peers
+    seed(source)
+    seed(source, 2)
+    raw_record(source, "old-recording", 1)
+    raw_record(source, "next-recording", 2)
+    raw_record(target, "existing-recording", 3)
+    raw_record(source, "recent-recording", int(datetime.now(UTC).timestamp() * 1_000_000))
+    original = source.parent / "replay/account-1/raw-old-recording.mcap"
+    spec = {"execution_days": 1, "replay_days": 1}
+    app = FastAPI()
+    app.include_router(router)
+    with TestClient(app) as client:
+        response = client.post("/transfer/move", json=spec)
+        assert response.status_code == 200, response.text
+        prepared = response.json()
+        manifest = prepared["manifest"]
+        assert set(manifest["files"]) == {"database.sqlite3", "replay/account-1/raw-old-recording.mcap"}
+        assert manifest["executions"] == ["exec-1"]
+        url = f"/transfer/move/{manifest['batch']}/replay/account-1/raw-old-recording.mcap"
+        suffix = client.get(url, headers={"Range": "bytes=10-"})
+        assert suffix.status_code == 206
+        assert suffix.content == original.read_bytes()[10:]
+        assert {p.name for p in (transfer.root() / "outbox" / manifest["batch"]).iterdir()} == {"manifest.json"}
+        contents = client.get(url).content
+    staging = target.parent / "direct"
+    path = staging / "replay/account-1/raw-old-recording.mcap"
+    path.parent.mkdir(parents=True)
+    (staging / "database.sqlite3").write_bytes(base64.b64decode(prepared["database"]))
+    target_replay = target.parent / "replay"
+    existing_lease = _core.ReplayReadLease(str(target_replay), 1, "existing-recording")
+    with sqlite3.connect(target_replay / "account-1/.replay-v2.sqlite") as index:
+        generation = index.execute("SELECT value FROM meta WHERE key='generation'").fetchone()
+        index.execute("BEGIN")
+        assert index.execute("SELECT id FROM recordings").fetchall() == [("existing-recording",)]
+        with monkeypatch.context() as context:
+            context.setattr(transfer, "database_path", lambda: str(target))
+            path.write_bytes(bytes([contents[0] ^ 1]) + contents[1:])
+            with pytest.raises(ValueError, match="校验失败"):
+                transfer._install_direct(staging, manifest)
+            assert not path.exists()
+            assert original.exists()
+            path.write_bytes(contents)
+            receipt = transfer._install_direct(staging, manifest)
+        assert index.execute("SELECT id FROM recordings").fetchall() == [("existing-recording",)]
+        index.rollback()
+        assert index.execute("SELECT value FROM meta WHERE key='generation'").fetchone() == generation
+        assert index.execute("SELECT id FROM recordings ORDER BY id").fetchall() == [
+            ("existing-recording",),
+            ("old-recording",),
+        ]
+    del existing_lease
+    assert original.exists()
+    assert raw_manifest(target, "exec-1")["recordings"]
+    result = transfer.acknowledge(receipt, transfer.TransferPlan(**spec))
+    assert result["cleanup_pending"] and original.exists()
+    replay = source.parent / "replay"
+    writer = _core.ExecutionReplayWriter(str(replay), 1, "live", '{"schema_version":2}')
+    lease = _core.ReplayReadLease(str(replay), 1, "old-recording")
+    result = transfer._operation("cleanup_acknowledged", batch=manifest["batch"], source_id=manifest["source_id"])
+    assert result["cleanup_pending"] and original.exists()
+    following = transfer._operation("prepare_direct", **transfer._plan_request(transfer.TransferPlan(**spec)))[
+        "manifest"
+    ]
+    assert set(following["files"]) == {"database.sqlite3", "replay/account-1/raw-next-recording.mcap"}
+    del lease
+    result = transfer._operation("cleanup_acknowledged", batch=manifest["batch"], source_id=manifest["source_id"])
+    assert result["removed_recordings"] == 1 and not result["cleanup_pending"]
+    assert not original.exists()
+    writer.append(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "recording_id": "live",
+                "capture_seq": 1,
+                "time_us": 2,
+                "topic": "/execution",
+                "data": {"execution_id": "exec-live", "phase": "start"},
+            }
+        )
+    )
+    writer.seal()
+    with sqlite3.connect(replay / "account-1/.replay-v2.sqlite") as index:
+        assert index.execute("SELECT state,seq FROM recordings WHERE id='live'").fetchone() == ("recording", 1)
+    writer.finish()
+    assert (source.parent / "replay/account-1/raw-recent-recording.mcap").exists()
+
+
+def test_direct_without_retention_transfers_and_keeps_originals(peers, monkeypatch):
+    source, target = peers
+    seed(source)
+    raw_record(source, "keep", 1)
+    original = source.parent / "replay/account-1/raw-keep.mcap"
+    plan = transfer.TransferPlan(start=datetime.fromtimestamp(0, UTC), end=datetime.now(UTC))
+    request = transfer._plan_request(plan)
+    prepared = transfer._operation("prepare_direct", **request)
+    manifest = prepared["manifest"]
+    assert manifest["executions"] == ["exec-1"]
+    staging = target.parent / "direct"
+    incoming = staging / "replay/account-1/raw-keep.mcap"
+    incoming.parent.mkdir(parents=True)
+    incoming.write_bytes(original.read_bytes())
+    (staging / "database.sqlite3").write_bytes(base64.b64decode(prepared["database"]))
+    with monkeypatch.context() as context:
+        context.setattr(transfer, "database_path", lambda: str(target))
+        receipt = transfer._install_direct(staging, manifest)
+    transfer.acknowledge(receipt, plan)
+    result = transfer._operation("cleanup_acknowledged", batch=manifest["batch"], source_id=manifest["source_id"])
+    assert result == {"removed_executions": 0, "removed_recordings": 0, "cleanup_pending": False}
+    assert original.exists()
+    assert raw_manifest(target, "exec-1")["recordings"]
+    assert transfer._operation("prepare_direct", **request)["manifest"] is None
+    other = transfer._operation("prepare_direct", requester="a" * 32, **request)["manifest"]
+    assert other["executions"] == ["exec-1"]
+
+
+def test_direct_old_receipt_keeps_late_event_until_fresh_receipt(peers, monkeypatch):
+    source, target = peers
+    for ident in (1, 2):
+        seed(source, ident)
+    plan = transfer.TransferPlan(execution_days=1)
+    request = transfer._plan_request(plan)
+    staging = target.parent / "direct"
+    staging.mkdir()
+
+    def acknowledge_revision():
+        prepared = transfer._operation("prepare_direct", **request)
+        manifest = prepared["manifest"]
+        (staging / "database.sqlite3").write_bytes(base64.b64decode(prepared["database"]))
+        with monkeypatch.context() as context:
+            context.setattr(transfer, "database_path", lambda: str(target))
+            receipt = transfer._install_direct(staging, manifest)
+        assert transfer.acknowledge(receipt, plan)["cleanup_pending"]
+        return manifest
+
+    def events(database):
+        payload = _core.list_execution_events_json(str(database), '{"execution_id":"exec-1"}')
+        return [event["event_uid"] for event in json.loads(payload)["data"]]
+
+    original = acknowledge_revision()
+    for ident, uid in ((1, "late-event"), (2, "sentinel")):
+        event = {
+            "execution_id": f"exec-{ident}",
+            "account_id": 1,
+            "channel": "binance",
+            "algorithm": "test",
+            "schema_version": 1,
+            "event_uid": uid,
+            "event_type": "order_terminal",
+            "status": "SUCCESS",
+            "reason_family": "EXCHANGE",
+            "reason_code": "filled",
+            "ts_local_created": "2026-11-22T00:00:00Z",
+            "ts_persisted": "2026-11-22T00:00:00Z",
+            "seq": 1,
+            "details": {},
+        }
+        assert _core.append_execution_event(str(source), json.dumps(event))
+    result = transfer._operation("cleanup_acknowledged", batch=original["batch"], source_id=original["source_id"])
+    assert result["removed_executions"] == 0
+    assert events(source) == ["late-event"]
+    fresh = acknowledge_revision()
+    assert fresh["execution_digests"] != original["execution_digests"]
+    result = transfer._operation("cleanup_acknowledged", batch=fresh["batch"], source_id=fresh["source_id"])
+    assert result["removed_executions"] == 1
+    assert events(target) == ["late-event"]
+    assert events(source) == []

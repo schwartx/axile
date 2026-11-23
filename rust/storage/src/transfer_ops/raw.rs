@@ -1,9 +1,9 @@
-//! Raw v2 transfer uses committed source prefixes; indexes are always rebuilt locally.
+//! Raw v2 transfer uses committed source prefixes and derives indexes locally.
 use super::{
     files::{self, invalid, Result, MAX_BYTES},
     package::{Entry, Manifest},
 };
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{params, types::Value as SqlValue, Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -174,6 +174,184 @@ pub(super) fn collect(
     }
     Ok(paths)
 }
+struct DirectAccount {
+    db: Connection,
+    _leases: [File; 2],
+}
+
+impl DirectAccount {
+    fn open(account: &Path) -> Result<Option<Self>> {
+        let lock = |name: &str| -> Result<File> {
+            let path = account.join(name);
+            files::reject_links(&path)?;
+            let file = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(path)
+                .map_err(invalid)?;
+            fs2::FileExt::try_lock_exclusive(&file)
+                .map_err(|_| invalid("接收端正在录制或维护索引"))?;
+            Ok(file)
+        };
+        let leases = [
+            lock(".raw-writer.lock")?,
+            lock(".raw-index-maintenance.lock")?,
+        ];
+        if account.join(".raw-import-pending").exists() {
+            return Ok(None);
+        }
+        let index = account.join(".replay-v2.sqlite");
+        files::reject_links(&index)?;
+        let exists = index.exists();
+        if !exists {
+            for entry in fs::read_dir(account).map_err(invalid)? {
+                let name = entry.map_err(invalid)?.file_name();
+                if name
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("raw-") && name.ends_with(".mcap"))
+                {
+                    return Ok(None);
+                }
+            }
+        }
+        let db = Connection::open(index).map_err(invalid)?;
+        if exists {
+            let layout = db
+                .query_row("SELECT value FROM meta WHERE key='layout'", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .ok();
+            if layout.as_deref() != Some(crate::execution_replay_raw_index::LAYOUT) {
+                return Ok(None);
+            }
+        } else {
+            db.execute_batch(include_str!("../execution_replay_raw.sql"))
+                .map_err(invalid)?;
+            db.execute(
+                "INSERT INTO meta VALUES ('layout',?1),('generation',?2)",
+                params![
+                    crate::execution_replay_raw_index::LAYOUT,
+                    uuid::Uuid::new_v4().to_string()
+                ],
+            )
+            .map_err(invalid)?;
+        }
+        db.execute_batch("BEGIN IMMEDIATE").map_err(invalid)?;
+        Ok(Some(Self {
+            db,
+            _leases: leases,
+        }))
+    }
+}
+
+pub(super) fn install_direct(
+    database: &str,
+    base: &Path,
+    staging: &Path,
+    manifest: &Manifest,
+) -> Result<bool> {
+    let mut accounts = BTreeMap::new();
+    let mut recordings = Vec::new();
+    for (name, entry) in manifest
+        .files
+        .iter()
+        .filter(|(name, _)| name.starts_with("replay/"))
+    {
+        let source = staging.join(name);
+        let target = base.join(name);
+        files::reject_links(&target)?;
+        let account = target.parent().unwrap();
+        files::mkdir(account)?;
+        if !accounts.contains_key(account) {
+            let Some(install) = DirectAccount::open(account)? else {
+                return Ok(false);
+            };
+            accounts.insert(account.to_owned(), install);
+        }
+        let db = &accounts[account].db;
+        let recording = target
+            .file_stem()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .strip_prefix("raw-")
+            .unwrap();
+        let state: Option<String> = db
+            .query_row(
+                "SELECT state FROM recordings WHERE id=?1",
+                [recording],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(invalid)?;
+        if target.exists() {
+            let length = target.metadata().map_err(invalid)?.len();
+            if length != entry.size || state.as_deref().is_some_and(|state| state != "closed") {
+                return Ok(false);
+            }
+            if files::digest(&target)? != entry.sha256 {
+                return Err(invalid("同名原始录制内容冲突"));
+            }
+            if state.is_some() {
+                continue;
+            }
+        } else if state.is_some() {
+            return Ok(false);
+        }
+        let pin = pin(account, recording, true)?;
+        let retired: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM meta WHERE key=?1)",
+                [format!("pruned:{recording}")],
+                |row| row.get(0),
+            )
+            .map_err(invalid)?;
+        if retired {
+            return Err(invalid("请等待原始录制清理完成"));
+        }
+        crate::execution_replay_raw_rebuild::scan(db, &source, recording, false)
+            .map_err(invalid)?;
+        let closed: bool = db
+            .query_row(
+                "SELECT state='closed' AND seq>0 FROM recordings WHERE id=?1",
+                [recording],
+                |row| row.get(0),
+            )
+            .map_err(invalid)?;
+        if !closed {
+            return Err(invalid("在线迁移需要已封口的录制"));
+        }
+        // The direct sender only selects independently readable recordings.
+        let missing: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM content_refs r WHERE r.recording=?1
+             AND NOT EXISTS(SELECT 1 FROM commits c WHERE c.recording=r.target AND c.id=r.commit_id))",
+            [recording], |row| row.get(0)
+        ).map_err(invalid)?;
+        if missing {
+            return Err(invalid("数据包缺少被引用的原始提交前缀"));
+        }
+        recordings.push((source, target, pin));
+    }
+    super::import_snapshot(
+        database,
+        &serde_json::json!({
+            "source_id":manifest.source_id, "snapshot":staging.join("database.sqlite3")
+        }),
+    )?;
+    for (source, target, _) in &recordings {
+        if !target.exists() {
+            // Persist the same inode before publishing its index, leaving a retryable source until receipt.
+            fs::hard_link(source, target).map_err(invalid)?;
+        }
+        files::sync_directory(target.parent().unwrap())?;
+    }
+    for install in accounts.values() {
+        install.db.execute_batch("COMMIT").map_err(invalid)?;
+    }
+    Ok(true)
+}
+
 pub(super) fn install(base: &Path, staging: &Path, manifest: &Manifest) -> Result<()> {
     let mut accounts = BTreeSet::new();
     for (name, entry) in manifest
@@ -393,45 +571,168 @@ pub(super) fn prune(base: &Path, name: &str, entry: &Entry, cutoff: i64) -> Resu
     // Rename under the lease; a crash leaves a recoverable tombstone, never a live index to partial bytes.
     fs::rename(&path, &tombstone).map_err(invalid)?;
     files::sync_directory(account)?;
-    let tables: Vec<String> = db
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name<>'meta'")
+    delete_index_rows(&db, recording, false)?;
+    db.execute_batch("COMMIT").map_err(invalid)?;
+    files::remove_file(&tombstone)?;
+    Ok(true)
+}
+
+pub(super) fn prune_live(
+    base: &Path,
+    name: &str,
+    entry: &Entry,
+    cutoff: i64,
+) -> Result<(bool, bool)> {
+    let path = base.join(name);
+    let tombstone = path.with_extension("mcap.deleted");
+    let account = path.parent().unwrap();
+    let recording = path
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .strip_prefix("raw-")
+        .unwrap()
+        .strip_suffix(".mcap")
+        .unwrap();
+    let maintenance = account.join(".raw-index-maintenance.lock");
+    for path in [&path, &tombstone, &maintenance] {
+        files::reject_links(path)?;
+    }
+    if !account.exists() {
+        return Ok((false, false));
+    }
+    let lease = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(maintenance)
+        .map_err(invalid)?;
+    if fs2::FileExt::try_lock_exclusive(&lease).is_err() {
+        return Ok((false, true));
+    }
+    let Ok(_pin) = pin(account, recording, true) else {
+        return Ok((false, true));
+    };
+    let index = account.join(".replay-v2.sqlite");
+    files::reject_links(&index)?;
+    let db = Connection::open(index).map_err(invalid)?;
+    db.busy_timeout(std::time::Duration::from_millis(100))
+        .map_err(invalid)?;
+    let marker = format!("pruned:{recording}");
+    let retired: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM meta WHERE key=?1)",
+            [&marker],
+            |row| row.get(0),
+        )
+        .map_err(invalid)?;
+    let mut removed = false;
+    if !retired && (path.exists() || tombstone.exists()) {
+        let source = if path.exists() { &path } else { &tombstone };
+        if fs::metadata(source).map_err(invalid)?.len() != entry.size
+            || files::digest(source)? != entry.sha256
+        {
+            return Ok((false, true));
+        }
+        let tx =
+            rusqlite::Transaction::new_unchecked(&db, rusqlite::TransactionBehavior::Immediate)
+                .map_err(invalid)?;
+        let safe: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM recordings WHERE id=?1 AND state='closed' AND watermark<?2)
+             AND NOT EXISTS(SELECT 1 FROM content_refs WHERE target=?1 AND recording<>?1)",
+            params![recording,cutoff], |row| row.get(0)
+        ).map_err(invalid)?;
+        if !safe {
+            return Ok((false, true));
+        }
+        if source == &path {
+            if tombstone.exists() {
+                return Err(invalid("原始录制清理存在冲突"));
+            }
+            fs::rename(&path, &tombstone).map_err(invalid)?;
+            files::sync_directory(account)?;
+        }
+        // Readers resolve the recording row first. The remaining derived rows are now unreachable.
+        tx.execute("DELETE FROM recordings WHERE id=?1", [recording])
+            .map_err(invalid)?;
+        tx.execute("INSERT INTO meta VALUES (?1,'')", [&marker])
+            .map_err(invalid)?;
+        tx.commit().map_err(invalid)?;
+        removed = true;
+    } else if !retired {
+        return Ok((false, false));
+    }
+    files::remove_file(&tombstone)?;
+    let pending = delete_index_rows(&db, recording, true)?;
+    if !pending {
+        db.execute("DELETE FROM meta WHERE key=?1", [&marker])
+            .map_err(invalid)?;
+    }
+    Ok((removed, pending))
+}
+
+fn delete_index_rows(db: &Connection, recording: &str, bounded: bool) -> Result<bool> {
+    let tables = db
+        .prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name<>'meta'
+         ORDER BY name='recording_keys',name",
+        )
         .map_err(invalid)?
-        .query_map([], |r| r.get(0))
+        .query_map([], |row| row.get::<_, String>(0))
         .map_err(invalid)?
-        .collect::<std::result::Result<_, _>>()
+        .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(invalid)?;
     let key: Option<i64> = db
         .query_row(
             "SELECT id FROM recording_keys WHERE recording=?1",
             [recording],
-            |r| r.get(0),
+            |row| row.get(0),
         )
         .ok();
-    if let Some(key) = key {
-        db.execute("DELETE FROM market_namespace_symbols WHERE namespace IN (SELECT id FROM market_namespaces WHERE recording=?1)",[key]).map_err(invalid)?;
-    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     for table in tables {
-        if table == "recordings" {
-            db.execute("DELETE FROM recordings WHERE id=?1", [recording])
-                .map_err(invalid)?;
-        } else if table.starts_with("market_") {
-            if let Some(key) = key {
-                if table == "market_namespace_symbols" {
-                    db.execute("DELETE FROM market_namespace_symbols WHERE namespace IN (SELECT id FROM market_namespaces WHERE recording=?1)",[key]).map_err(invalid)?;
-                } else {
-                    db.execute(&format!("DELETE FROM {table} WHERE recording=?1"), [key])
-                        .map_err(invalid)?;
-                }
-            }
+        let (predicate, value) = if table.starts_with("market_") {
+            let Some(key) = key else { continue };
+            let predicate = if table == "market_namespace_symbols" {
+                "namespace IN (SELECT id FROM market_namespaces WHERE recording=?1)"
+            } else {
+                "recording=?1"
+            };
+            (predicate, SqlValue::Integer(key))
         } else {
-            db.execute(
-                &format!("DELETE FROM {table} WHERE recording=?1"),
-                [recording],
-            )
-            .map_err(invalid)?;
+            let column = if table == "recordings" {
+                "id=?1"
+            } else {
+                "recording=?1"
+            };
+            (column, SqlValue::Text(recording.to_owned()))
+        };
+        let name = super::quote(&table);
+        if !bounded {
+            db.execute(&format!("DELETE FROM {name} WHERE {predicate}"), [&value])
+                .map_err(invalid)?;
+            continue;
+        }
+        let keys = db
+            .prepare("SELECT name FROM pragma_table_info(?1) WHERE pk>0 ORDER BY pk")
+            .map_err(invalid)?
+            .query_map([&table], |row| row.get::<_, String>(0))
+            .map_err(invalid)?
+            .map(|name| name.map(|name| super::quote(&name)))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(invalid)?
+            .join(",");
+        let sql = format!("DELETE FROM {name} WHERE ({keys}) IN (SELECT {keys} FROM {name} WHERE {predicate} LIMIT 256)");
+        loop {
+            let count = db.execute(&sql, [&value]).map_err(invalid)?;
+            if count < 256 {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Ok(true);
+            }
         }
     }
-    db.execute_batch("COMMIT").map_err(invalid)?;
-    files::remove_file(&tombstone)?;
-    Ok(true)
+    Ok(false)
 }

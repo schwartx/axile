@@ -79,7 +79,7 @@ impl RawWriter {
                 "raw index layout changed",
             ));
         }
-        db.busy_timeout(std::time::Duration::from_millis(100))
+        db.busy_timeout(std::time::Duration::from_secs(2))
             .map_err(io_error)?;
         db.execute_batch(include_str!("execution_replay_raw.sql"))
             .map_err(io_error)?;
@@ -93,12 +93,40 @@ impl RawWriter {
             [uuid::Uuid::new_v4().to_string()],
         )
         .map_err(io_error)?;
-        db.execute(
+        let tx =
+            rusqlite::Transaction::new_unchecked(&db, rusqlite::TransactionBehavior::Immediate)
+                .map_err(io_error)?;
+        let retired: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM meta WHERE key='pruned:'||?1)",
+                [recording],
+                |row| row.get(0),
+            )
+            .map_err(io_error)?;
+        if retired {
+            return Err(failure("INVALID_REQUEST", "raw recording is being retired"));
+        }
+        tx.execute(
             "INSERT INTO recordings(id,context) VALUES (?1,?2)",
             params![recording, context.to_string()],
         )
         .map_err(io_error)?;
-        raw_index::context(&db, recording, &context)?;
+        raw_index::context(&tx, recording, &context)?;
+        let missing: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM content_refs r WHERE r.recording=?1 AND NOT EXISTS(
+             SELECT 1 FROM commits c JOIN recordings s ON s.id=c.recording
+             WHERE c.recording=r.target AND c.id=r.commit_id))",
+                [recording],
+                |row| row.get(0),
+            )
+            .map_err(io_error)?;
+        if missing {
+            return Err(failure(
+                "INVALID_REQUEST",
+                "raw content reference is unavailable",
+            ));
+        }
         let file = OpenOptions::new()
             .create_new(true)
             .read(true)
@@ -126,6 +154,7 @@ impl RawWriter {
             .map_err(io_error)?;
         writer.flush().map_err(io_error)?;
         sync_file.sync_all().map_err(io_error)?;
+        tx.commit().map_err(io_error)?;
         Ok(Self {
             db,
             writer,

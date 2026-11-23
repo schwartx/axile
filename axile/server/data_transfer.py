@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import os
+import re
 import secrets
+import shutil
 import tempfile
 import threading
 from dataclasses import dataclass, field
@@ -217,7 +220,8 @@ async def pull(plan: TransferPlan) -> dict:
                 source = plan.source_url.rstrip("/")
                 peer = await client.get(source + "/api/v1/transfer/identity")
                 peer.raise_for_status()
-                if peer.json()["source_id"] == settings()["source_id"]:
+                requester = settings()["source_id"]
+                if peer.json()["source_id"] == requester:
                     raise ValueError("来源端不能是本机")
                 remote_plan = _plan_request(plan)["plan"]
                 with tempfile.TemporaryDirectory(dir=root(), prefix="pull-") as temporary:
@@ -249,10 +253,132 @@ async def pull(plan: TransferPlan) -> dict:
             return result
 
 
+def _direct_entries(manifest: dict):
+    """验证从来源端收到的迁移路径与大小。"""
+    if manifest["format"] != 3 or not re.fullmatch(r"[0-9a-f]{32}", manifest["batch"]):
+        raise ValueError("无效在线迁移清单")
+    for name, entry in manifest["files"].items():
+        if name != "database.sqlite3" and not re.fullmatch(
+            r"replay/account-[0-9]+/raw-[A-Za-z0-9_-]{1,128}\.mcap", name
+        ):
+            raise ValueError("无效在线迁移路径")
+        if not isinstance(entry["size"], int) or entry["size"] < 0:
+            raise ValueError("无效在线迁移文件大小")
+        yield name, entry["size"]
+
+
+async def _receive_recording(client, url: str, path: Path, size: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    offset = path.stat().st_size if path.exists() else 0
+    if offset == size and path.exists():
+        return
+    if offset > size:
+        path.unlink()
+        offset = 0
+    headers = {"Range": f"bytes={offset}-"} if offset else {}
+    async with client.stream("GET", url, headers=headers) as response:
+        response.raise_for_status()
+        if offset and response.headers.get("content-range") != f"bytes {offset}-{size - 1}/{size}":
+            raise ValueError("来源端未按请求偏移续传")
+        with path.open("ab") as destination:
+            async for chunk in response.aiter_bytes(1024 * 1024):
+                offset += len(chunk)
+                if offset > size:
+                    raise ValueError("迁移文件超过清单大小")
+                destination.write(chunk)
+            if offset != size:
+                raise ValueError("迁移文件传输不完整")
+            destination.flush()
+            os.fsync(destination.fileno())
+
+
+def _install_direct(staging: Path, manifest: dict) -> dict:
+    from axile.server.execution_replay.reader import readers
+
+    request = {"staging": str(staging), "manifest": manifest}
+    result = _operation("import_direct", **request)
+    if result.get("rebuild_required"):
+        with readers.maintenance():
+            result = _operation("import_direct", rebuild=True, **request)
+    if name := result.get("corrupt_recording"):
+        (staging / name).unlink()
+        raise ValueError("迁移文件校验失败，下次将重新下载")
+    return result["receipt"]
+
+
+async def move(plan: TransferPlan) -> dict:
+    """在线迁移到期数据，来源端收到可靠回执后才能删除原件。"""
+    if (root() / "pull-pending.json").exists():
+        return await pull(plan)
+    async with _lock:
+        staging = root() / "direct-receive"
+        staging.mkdir(mode=0o700, exist_ok=True)
+        state = staging / "state.json"
+        async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
+            if state.exists():
+                delivery = json.loads(state.read_text())
+            else:
+                if not plan.source_url:
+                    raise ValueError("请填写来源端地址")
+                source = plan.source_url.rstrip("/")
+                peer = await client.get(source + "/api/v1/transfer/identity")
+                peer.raise_for_status()
+                requester = settings()["source_id"]
+                if peer.json()["source_id"] == requester:
+                    raise ValueError("来源端不能是本机")
+                remote_plan = _plan_request(plan)["plan"]
+                response = await client.post(
+                    source + "/api/v1/transfer/move", params={"requester": requester}, json=remote_plan
+                )
+                response.raise_for_status()
+                report = response.json()
+                manifest = report["manifest"]
+                if manifest is None:
+                    shutil.rmtree(staging)
+                    return {"batch": None, "removed_executions": 0, "removed_recordings": 0, "cleanup_pending": False}
+                if manifest["source_id"] != peer.json()["source_id"]:
+                    raise ValueError("迁移清单来源不符")
+                list(_direct_entries(manifest))
+                data = base64.b64decode(report["database"], validate=True)
+                if hashlib.sha256(data).hexdigest() != manifest["files"]["database.sqlite3"]["sha256"]:
+                    raise ValueError("业务数据校验失败")
+                with (staging / "database.sqlite3").open("wb") as destination:
+                    destination.write(data)
+                    destination.flush()
+                    os.fsync(destination.fileno())
+                delivery = {"source_url": source, "plan": remote_plan, "manifest": manifest}
+                write_json(state, delivery)
+            if "receipt" not in delivery:
+                manifest = delivery["manifest"]
+                receipt_path = root() / f"receipt-{manifest['batch']}.json"
+                if receipt_path.is_file():
+                    # A restart can occur after installation persisted the receipt.
+                    delivery["receipt"] = json.loads(receipt_path.read_text())
+                else:
+                    for name, size in _direct_entries(manifest):
+                        if name != "database.sqlite3":
+                            await _receive_recording(
+                                client,
+                                f"{delivery['source_url']}/api/v1/transfer/move/{manifest['batch']}/{name}",
+                                staging / name,
+                                size,
+                            )
+                    delivery["receipt"] = await native_call(_install_direct, staging, manifest)
+                write_json(state, delivery)
+            response = await client.post(
+                delivery["source_url"] + "/api/v1/transfer/acknowledge",
+                json={"receipt": delivery["receipt"], "plan": delivery["plan"]},
+            )
+            response.raise_for_status()
+            result = {"batch": delivery["receipt"]["batch"], **response.json()}
+            shutil.rmtree(staging)
+            return result
+
+
 async def scheduled_pull() -> None:
     """执行定时拉取并保存结果。"""
     try:
-        result = await pull(from_payload(TransferPlan, settings()["plan"]))
+        result = await move(from_payload(TransferPlan, settings()["plan"]))
         write_json(root() / "last-run.json", {"ok": True, "at": datetime.now(UTC).isoformat(), "result": result})
     except Exception:
         # 凭据和账户配置不进入调度错误日志。
@@ -272,14 +398,9 @@ async def scheduled_cleanup() -> None:
         batch = pending.parent.name
         try:
             async with _lock:
-                result = await native_call(
-                    _operation, "cleanup_acknowledged", batch=batch, source_id=settings()["source_id"]
-                )
+                await native_call(_operation, "cleanup_acknowledged", batch=batch, source_id=settings()["source_id"])
         except Exception:
             logger.warning("数据传送清理未完成，保留待清理批次 {}", batch)
-        else:
-            if result["cleanup_pending"]:
-                break
 
 
 def configure_schedule() -> None:

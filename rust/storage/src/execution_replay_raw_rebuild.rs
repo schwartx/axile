@@ -85,7 +85,21 @@ fn recover_deletions(directory: &Path, index: &Path) -> ReplayResult<()> {
         .map_err(io_error)
 }
 
-fn scan(db: &Connection, path: &Path, recording: &str) -> ReplayResult<()> {
+pub(crate) fn scan(
+    db: &Connection,
+    path: &Path,
+    recording: &str,
+    unpublished: bool,
+) -> ReplayResult<()> {
+    let (begin, checkpoint, rollback) = if unpublished {
+        ("BEGIN IMMEDIATE", "COMMIT; BEGIN IMMEDIATE", "ROLLBACK")
+    } else {
+        (
+            "SAVEPOINT raw_scan",
+            "RELEASE raw_scan; SAVEPOINT raw_scan",
+            "ROLLBACK TO raw_scan; RELEASE raw_scan",
+        )
+    };
     let mut input = BufReader::with_capacity(64 * 1024, File::open(path).map_err(io_error)?);
     let mut magic = [0; 8];
     input.read_exact(&mut magic).map_err(io_error)?;
@@ -97,7 +111,7 @@ fn scan(db: &Connection, path: &Path, recording: &str) -> ReplayResult<()> {
     let mut observations = Vec::new();
     let mut market = Vec::new();
     let mut commit_bytes = 0usize;
-    db.execute_batch("BEGIN IMMEDIATE").map_err(io_error)?;
+    db.execute_batch(begin).map_err(io_error)?;
     loop {
         let offset = input.stream_position().map_err(io_error)?;
         let mut header = [0u8; 9];
@@ -276,8 +290,7 @@ fn scan(db: &Connection, path: &Path, recording: &str) -> ReplayResult<()> {
                 .map_err(io_error)?;
                 context = true;
                 raw_index::context(db, recording, &value)?;
-                db.execute_batch("COMMIT; BEGIN IMMEDIATE")
-                    .map_err(io_error)?;
+                db.execute_batch(checkpoint).map_err(io_error)?;
             }
             Record::Metadata(metadata) if metadata.name == "axile.raw.commit.v2" => {
                 let text = metadata
@@ -323,8 +336,7 @@ fn scan(db: &Connection, path: &Path, recording: &str) -> ReplayResult<()> {
                     params![recording, id, offset, sequence, next_watermark, block],
                 )
                 .map_err(io_error)?;
-                db.execute_batch("COMMIT; BEGIN IMMEDIATE")
-                    .map_err(io_error)?;
+                db.execute_batch(checkpoint).map_err(io_error)?;
                 watermark = next_watermark;
                 committed_block = block;
             }
@@ -338,7 +350,7 @@ fn scan(db: &Connection, path: &Path, recording: &str) -> ReplayResult<()> {
     if !profile || !context {
         return Err(failure("CORRUPT", "raw context not committed"));
     }
-    db.execute_batch("ROLLBACK").map_err(io_error)?;
+    db.execute_batch(rollback).map_err(io_error)?;
     db.execute(
         "UPDATE recordings SET state=?2 WHERE id=?1",
         params![
@@ -359,6 +371,7 @@ pub fn rebuild(root: &Path, account: u64) -> ReplayResult<Value> {
     let _reader = locked(&child_file(&root, ".read-owner-v2.lock")?)?;
     let directory = account_directory(&root, account, false)?;
     let _writer = locked(&child_file(&directory, ".raw-writer.lock")?)?;
+    let _maintenance = locked(&child_file(&directory, ".raw-index-maintenance.lock")?)?;
     let index = child_file(&directory, ".replay-v2.sqlite")?;
     // Recover interrupted cleanup before enumerating inputs for the new generation.
     recover_deletions(&directory, &index)?;
@@ -369,7 +382,8 @@ pub fn rebuild(root: &Path, account: u64) -> ReplayResult<Value> {
     let db = Connection::open(temp.path()).map_err(io_error)?;
     db.execute_batch(include_str!("execution_replay_raw.sql"))
         .map_err(io_error)?;
-    db.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA cache_size=-2048")
+    // The index is unpublished until the completed file is synced and renamed below.
+    db.execute_batch("PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF; PRAGMA cache_size=-2048")
         .map_err(io_error)?;
     let generation = uuid::Uuid::new_v4().to_string();
     db.execute("INSERT INTO meta VALUES ('layout',?1)", [raw_index::LAYOUT])
@@ -388,7 +402,7 @@ pub fn rebuild(root: &Path, account: u64) -> ReplayResult<Value> {
             continue;
         };
         identifier(recording)?;
-        scan(&db, &child_file(&directory, name)?, recording)?;
+        scan(&db, &child_file(&directory, name)?, recording, true)?;
         recordings += 1;
     }
     let observations: u64 = db
