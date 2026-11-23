@@ -12,7 +12,11 @@ from axile.executor.algorithms.utils.clock import clock_now_ms
 from axile.server._native import _core
 from axile.server.account_orders import cancel_account_order, query_account_activity, query_account_orders
 from axile.server.api.inputs import json_body
-from axile.server.api.routes.account_support import _get_account_or_404, _get_account_snapshot_or_404
+from axile.server.api.routes.account_support import (
+    _get_account_or_404,
+    _get_account_snapshot_or_404,
+    ensure_trading_account,
+)
 from axile.server.core.db import analysis_store
 from axile.server.db.models.account_order import OrderCancelRequest
 from axile.server.execution.resident_connection import AccountConnectionUnavailable
@@ -131,6 +135,7 @@ async def cancel_order(
 ) -> dict[str, Any]:
     """受理单笔撤单；202 及 submitted 均不表示柜台已完成撤单。"""
     account = await _get_account_snapshot_or_404(account_id)
+    ensure_trading_account(account)
     try:
         return await cancel_account_order(account, payload)
     except ValueError as exc:

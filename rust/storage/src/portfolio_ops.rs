@@ -250,7 +250,12 @@ fn target_public(snapshot: Option<Value>) -> Result<Value, AnalysisError> {
         Value::Number(value) if value.as_f64() == Some(0.0) => json!({}),
         _ => return Err(AnalysisError::new("TARGET_INVALID", "组合目标快照权重无效")),
     };
-    if has_snapshot && !matches!(snapshot["source"].as_str(), Some("manual" | "execution")) {
+    if has_snapshot
+        && !matches!(
+            snapshot["source"].as_str(),
+            Some("manual" | "execution" | "signal")
+        )
+    {
         return Err(AnalysisError::new("TARGET_INVALID", "组合目标快照来源无效"));
     }
     let mode = snapshot

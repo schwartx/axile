@@ -34,11 +34,14 @@ def create_executor_instance(account: AccountContext, *, initialize: bool = True
         plugin = get_channel(account.trade_channel)
     except KeyError as exc:
         raise ValueError(f"未注册交易渠道: {account.trade_channel}") from exc
+    factory = plugin.create_executor
+    if factory is None:
+        raise ValueError("该渠道不支持交易执行")
     config_data = dict(account.account_config)
     config_data["channel_type"] = account.trade_channel
     config = parse_input(plugin.account_config_model, config_data)
     with report_connection_for_account(account):
-        executor = plugin.create_executor(config)
+        executor = factory(config)
     try:
         account_id = getattr(account, "id", None)
         if account_id is not None:

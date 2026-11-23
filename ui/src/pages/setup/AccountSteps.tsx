@@ -57,6 +57,7 @@ const CHANNEL_ICONS: Record<string, LucideIcon> = {
   landmark: Landmark,
   monitor: Monitor,
   'radio-tower': RadioTower,
+  signal: RadioTower,
 }
 
 function ChannelIcon({ name }: { name: string }) {
@@ -76,7 +77,7 @@ function channelDraft(channel: ChannelCapability) {
   return {
     channel: channel.channel,
     config: accountConfigDefaults(accountFields(channel)),
-    algorithm: channel.defaults.trade_algorithm,
+    algorithm: channel.defaults.trade_algorithm ?? { method: '', params: {} },
     futuresClosePolicy: defaultClosePolicy(),
     longLeverage: String(channel.defaults.long_leverage),
     shortLeverage: String(channel.defaults.short_leverage),
@@ -111,7 +112,7 @@ export function AcctChannel() {
   return (
     <div className="flex h-full flex-col">
       <div className="flex-1 overflow-y-auto">
-        <WizardPage kicker="账户设置 · 1 / 6" title="连接哪个交易所 / 券商？" lead="不同渠道连接方式完全不同——选定后进入对应的连接页。">
+        <WizardPage kicker={selected?.supports_trading === false ? '账户设置 · 1 / 5' : '账户设置 · 1 / 6'} title="选择账户渠道">
           <div className="grid grid-cols-1 gap-3">
             {loading && channels === null && <p className="text-[15px] text-ink-2">加载渠道…</p>}
             <ErrorNotice intent="read" title="渠道目录加载失败" error={channels === null ? error : null} onRetry={refresh} />
@@ -146,7 +147,7 @@ export function AcctChannel() {
           </div>
         </WizardPage>
       </div>
-      <WizardNav nextTo="/setup/acct/connect" nextDisabled={nextDisabled} />
+      <WizardNav nextTo={selected?.supports_trading === false ? '/setup/acct/signal' : '/setup/acct/connect'} nextDisabled={nextDisabled} />
     </div>
   )
 }
@@ -768,7 +769,7 @@ export function AcctConfirm() {
       }
       const account = await createAccount({
         name: acct.name,
-        market: descriptor.portfolio.market_label,
+        market: descriptor.portfolio?.market_label ?? '',
         trade_channel: acct.channel,
         account_control_preset: descriptor.defaults.account_control_preset,
         account_control_override: null,

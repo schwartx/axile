@@ -215,7 +215,7 @@ pub(crate) fn append_target_snapshot(
         Some(Value::String(mode)) if matches!(mode.as_str(), "weight" | "quantity") => mode,
         _ => return Err(invalid("invalid target_mode")),
     };
-    if !matches!(source, "manual" | "execution") {
+    if !matches!(source, "manual" | "execution" | "signal") {
         return Err(invalid("目标权重快照来源无效"));
     }
     let calculated_at_us =
@@ -497,6 +497,39 @@ pub(crate) fn account_evidence_on(
     Ok(Value::Object(result))
 }
 
+fn commit_signal(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {
+    let account_id = integer(request, "account_id")?;
+    let portfolio_id = integer(request, "portfolio_id")?;
+    let event_id = text(&request["notification"], "id")?;
+    let duplicate: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM notification_event WHERE id=?1 AND account_id=?2 AND event_type='signal.calculated')",
+        params![event_id, account_id],
+        |row| row.get(0),
+    ).map_err(sql)?;
+    if duplicate {
+        return Ok(Value::Null);
+    }
+    crate::accounts::ensure_current_on(connection, account_id)?;
+    let account =
+        crate::accounts::load_on(connection, account_id)?.ok_or_else(|| invalid("账户不存在"))?;
+    if account["trade_channel"] != crate::accounts::SIGNAL_CHANNEL
+        || account["is_started"] != true
+        || account["portfolio_id"] != portfolio_id
+        || account["runtime_sync"]["revision"] != request["revision"]
+    {
+        return Err(invalid("信号账户配置已变化"));
+    }
+    let at = text(request, "calculated_at")?;
+    let mut event = request["notification"].clone();
+    if request["raw_weights"].is_object() {
+        let snapshot = append_target_snapshot(connection, request)?;
+        let assets = crate::asset_ops::write_manual_snapshot(connection, account_id, at, request)?;
+        event["context"]["target_snapshot_id"] = snapshot["id"].clone();
+        event["context"]["asset_snapshot_id"] = assets["id"].clone();
+    }
+    crate::notifications::enqueue_in_connection(connection, &event)
+}
+
 /// 独立追加拥有一次写事务；读取在同一个只读快照内加载头和明细。
 pub fn target_operation(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let operation = text(request, "op")?;
@@ -505,6 +538,10 @@ pub fn target_operation(path: &str, request: &Value) -> Result<Value, AnalysisEr
         return writer_scope::immediate(&connection, || {
             append_target_snapshot(&connection, request)
         });
+    }
+    if operation == "signal_commit" {
+        let connection = writer_scope::open_writer(Path::new(path))?;
+        return writer_scope::immediate(&connection, || commit_signal(&connection, request));
     }
     let connection = crate::storage_connection::open_reader(Path::new(path))?;
     connection.execute_batch("BEGIN DEFERRED;").map_err(sql)?;

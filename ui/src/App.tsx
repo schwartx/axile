@@ -1,3 +1,5 @@
+import { SignalSetupPage } from '@/pages/setup/SignalSetupPage'
+import { SignalAccountSettingsPage } from '@/pages/SignalAccountPage'
 import { AccountEditGuard } from '@/features/account/AccountEditGuard'
 import { LocalEditorPage } from '@/features/editor/LocalEditorPage'
 import { useEffect, useState } from 'react'
@@ -114,6 +116,7 @@ const router = createBrowserRouter([
           { path: 'accounts/:id/edit', element: <AccountEditGuard />, children: [
           { index: true, element: <AccountEditPage /> },
           { path: 'connection', element: <AccountEditConnectionPage /> },
+          { path: 'signal', element: <SignalAccountSettingsPage /> },
           { path: 'leverage', element: <AccountEditPage section="leverage" /> },
           { path: 'symbols', element: <AccountEditPage section="symbols" /> },
           { path: 'portfolio', element: <AccountEditPage section="portfolio" /> },
@@ -145,6 +148,7 @@ const router = createBrowserRouter([
           { index: true, element: <SetupHub /> },
           { path: 'acct/channel', element: <AcctChannel /> },
           { path: 'acct/connect', element: <AcctConnect /> },
+          { path: 'acct/signal', element: <SignalSetupPage /> },
           { path: 'acct/portfolio', element: <AcctPortfolio /> },
           { path: 'acct/trade', element: <AcctTrade /> },
           { path: 'acct/timer', element: <AcctTimer /> },

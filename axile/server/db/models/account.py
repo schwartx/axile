@@ -5,10 +5,12 @@ from typing import Annotated, Any, Dict, List, Optional
 
 from msgspec import UNSET, Meta, UnsetType
 
+from axile.channels.rebalance_signal import SIGNAL_CHANNEL
 from axile.channels.schedule_settings import validate_schedule_options
 from axile.common.serialization import provided_fields
 from axile.common.trade_channel import TradeChannel
 from axile.executor.futures_close_policy import FuturesClosePolicy
+from axile.executor.models.cash_flow import CashFlowInput
 from axile.executor.models.unified_input import DEFAULT_EXECUTION_TIMEOUT_SECONDS
 from axile.server.db.models.account_connection import AccountConnectionState
 from axile.server.db.models.account_notification import AccountNotificationState
@@ -132,7 +134,12 @@ class AccountBase:
             object.__setattr__(self, "short_leverage", self._check_leverage_fields(self.short_leverage))
         if "cron_expr" in provided_fields(self):
             object.__setattr__(self, "cron_expr", self._check_cron_expr(self.cron_expr))
-        if "algorithm" in provided_fields(self):
+        if self.trade_channel == SIGNAL_CHANNEL:
+            if self.algorithm or self.empty_positions_algorithm or self.algorithm_schedule or self.product_algorithms:
+                raise ValueError("调仓信号账户不支持配置交易算法")
+            if self.supplement is not None:
+                raise ValueError("调仓信号账户不支持交易补发")
+        elif "algorithm" in provided_fields(self):
             object.__setattr__(self, "algorithm", self._check_algorithm_field(self.algorithm))
         if "empty_positions_algorithm" in provided_fields(self):
             object.__setattr__(
@@ -148,11 +155,17 @@ class AccountBase:
 class AccountCreate(AccountBase):
     """创建账户时使用的载荷."""
 
+    initial_deposit: CashFlowInput | None = None
+
     __forbid_unknown__ = True
 
     def validate(self) -> None:
         """在输入入口检查本对象的业务约束。"""
         super().validate()
+        if self.initial_deposit is not None and (
+            self.trade_channel != SIGNAL_CHANNEL or self.initial_deposit.direction != "deposit"
+        ):
+            raise ValueError("首次入金只用于创建调仓信号账户")
 
 
 @dataclass(kw_only=True)

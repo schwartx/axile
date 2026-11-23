@@ -59,3 +59,12 @@ CTP 与天勤共用内存合约目录，服务重启后按执行所需补齐，�
 主服务读取配置文件和代码默认值，不从 `.env` 读取业务配置。`AXILE_CONFIG_TOML` 用来指定配置文件路径，不能逐项覆盖配置。
 
 保存需要重新读取的配置后，要重启服务。直接用 CLI 启动的，再执行一次启动命令；托管运行的，由外部 supervisor 重启。
+
+## 调仓信号
+
+从「新建账户」选择「调仓信号」，绑定已有组合。账户继承组合的市场。可以填写权益、可用资金、币种及实际持仓，也可以配置账户函数。首次入金单独记入资金流水。
+
+- `fetch_account(context)` 返回包含 `total_asset`、`available_cash`、`currency` 和可选 `positions` 的字典。定时计算前和手动刷新权益时调用。省略 `positions` 表示未知持仓，返回空列表表示确认空仓。上下文提供市场、账户名称及账户 ID，开户试算时还没有账户 ID。
+- `fetch_quotes(symbols)` 按请求标的返回字典。每个值包含 `last_price` 和带时区的 ISO 格式 `update_time`。在组合函数调用 `context.get_price()` 或 `context.get_quote()` 时按需取数，数据源由用户提供。
+- 组合函数返回 `{"mode": "quantity", "targets": {...}}`。编辑页试算和手动重算可预览目标。定时任务保存目标并按账户通知配置推送。默认卡片按完整目标列出数量，账户由用户自行在券商端交易。
+- 自定义通知可判断 `event_type == "signal.calculated"`，并从 `targets.current` 读取完整目标数量。有实际持仓时，`positions` 提供当前持仓供自定义通知计算差额。

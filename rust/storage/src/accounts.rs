@@ -408,11 +408,39 @@ fn settings(data: &Value, fields: &[&str]) -> Value {
     )
 }
 
+pub(crate) const SIGNAL_CHANNEL: &str = "rebalance_signal";
+
+fn signal_portfolio_market(
+    connection: &Connection,
+    portfolio_id: &Value,
+) -> Result<Value, AnalysisError> {
+    let portfolio_id = portfolio_id
+        .as_i64()
+        .ok_or_else(|| invalid("调仓信号账户必须绑定组合"))?;
+    ensure_portfolio_on(connection, Some(portfolio_id))?;
+    let market = connection
+        .query_row(
+            "SELECT market FROM portfolio WHERE id=?1",
+            [portfolio_id],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(sql)?;
+    Ok(json!(market))
+}
+
 fn insert_on(connection: &Connection, data: &Value, now: &str) -> Result<i64, AnalysisError> {
     validate_replay_recording(data.get("replay_recording_enabled"), "ACCOUNT_INPUT")?;
     crate::control_policy::parse_override(data["account_control_override"].clone())
         .map_err(|error| AnalysisError::caused_by("ACCOUNT_INPUT", error))?;
     ensure_portfolio_on(connection, data["portfolio_id"].as_i64())?;
+    let mut signal_data;
+    let data = if data["trade_channel"] == SIGNAL_CHANNEL {
+        signal_data = data.clone();
+        signal_data["market"] = signal_portfolio_market(connection, &data["portfolio_id"])?;
+        &signal_data
+    } else {
+        data
+    };
     let identity = [
         "name",
         "market",
@@ -626,6 +654,14 @@ pub fn account_create(path: &str, request: &Value) -> Result<Value, AnalysisErro
             .filter(|data| data.is_object())
             .ok_or_else(|| invalid("缺少账户配置"))?;
         let account_id = insert_on(&connection, data, now)?;
+        if data["trade_channel"] == SIGNAL_CHANNEL && data["initial_deposit"].is_object() {
+            crate::cash_flows::create(
+                &connection,
+                account_id,
+                &data["initial_deposit"],
+                crate::time_us::parse(now).map_err(invalid)?,
+            )?;
+        }
         runtime_sync::enqueue_on(&connection, account_id, false, key, now)?;
         Ok(json!({"account": require_on(&connection, account_id)?, "replayed": false}))
     })
@@ -818,7 +854,27 @@ pub fn account_update(path: &str, request: &Value) -> Result<Value, AnalysisErro
                 bind_on(&connection, account_id, portfolio_id.as_i64(), now)?;
             }
         }
-        patch_on(&connection, account_id, data, now)?;
+        let is_signal = previous["trade_channel"] == SIGNAL_CHANNEL;
+        let becomes_signal = data
+            .get("trade_channel")
+            .unwrap_or(&previous["trade_channel"])
+            == SIGNAL_CHANNEL;
+        if is_signal != becomes_signal {
+            return Err(invalid("调仓信号账户与交易账户不能互换渠道"));
+        }
+        if is_signal {
+            let mut signal_data = data.clone();
+            let portfolio_id = data
+                .get("portfolio_id")
+                .unwrap_or(&previous["portfolio_id"]);
+            signal_data.insert(
+                "market".to_owned(),
+                signal_portfolio_market(&connection, portfolio_id)?,
+            );
+            patch_on(&connection, account_id, &signal_data, now)?;
+        } else {
+            patch_on(&connection, account_id, data, now)?;
+        }
         if runtime_changed {
             let channel = data
                 .get("trade_channel")

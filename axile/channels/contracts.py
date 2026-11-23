@@ -112,7 +112,7 @@ class ChannelDefaults:
     long_leverage: Annotated[float, Meta(ge=0)]
     short_leverage: Annotated[float, Meta(ge=0)]
     execution_timeout: Annotated[int, Meta(ge=1)]
-    trade_algorithm: AlgorithmReference
+    trade_algorithm: AlgorithmReference | None
     empty_positions_algorithm: AlgorithmReference | None = None
 
 
@@ -443,7 +443,7 @@ class ChannelDescriptor:
     label: Annotated[str, Meta(min_length=1)]
     description: Annotated[str, Meta(min_length=1)]
     icon: Annotated[str, Meta(min_length=1)]
-    market: Annotated[str, Meta(min_length=1)]
+    market: Annotated[str, Meta(min_length=1)] | None
     currency: Annotated[str, Meta(min_length=1)]
     cash_flow_sync: bool = False
     units: ChannelUnits = field(default_factory=ChannelUnits)
@@ -458,7 +458,7 @@ class ChannelDescriptor:
     calendar: ChannelCalendar | None = None
     connection_steps: tuple[ConnectionStepDefinition, ...] = ()
     connection_validation: ChannelConnectionValidation | None = None
-    portfolio: ChannelPortfolioPreset
+    portfolio: ChannelPortfolioPreset | None
     simulation_account: SimulationAccount | None = None
 
 
@@ -502,7 +502,7 @@ class ChannelPlugin:
 
     descriptor: ChannelDescriptor
     account_config_model: type[BaseAccountConfig]
-    create_executor: ExecutorFactory
+    create_executor: ExecutorFactory | None = None
     execution_backend: ExecutionBackend = "process"
     required_modules: tuple[str, ...] = ()
     install_extra: str | None = None

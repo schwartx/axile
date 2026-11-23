@@ -87,7 +87,12 @@ fn manual_status(
     let duplicate: bool=c.query_row("SELECT EXISTS(SELECT 1 FROM account_cash_flow WHERE account_id=?1 AND source='channel' AND status='active' AND direction=?2 AND amount=?3)",params![account,direction,amount],|r|r.get(0)).map_err(analysis::sql)?;
     Ok(if duplicate { "pending" } else { "active" })
 }
-fn create(c: &Connection, account: i64, r: &Value, now: i64) -> Result<Value, AnalysisError> {
+pub(crate) fn create(
+    c: &Connection,
+    account: i64,
+    r: &Value,
+    now: i64,
+) -> Result<Value, AnalysisError> {
     let (direction, amount, time, note) = checked(r, now)?;
     let status = manual_status(c, account, direction, amount)?;
     c.execute("INSERT INTO account_cash_flow(account_id,direction,amount,occurred_at_us,source,status,note,created_at_us,updated_at_us) VALUES(?1,?2,?3,?4,'manual',?7,?5,?6,?6)", params![account,direction,amount,time,note,now,status]).map_err(analysis::sql)?;

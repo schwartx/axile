@@ -8,6 +8,7 @@ from typing import cast
 from fastapi import HTTPException, status
 
 from axile.channels.gm_sessions import GMSessionSettings
+from axile.channels.rebalance_signal import SIGNAL_CHANNEL
 from axile.server.api.deps import SchedDep
 from axile.server.cron import (
     combine_cron_triggers,
@@ -35,6 +36,12 @@ async def _get_account_snapshot_or_404(account_id: int) -> AccountContext:
     if account is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="账户不存在")
     return account
+
+
+def ensure_trading_account(account: AccountContext) -> None:
+    """在产生交易副作用前拒绝调仓信号账户。"""
+    if account.trade_channel == SIGNAL_CHANNEL:
+        raise HTTPException(409, detail="调仓信号账户只计算目标持仓")
 
 
 def ensure_account_current(account: AccountContext) -> None:
@@ -123,7 +130,7 @@ async def _apply_account_job(sched: SchedDep, account: AccountContext, latest_po
         existing_job is not None
         and cron_triggers_equivalent(existing_job.trigger, desired_trigger)
         and (getattr(existing_job, "func", None) == _scheduled_signal)
-        == bool(getattr(account, "supplement", None) or str(account.trade_channel) == "gm")
+        == bool(getattr(account, "supplement", None) or account.trade_channel in {"gm", SIGNAL_CHANNEL})
     ):
         return
 

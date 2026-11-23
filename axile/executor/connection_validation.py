@@ -45,7 +45,10 @@ def validate_channel_connection(channel: str, config: BaseAccountConfig, report:
     executor = None
     with validation_progress(channel, report):
         try:
-            executor = get_channel(channel).create_executor(config)
+            factory = get_channel(channel).create_executor
+            if factory is None:
+                raise ValueError("该渠道不支持连接交易账户")
+            executor = factory(config)
             if not executor._verify_connection():
                 executor._initialize_connection(config)
             reconcile_account_connection(executor)

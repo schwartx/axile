@@ -45,13 +45,13 @@ export function useCustomCalcValidation(code: string, market: string | null | un
   const accounts = useDomainStore((state) => state.accounts) ?? []
   const channels = useChannelCatalogStore((state) => state.channels)
   const marketId = (value: string) => channels?.find(
-    (channel) => channel.market === value || channel.portfolio.market_label === value,
+    (channel) => channel.market === value || channel.portfolio?.market_label === value,
   )?.market ?? value
   const matchingAccounts = accounts.filter((account) => market != null && marketId(account.market) === marketId(market))
   const accountId = selection && selection.portfolioId === portfolioId ? selection.accountId : null
   const contextAccountId = matchingAccounts.some((account) => account.account_id === accountId) ? accountId : null
   const simulationChannels = (channels ?? []).filter((channel) => channel.simulation_account
-    && market != null && marketId(channel.market) === marketId(market))
+    && channel.market != null && market != null && marketId(channel.market) === marketId(market))
   const simulationChannel = simulationChannels.find((channel) => selection?.portfolioId === portfolioId
     && channel.channel === selection?.simulationChannel) ?? simulationChannels[0]
   const savedSimulations = useSimulationAccounts((state) => state.accounts)
@@ -65,7 +65,7 @@ export function useCustomCalcValidation(code: string, market: string | null | un
   const operation = useConnectionOperation(contextAccountId ?? -1)
   const blockedReason = leverageDraft?.invalid ? '杠杆参数有误，请先修正'
     : contextAccountId === null ? simulationAccount ? null : '正在加载渠道模拟账户，请稍候'
-      : channel?.independent_market_data ? null
+      : channel?.supports_trading === false || channel?.independent_market_data ? null
         : operation.pending !== null || connection.status === 'connecting' || connection.status === 'recovering' ? '账户连接操作中，请稍候'
           : connection.status === 'ready' ? null
             : connection.status === 'unknown' ? '正在确认账户连接状态'

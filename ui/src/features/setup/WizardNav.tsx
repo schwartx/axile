@@ -44,12 +44,14 @@ export function WizardPage({
 /** 底部导航条：上一步 + 下一步（可自定义异步动作）。 */
 export function WizardNav({
   prevTo,
+  onPrev,
   nextLabel = '下一步',
   nextTo,
   onNext,
   nextDisabled,
 }: {
   prevTo?: string
+  onPrev?: () => void
   nextLabel?: string
   nextTo?: string
   onNext?: () => void | Promise<void>
@@ -76,10 +78,10 @@ export function WizardNav({
 
   return (
     <div className="flex gap-3 border-t border-line bg-surface px-5 py-3.5 sm:px-12">
-      {prevTo ? (
+      {prevTo || onPrev ? (
         <button
           className="cursor-pointer rounded-[11px] border border-line bg-surface px-[22px] py-2.5 text-[15px] text-ink-2"
-          onClick={() => navigate(prevTo)}
+          onClick={onPrev ?? (() => { if (prevTo) navigate(prevTo) })}
         >
           上一步
         </button>

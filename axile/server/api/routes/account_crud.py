@@ -14,6 +14,7 @@ from starlette.concurrency import run_in_threadpool
 
 from axile.channels import get_channel, list_channels
 from axile.channels.gm_sessions import GMSessionSettings
+from axile.channels.rebalance_signal import SIGNAL_CHANNEL
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.notification_function import validate_notification_function
 from axile.common.serialization import from_payload, parse_input, provided_fields, to_payload
@@ -89,7 +90,7 @@ def _validate_channel_account_config(channel: TradeChannel | str, config: dict[s
         raise ValueError(f"account_config: {exc}") from exc
     normalized = cast(
         "dict[str, object]",
-        to_payload(validated, mode="json", exclude_none=True, exclude={"channel_type"}),
+        to_payload(validated, mode="json", exclude_none=channel != SIGNAL_CHANNEL, exclude={"channel_type"}),
     )
     for field in plugin.descriptor.account_form.fields:
         condition = field.visible_when
@@ -441,6 +442,12 @@ async def account_dashboard(sched: SchedDep, archived: bool = False, include_arc
         )
         plugin = get_channel(str(account["trade_channel"]))
         currency = plugin.descriptor.currency
+        if account["trade_channel"] == SIGNAL_CHANNEL:
+            currency = assets.get("currency") or (account["account_config"].get("manual_assets") or {}).get(
+                "currency", ""
+            )
+            if not (assets.get("extra") or {}).get("positions_known"):
+                holdings_count = None
 
         job = sched.get_job(str(account_id))  # type: ignore[no-untyped-call]
         next_run = getattr(job, "next_run_time", None) if job is not None else None

@@ -3,6 +3,8 @@
 from math import isfinite
 from typing import Any
 
+from axile.channels.rebalance_signal import SIGNAL_EVENT
+from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE, SIGNAL_NOTIFICATION_CODE
 from axile.common.notification_function import (
     NotificationFunctionResult,
     run_notification_function,
@@ -59,4 +61,6 @@ def run_account_notification(
             raise ValueError(f"加载通知附加数据失败：{exc.args[1]}") from exc
         return additions | data
 
+    if context.get("event_type") == SIGNAL_EVENT and code.strip() == DEFAULT_ACCOUNT_NOTIFICATION_CODE.strip():
+        code = SIGNAL_NOTIFICATION_CODE
     return run_notification_function(code, context, feishu_key=feishu_key, load_context=load_context)

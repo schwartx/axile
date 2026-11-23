@@ -10,8 +10,8 @@ export interface PortfolioMarketOption {
 export function portfolioQuantityUnit(
   channels: ChannelCapability[], market: string | null | undefined, channel?: TradeChannel,
 ): string {
-  const descriptor = channels.find((item) => item.channel === channel)
-    ?? channels.find((item) => item.market === market || item.portfolio.market_label === market)
+  const descriptor = channels.find((item) => item.channel === channel && item.supports_trading !== false)
+    ?? channels.find((item) => item.market === market || item.portfolio?.market_label === market)
   return descriptor?.units.quantity_label ?? ''
 }
 
@@ -20,7 +20,7 @@ export function portfolioMarketOptions(channels: ChannelCapability[]): Portfolio
   const seen = new Set<string>()
   const options: PortfolioMarketOption[] = []
   for (const channel of channels) {
-    if (seen.has(channel.market)) continue
+    if (!channel.market || !channel.portfolio || seen.has(channel.market)) continue
     seen.add(channel.market)
     options.push({
       value: channel.market,

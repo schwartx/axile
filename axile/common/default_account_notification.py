@@ -42,3 +42,41 @@ def notify(context: AccountNotificationContext) -> None:
     }
     push_feishu_card(card, key, timeout=10)
 '''
+
+
+def build_signal_feishu_card(
+    account: str,
+    targets: dict[str, float],
+    unit: str,
+    error: str | None = None,
+) -> dict[str, object]:
+    """按目标清单生成信号卡片，保留完整数量精度。"""
+    rows = [
+        f"{symbol}  {int(quantity) if quantity == int(quantity) else quantity} {unit}".rstrip()
+        for symbol, quantity in targets.items()
+    ]
+    content = error or "\n".join(rows) or "目标空仓"
+    return {
+        "header": {"title": {"tag": "plain_text", "content": f"调仓信号 · {account}"}},
+        "elements": [{"tag": "markdown", "content": f"**目标持仓**\n{content}"}],
+    }
+
+
+SIGNAL_NOTIFICATION_CODE = """import os
+
+from axile.common.default_account_notification import build_signal_feishu_card
+from axile.common.feishu import push_feishu_card
+
+
+def notify(context):
+    key = os.environ.get("AXILE_ACCOUNT_FEISHU_KEY")
+    if not key:
+        return
+    card = build_signal_feishu_card(
+        context["account"]["name"],
+        context["targets"]["current"],
+        context["quantity_unit"],
+        context["execution"]["error"],
+    )
+    push_feishu_card(card, key)
+"""

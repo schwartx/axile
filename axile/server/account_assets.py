@@ -7,6 +7,7 @@ from typing import Any
 
 from loguru import logger
 
+from axile.channels.rebalance_signal import SIGNAL_CHANNEL
 from axile.common.serialization import to_payload
 from axile.executor.algorithms.utils.clock import clock_async_sleep
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
@@ -28,7 +29,11 @@ class AccountAssetRefreshBusyError(RuntimeError):
 
 
 async def query_account_assets(account: AccountContext) -> UnifiedAccountAssets:
-    """通过账户常驻 worker 查询最新资产。"""
+    """查询最新账户资产。"""
+    if account.trade_channel == SIGNAL_CHANNEL:
+        from axile.server.signal_service import calculate_signal
+
+        return (await calculate_signal(account, None)).assets
     try:
         return await get_worker_backend_manager().get_account_assets(account)
     except WorkerBackendTimeoutError as exc:

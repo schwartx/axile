@@ -586,6 +586,13 @@ fn supplement_history(
 pub fn preview(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let account_id = id(request, "account_id")?;
     crate::with_read_snapshot(Path::new(path), |connection| {
+        if let Some(signal) = connection.query_row(
+            "SELECT context FROM notification_event WHERE account_id=?1 AND event_type='signal.calculated' ORDER BY sequence DESC LIMIT 1",
+            [account_id], |row| row.get::<_, String>(0),
+        ).optional().map_err(database)? {
+            let context: Value = crate::json_codec::parse(&signal).map_err(invalid)?;
+            return Ok(json!({"record":null,"context":context}));
+        }
         let record = connection.query_row("SELECT id,execution_id,created_at_us FROM executerecord WHERE account_id=?1 AND result_staged=0 ORDER BY id DESC LIMIT 1",[account_id],|row| Ok(json!({"id":row.get::<_,i64>(0)?,"execution_id":row.get::<_,Option<String>>(1)?,"created_at":crate::time_us::read(row, 2)?}))).optional().map_err(database)?;
         let Some(record) = record else {
             return Ok(Value::Null);

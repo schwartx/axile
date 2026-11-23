@@ -781,6 +781,8 @@ def builtin_channel_plugins() -> tuple[ChannelPlugin, ...]:
     tuple[ChannelPlugin, ...]
         依次为 CTP、掘金与天勤渠道插件。
     """
+    from axile.channels.rebalance_signal import signal_plugin
+
     plugins = (_ctp_plugin(), _gm_plugin(), _tq_plugin())
     futures = (("rb2610", 3500, 2, 10, 1), ("ag2612", 8000, 1, 15, 1))
     stocks = (("600000.SH", 10, 1000, 1, 0.01), ("000001.SZ", 12, 1000, 1, 0.01))
@@ -798,4 +800,4 @@ def builtin_channel_plugins() -> tuple[ChannelPlugin, ...]:
             ),
         )
         for plugin in plugins
-    )
+    ) + (signal_plugin(),)

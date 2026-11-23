@@ -20,6 +20,7 @@ from axile.server.api.routes.account_support import (
     _build_empty_positions_algorithm,
     _get_account_or_404,
     ensure_account_current,
+    ensure_trading_account,
 )
 from axile.server.api.routes.portfolio import resolve_portfolio_target
 from axile.server.business_facts.assets import latest_asset_snapshot
@@ -137,7 +138,9 @@ async def account_rebalance_plan(account_id: int) -> dict[str, Any]:
 @router.post("/execute/{account_id}", response_model=None)
 async def execute(account_id: int) -> dict[str, Any]:
     """异步触发立即执行，并返回可用于轮询的执行标识."""
-    ensure_account_current(await _get_account_or_404(account_id))
+    account = await _get_account_or_404(account_id)
+    ensure_account_current(account)
+    ensure_trading_account(account)
 
     try:
         submitted = await enqueue_execute_trade(account_id)
@@ -351,6 +354,7 @@ async def empty_all_positions(
     """异步触发一键平仓，并返回可用于轮询的执行标识."""
     db_account = await _get_account_or_404(account_id)
     ensure_account_current(db_account)
+    ensure_trading_account(db_account)
 
     try:
         algorithm = _build_empty_positions_algorithm(

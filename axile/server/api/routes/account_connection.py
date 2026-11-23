@@ -12,6 +12,7 @@ from axile.server.api.routes.account_support import (
     _get_account_or_404,
     _get_account_snapshot_or_404,
     ensure_account_current,
+    ensure_trading_account,
 )
 from axile.server.db.models.account import AccountContext
 from axile.server.execution.registry import get_queued_execution_id, get_running_execution_id
@@ -40,6 +41,7 @@ async def _connection_operation(account_id: int, *, reconnect: bool, connect_acc
         _check_idle(account_id)
         account = await _get_account_snapshot_or_404(account_id)
         ensure_account_current(account)
+        ensure_trading_account(account)
         try:
             if connect_account:
                 plugin = get_channel(account.trade_channel)

@@ -10,7 +10,8 @@ from typing import Annotated, Any, Literal, NamedTuple
 from fastapi import APIRouter, Depends, HTTPException, status
 from loguru import logger
 
-from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
+from axile.channels.rebalance_signal import SIGNAL_CHANNEL
+from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE, build_signal_feishu_card
 from axile.common.feishu import push_feishu_card
 from axile.common.serialization import provided_fields
 from axile.executor.algorithms.utils import clock_now
@@ -251,6 +252,21 @@ async def _build_test_card(
     account_id = account.id
     if account_id is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="账户不存在")
+    if account.trade_channel == SIGNAL_CHANNEL:
+        from axile.server.signal_service import signal_quantity_unit
+        from axile.server.target_weight_snapshots import get_latest_account_target_snapshot
+
+        signal = (
+            await get_latest_account_target_snapshot(account_id, account.portfolio_id)
+            if account.portfolio_id is not None
+            else None
+        )
+        return build_signal_feishu_card(
+            account.name,
+            (signal or {}).get("raw_weights") or {},
+            signal_quantity_unit(account.market),
+            "尚未计算目标持仓" if signal is None else None,
+        )
     if not try_register_account_asset_refresh(account_id):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="账户正在执行或刷新资产，请稍后再试")
     try:
@@ -305,12 +321,13 @@ async def _load_notification_preview_context(
     record = preview["record"]
     context = deepcopy(preview["context"])
     context["is_test"] = True
-    context["event_type"] = "execution.finished"
     execution = context.get("execution")
     if isinstance(execution, dict):
         execution["is_test"] = True
-        execution["id"] = record["execution_id"]
-        execution.setdefault("notified_at", record["created_at"])
+        if record is not None:
+            context["event_type"] = "execution.finished"
+            execution["id"] = record["execution_id"]
+            execution.setdefault("notified_at", record["created_at"])
     return context
 
 

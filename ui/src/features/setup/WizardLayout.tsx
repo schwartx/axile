@@ -5,23 +5,21 @@ import { Link } from '@/components/ui/nav'
 import { Toast } from '@/components/Toast'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { BrandWordmark } from '@/components/brand/BrandWordmark'
-import { flowOf, ACCT_STEPS, type Step } from '@/features/setup/steps'
+import { SIGNAL_CHANNEL } from '@/features/signal/signalData'
+import { useWizardStore } from '@/stores/wizard'
+import { flowOf, SIGNAL_STEPS, type Step } from '@/features/setup/steps'
 
-function Rail({ steps, index, title }: { steps: Step[]; index: number; title: string }) {
+function Rail({ steps, index, title, guided }: { steps: Step[]; index: number; title: string; guided: boolean }) {
   return (
     <aside className="flex w-full flex-none overflow-x-auto border-b border-line bg-surface px-3 py-2 sm:block sm:w-[248px] sm:overflow-y-auto sm:border-r sm:border-b-0 sm:px-[18px] sm:py-7">
       <div className="hidden px-2.5 pb-3.5 text-xs font-semibold tracking-wide text-ink-3 sm:block">{title}</div>
       {steps.map((s, i) => {
         const done = i < index
         const cur = i === index
-        return (
-          <Link
-            key={s.path}
-            to={s.path}
-            className={`flex min-w-fit flex-none items-center gap-2 rounded-[8px] px-3 py-2 text-[14px] sm:mb-1 sm:w-full sm:gap-3 sm:p-2.5 sm:text-[15px] ${
-              cur ? 'bg-accent-soft font-semibold text-ink-1' : 'text-ink-2'
-            }`}
-          >
+        const className = `flex min-w-fit flex-none items-center gap-2 rounded-[8px] px-3 py-2 text-[14px] sm:mb-1 sm:w-full sm:gap-3 sm:p-2.5 sm:text-[15px] ${
+          cur ? 'bg-accent-soft font-semibold text-ink-1' : 'text-ink-2'
+        }`
+        const content = <>
             <span
               className={`grid h-6 w-6 flex-none place-items-center rounded-full border text-xs ${
                 done
@@ -34,8 +32,10 @@ function Rail({ steps, index, title }: { steps: Step[]; index: number; title: st
               {done ? '✓' : i + 1}
             </span>
             {s.label}
-          </Link>
-        )
+        </>
+        return guided
+          ? <div key={s.path} className={className} aria-current={cur ? 'step' : undefined}>{content}</div>
+          : <Link key={s.path} to={s.path} className={className}>{content}</Link>
       })}
     </aside>
   )
@@ -43,8 +43,9 @@ function Rail({ steps, index, title }: { steps: Step[]; index: number; title: st
 
 /** 向导外壳：独立全屏布局（头部 + 步骤栏 + 内容）。 */
 export function WizardLayout() {
-  const { pathname } = useLocation()
-  const { flow, index } = flowOf(pathname)
+  const { pathname, search } = useLocation()
+  const channel = useWizardStore((state) => state.acct.channel)
+  const { flow, index, steps } = flowOf(pathname, search, channel === SIGNAL_CHANNEL)
 
   return (
     <GlobalErrorContext.Provider value={true}><div className="flex h-screen flex-col">
@@ -62,7 +63,7 @@ export function WizardLayout() {
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden sm:flex-row">
-        {flow === 'acct' && <Rail steps={ACCT_STEPS} index={index} title="账户设置" />}
+        {flow === 'acct' && <Rail steps={steps} index={index} title="账户设置" guided={steps === SIGNAL_STEPS} />}
         <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
           <Outlet />
         </div>

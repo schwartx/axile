@@ -104,7 +104,7 @@ def target_snapshot_public(
         "account_weights": account_weights if mode == "weight" else None,
         "sizing": sizing,
         "calculated_at": snapshot["calculated_at"],
-        "source": cast(Literal["manual", "execution"], snapshot["source"]),
+        "source": cast(Literal["manual", "execution", "signal"], snapshot["source"]),
         "execution_id": snapshot["execution_id"],
         "context_account_id": snapshot["account_id"],
     }

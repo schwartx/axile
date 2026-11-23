@@ -8,6 +8,7 @@ from typing import Any, Literal, cast
 import loguru
 
 from axile.channels.gm_sessions import GMSessionSettings
+from axile.channels.rebalance_signal import SIGNAL_CHANNEL
 from axile.common.serialization import to_payload
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
@@ -465,6 +466,8 @@ async def _submit_intent(
         冲突时抛 409 语义异常或返回 ``skipped_busy``（Cron 用）。
     """
     account = await _require_account(account_id)
+    if account.trade_channel == SIGNAL_CHANNEL:
+        raise ValueError("调仓信号账户不支持交易执行")
     payload = dict(payload or {})
     running, queued = await load_active_intents(account_id)
     memory_running_id = get_running_execution_id(account_id)

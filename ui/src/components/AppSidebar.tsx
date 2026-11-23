@@ -1,3 +1,4 @@
+import { SIGNAL_CHANNEL } from '@/features/signal/signalData'
 import { useEffect, useLayoutEffect, useRef, useState, type ComponentType, type CSSProperties, type ReactNode, type RefObject } from 'react'
 import { useLocation } from 'react-router'
 import {
@@ -243,6 +244,7 @@ export function AppSidebar({
   }, [setSidebarCompact])
 
   // 账户段条目不带图标：归属已由「身份块头 + 左缘线 + 缩进」表达，段内保持素净。
+  const signalAccount = activeAccount?.trade_channel === SIGNAL_CHANNEL
   const accountOverview: NavItemSpec[] = [
     { label: '账户概览', to: accountPath(), active: exact(accountPath()) },
     { label: '持仓明细', to: accountPath('/holdings'), active: exact(accountPath('/holdings')) },
@@ -321,14 +323,19 @@ export function AppSidebar({
                     )}
                   </div>
                   <div>
-                    {accountOverview.map((item) => <NavItem key={item.label} item={item} dense={denseNav} />)}
+                    {(signalAccount ? accountOverview.slice(0, 1) : accountOverview).map((item) => <NavItem key={item.label} item={item} dense={denseNav} />)}
                   </div>
+                  {signalAccount ? <NavSection compact dense={denseNav} label="设置">
+                    <NavItem item={accountParameters[0]} dense={denseNav} />
+                    <NavItem item={{ label: '信号设置', to: accountPath('/edit/signal'), active: exact(accountPath('/edit/signal')) }} dense={denseNav} />
+                    <NavItem item={{ label: '通知函数', to: accountPath('/edit/notification'), active: exact(accountPath('/edit/notification')) }} dense={denseNav} />
+                  </NavSection> : <>
                   <NavSection compact dense={denseNav} label="参数">
                     {accountParameters.map((item) => <NavItem key={item.label} item={item} dense={denseNav} />)}
                   </NavSection>
                   <NavSection compact dense={denseNav} label="执行">
                     {accountExecution.map((item) => <NavItem key={item.label} item={item} dense={denseNav} />)}
-                  </NavSection>
+                  </NavSection></>}
                 </div>
               )}
               {settingsAtBottom && (

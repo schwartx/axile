@@ -40,6 +40,7 @@ import {
   refreshPortfolioTargetSnapshot,
   updatePortfolio,
 } from '@/lib/api/portfolios'
+import { SIGNAL_CHANNEL } from '@/features/signal/signalData'
 import { triggerExecute } from '@/lib/api/executions'
 import { useDomainStore } from '@/stores/domain'
 import { useChannelCatalogStore } from '@/stores/channels'
@@ -124,6 +125,7 @@ export function PortfolioEditPage() {
     () => (accounts ?? []).filter((account) => account.portfolio_id === portfolioId),
     [accounts, portfolioId],
   )
+  const tradingFollowers = followers.filter((account) => account.trade_channel !== SIGNAL_CHANNEL)
   const anyFollowerRunning = useLiveExecStore((state) =>
     followers.some((follower) => state.running.has(follower.account_id)),
   )
@@ -170,12 +172,12 @@ export function PortfolioEditPage() {
     } finally { if (version === batchGeneration.current) batchBusy.current.delete(accountId) }
   }
   const runFanout = () => {
-    if (!followers.length || batchBusy.current.size) return
-    setConfirm({ title: '全部跟随账户立即执行',
-      body: `通知跟随本组合的账户（${followers.map(follower => follower.name).join('、')}）立即按最新目标调仓。`, okText: '通知执行',
+    if (!tradingFollowers.length || batchBusy.current.size) return
+    setConfirm({ title: '跟随本组合的交易账户立即执行',
+      body: `通知跟随本组合的账户（${tradingFollowers.map(follower => follower.name).join('、')}）立即按最新目标调仓。`, okText: '通知执行',
       onConfirm: async () => {
         setBatchResults([])
-        await Promise.all(followers.map(follower => notifyFollower(follower.account_id, follower.name)))
+        await Promise.all(tradingFollowers.map(follower => notifyFollower(follower.account_id, follower.name)))
       },
     })
   }
@@ -483,12 +485,12 @@ export function PortfolioEditPage() {
             onToggle={() => setFollowersOpen((open) => !open)}
             className="border-t border-line md:border-r"
             bodyClassName="px-1.5 py-1.5"
-            status={followers.length > 0 ? (
+            status={tradingFollowers.length > 0 ? (
                 <Tooltip
                   content={
                     anyFollowerRunning
                       ? '账户正在执行，结束后可通知'
-                      : '通知全部跟随账户按最新目标立即调仓'
+                      : '通知跟随本组合的交易账户按最新目标立即调仓'
                   }
                 >
                   <span className="ml-auto inline-flex flex-none items-center pr-2">
