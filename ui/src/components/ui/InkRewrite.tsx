@@ -10,6 +10,7 @@
  * tone:
  * - ``label``：控件标签（如 启动↔暂停），纯 opacity 交叉淡。
  * - ``prose``：状态句，淡 + 极轻 blur（墨晕收锐），略日记一点。
+ * - ``quick``：快速扫读，同一槽内短交叉淡。
  */
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 
@@ -23,7 +24,7 @@ const FLUID_W_EASE = 'cubic-bezier(.4,0,.2,1)'
 interface InkRewriteProps {
   /** 当前应显示的文案；变化时触发重写。 */
   text: string
-  /** label=按钮浅淡；prose=状态句带轻 blur。 */
+  /** label=按钮浅淡；prose=状态句带轻 blur；quick=扫读时的短交接。 */
   tone?: InkTone
   className?: string
   /**
@@ -159,6 +160,7 @@ export function InkRewrite({
   const animate = pair.gen > 0
   const inCls = animate ? (tone === 'prose' ? 'ink-rewrite-in-prose' : 'ink-rewrite-in') : ''
   const outCls = tone === 'prose' ? 'ink-rewrite-out-prose' : 'ink-rewrite-out'
+  const timing = tone === 'quick' ? { animationDuration: `${inkRewriteMs(tone)}ms` } : undefined
 
   if (fluid) {
     // 两可见层绝对定位（不撑宽）→ 占位层（inline-block 固有宽，不被槽反向撑动）单独定槽宽，
@@ -176,6 +178,7 @@ export function InkRewrite({
         {pair.prev != null && (
           <span
             className={`absolute left-0 top-0 whitespace-nowrap ${overflow ? 'w-full' : ''} ${outCls} ${pair.prevCls ?? ''}`.trim()}
+            style={timing}
             aria-hidden
           >
             {render(pair.prev)}
@@ -184,6 +187,7 @@ export function InkRewrite({
         <span
           key={pair.gen}
           className={`absolute left-0 top-0 whitespace-nowrap ${overflow ? 'w-full' : ''} ${inCls} ${pair.curCls}`.trim()}
+          style={timing}
         >
           {render(pair.cur)}
         </span>
@@ -200,6 +204,7 @@ export function InkRewrite({
       {pair.prev != null && (
         <span
           className={`col-start-1 row-start-1 truncate whitespace-nowrap ${outCls} ${pair.prevCls ?? ''}`.trim()}
+          style={timing}
           aria-hidden
         >
           {render(pair.prev)}
@@ -208,6 +213,7 @@ export function InkRewrite({
       <span
         key={pair.gen}
         className={`col-start-1 row-start-1 truncate whitespace-nowrap ${inCls} ${pair.curCls}`.trim()}
+        style={timing}
       >
         {render(pair.cur)}
       </span>

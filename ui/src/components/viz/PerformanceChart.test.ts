@@ -26,10 +26,11 @@ test('首屏图表仅凭轻量曲线和执行摘要显示读数与键盘操作',
   }
   const html = renderToStaticMarkup(createElement(PerformanceChart, {
     accountId: 7, data, executionIndex: [execution], daily: false, backtestMode: 'sized', scaleMode: 'natural',
-    costs: new Map(), intervalCost: null, selection: null, onSelect: () => {}, portfolioNames: new Map(), showExecutions: true,
+    costs: new Map(), intervalCost: null, selection: null, onSelect: () => {}, portfolioNames: new Map(), showExecutions: true, returnReadout: null,
   }))
-  expect(html).toContain('本次执行')
-  expect(html).toContain('本次执行成交额 123.4')
+  expect(html).not.toMatch(/(?:本次|末次)执行/)
+  expect(html).toContain('成交额')
+  expect(html).toContain('<span class="opacity-0">123.4</span>')
   expect(html).toContain('数据不完整')
   expect(html).toContain('tabindex="0"')
   expect(html).toContain('data-chart="time-series"')

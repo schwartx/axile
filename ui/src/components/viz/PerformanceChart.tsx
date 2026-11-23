@@ -5,10 +5,13 @@ import { Link } from '@/components/ui/nav'
 import { performanceJournalPath } from '@/features/account/journalSource'
 import { lossClass } from '@/features/history/costs'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
-import { CircleHelp } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { ArrowUpRight, CircleHelp, TriangleAlert } from 'lucide-react'
 import { Tooltip } from '@/components/ui/Tooltip'
+import { InkRewrite } from '@/components/ui/InkRewrite'
+import { NumberTicker } from '@/components/ui/NumberTicker'
 import { ChartTradingOverlay } from '@/features/history/ChartTradingOverlay'
-import { executionAt, executionSelection } from '@/features/history/executionSelection'
+import { executionSelection, hoverExecution } from '@/features/history/executionSelection'
 import { useExecutionMarkerInteraction } from '@/features/history/executionMarkers'
 import { useDomainStore } from '@/stores/domain'
 import { useChannelDescriptor } from '@/stores/channels'
@@ -20,7 +23,7 @@ import type { AnalysisChart, AnalysisExecutionSummary } from '@/lib/api/performa
 import { OverflowText } from '@/components/ui/OverflowText'
 import { chartAxis } from '@/components/viz/performanceCanvas'
 import { amount, feeText, shanghaiTime, type CostSummary } from '@/features/history/costs'
-import { returnText } from '@/features/history/performance'
+import { returnColor, returnText } from '@/features/history/performance'
 import { bindingSelection, clampViewport, intervalReturn, intervalSelection, nearestIndex, navigationTimes as chartNavigationTimes, pointTime, precisePoints, reconcileSelection, timeLabel, type ChartSelection, type Viewport } from '@/features/history/chartModel'
 import { bindingAtObservation, bindingObservationSpan, BINDING_BOTTOM, CHART_HEIGHT, drawOverlay, drawScene, PLOT, plotBounds, plotRight, pointLabel, readCanvasTheme, seriesKeys, xPosition, xTime, type ChartScene } from '@/components/viz/performanceCanvas'
 import { closedDaysBetween, createTimeScale, type TimeScaleMode } from '@/features/history/timeScale'
@@ -43,18 +46,79 @@ interface Props {
   onSelect: (selection: ChartSelection) => void
   portfolioNames: Map<number, string>
   showExecutions: boolean
+  returnReadout: HTMLDivElement | null
 }
 type DragKind = 'pan' | 'compare' | 'start' | 'end' | 'nav' | 'navStart' | 'navEnd'
 interface Drag { kind: DragKind; x: number; y: number; viewport: Viewport; anchor: number; moved: boolean; pending: ChartSelection; bindingTime: number | null }
 
 const slippageCostAmount = (value: number | null) => value == null ? '—' : value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const COST_LABELS = ['成交额', '滑点损耗', '滑点成本', '成交额覆盖']
+const RETURN_LABELS = ['账户', '回测', '收益差']
+
+function addReadoutSamples(samples: Set<string>[], values: string[]) {
+  // 等宽数字共享占位，保留符号、分隔符和单位的实际宽度。
+  values.forEach((value, index) => samples[index].add(value.replace(/\d/g, '0')))
+}
+
+function ReadoutNumber({ text, signed = false }: { text: string; signed?: boolean }) {
+  const number = /^([+-]?[\d,]+(?:\.(\d+))?)(.*)$/.exec(text)
+  if (!number) return text
+  const sign = number[1].startsWith('-') ? '−' : number[1].startsWith('+') ? '+' : ''
+  // 保留符号的字宽，滚动方向仍由传给 NumberTicker 的有符号值决定。
+  const reservedSign = signed ? '−' : ''
+  return <>
+      <span className="relative inline-grid [&>span]:col-start-1 [&>span]:row-start-1">
+        <span className="opacity-0">{number[1]}</span>
+        {signed && <>
+          <span className="invisible" aria-hidden="true">{reservedSign}{number[1].replace(/^[+-]/, '')}</span>
+          <span aria-hidden="true" data-sign={sign} className="pointer-events-none absolute inset-0 before:content-[attr(data-sign)]" />
+        </>}
+        <NumberTicker scrub aria-hidden="true" prefix={reservedSign} className="pointer-events-none absolute inset-0 leading-[inherit] [--number-flow-mask-height:0px] [&::part(prefix)]:invisible"
+          value={Number(number[1].replaceAll(',', ''))} format={{
+            minimumFractionDigits: number[2]?.length ?? 0, maximumFractionDigits: number[2]?.length ?? 0,
+            signDisplay: signed ? 'never' : 'auto', useGrouping: number[1].includes(','),
+          }} />
+      </span>{number[3]}
+  </>
+}
+
+function CoverageReadout({ text, className }: { text: string; className?: string }) {
+  const percent = text.endsWith('%')
+  const lastPercent = useRef(text)
+  useLayoutEffect(() => { if (percent) lastPercent.current = text }, [percent, text])
+
+  // 百分比共用一个换字身份，同类更新由常驻的 NumberTicker 接手。
+  return <InkRewrite text={percent ? '%' : text} tone="quick" textClassName={className}
+    renderText={value => value === '%' ? (percent ? <ReadoutNumber text={text} /> : lastPercent.current) : value} />
+}
+
+function ReadoutValue({ text, samples, className, signed = false, coverage = false }: {
+  text: string; samples: Set<string>; className?: string; signed?: boolean; coverage?: boolean
+}) {
+  const reservedSign = signed ? '−' : ''
+  return <span className="inline-grid [&>span]:col-start-1 [&>span]:row-start-1">
+    {coverage ? <CoverageReadout text={text} className={className} /> : <span className={className}><ReadoutNumber text={text} signed={signed} /></span>}
+    {[...samples].map(sample => <span key={sample} className="invisible" aria-hidden="true">{signed ? sample.replace(/^[+-]?(?=\d)/, reservedSign) : sample}</span>)}
+  </span>
+}
+
+function returnReadoutValues(account: number | null | undefined, portfolio: number | null | undefined) {
+  return [returnText(account), returnText(portfolio), returnText(account != null && portfolio != null ? portfolio - account : null, 'pp')]
+}
+
+function costReadoutValues(summary: CostSummary | null | undefined, currency: string, ready = true) {
+  const coverage = !ready ? '加载中'
+    : !summary || summary.count === 0 ? '无成交'
+    : summary.coverage == null ? '数据不完整' : `${(summary.coverage * 100).toFixed(1)}%`
+  return [amount(summary?.value ?? null), `${amount(summary?.lossBp ?? null)} BP`, `${amount(summary?.cost ?? null)} ${currency}`.trimEnd(), coverage]
+}
 
 export function PerformanceChart(props: Props) {
   if (props.data.observation_count < 2 || props.data.points.length < 2) return <PerformanceChartPlaceholder accountId={props.accountId} loading={false} failed={false} message="有效观测不足两条" />
   return <CanvasPerformanceChart {...props} />
 }
 
-function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, scaleMode, costs, intervalCost, selection, slideInterval, rangeTarget, onSelect, portfolioNames, viewKey, accountId, snapshotId, showExecutions }: Props) {
+function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, scaleMode, costs, intervalCost, selection, slideInterval, rangeTarget, onSelect, portfolioNames, viewKey, accountId, snapshotId, showExecutions, returnReadout }: Props) {
   const accountInfo = useDomainStore(s => s.accounts?.find(a => a.account_id === accountId))
   const descriptor = useChannelDescriptor(accountInfo?.trade_channel)
   const times = useMemo(() => data.points.map(pointTime), [data.points])
@@ -104,30 +168,49 @@ function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, sca
   const shownSelection = draft ?? selection
   selectionRef.current = shownSelection
   const readingSelection = pinned ?? selection
-  const pointIndex = Math.min(data.points.length - 1, !pinned && hover != null ? hover : readingSelection && readingSelection.kind !== 'interval' ? nearestIndex(times, readingSelection.time) : data.points.length - 1)
+  const lastPointIndex = data.points.length - 1
+  const committedIndex = readingSelection && readingSelection.kind !== 'interval' ? nearestIndex(times, readingSelection.time) : lastPointIndex
+  const committedPoint = data.points[committedIndex]
+  const pointIndex = !pinned && hover != null ? Math.min(lastPointIndex, hover) : committedIndex
   const point = data.points[pointIndex]
-  const execution = executionIndex.find(row => row.record_id === point.record_id)
-  // 悬停读数优先用磁吸命中的执行，与点击固定的取数同源；观测点 record_id 可能绑定到同刻另一条执行。
-  const magnetExecution = magnet != null ? executionIndex.find(row => row.record_id === magnet) : null
-  const selectedExecution = pinned?.kind === 'execution' ? executionIndex.find(row => row.record_id === pinned.recordId) : null
-  const cursorExecution = cursor ? executionAt(executionIndex, cursor.time) : null
+  const selectedExecution = readingSelection?.kind === 'execution' ? executionIndex.find(row => row.record_id === readingSelection.recordId) : null
   const keys = seriesKeys(daily, backtestMode)
-  const summary = draft ? null : intervalCost
-  const estimated = summary?.estimated ?? 0
   const daySummary = costs?.get(point.date.slice(0, 10))
   const interval = shownSelection?.kind === 'interval'
   const account = interval ? intervalReturn(data.points, shownSelection, 'account_return') : point[keys[0]]
   const portfolio = interval ? intervalReturn(data.points, shownSelection, backtestMode === 'target' ? 'target_portfolio_return' : 'portfolio_return') : point[keys[1]]
-  const readingExecution = selectedExecution ?? magnetExecution ?? (cursor ? cursorExecution : execution)
-  const readingCost = interval ? summary : selection?.kind === 'day' ? daySummary : readingExecution?.summary ?? daySummary
-  const costReady = costs != null && (!interval || summary != null)
-  const costScope = interval ? '区间' : readingExecution ? '本次执行' : '当日'
+  const returnValues = returnReadoutValues(account, portfolio)
+  const returnSamples = useMemo(() => {
+    const samples = RETURN_LABELS.map(() => new Set(['—']))
+    const [accountKey, portfolioKey] = seriesKeys(daily, backtestMode)
+    for (const observation of data.points) addReadoutSamples(samples, returnReadoutValues(observation[accountKey], observation[portfolioKey]))
+    return samples
+  }, [backtestMode, daily, data.points])
+  const intervalSelected = readingSelection?.kind === 'interval'
+  const activeExecution = selectedExecution ?? hoverExecution(executionIndex, cursor)
+  const costInterval = intervalSelected && !activeExecution
+  const defaultExecution = readingSelection ? selectedExecution : executionIndex.at(-1)
+  const readingExecution = activeExecution ?? defaultExecution
+  const costDay = readingSelection?.kind === 'day' ? readingSelection.day : committedPoint.date.slice(0, 10)
+  const readingCost = costInterval ? intervalCost : readingExecution?.summary ?? costs?.get(costDay)
+  const costReady = costInterval ? intervalCost != null : readingExecution != null || costs != null
+  const costScope = intervalSelected ? '区间比较' : defaultExecution ? null : '当日汇总'
+  const estimated = intervalCost?.estimated ?? 0
+  const currency = displayCurrencyUnit(accountInfo?.currency)
+  const costSamples = useMemo(() => {
+    const samples = COST_LABELS.map(() => new Set<string>())
+    const add = (summary: CostSummary | null, ready = true) => addReadoutSamples(samples, costReadoutValues(summary, currency, ready))
+    add(null, false)
+    add(null)
+    add(intervalCost)
+    for (const { summary } of executionIndex) add(summary)
+    for (const summary of costs?.values() ?? []) add(summary)
+    return samples
+  }, [costs, currency, executionIndex, intervalCost])
   const costIncomplete = readingCost != null && readingCost.count > 0 && (readingCost.covered < readingCost.count || !readingCost.amountComplete)
-  const coverage = !costReady ? '成交额覆盖 —（加载中）'
-    : !readingCost || readingCost.count === 0 ? '成交额覆盖 —（无成交）'
-    : readingCost.coverage == null ? '成交额覆盖 —（数据不完整）'
-    : `${(readingCost.coverage * 100).toFixed(1)}% 成交额覆盖`
   const coverageNeedsAttention = costReady && readingCost != null && readingCost.count > 0 && (costIncomplete || readingCost.coverage == null)
+  const costValues = costReadoutValues(costReady ? readingCost : null, currency, costReady)
+  const costColors = [undefined, lossClass(readingCost?.lossBp), lossClass(readingCost?.cost), coverageNeedsAttention ? 'text-warn' : undefined]
   const binding = bindingAtObservation(data, times, bindingTime ?? times[pointIndex])
   const bindingName = !binding || binding.binding.portfolio_id == null ? '未绑定' : portfolioNames.get(binding.binding.portfolio_id) ?? `组合 #${binding.binding.portfolio_id}`
   const tradingScene = useMemo<ChartScene>(() => ({ data, executionIndex, times, width: size.width, viewport, daily, backtestMode, returnRange, portfolioNames, domain: full, scale: timeScale, showExecutions, closedGapDays, theme: container.current ? readCanvasTheme(container.current) : { bg: '', surface: '', ink: '', muted: '', line: '', accent: '', warn: '', fill: '', font: '' } }), [data, executionIndex, times, size, viewport, daily, backtestMode, returnRange, portfolioNames, full, timeScale, showExecutions, closedGapDays])
@@ -295,40 +378,44 @@ function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, sca
   }
 
   return <div data-testid="performance-workbench" className="min-w-0">
-    <div className="flex min-h-36 flex-wrap content-center items-center justify-between gap-x-4 gap-y-1 @min-[40rem]:min-h-28 @min-[56rem]:min-h-16">
-    <div className="flex min-h-9 min-w-0 flex-1 basis-[32rem] flex-col gap-y-1 py-1 text-xs text-ink-2" data-testid="chart-readout">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <span className="break-words text-ink-3">{interval ? '区间比较' : `日末观测 ${pointLabel(point)}`}</span>
-        <span>账户 <b className="font-medium text-accent">{returnText(account)}</b></span>
-        <span>回测 <b className="font-medium">{returnText(portfolio)}</b></span>
-        {backtestMode === 'sized' && !interval && point.sizing_fallback && <span className="text-ink-3">本次按目标权重回退</span>}
-        <span>收益差 <b className="font-medium">{returnText(account != null && portfolio != null ? portfolio - account : null, ' 个百分点')}</b></span>
+    {returnReadout && createPortal(
+      <Tooltip content={interval ? '区间比较' : `日末观测 ${pointLabel(point)}`} arrow>
+        <div data-testid="performance-returns" role="group" aria-label="收益读数" tabIndex={0} className="flex min-w-0 flex-wrap items-baseline gap-x-6 gap-y-1 border-l border-line pl-4 text-sm text-ink-2 tabular-nums focus-visible:outline-accent [&>span]:whitespace-nowrap [&_b]:ml-1 [&_b]:text-base [&_b]:font-semibold">
+          {RETURN_LABELS.map((label, index) => <span key={label}>{label}{' '}
+            <b className={index === 0 ? returnColor(account) : undefined}><ReadoutValue text={returnValues[index]} samples={returnSamples[index]} signed /></b>
+          </span>)}
+        </div>
+      </Tooltip>, returnReadout)}
+    <div className="flex min-h-9 flex-wrap content-center items-start gap-x-5 gap-y-1 border-b border-line py-0.5">
+      <div className="min-w-0 max-w-full text-sm text-ink-3 tabular-nums" data-testid="chart-readout">
+        <div className="flex min-h-7 flex-wrap content-center items-baseline gap-x-3 gap-y-1">
+          {COST_LABELS.map((label, index) => <div key={label} className="whitespace-nowrap">
+            {label}{' '}<ReadoutValue text={costValues[index]} samples={costSamples[index]} className={costColors[index]} signed={index === 1 || index === 2} coverage={index === 3} />
+          </div>)}
+        </div>
+        <div className="flex flex-wrap gap-x-3 gap-y-1 empty:hidden">
+          {costScope && <span className={activeExecution ? 'invisible' : 'text-ink-2'}>{costScope}</span>}
+          {intervalSelected && intervalCost && <><span>区间手续费 {feeText(intervalCost)}</span>{estimated > 0 && <span className="text-warn">区间内 {estimated} 笔使用执行时间</span>}</>}
+          {backtestMode === 'sized' && !intervalSelected && committedPoint.sizing_fallback && <span>本次按目标权重回退</span>}
+          {!!data.cash_flow_adjustment?.pending && <span role="status" className="text-warn">{data.cash_flow_adjustment.pending} 笔出入金待核对，尚未计入</span>}
+          {data.cash_flow_adjustment?.approximate && <span>出入金按资金占用时间加权估算</span>}
+        </div>
       </div>
-      <div className="flex min-h-5 flex-wrap items-center gap-x-3 gap-y-1 text-ink-3 tabular-nums">
-        <span>{costScope}成交额 {amount(costReady ? readingCost?.value ?? null : null)}</span>
-        <span className={lossClass(costReady ? readingCost?.lossBp : null)}>滑点损耗 {amount(costReady ? readingCost?.lossBp ?? null : null)} BP</span>
-        <span className={lossClass(costReady ? readingCost?.cost : null)}>滑点成本 {slippageCostAmount(costReady ? readingCost?.cost ?? null : null)} {displayCurrencyUnit(accountInfo?.currency)}</span>
-        <span className={coverageNeedsAttention ? 'text-warn' : undefined}>{coverage}</span>
-        {interval && costReady && readingCost && <><span>手续费 {feeText(readingCost)}</span>{estimated > 0 && <span className="text-warn">{estimated} 笔使用执行时间</span>}</>}
-    <Tooltip content={<p>账户收益按已录入出入金修正{data.cash_flow_adjustment?.approximate ? '（资金占用时间加权近似）' : ''}{data.cash_flow_adjustment?.pending ? ` · ${data.cash_flow_adjustment.pending} 笔流水待核对` : ''} · 回测单边费率 {Number((data.settings.backtest_fee_rate * 10000).toFixed(8))} BP</p>} arrow>
-      <button type="button" aria-label="收益计算口径说明" className="inline-flex min-h-5 items-center gap-1.5 rounded text-xs text-ink-3 hover:text-ink-1 focus-visible:outline-accent"><CircleHelp size={15} aria-hidden="true" /><span>计算口径</span></button>
-    </Tooltip>
-      {!!data.cash_flow_adjustment?.pending && <span role="status" className="text-warn">{data.cash_flow_adjustment.pending} 笔出入金待核对，尚未计入</span>}
-      {data.cash_flow_adjustment?.approximate && <span className="text-ink-3">出入金按资金占用时间加权估算</span>}
-      {((backtestMode === 'target' ? data.target_skips : data.skips)?.count || data.invalid_asset_count > 0 || backtestMode === 'sized' && !!data.sizing_fallback_count) ? <div role="status" className="text-xs text-warn">
-        <Tooltip content={<div className="space-y-2">
-      {backtestMode === 'sized' && !!data.sizing_fallback_count && <p className="text-ink-2">{data.sizing_fallback_count} 条参与回测的执行记录因缺少数量换算证据，按目标权重计算，对应日期在曲线上标记</p>}
-      {(backtestMode === 'target' ? data.target_skips : data.skips)?.count ? <p className="text-ink-2">{(backtestMode === 'target' ? data.target_skips : data.skips)?.count} 条执行快照未参与回测（{[(backtestMode === 'target' ? data.target_skips : data.skips)?.missing_target ? `目标权重缺失 ${(backtestMode === 'target' ? data.target_skips : data.skips)?.missing_target} 条` : null, (backtestMode === 'target' ? data.target_skips : data.skips)?.missing_ticks ? `缺少首笔盘口 ${(backtestMode === 'target' ? data.target_skips : data.skips)?.missing_ticks} 条` : null].filter(Boolean).join('、')}），组合收益按最后持仓延续估算</p> : null}
-      {data.invalid_asset_count > 0 && <p className="text-ink-2">{data.invalid_asset_count} 条账户资产快照不可用</p>}
-        </div>} arrow>
-          <button type="button" aria-label="查看回测与账户数据缺失详情" className="inline-flex min-h-5 items-center gap-1.5 rounded text-left focus-visible:outline-accent"><span>回测与账户数据存在缺失</span><CircleHelp size={15} aria-hidden="true" /></button>
+      <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-1 text-sm">
+        <Tooltip content={<p>账户收益按已录入出入金修正{data.cash_flow_adjustment?.approximate ? '（资金占用时间加权近似）' : ''}{data.cash_flow_adjustment?.pending ? ` · ${data.cash_flow_adjustment.pending} 笔流水待核对` : ''} · 回测单边费率 {Number((data.settings.backtest_fee_rate * 10000).toFixed(8))} BP</p>} arrow>
+          <button type="button" aria-label="收益计算口径说明" className="inline-flex min-h-7 items-center gap-1.5 rounded text-ink-3 hover:text-ink-1 focus-visible:outline-accent"><CircleHelp size={15} aria-hidden="true" /><span>计算口径</span></button>
         </Tooltip>
-      </div> : null}
+        {((backtestMode === 'target' ? data.target_skips : data.skips)?.count || data.invalid_asset_count > 0 || backtestMode === 'sized' && !!data.sizing_fallback_count) ? <div role="status" className="text-warn">
+          <Tooltip content={<div className="space-y-2">
+            {backtestMode === 'sized' && !!data.sizing_fallback_count && <p className="text-ink-2">{data.sizing_fallback_count} 条参与回测的执行记录因缺少数量换算证据，按目标权重计算，对应日期在曲线上标记</p>}
+            {(backtestMode === 'target' ? data.target_skips : data.skips)?.count ? <p className="text-ink-2">{(backtestMode === 'target' ? data.target_skips : data.skips)?.count} 条执行快照未参与回测（{[(backtestMode === 'target' ? data.target_skips : data.skips)?.missing_target ? `目标权重缺失 ${(backtestMode === 'target' ? data.target_skips : data.skips)?.missing_target} 条` : null, (backtestMode === 'target' ? data.target_skips : data.skips)?.missing_ticks ? `缺少首笔盘口 ${(backtestMode === 'target' ? data.target_skips : data.skips)?.missing_ticks} 条` : null].filter(Boolean).join('、')}），组合收益按最后持仓延续估算</p> : null}
+            {data.invalid_asset_count > 0 && <p className="text-ink-2">{data.invalid_asset_count} 条账户资产快照不可用</p>}
+          </div>} arrow>
+            <button type="button" aria-label="查看回测与账户数据缺失详情" className="inline-flex min-h-7 items-center gap-1.5 rounded text-left focus-visible:outline-accent"><TriangleAlert size={14} aria-hidden="true" /><span>回测与账户数据存在缺失</span></button>
+          </Tooltip>
+        </div> : null}
+        {snapshotId && <Link aria-disabled={!!draft} tabIndex={draft ? -1 : undefined} onClick={event => { if (draft) event.preventDefault() }} data-testid="journal-link" to={performanceJournalPath(accountId, snapshotId, data.range, selection)} className="inline-flex min-h-7 items-center gap-1.5 whitespace-nowrap text-accent hover:underline">{selection?.kind === 'interval' ? '查看区间执行' : selection?.kind === 'day' ? '查看当日执行' : '查看执行记录'}<ArrowUpRight size={14} aria-hidden="true" /></Link>}
       </div>
-    </div>
-    <div className="flex flex-wrap items-center gap-2">
-      {snapshotId && <Link aria-disabled={!!draft} tabIndex={draft ? -1 : undefined} onClick={event => { if (draft) event.preventDefault() }} data-testid="journal-link" to={performanceJournalPath(accountId, snapshotId, data.range, selection)} className="inline-flex min-h-9 items-center text-xs text-accent hover:underline">{selection?.kind === 'interval' ? '查看区间执行' : selection?.kind === 'day' ? '查看当日执行' : '查看执行记录'}</Link>}
-    </div>
     </div>
     <TimeSeriesChart height={CHART_HEIGHT} label={daily ? '每日收益' : '累计收益'} surfaceRef={container} overlayRef={overlay} onResize={setSize} draw={paint} drawOverlay={paintOverlay} windowMotion={windowMotion}
       navigation={{ times, current: hoverRef.current ?? pointIndex, viewport, scale: timeScale, plot: plotBounds, onFocus: focusPoint, onZoom: zoom, onReset: () => { setViewport(full); setReturnRange(null) } }}

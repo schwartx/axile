@@ -160,7 +160,7 @@ export function ContributionChart({ rows, points, navigationDomain, rangeTarget,
     return { x, y, time, index: nearestIndex(times, time) }
   }
   return <div className="min-w-0">
-    <div className={heading ? 'flex min-h-36 flex-col justify-center gap-1 @min-[40rem]:min-h-28 @min-[56rem]:min-h-16' : 'mb-1'}>
+    <div className="mb-1 flex flex-col gap-1">
       {heading}
       <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs"><span>{segmented ? '分段毛盈亏贡献' : '累计毛盈亏贡献'} · {displayCurrencyUnit(currency) || '按原币种'}</span><span className="text-ink-3">{segmented ? '各段起点归零' : '区间起点归零'}</span></div>
     </div>

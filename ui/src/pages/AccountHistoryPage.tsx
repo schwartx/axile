@@ -15,6 +15,7 @@ import { PerformanceChart } from '@/components/viz/PerformanceChart'
 import { PerformanceChartPlaceholder } from '@/features/history/PerformanceChartPlaceholder'
 import { ObservationEndpointPicker } from '@/features/history/ObservationEndpointPicker'
 import { AccountPageTitle } from '@/features/account/pageHead'
+import { Toggle } from '@/features/account/editUi'
 import { FeeControl } from '@/features/history/FeeControl'
 import { getAccount } from '@/lib/api/accounts'
 import { getPortfolios } from '@/lib/api/portfolios'
@@ -45,10 +46,6 @@ const BACKTEST_MODES: Array<{ value: BacktestMode; label: string }> = [
 const SCALES: Array<{ value: TimeScaleMode; label: string }> = [
   { value: 'observations', label: '观测序列' }, { value: 'natural', label: '自然时间' },
 ]
-const MARKERS: Array<{ value: 'on' | 'off'; label: string }> = [
-  { value: 'on', label: '显示成交点' }, { value: 'off', label: '隐藏成交点' },
-]
-
 /** Distinguish a ready publication from a chart that has finished loading. */
 function historyLoadingMessage(metadata: AnalysisMetadata | null, hasResult: boolean, loadingResult: boolean): string | undefined {
   if (loadingResult) return hasResult ? '正在读取新版绩效，当前保留上次结果' : '正在读取绩效结果'
@@ -75,6 +72,7 @@ function AccountHistory({ accountId }: { accountId: number }) {
   const [pickerSelection, setPickerSelection] = useState<ChartSelection>(null)
   const slideInterval = pickerSelection != null && pickerSelection === selection
   const [markers, setMarkers] = useState(() => performanceViews.get(accountId)?.markers ?? loadPerformanceView(accountId).markers ?? true)
+  const [returnReadout, setReturnReadout] = useState<HTMLDivElement | null>(null)
   const [backtestMode, setBacktestMode] = useState<BacktestMode>(() => performanceViews.get(accountId)?.backtestMode ?? loadPerformanceView(accountId).backtestMode ?? 'sized')
   const [showEvents, setShowEvents] = useState(false)
   const [draft, setDraft] = useState<{ fee: string } | null>(null)
@@ -276,30 +274,29 @@ function AccountHistory({ accountId }: { accountId: number }) {
   const intervalStart = selection?.kind === 'interval' ? selection.start : intervalTimes[0]
   const intervalEnd = selection?.kind === 'interval' ? selection.end : intervalTimes.at(-1)
 
-  const controls = <div data-testid="performance-controls" className="flex w-full min-w-0 flex-wrap items-center gap-2 py-1">
-        <fieldset disabled={saving || !settings || !!account.data?.archived_at} className="flex min-w-0 flex-wrap items-center gap-2 disabled:opacity-60">
-          <FeeControl fee={fee} onChange={value => setDraft({ fee: value })} onEditingChange={setEditingFee} />
-        </fieldset>
-        <div className="flex items-center gap-2">
-          <button type="button" aria-label={saving ? '保存中' : '保存并计算'} title={dirty ? '参数已修改，保存并计算' : '保存并计算'} disabled={!dirty || saving || !settings} onClick={() => void save()} className="flex h-9 w-9 items-center justify-center rounded border border-line text-sm disabled:opacity-40"><Save size={14} /></button>
-          <button type="button" aria-label="刷新绩效与成本" title="刷新绩效与成本" disabled={saving || backtestBusy} onClick={() => void performance.refresh()} className="flex h-9 w-9 items-center justify-center rounded border border-line disabled:opacity-40"><RefreshCw size={14} className={backtestBusy ? 'animate-spin motion-reduce:animate-none' : ''} /></button>
-          <span role="status" className="sr-only">{dirty && !saving ? '参数已修改，待计算' : ''}</span>
-        </div>
-        <fieldset><legend className="sr-only">回测口径</legend><Segmented size="sm" value={backtestMode} options={BACKTEST_MODES} onChange={setBacktestMode} trailing={
-          <Tooltip content={<div className="space-y-1"><p><b>数量换算后：</b>按数量换算目标敞口，并非实际成交持仓。</p><p><b>目标权重：</b>直接按目标权重计算回测收益。</p></div>} arrow>
-            <button type="button" aria-label="回测口径说明" className="flex h-9 w-8 items-center justify-center rounded text-ink-3 hover:text-ink-1 focus-visible:outline-accent"><CircleHelp size={15} aria-hidden="true" /></button>
-          </Tooltip>
-        } /></fieldset>
-        <fieldset><legend className="sr-only">成交点</legend><Segmented size="sm" value={markers ? 'on' : 'off'} options={MARKERS} onChange={value => setMarkers(value === 'on')} /></fieldset>
-        <div className={chartSymbol ? 'invisible' : undefined} inert={!!chartSymbol}>
-          <Segmented size="sm" value={view} options={VIEWS} onChange={setView} />
-        </div>
-        </div>
+  const controls = <div data-testid="performance-controls" className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-1.5 py-1">
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
+      <fieldset disabled={saving || !settings || !!account.data?.archived_at} className="min-w-0 disabled:opacity-60">
+        <FeeControl fee={fee} onChange={value => setDraft({ fee: value })} onEditingChange={setEditingFee} />
+      </fieldset>
+      <button type="button" aria-label={saving ? '保存中' : '保存并计算'} title={dirty ? '参数已修改，保存并计算' : '保存并计算'} disabled={!dirty || saving || !settings} onClick={() => void save()} className="flex h-9 w-9 items-center justify-center rounded border border-line text-sm disabled:opacity-40"><Save size={14} /></button>
+      <button type="button" aria-label="刷新绩效与成本" title="刷新绩效与成本" disabled={saving || backtestBusy} onClick={() => void performance.refresh()} className="flex h-9 w-9 items-center justify-center rounded border border-line disabled:opacity-40"><RefreshCw size={14} className={backtestBusy ? 'animate-spin motion-reduce:animate-none' : ''} /></button>
+      <span role="status" className="sr-only">{dirty && !saving ? '参数已修改，待计算' : ''}</span>
+    </div>
+    <fieldset><legend className="sr-only">回测口径</legend><Segmented size="sm" value={backtestMode} options={BACKTEST_MODES} onChange={setBacktestMode} trailing={
+      <Tooltip content={<div className="space-y-1"><p><b>数量换算后：</b>按数量换算目标敞口，并非实际成交持仓。</p><p><b>目标权重：</b>直接按目标权重计算回测收益。</p></div>} arrow>
+        <button type="button" aria-label="回测口径说明" className="flex h-9 w-8 items-center justify-center rounded text-ink-3 hover:text-ink-1 focus-visible:outline-accent"><CircleHelp size={15} aria-hidden="true" /></button>
+      </Tooltip>
+    } /></fieldset>
+    <div className="flex shrink-0 items-center gap-2 text-sm text-ink-2">
+      <span>成交点</span><Toggle on={markers} onClick={() => setMarkers(!markers)} ariaLabel="显示成交点" />
+    </div>
+    <div ref={setReturnReadout} className="ml-auto min-w-0 empty:hidden" />
+  </div>
 
-  return <section className="min-w-0 [&_button]:min-h-9">
-    <div data-testid="performance-sticky-header" className="sticky top-0 z-30 flex flex-wrap items-center gap-x-1 gap-y-1 border-b border-line bg-bg py-1">
-    <div className="flex w-full min-w-0 items-center [&_h1]:text-sm!">
-      <div className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-1 [&>div]:gap-1!">
+  return <section className="min-w-0">
+    <div data-testid="performance-sticky-header" className="sticky top-0 z-30 min-w-0 border-b border-line bg-bg">
+      <div className="flex min-h-12 min-w-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-line py-2">
         <AccountPageTitle
           accountId={accountId}
           page="实盘绩效"
@@ -316,26 +313,30 @@ function AccountHistory({ accountId }: { accountId: number }) {
           <button type="button" aria-label="绩效数据说明" className="inline-flex h-[30px] w-6 min-h-0! shrink-0 items-center justify-center rounded text-ink-3 hover:bg-fill hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-accent"><Info size={15} aria-hidden="true" /></button>
         </Tooltip>
       </div>
-    </div>
-    <div role="group" aria-label="绩效与品种贡献共用筛选" data-testid="performance-shared-controls" className="flex w-full min-w-0 flex-wrap items-center gap-x-1 gap-y-1 text-xs text-ink-2 [&_button]:min-h-0!">
-      <fieldset><legend className="sr-only">绩效时间范围</legend><Segmented size="sm" className="rounded-md! [&_button]:h-[26px] [&_button]:px-2 [&_button]:py-0" value={range} options={RANGES} onChange={setRange} /></fieldset>
-      <div className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-1" role="group" aria-label="分析区间">
-        {[{ label: '起点', value: intervalStart, other: intervalEnd }, { label: '终点', value: intervalEnd, other: intervalStart }]
-          .map(({ label, value, other }) => <ObservationEndpointPicker key={label} label={label} value={value} other={other}
-            times={intervalTimes} onChange={time => {
-              if (other == null) return
-              setSelectionNotice(false)
-              const interval = intervalSelection(time, other)
-              setPickerSelection(interval)
-              setSelection(interval)
-            }} />)}
-        <button type="button" aria-label="取消选择" disabled={!selection} onClick={() => { setSelectionNotice(false); setSelection(null) }} className="inline-flex h-[30px] w-6 shrink-0 items-center justify-center rounded hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40"><X size={15} aria-hidden="true" /></button>
+      <div role="group" aria-label="绩效与品种贡献共用筛选" data-testid="performance-shared-controls" className="flex min-w-0 flex-wrap items-center gap-x-6 gap-y-1.5 border-b border-line py-1 text-sm text-ink-2">
+        <fieldset><legend className="sr-only">绩效时间范围</legend><Segmented size="sm" highlight="accent" className="[&_button]:min-h-8" value={range} options={RANGES} onChange={setRange} /></fieldset>
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2" role="group" aria-label="分析区间">
+          {[{ label: '起点', value: intervalStart, other: intervalEnd }, { label: '终点', value: intervalEnd, other: intervalStart }]
+            .map(({ label, value, other }) => <ObservationEndpointPicker key={label} label={label} value={value} other={other}
+              times={intervalTimes} onChange={time => {
+                if (other == null) return
+                setSelectionNotice(false)
+                const interval = intervalSelection(time, other)
+                setPickerSelection(interval)
+                setSelection(interval)
+              }} />)}
+          <button type="button" aria-label="取消选择" disabled={!selection} onClick={() => { setSelectionNotice(false); setSelection(null) }} className="inline-flex h-8 w-7 shrink-0 items-center justify-center rounded hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40"><X size={15} aria-hidden="true" /></button>
+        </div>
+        <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-2">
+          <fieldset><legend className="sr-only">横轴尺度</legend><Segmented size="sm" className="[&_button]:min-h-8" value={scale} options={SCALES} onChange={setScale} /></fieldset>
+          <fieldset className={chartSymbol ? 'invisible' : undefined} inert={!!chartSymbol}>
+            <legend className="sr-only">收益视图</legend><Segmented size="sm" className="[&_button]:min-h-8" value={view} options={VIEWS} onChange={setView} />
+          </fieldset>
+        </div>
       </div>
-      <fieldset><legend className="sr-only">横轴尺度</legend><Segmented size="sm" className="rounded-md! [&_button]:h-[26px] [&_button]:px-2 [&_button]:py-0" value={scale} options={SCALES} onChange={setScale} /></fieldset>
+      {controls}
     </div>
-    {controls}
-    </div>
-    <div className="pt-2">
+    <div>
       {data && data.observation_count > 0 && (data.calendar.status === 'partial' || data.calendar.status === 'unavailable') && <p role="status" className="mt-1 text-xs text-warn">部分日期交易日历不可用，休市标记可能不完整</p>}
       {!parsed && !editingFee && <p role="alert" className="mt-2 text-xs text-warn">费率须大于等于 0 且小于 10000 BP</p>}
       <ErrorNotice intent="mutation" title="参数保存失败" error={saveError} />
@@ -348,7 +349,7 @@ function AccountHistory({ accountId }: { accountId: number }) {
     <ErrorNotice intent="read" title={data ? '新版绩效读取失败，保留上次结果' : '绩效结果读取失败'} error={performance.resultError} hasData={data != null} variant="compact" onRetry={performance.check} />
     <ErrorNotice intent="read" title={data ? '绩效计算失败，保留上次结果' : '绩效计算失败'} error={calculationError} hasData={data != null} variant="compact" onRetry={() => void performance.refresh()} />
     <ErrorNotice intent="mutation" title="刷新请求失败" error={performance.refreshError} variant="compact" onRetry={() => void performance.refresh()} />
-    <p role="status" className="flex min-h-5 items-center text-xs text-ink-3" data-testid="performance-loading-status">{snapshot && loadingMessage}</p>
+    <p role="status" className="py-1 text-xs text-ink-3 empty:py-0" data-testid="performance-loading-status">{snapshot && loadingMessage}</p>
     {selectionNotice && <p role="status" className="py-1 text-xs text-ink-3">数据已更新，原选区已失效，请重新选择。</p>}
     <ErrorNotice intent="read" title="区间成本读取失败" error={intervalCosts.error} hasData={intervalCosts.data != null} variant="compact" onRetry={intervalCosts.refresh} />
     <ErrorNotice intent="read" title="费率试算不可用，当前保留正式曲线" error={dirty ? feeInputs.error ?? trial.error : null} variant="compact" onRetry={refreshFeeInputs} />
@@ -365,7 +366,7 @@ function AccountHistory({ accountId }: { accountId: number }) {
             <SymbolSlippage result={local.value} symbol={chartSymbol} side={costSide} onSelect={selectSymbol} />
           </div>}
           onInterval={(start, end) => setSelection({ kind: 'interval', start, end })} />
-        : <PerformanceChart accountId={accountId} rangeTarget={rangeTarget} snapshotId={snapshot.version} viewKey={`${accountId}:${displayedRange}`} data={chartData} executionIndex={snapshot.execution_index} daily={daily} backtestMode={backtestMode} scaleMode={scale} costs={costs} intervalCost={local.value?.summary ?? (intervalCosts.error || intervalCosts.loading ? null : intervalCosts.data?.summary ?? null)} onSelect={value => { setSelectionNotice(false); setSelection(value) }} selection={selection} slideInterval={slideInterval} portfolioNames={portfolioNames} showExecutions={markers} />}
+        : <PerformanceChart accountId={accountId} rangeTarget={rangeTarget} snapshotId={snapshot.version} viewKey={`${accountId}:${displayedRange}`} data={chartData} executionIndex={snapshot.execution_index} daily={daily} backtestMode={backtestMode} scaleMode={scale} costs={costs} intervalCost={local.value?.summary ?? (intervalCosts.error || intervalCosts.loading ? null : intervalCosts.data?.summary ?? null)} onSelect={value => { setSelectionNotice(false); setSelection(value) }} selection={selection} slideInterval={slideInterval} portfolioNames={portfolioNames} showExecutions={markers} returnReadout={returnReadout} />}
       </div>
       {costSymbol && <ErrorNotice intent="read" error={feeInputs.error ?? replay.error} title="品种回测读取失败" onRetry={refreshFeeInputs} variant="compact" />}
       <p role="status" className="min-h-5 text-xs text-ink-2">{costSymbol === chartSymbol && contributionQuery && !replay.error && !feeInputs.error
