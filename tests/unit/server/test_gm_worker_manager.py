@@ -1069,6 +1069,46 @@ def test_calculate_worker_keeps_script_and_prepare_error_channels(monkeypatch, m
             assert again.output_payload["portfolio_result"]["targets"]["short"] == 0.5
 
 
+@pytest.mark.parametrize("trial", [False, True])
+def test_calculate_portfolio_opt_in_to_reference_quote_only_in_trial(monkeypatch, trial):
+    pytest.importorskip("openctp_ctp")
+    from axile.executor.ctp.ctp_execute import CTPExecutor
+    from axile.server.execution.worker_backend import worker
+    from axile.server.execution.worker_backend.worker_state import _WorkerBackendState
+    from tests.unit.executor.ctp._quote_test_support import fresh_quote
+
+    executor = CTPExecutor(TradeChannel("ctp"))
+    current = fresh_quote("rb2701", "20261124")
+    reference = fresh_quote("rb2701", "20261124")
+    reference.timestamp -= 30 * 60 * 1000
+    reference.last_price = 3000
+    executor._valuation_quotes[reference.symbol] = reference
+    monkeypatch.setattr(executor, "_require_session_ready", lambda: None)
+    monkeypatch.setattr(executor, "get_market_data", lambda symbols: {symbol: current for symbol in symbols})
+    monkeypatch.setattr(worker, "_resolve_prepared_executor", lambda **kwargs: executor)
+    monkeypatch.setattr(worker, "_finalize_with_orders", lambda *args: None)
+
+    manager = WorkerBackendManager()
+    state = _WorkerBackendState()
+    monkeypatch.setattr(manager, "_check_read_session", lambda account: None)
+    monkeypatch.setattr(
+        manager,
+        "_request_blocking",
+        lambda account_id, request, *args: worker._handle_calculate_portfolio(request, state),
+    )
+    code = (
+        "def calculate_portfolio(context):\n"
+        "    reference = context.get_quote('rb2701', allow_stale=True)\n"
+        "    current = context.get_quote('rb2701')\n"
+        "    return {'rb2701': reference.last_price / current.last_price}\n"
+    )
+    try:
+        target = asyncio.run(manager.calculate_portfolio(build_account(), code, allow_market_only=trial))
+        assert target.targets == {"rb2701": 3000 / 3036 if trial else 1.0}
+    finally:
+        manager.close()
+
+
 def test_termination_cancellation_facts_survive_worker_response_and_manager():
     from axile.server.execution.worker_backend.worker_responses import _build_terminated_response
 

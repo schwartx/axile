@@ -196,7 +196,7 @@ export function SimulationAccountModal({ channel, value, sources = [], onSave, o
     setImporting(row.id)
     setImportNotice(null)
     try {
-      const result = await apiSend<{ data: Record<string, SimulationQuote | undefined> }>('POST', `/market-data/accounts/${source.account_id}/quotes`, { symbols: [symbol] }, request.signal)
+      const result = await apiSend<{ data: Record<string, SimulationQuote | undefined> }>('POST', `/market-data/accounts/${source.account_id}/quotes`, { symbols: [symbol], allow_stale: true }, request.signal)
       const quote = result.data[symbol]
       if (!quote || quote.timestamp <= 0 || !quote.update_time) throw new Error('该合约暂无带有效时间的行情')
       const imported = quoteDraft({ ...quote, symbol: row.symbol }, row.id)

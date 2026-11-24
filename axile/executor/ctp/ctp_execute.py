@@ -97,11 +97,12 @@ from axile.executor.ctp_query_wait import QueryIdleClock
 from axile.executor.execution_engine import ExecutionEngine
 from axile.executor.futures_order_intent import is_close_intent, single_close_offset
 from axile.executor.instrument_catalog import catalog_deadline, catalog_remaining
-from axile.executor.instrument_catalog_records import Instrument, InstrumentRecord, from_ctp
+from axile.executor.instrument_catalog_records import EXCHANGES, Instrument, InstrumentRecord, from_ctp
 from axile.executor.market_data_validation import (
     DEFAULT_QUOTE_MAX_AGE_SECONDS,
     QUOTE_FUTURE_TOLERANCE_SECONDS,
     MarketDataUnavailableError,
+    market_data_error,
 )
 from axile.executor.models.execution_result import (
     AlgorithmResult,
@@ -115,6 +116,7 @@ from axile.executor.models.unified_callback import (
 )
 from axile.executor.models.unified_input import AccountConfig, CTPAccountConfig, UnifiedStandardInput
 from axile.executor.models.unified_order import OrderDirection, OrderType, UnifiedOrder
+from axile.executor.models.unified_price import UnifiedPriceData
 from axile.executor.order_input_validation import normalize_order_enums
 from axile.executor.order_insert_rejects import (
     insert_error_detail,
@@ -1909,6 +1911,34 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             )
             quotes[symbol] = selected
         return quotes, errors
+
+    def get_valuation_quote(self, symbol: str) -> UnifiedPriceData:
+        """读取最近有效的参考价格，缓存缺价时限时查询柜台快照。"""
+        prefix, dot, code = symbol.partition(".")
+        exchange = prefix.upper() if dot and prefix.upper() in EXCHANGES else ""
+        if exchange:
+            symbol = code
+        validate_instrument(symbol)
+        with self._lock:
+            self._require_session_ready()
+            quote = self._valuation_quotes.get(symbol)
+        if market_data_error(quote, now=self.market_data_now(), max_age=float("inf"), purpose="sizing"):
+            if symbol not in self._instruments:
+                self._ensure_instrument_symbols([symbol], timeout=min(self._timeout, 3.0))
+            if symbol not in self._instruments:
+                raise ValueError(f"未知 CTP 合约: {symbol}")
+            quote = self._query_valuation_snapshot(symbol)
+            if error := market_data_error(quote, now=self.market_data_now(), max_age=float("inf"), purpose="sizing"):
+                raise ValueError(f"无法获取 CTP 参考行情: {symbol}，{error}")
+        assert quote is not None
+        selected = copy_data(quote, deep=True)
+        quote_exchange = selected.extra.get("exchange_id") or getattr(self._instruments.get(symbol), "ExchangeID", "")
+        if exchange and quote_exchange != exchange:
+            raise ValueError(f"无法确认 {symbol} 的行情归属 {exchange}")
+        if quote_exchange:
+            selected.extra["exchange_id"] = quote_exchange
+        selected.extra["valuation_reference"] = True
+        return selected
 
     def _query_valuation_snapshot(self, symbol):
         """从交易柜台查询单合约快照；失败时保留已有估值行情。"""

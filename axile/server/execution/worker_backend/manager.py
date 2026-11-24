@@ -1202,7 +1202,12 @@ class WorkerBackendManager:
         return from_payload(UnifiedAccountAssets, response.output_payload)
 
     async def query_ctp_account(
-        self, account: AccountContext, command: CtpAccountQuery, argument: str
+        self,
+        account: AccountContext,
+        command: CtpAccountQuery,
+        argument: str | list[str],
+        *,
+        timeout_seconds: float | None = None,
     ) -> dict[str, object]:
         """使用账户常驻 worker 查 CTP 柜台。"""
         self._check_read_session(account)
@@ -1211,7 +1216,7 @@ class WorkerBackendManager:
             command=command,
             account_payload=to_payload(account, mode="json"),
             execution_id=None,
-            payload={"argument": argument},
+            payload={"argument": argument, **({"timeout_seconds": timeout_seconds} if timeout_seconds else {})},
         )
         response = await asyncio.to_thread(
             self._request_blocking, _require_account_id(account), request, self._query_timeout(account)
@@ -1306,7 +1311,11 @@ class WorkerBackendManager:
             command="calculate_portfolio",
             account_payload=to_payload(account, mode="json"),
             execution_id=execution_id,
-            payload={"code": code, **({"leverage_overrides": leverage_overrides} if leverage_overrides else {})},
+            payload={
+                "code": code,
+                **({"trial": True} if allow_market_only else {}),
+                **({"leverage_overrides": leverage_overrides} if leverage_overrides else {}),
+            },
         )
         response = await asyncio.to_thread(
             self._request_blocking,

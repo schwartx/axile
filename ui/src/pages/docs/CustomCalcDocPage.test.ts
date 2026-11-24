@@ -15,7 +15,7 @@ describe('customCalcMarkdown', () => {
     expect(markdown).toContain('## 函数契约')
     expect(markdown).toContain('```python\ndef calculate_portfolio(context):')
     expect(markdown).toContain('## Context 通用能力')
-    expect(markdown).toContain('| `get_quote(symbol)` | `UnifiedPriceData` |')
+    expect(markdown).toContain('| `get_quote(symbol, *, allow_stale=False)` | `UnifiedPriceData` |')
     expect(markdown).toContain('## 完整 executor（高级）')
     expect(markdown).toContain('### 读取 TQ 合约信息')
   })

@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from axile.common.trade_channel import TradeChannel
 from axile.executor.ctp.converters import account_to_unified
 from axile.executor.ctp.ctp_execute import CTPExecutor
@@ -31,6 +33,34 @@ def _executor(*, closed: bool) -> CTPExecutor:
 
 def _position_rows() -> list[object]:
     return [SimpleNamespace(InstrumentID="rb2610", PosiDirection="2", Position=2, TodayPosition=1, PositionCost=7000)]
+
+
+@pytest.mark.parametrize("source", ["cache", "snapshot", "missing"])
+def test_reference_quote_accepts_old_last_price_without_subscribing(source) -> None:
+    executor = _executor(closed=True)
+    executor._require_session_ready = Mock()
+    previous = fresh_quote("rb2610", "20260909")
+    previous.timestamp -= 30 * 60 * 1000
+    if source == "cache":
+        executor._valuation_quotes[previous.symbol] = previous
+    elif source == "snapshot":
+        executor._query_valuation_snapshot.return_value = previous
+
+    if source == "missing":
+        with pytest.raises(ValueError, match="无法获取 CTP 参考行情: rb2610"):
+            executor.get_valuation_quote(previous.symbol)
+    else:
+        result = executor.get_valuation_quote(previous.symbol)
+        assert result.last_price == previous.last_price
+        assert result.timestamp == previous.timestamp
+        assert result.extra["valuation_reference"] is True
+        assert "valuation_reference" not in previous.extra
+
+    executor._subscribe_market.assert_not_called()
+    if source == "cache":
+        executor._query_valuation_snapshot.assert_not_called()
+    else:
+        executor._query_valuation_snapshot.assert_called_once_with(previous.symbol)
 
 
 def test_closed_contract_uses_cached_last_price_without_waiting_or_querying() -> None:

@@ -21,7 +21,7 @@ export const CONTEXT_FIELDS: ContextField[] = [
   { name: 'account', type: 'UnifiedAccountAssets', desc: '本次计算内缓存的账户资产快照' },
   { name: 'positions', type: 'list[Position]', desc: 'account.positions 的便捷入口' },
   { name: 'get_positions(symbol=None, direction=None)', type: 'list[Position]', desc: '按标的和多空方向筛选持仓' },
-  { name: 'get_quote(symbol)', type: 'UnifiedPriceData', desc: '获取并在本次计算内缓存统一行情' },
+  { name: 'get_quote(symbol, *, allow_stale=False)', type: 'UnifiedPriceData', desc: '获取并在本次计算内缓存统一行情。已连接的真实 CTP 账户试跑时可传 allow_stale=True，使用最近有效报价作为参考价。' },
   { name: 'get_price(symbol)', type: 'float', desc: '获取统一行情中的最新成交价' },
   { name: 'get_pending_orders(symbol=None)', type: 'list[UnifiedOrder]', desc: '查询全部或指定标的的未完成订单' },
   { name: 'query_trades(symbol, order_id)', type: 'list[TradeRecord]', desc: '查询指定订单的成交明细' },
