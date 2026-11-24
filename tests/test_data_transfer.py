@@ -16,6 +16,9 @@ from axile.server._native import _core
 
 @pytest.fixture
 def peers(tmp_path, monkeypatch):
+    from axile.server.core import scheduler
+
+    monkeypatch.setattr(scheduler, "scheduler", scheduler.Scheduler(timezone=scheduler.SCHEDULER_TIMEZONE))
     source = tmp_path / "source" / "axile.db"
     target = tmp_path / "target" / "axile.db"
     for p in (source, target):
@@ -332,15 +335,16 @@ def test_offline_import_and_confirmation_api(peers, monkeypatch):
 def test_schedule_saved_and_restored(peers):
     from axile.server.core.scheduler import scheduler
 
+    transfer.configure_cleanup_schedule()
+    assert scheduler.get_job("data-transfer-cleanup") is None
     plan = transfer.TransferPlan(source_url="https://example.test:8443", every_hours=2)
     transfer.save_plan(plan)
     transfer.configure_schedule()
     assert scheduler.get_job("data-transfer").func is transfer.scheduled_pull
-    assert scheduler.get_job("data-transfer-cleanup").func is transfer.scheduled_cleanup
+    assert scheduler.get_job("data-transfer-cleanup") is None
     transfer.save_plan(transfer.TransferPlan())
     transfer.configure_schedule()
     assert scheduler.get_job("data-transfer") is None
-    assert scheduler.get_job("data-transfer-cleanup").func is transfer.scheduled_cleanup
 
 
 def test_network_failure_keeps_source_batch_without_cleanup(peers, monkeypatch):
@@ -619,6 +623,8 @@ def test_source_finishes_saved_receipt_before_new_export(peers, monkeypatch, cle
 
 
 def test_online_confirmation_releases_next_batch_before_busy_source_cleanup(peers, monkeypatch):
+    from axile.server.core.scheduler import scheduler
+
     source, target = peers
     seed(source)
     seed(source, 2)
@@ -639,16 +645,23 @@ def test_online_confirmation_releases_next_batch_before_busy_source_cleanup(peer
         "removed_recordings": 0,
         "cleanup_pending": True,
     }
+    cleanup_job = scheduler.get_job("data-transfer-cleanup")
+    assert cleanup_job.func is transfer.scheduled_cleanup
+    cleanup_job.remove()
+    transfer.configure_cleanup_schedule()
+    assert scheduler.get_job("data-transfer-cleanup").func is transfer.scheduled_cleanup
     assert not package.exists()
     assert transfer.prepare_package(plan, "receiver") != package
     assert transfer.acknowledge(receipt, transfer.TransferPlan())["cleanup_pending"]
     asyncio.run(transfer.scheduled_cleanup())
+    assert len(scheduler.get_jobs()) == 1
     with sqlite3.connect(source) as c:
         assert c.execute("SELECT count(*) FROM executerecord").fetchone() == (2,)
         c.execute("UPDATE execution_intent SET status='SUCCEEDED',finished_at_us=4")
     assert list((source.parent / "replay").rglob("*.mcap"))
 
     asyncio.run(transfer.scheduled_cleanup())
+    assert scheduler.get_job("data-transfer-cleanup") is None
     with sqlite3.connect(source) as c:
         assert c.execute("SELECT execution_id FROM executerecord").fetchall() == [("exec-2",)]
     assert not list((source.parent / "replay").rglob("*.mcap"))
