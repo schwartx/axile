@@ -42,7 +42,7 @@ def test_trial_forwards_temporary_leverage_without_changing_account_or_saving(mo
     native.assert_awaited_once_with("portfolio_operation", {"op": "validation_context", "account_id": 7})
     assert runner.await_args.kwargs == {
         "leverage_overrides": {"long_leverage": 4, "short_leverage": 0},
-        "allow_market_only": True,
+        "trial": True,
     }
     context = runner.await_args.args[0]
     assert context.long_leverage == account["long_leverage"] == 3.0

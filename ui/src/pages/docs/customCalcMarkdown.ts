@@ -60,7 +60,7 @@ export const EXECUTOR_RULES = [
   '`context.executor` 不是只读代理，而是当前账户完整、共享且常驻的真实渠道执行器。',
   '计算目标不会自动执行返回的权重；但代码主动调用 `execute`、`empty_positions` 或渠道下单方法会立即产生真实交易副作用。',
   '成功执行后 executor、回调和模块全局状态会继续复用；不要无意修改属性、遗留回调或启动永久后台线程。',
-  '自行创建的资源应在 `finally` 中释放。脚本失败、超时或 worker 异常后，系统会丢弃 worker，并在下次调用时重建。',
+  '自行创建的资源应在 `finally` 中释放。试跑返回普通脚本错误后，账户保持连接。正式目标计算中的脚本错误、连接故障、函数超时或 worker 异常仍可能触发 worker 回收。',
 ]
 
 export const CONTRACT_RULES = [

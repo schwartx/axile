@@ -1293,7 +1293,7 @@ class WorkerBackendManager:
         *,
         execution_id: str | None = None,
         leverage_overrides: dict[str, float] | None = None,
-        allow_market_only: bool = False,
+        trial: bool = False,
     ) -> PortfolioTarget:
         """正式执行使用常驻 worker；交易未就绪时仍可试跑行情逻辑。"""
         if execution_id is None:
@@ -1302,7 +1302,7 @@ class WorkerBackendManager:
             try:
                 self._check_read_session(account)
             except AccountConnectionUnavailable:
-                if not allow_market_only or get_channel(str(account.trade_channel)).configure_market_data is None:
+                if not trial or get_channel(str(account.trade_channel)).configure_market_data is None:
                     raise
                 return await self._calculate_market_trial(account, code, leverage_overrides)
         termination_controller = self._termination_controller(execution_id)
@@ -1313,7 +1313,7 @@ class WorkerBackendManager:
             execution_id=execution_id,
             payload={
                 "code": code,
-                **({"trial": True} if allow_market_only else {}),
+                **({"trial": True} if trial else {}),
                 **({"leverage_overrides": leverage_overrides} if leverage_overrides else {}),
             },
         )
@@ -1333,8 +1333,9 @@ class WorkerBackendManager:
             if isinstance(result, PortfolioFunctionError):
                 raise result
             return _normalize_target(result)
-        except Exception:
-            await self.drop_account(_require_account_id(account))
+        except Exception as exc:
+            if not (trial and isinstance(exc, PortfolioFunctionError) and exc.error_scope is None):
+                await self.drop_account(_require_account_id(account))
             raise
 
     @staticmethod

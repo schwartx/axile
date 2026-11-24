@@ -42,28 +42,34 @@ export function useCustomCalcValidation(code: string, market: string | null | un
   const setLeverageDraft = useCallback((id: number | null, overrides: TrialLeverageOverrides | null, invalid: boolean) => {
     setLeverageDrafts((previous) => ({ ...previous, [id ?? 'sample']: { overrides, invalid } }))
   }, [])
-  const accounts = useDomainStore((state) => state.accounts) ?? []
+  const accounts = useDomainStore((state) => state.accounts)
   const channels = useChannelCatalogStore((state) => state.channels)
   const marketId = (value: string) => channels?.find(
     (channel) => channel.market === value || channel.portfolio.market_label === value,
   )?.market ?? value
-  const matchingAccounts = accounts.filter((account) => market != null && marketId(account.market) === marketId(market))
-  const accountId = selection && selection.portfolioId === portfolioId ? selection.accountId : null
-  const contextAccountId = matchingAccounts.some((account) => account.account_id === accountId) ? accountId : null
+  const matchingAccounts = (accounts ?? []).filter(
+    (account) => !account.archived_at && market != null && marketId(account.market) === marketId(market),
+  )
+  const boundAccount = portfolioId === undefined ? undefined
+    : matchingAccounts.find((account) => account.portfolio_id === portfolioId)
+  const currentSelection = selection?.portfolioId === portfolioId ? selection : null
+  const selected = currentSelection
+    ? matchingAccounts.find((account) => account.account_id === currentSelection.accountId)
+    : boundAccount ?? matchingAccounts[0]
+  const contextAccountId = selected?.account_id ?? null
   const simulationChannels = (channels ?? []).filter((channel) => channel.simulation_account
     && market != null && marketId(channel.market) === marketId(market))
-  const simulationChannel = simulationChannels.find((channel) => selection?.portfolioId === portfolioId
-    && channel.channel === selection?.simulationChannel) ?? simulationChannels[0]
+  const simulationChannel = simulationChannels.find((channel) => channel.channel === currentSelection?.simulationChannel) ?? simulationChannels[0]
   const savedSimulations = useSimulationAccounts((state) => state.accounts)
   const simulationAccount = simulationChannel
     ? savedSimulations[simulationChannel.channel] ?? simulationChannel.simulation_account ?? null : null
-  const selected = matchingAccounts.find((account) => account.account_id === contextAccountId)
   const channel = selected ? channels?.find((item) => item.channel === selected.trade_channel) : undefined
   const leverageDraft = leverageDrafts[contextAccountId ?? 'sample']
   const overrides = leverageDraft?.overrides ?? null
   const connection = useAccountConnection(contextAccountId ?? -1)
   const operation = useConnectionOperation(contextAccountId ?? -1)
   const blockedReason = leverageDraft?.invalid ? '杠杆参数有误，请先修正'
+    : accounts === null && !currentSelection ? '正在加载试跑账户，请稍候'
     : contextAccountId === null ? simulationAccount ? null : '正在加载渠道模拟账户，请稍候'
       : channel?.independent_market_data ? null
         : operation.pending !== null || connection.status === 'connecting' || connection.status === 'recovering' ? '账户连接操作中，请稍候'
