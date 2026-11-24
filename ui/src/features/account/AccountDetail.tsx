@@ -1,5 +1,4 @@
 import { CashFlowPanel } from '@/features/account/CashFlowPanel'
-import { SettlementStatement } from '@/features/channels/ctp/SettlementStatement'
 import { ArchiveAction } from '@/features/account/ArchiveAction'
 import { algorithmScheduleSummary } from '@/features/account/algorithmSchedule'
 import { shanghaiLabel } from '@/features/history/costs'
@@ -528,7 +527,6 @@ export function AccountDetail({
                 {item.performance?.status !== 'ready' && <PerformanceStatus status={item.performance?.status} />}
               </span>
               <CashFlowPanel key={accountId} accountId={accountId} />
-              {item.trade_channel === 'ctp' && <SettlementStatement key={`settlement-${accountId}`} accountId={accountId} />}
             </div>
             <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-ink-3">
               <span><AssetObservationTime observedAt={item.asset_observed_at} /></span>
