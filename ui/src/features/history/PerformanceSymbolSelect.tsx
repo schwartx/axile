@@ -1,6 +1,7 @@
 import { Fragment, useState } from 'react'
 import { Select } from '@/components/ui/Select'
 import { OverflowText } from '@/components/ui/OverflowText'
+import { displayCurrencyUnit } from '@/lib/format'
 import { amount, lossClass } from './costs'
 import type { CostView } from './localAnalysis'
 
@@ -33,22 +34,24 @@ export function PerformanceSymbolSelect({ result, scope, symbols, symbol, busy, 
     }))]} />
 }
 
-export function SymbolSlippage({ result, symbol, side, onSelect }: {
-  result: CostView | null; symbol: string; side: string; onSelect: (symbol: string, side: string) => void
+export function SymbolSlippage({ result, symbol, side, currency, onSelect }: {
+  result: CostView | null; symbol: string; side: string; currency?: string | null; onSelect: (symbol: string, side: string) => void
 }) {
   const row = result?.rows.find(row => row.symbol === symbol)
   const summary = result?.detail?.symbol === symbol && result.detail.side === side ? result.detail.result.summary : null
+  const coverage = !summary ? '—' : summary.coverage == null ? `${summary.covered}/${summary.count} 笔` : `${amount(summary.coverage * 100)}%（成交额）`
   return (
-    <section aria-label={`${symbol}成交滑点摘要`} className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs tabular-nums">
-      <div role="group" aria-label="成交方向" className="flex shrink-0 gap-2">
-        {[['', '全部'], ['buy', '买入'], ['sell', '卖出'], ...(row?.hasUnknownSide ? [['none', '未知']] : [])].map(([value, label]) =>
-          <button key={value} type="button" aria-pressed={side === value} onClick={() => onSelect(symbol, value)} className={`min-h-6! border-b ${side === value ? 'border-current font-medium' : 'border-transparent text-ink-3'}`}>{label}</button>)}
+    <section aria-label={`${symbol}成交滑点摘要`} className="flex min-h-7 min-w-0 max-w-full flex-wrap items-center gap-x-4 gap-y-1 text-sm text-ink-3 tabular-nums">
+      <div role="group" aria-label="成交方向" className="flex flex-wrap gap-x-2">
+        {[['', '全部方向'], ['buy', '买入'], ['sell', '卖出'], ...(row?.hasUnknownSide || side === 'none' ? [['none', '未知']] : [])].map(([value, label]) =>
+          <button key={value} type="button" aria-pressed={side === value} onClick={() => onSelect(symbol, value)} className={`min-h-7 whitespace-nowrap border-b ${side === value ? 'border-current font-medium text-ink-1' : 'border-transparent hover:text-ink-1'}`}>{label}</button>)}
       </div>
-      <span className="whitespace-nowrap text-ink-2">{summary ? `${summary.count} 笔成交 · ${amount(summary.lossBp)} BP` : '成交滑点 —'}</span>
-      {summary && <p className="flex flex-wrap gap-x-2 text-[11px] text-ink-2">
-        <span className="whitespace-nowrap">成本 {amount(summary.cost)}</span>
-        <span className="whitespace-nowrap">参考价覆盖 {summary.coverage == null ? `${summary.covered}/${summary.count} 笔` : `${amount(summary.coverage * 100)}%（成交额）`}</span>
-      </p>}
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 [&>span]:whitespace-nowrap">
+        <span>{summary ? `${summary.count} 笔成交` : '成交 —'}</span>
+        <span>滑点损耗 <span className={lossClass(summary?.lossBp)}>{amount(summary?.lossBp ?? null)} BP</span></span>
+        <span>滑点成本 <span className={lossClass(summary?.cost)}>{amount(summary?.cost ?? null)} {displayCurrencyUnit(currency)}</span></span>
+        <span>参考价覆盖 {coverage}</span>
+      </div>
     </section>
   )
 }

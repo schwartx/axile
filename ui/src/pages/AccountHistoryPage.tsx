@@ -1,4 +1,4 @@
-import { PerformanceSymbolSelect, SymbolSlippage } from '@/features/history/PerformanceSymbolSelect'
+import { PerformanceSymbolSelect } from '@/features/history/PerformanceSymbolSelect'
 import { SymbolPerformance } from '@/features/history/SymbolPerformance'
 import { loadAnalysisInputs, previewPerformance, type FeeResult, type CostView, type CostViewQuery } from '@/features/history/localAnalysis'
 import { useLocalAnalysis } from '@/features/history/useLocalAnalysis'
@@ -361,10 +361,7 @@ function AccountHistory({ accountId }: { accountId: number }) {
         {!snapshot || !chartData ? <PerformanceChartPlaceholder accountId={accountId} loading={backtestBusy || !metadata && !initialError} failed={!!initialError} message={loadingMessage} />
         : chartSymbol ? <SymbolPerformance chart={snapshot} rangeTarget={symbolRange} targetSamples={replaySnapshot === pendingTarget ? replay.value : null} selection={selection} slideInterval={slideInterval} symbol={chartSymbol} samples={chartSamples} currency={item?.currency ?? null} scaleMode={scale}
           accountId={accountId} channel={account.data?.trade_channel ?? item?.trade_channel} showExecutions={markers}
-          heading={<div className="flex flex-wrap items-center gap-x-3">
-            <h2 className="font-medium">{chartSymbol} · 绩效贡献</h2>
-            <SymbolSlippage result={local.value} symbol={chartSymbol} side={costSide} onSelect={selectSymbol} />
-          </div>}
+          slippage={local.value} side={costSide} onSideChange={selectSymbol}
           onInterval={(start, end) => setSelection({ kind: 'interval', start, end })} />
         : <PerformanceChart accountId={accountId} rangeTarget={rangeTarget} snapshotId={snapshot.version} viewKey={`${accountId}:${displayedRange}`} data={chartData} executionIndex={snapshot.execution_index} daily={daily} backtestMode={backtestMode} scaleMode={scale} costs={costs} intervalCost={local.value?.summary ?? (intervalCosts.error || intervalCosts.loading ? null : intervalCosts.data?.summary ?? null)} onSelect={value => { setSelectionNotice(false); setSelection(value) }} selection={selection} slideInterval={slideInterval} portfolioNames={portfolioNames} showExecutions={markers} returnReadout={returnReadout} />}
       </div>

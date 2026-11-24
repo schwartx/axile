@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useId, type PointerEvent, type ReactNode } from 'react'
+import { CircleHelp } from 'lucide-react'
+import { Tooltip } from '@/components/ui/Tooltip'
 import { TimeSeriesChart, type CanvasFrame, type WindowMotion } from '@/components/viz/TimeSeriesChart'
 import { drawCrosshair, drawSeries, drawTimeAxis, drawValueAxis, prepareCanvas, timeAtX, timeX, valueY, zoomTimeViewport } from '@/components/viz/chartCanvas'
 import { niceValueAxis } from '@/components/viz/chartAxis'
@@ -159,11 +161,17 @@ export function ContributionChart({ rows, points, navigationDomain, rangeTarget,
     const time = timeAtX(Math.max(plot.left, Math.min(plot.right, x)), plot, viewport, scale)
     return { x, y, time, index: nearestIndex(times, time) }
   }
+  const caption = `${segmented ? '分段毛盈亏贡献' : '累计毛盈亏贡献'} · ${displayCurrencyUnit(currency) || '按原币种'}`
+  const resetLabel = segmented ? '各段起点归零' : '区间起点归零'
   return <div className="min-w-0">
-    <div className="mb-1 flex flex-col gap-1">
+    {heading ? <div className="flex min-h-9 flex-wrap content-center items-start gap-x-5 gap-y-1 border-b border-line py-0.5">
       {heading}
-      <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs"><span>{segmented ? '分段毛盈亏贡献' : '累计毛盈亏贡献'} · {displayCurrencyUnit(currency) || '按原币种'}</span><span className="text-ink-3">{segmented ? '各段起点归零' : '区间起点归零'}</span></div>
-    </div>
+      <Tooltip content={resetLabel} arrow>
+        <button type="button" className="ml-auto inline-flex min-h-7 items-center gap-1.5 rounded text-left text-sm text-ink-3 hover:text-ink-1 focus-visible:outline-accent">
+          {caption}<CircleHelp size={15} className="shrink-0" aria-hidden="true" />
+        </button>
+      </Tooltip>
+    </div> : <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2 text-xs"><span>{caption}</span><span className="text-ink-3">{resetLabel}</span></div>}
     <TimeSeriesChart height={height} label="所选品种毛盈亏贡献曲线，方向键查看日期，异常处分段并从可靠快照重新归零" draw={drawAxes} drawOverlay={drawOverlay} windowMotion={windowMotion} onResize={executions ? onResize : undefined}
       seriesLayer={{ draw: drawCurves, transitionName: executions ? 'contribution-series' : undefined }}
       interval={selection === undefined ? undefined : { selection, animate: slideInterval }}
