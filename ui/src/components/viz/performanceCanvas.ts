@@ -1,3 +1,4 @@
+import { rangedValueAxis } from '@/components/viz/chartAxis'
 import { canvasLine as line, drawCrosshair, drawSeries, drawTimeAxis as drawSharedTimeAxis, drawValueAxis, prepareCanvas, timeAtX, timeX, valueY, type CanvasTheme } from '@/components/viz/chartCanvas'
 export { readCanvasTheme, type CanvasTheme } from '@/components/viz/chartCanvas'
 import type { PerformancePoint } from '@/types/api'
@@ -69,15 +70,7 @@ export const xTime = (x: number, width: number, view: Viewport, scale?: TimeScal
 
 export function chartAxis(scene: ChartScene) {
   if (scene.fixedAxis) return scene.fixedAxis
-  if (scene.returnRange) {
-    const { min, max } = scene.returnRange
-    const rough = (max - min) / 5
-    const power = 10 ** Math.floor(Math.log10(rough))
-    const step = ([1, 2, 2.5, 5, 10].find(n => n * power >= rough) ?? 10) * power
-    const first = Math.ceil(min / step) * step
-    const ticks = Array.from({ length: Math.max(0, Math.floor((max - first) / step) + 1) }, (_, i) => first + i * step)
-    return { min, max, step, ticks }
-  }
+  if (scene.returnRange) return rangedValueAxis(scene.returnRange)
   const keys = seriesKeys(scene.daily, scene.backtestMode)
   const values = scene.data.points.flatMap((p, i) => scene.times[i] >= scene.viewport.start && scene.times[i] <= scene.viewport.end || !scene.daily && (scene.times[i] < scene.viewport.start && (scene.times[i + 1] ?? Infinity) >= scene.viewport.start || scene.times[i] > scene.viewport.end && (scene.times[i - 1] ?? -Infinity) <= scene.viewport.end)
     ? keys.flatMap(key => typeof p[key] === 'number' && Number.isFinite(p[key]) ? [p[key]!] : []) : [])

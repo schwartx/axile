@@ -1,3 +1,4 @@
+import { ValueAxisZoom } from '@/components/viz/ValueAxisZoom'
 import { TimeSeriesChart, type CanvasFrame, type WindowMotion } from '@/components/viz/TimeSeriesChart'
 import { zoomTimeViewport } from '@/components/viz/chartCanvas'
 import { displayCurrencyUnit } from '@/lib/format'
@@ -141,8 +142,7 @@ function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, sca
   useEffect(() => { setPinned(null) }, [selection])
   useEffect(() => { setPinned(value => reconcileSelection(value, data.points, executionIndex)) }, [data.points, executionIndex])
   const [returnRange, setReturnRange] = useState<{ min: number; max: number } | null>(null)
-  const axisDrag = useRef<{ y: number; min: number; max: number } | null>(null)
-  useEffect(() => { setReturnRange(null); axisDrag.current = null }, [daily])
+  useEffect(() => { setReturnRange(null) }, [daily])
   const [hover, setHover] = useState<number | null>(null)
   const [bindingTime, setBindingTime] = useState<number | null>(null)
   const [draft, setDraft] = useState<ChartSelection>(null)
@@ -453,25 +453,12 @@ function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, sca
           </div>
         })}
       </div>
-      <div role="group" aria-label="收益率轴缩放" data-testid="return-axis" className="absolute right-0 cursor-ns-resize touch-none"
-        style={{ top: PLOT.top, height: PLOT.bottom - PLOT.top, width: PLOT.right }}
-        onPointerDown={event => {
-          if (!event.isPrimary || event.button !== 0 || !scene.current) return
-          axisDrag.current = { y: event.clientY, ...chartAxis(scene.current) }
+      <ValueAxisZoom key={String(daily)} label="收益率轴缩放" testId="return-axis" top={PLOT.top} height={PLOT.bottom - PLOT.top} width={PLOT.right}
+        getRange={() => {
+          if (!scene.current) return null
           showHover(null); setBindingTime(null)
-          event.currentTarget.setPointerCapture(event.pointerId)
-        }}
-        onPointerMove={event => {
-          const active = axisDrag.current
-          if (!active) return
-          const factor = Math.exp(Math.max(-7, Math.min(7, (event.clientY - active.y) * 0.01)))
-          const center = (active.min + active.max) / 2
-          const half = Math.max(1e-8, Math.min(1e8, (active.max - active.min) * factor / 2))
-          setReturnRange({ min: center - half, max: center + half })
-        }}
-        onPointerUp={event => { axisDrag.current = null; if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId) }}
-        onPointerCancel={() => { axisDrag.current = null }} onLostPointerCapture={() => { axisDrag.current = null }}
-        onDoubleClick={() => setReturnRange(null)} />
+          return chartAxis(scene.current)
+        }} onChange={setReturnRange} />
       <div ref={tip} role="tooltip" className={`pointer-events-none absolute z-10 hidden w-[260px] max-w-[calc(100%-16px)] rounded border border-line bg-surface px-3 py-2 text-xs shadow-sm ${hover != null && !drag.current && !cursor && selection?.kind !== 'execution' ? 'block' : ''}`}>
         {bindingTime != null && binding ? <>
           <div className="break-words font-medium">{bindingName}</div>

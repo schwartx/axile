@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { drawSeries, drawValueAxis, keyboardPoint, timeAtX, timeX, zoomTimeViewport, type CanvasTheme } from '@/components/viz/chartCanvas'
-import { niceValueAxis } from '@/components/viz/chartAxis'
+import { niceValueAxis, rangedValueAxis, scaleValueRange } from '@/components/viz/chartAxis'
 import { seriesStyle } from '@/components/viz/seriesStyle'
 import { createTimeScale } from '@/features/history/timeScale'
 
@@ -77,4 +77,14 @@ test('任意品种的颜色和线型按身份固定，排名、勾选集合和�
   expect(new Set(symbols.map(key => JSON.stringify(seriesStyle(key)))).size).toBeGreaterThan(1)
   const colors = new Set(Array.from({ length: 50 }, (_, i) => seriesStyle(`product-${i}`).color))
   expect(colors).toEqual(new Set([1, 2, 3, 4, 5].map(i => `var(--color-chart-${i})`)))
+})
+
+test('纵轴缩放保留中心，刻度落在手动范围内', () => {
+  const range = { min: -0.08, max: 0.02 }
+  const narrowed = scaleValueRange(range, 0.5)
+  expect(narrowed.max - narrowed.min).toBeCloseTo(0.05)
+  expect((narrowed.min + narrowed.max) / 2).toBeCloseTo(-0.03)
+  const axis = rangedValueAxis(narrowed)
+  expect(axis.ticks.length).toBeGreaterThan(1)
+  expect(axis.ticks.every(tick => tick >= narrowed.min && tick <= narrowed.max)).toBe(true)
 })
