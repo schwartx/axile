@@ -272,8 +272,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     _load_configured_algorithm_directories()
     _load_configured_algorithm_modules()
     register_china_channel_jobs(scheduler)
-    from axile.server.data_transfer import configure_schedule
+    from axile.server.data_transfer import configure_cleanup_schedule, configure_schedule
 
+    configure_cleanup_schedule()
     configure_schedule()
     scheduler.start()
     from axile.server.time_check.service import service as time_check_service
