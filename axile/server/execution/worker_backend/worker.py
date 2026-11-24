@@ -243,8 +243,8 @@ def _handle_calculate_portfolio(
 ) -> WorkerBackendResponse:
     """使用账户常驻执行器运行可信的自定义组合函数.
 
-    正常成功后保留完整 executor 及进程状态；失败结果由 manager 关闭并重建
-    worker，超时则由 watchdog 直接终止当前进程。
+    manager 在试跑返回普通脚本错误后仍保留常驻连接。组合函数超时由 watchdog
+    直接终止当前进程。
     """
     account = from_payload(AccountSnapshot, request.account_payload)
     executor = None

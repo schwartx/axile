@@ -90,8 +90,8 @@ export function AccountLeverageControl({ account, disabled, onLeverageChange }: 
     })
   }
   return <div className="w-full min-w-0">
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-      <fieldset disabled={disabled || (!!account && !channel) || saveState.saving} className="flex flex-wrap gap-2 text-[12px] text-ink-2">
+    <div className="flex flex-wrap items-end gap-x-2 gap-y-1">
+      <fieldset disabled={disabled || (!!account && !channel) || saveState.saving} className="flex flex-col gap-1 text-[12px] text-ink-2">
         <div className="flex max-w-full items-center gap-1">
           <label htmlFor={`${id}-long`} title={channel?.ui.long_leverage_label}>{showShort ? '多' : '系数'}</label>
           <LeverageInput compact id={`${id}-long`} value={values.long} limits={channel?.leverage} invalid={!!longError}
@@ -149,7 +149,6 @@ export function PortfolioTrialAccounts({ accounts, accountId, portfolioId, onSel
   const loaded = useDomainStore((state) => state.accounts !== null)
   const refresh = useDomainStore((state) => state.refreshAccounts)
   const options = [
-    ...simulationChannels.map((channel) => ({ value: `simulation:${channel.channel}`, label: `模拟 · ${channel.label}`, groupLabel: '模拟' })),
     ...accounts.map((account) => ({
       value: account.account_id,
       label: `${account.name} · ${describeLeverage(account.long_leverage ?? null, account.short_leverage ?? null,
@@ -157,6 +156,7 @@ export function PortfolioTrialAccounts({ accounts, accountId, portfolioId, onSel
       groupLabel: '账户',
       hint: `${synced && frames[account.account_id] ? connectionLabel(frames[account.account_id]) : '状态待确认'}${account.portfolio_id === portfolioId ? ' · 跟随本组合' : ''}`,
     })),
+    ...simulationChannels.map((channel) => ({ value: `simulation:${channel.channel}`, label: `模拟 · ${channel.label}`, groupLabel: '模拟' })),
   ]
   return <section aria-label="试跑账户" className="mt-4 min-w-0">
     <div className="flex min-w-0 flex-wrap items-center gap-2">

@@ -744,12 +744,18 @@ def test_execution_activity_keeps_latest_catalog_source_in_negative_timezone(mon
         manager.close()
 
 
-def test_calculate_portfolio_drops_worker_after_script_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("trial", "error_scope", "expected_drops"),
+    [(True, None, []), (True, "account_connection", [2]), (False, None, [2])],
+)
+def test_calculate_portfolio_preserves_trial_connection_after_script_error(
+    monkeypatch: pytest.MonkeyPatch, trial: bool, error_scope: str | None, expected_drops: list[int]
+) -> None:
     manager = WorkerBackendManager()
     monkeypatch.setattr(manager, "_check_read_session", lambda _: None)
     account = build_account(id=2)
     dropped: list[int] = []
-    error = PortfolioFunctionError("boom", error_line=2, error_type="RuntimeError")
+    error = PortfolioFunctionError("boom", error_line=2, error_type="RuntimeError", error_scope=error_scope)
 
     async def fake_to_thread(func: object, *args: object) -> WorkerBackendResponse:
         del func
@@ -768,9 +774,9 @@ def test_calculate_portfolio_drops_worker_after_script_failure(monkeypatch: pyte
     monkeypatch.setattr(manager, "drop_account", fake_drop_account)
 
     with pytest.raises(PortfolioFunctionError) as caught:
-        asyncio.run(manager.calculate_portfolio(account, "code"))
+        asyncio.run(manager.calculate_portfolio(account, "code", trial=trial))
     assert caught.value is error and caught.value.error_line == 2
-    assert dropped == [2]
+    assert dropped == expected_drops
 
 
 def test_calculate_portfolio_drops_worker_after_worker_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1103,7 +1109,7 @@ def test_calculate_portfolio_opt_in_to_reference_quote_only_in_trial(monkeypatch
         "    return {'rb2701': reference.last_price / current.last_price}\n"
     )
     try:
-        target = asyncio.run(manager.calculate_portfolio(build_account(), code, allow_market_only=trial))
+        target = asyncio.run(manager.calculate_portfolio(build_account(), code, trial=trial))
         assert target.targets == {"rb2701": 3000 / 3036 if trial else 1.0}
     finally:
         manager.close()
