@@ -13,7 +13,9 @@ from typing import Literal
 from axile.common.trade_channel import TradeChannel
 from axile.executor.termination import TERMINATION_TRIGGER_OPERATOR
 
-CtpAccountQuery = Literal["query_margin_rates", "query_commission_rates", "query_settlement_info"]
+CtpAccountQuery = Literal[
+    "query_margin_rates", "query_commission_rates", "query_settlement_info", "query_valuation_quotes"
+]
 
 WorkerBackendCommand = Literal[
     "prepare",

@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime
 from threading import Event
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import FastAPI
@@ -12,8 +12,8 @@ from fastapi.testclient import TestClient
 
 from axile.channels import get_channel
 from axile.channels.gm_sessions import SHANGHAI
+from axile.common.trade_channel import TradeChannel
 from axile.executor import gm_market_data
-from axile.executor.instrument_catalog import InstrumentCatalog
 from axile.executor.instrument_catalog_records import Instrument
 from axile.executor.models.unified_price import UnifiedPriceData
 from axile.server.api.routes import market_data, portfolio
@@ -21,10 +21,11 @@ from axile.server.execution.resident_connection import AccountConnectionUnavaila
 from axile.server.execution.worker_backend import manager as workers
 from axile.server.execution.worker_backend.manager import WorkerBackendManager
 from axile.server.market_data import close_market_data
+from tests.unit.server._execution_test_support import build_account
 from tests.unit.server.test_portfolio_routes import _account_payload
 
 
-def test_quote_route_uses_only_market_front_and_recovers_subscription(monkeypatch):
+def test_quote_route_fills_missing_specs_and_recovers_market_subscription(monkeypatch):
     pytest.importorskip("openctp_ctp")
     from axile.executor.ctp import market_data as ctp
     from axile.server.api.main import api_router
@@ -71,6 +72,7 @@ def test_quote_route_uses_only_market_front_and_recovers_subscription(monkeypatc
             self.closed = True
 
     account = SimpleNamespace(
+        id=41,
         trade_channel="ctp",
         archived_at=None,
         account_config={
@@ -81,8 +83,15 @@ def test_quote_route_uses_only_market_front_and_recovers_subscription(monkeypatc
         },
     )
     monkeypatch.setattr(market_data, "_get_account_snapshot_or_404", AsyncMock(return_value=account))
-    catalog = InstrumentCatalog()
-    monkeypatch.setattr(market_data, "get_worker_backend_manager", lambda: SimpleNamespace(instrument_catalog=catalog))
+    manager = WorkerBackendManager()
+    catalog = manager.instrument_catalog
+    monkeypatch.setattr(market_data, "get_worker_backend_manager", lambda: manager)
+
+    def check_trade_session(_account):
+        if not manager._workers:
+            raise AccountConnectionUnavailable("交易未连接")
+
+    monkeypatch.setattr(manager, "_check_read_session", check_trade_session)
     feed = Feed()
     monkeypatch.setattr(ctp.md.CThostFtdcMdApi, "CreateFtdcMdApi", lambda _: feed)
     app = FastAPI()
@@ -103,10 +112,25 @@ def test_quote_route_uses_only_market_front_and_recovers_subscription(monkeypatc
         assert quote["extra"]["source"] == "ctp.market_data"
         assert "volume_multiple" not in quote["extra"]
         assert client.get(status).json() == {"status": "ready"}
+
         instrument = Instrument(exchange="SHFE", symbol="rb2701", kind="FUTURE", multiplier=10, tick=1)
-        catalog.register("fixture", lambda _symbols, _timeout: [instrument], channel="ctp")
-        catalog.ensure([instrument.key], require_specs=True, timeout=2)
+        queries = []
+
+        def lookup(symbols, _timeout):
+            queries.append(symbols)
+            return [instrument]
+
+        catalog.register("fixture", lookup, channel="ctp")
+        handle = SimpleNamespace(catalog=SimpleNamespace(source="fixture"))
+        manager._workers[account.id] = handle
+        monkeypatch.setattr(manager, "_is_handle_healthy", lambda value: value is handle)
+        fetched = client.post(quotes, json=payload).json()["data"]["rb2701"]
+        assert fetched["extra"]["volume_multiple"] == 10
+        assert fetched["extra"]["price_tick"] == 1
+        assert queries == [[instrument.key]]
+
         catalog.unregister("fixture")
+        manager._workers.clear()
         qualified = client.post(quotes, json={"symbols": [instrument.key]})
         assert qualified.status_code == 200
         cached = qualified.json()["data"][instrument.key]
@@ -122,7 +146,66 @@ def test_quote_route_uses_only_market_front_and_recovers_subscription(monkeypatc
         assert client.post(quotes, json=payload).json()["data"]["rb2701"]["last_price"] == 3501
         assert len(feed.subscriptions) == 2
     close_market_data()
+    manager.close()
     assert feed.closed
+
+
+def test_quote_route_can_import_old_ctp_reference_without_waiting_for_a_tick(monkeypatch):
+    pytest.importorskip("openctp_ctp")
+    from axile.executor.ctp.ctp_execute import CTPExecutor
+    from axile.server.execution.worker_backend import worker
+    from axile.server.execution.worker_backend.worker_state import _WorkerBackendState
+    from tests.unit.executor.ctp._quote_test_support import fresh_quote
+
+    account = build_account(id=41)
+    manager = WorkerBackendManager()
+    executor = CTPExecutor(TradeChannel("ctp"))
+    state = _WorkerBackendState()
+    quote = fresh_quote("rb2701", "20261124")
+    quote.timestamp -= 30 * 60 * 1000
+    quote.update_time = "2026-11-24T15:00:00.500000+08:00"
+    executor._valuation_quotes[quote.symbol] = quote
+    executor._instruments[quote.symbol] = SimpleNamespace(ExchangeID="SHFE")
+    instrument = Instrument(exchange="SHFE", symbol=quote.symbol, kind="FUTURE", multiplier=10, tick=1)
+    manager.instrument_catalog.register("fixture", lambda _symbols, _timeout: [instrument], channel="ctp")
+    manager.instrument_catalog.ensure([instrument.key], require_specs=True, timeout=2)
+
+    read_market = Mock(side_effect=TimeoutError("等待 CTP 行情回报超时"))
+    monkeypatch.setattr(market_data, "read_market_data", read_market)
+    monkeypatch.setattr(market_data, "_get_account_snapshot_or_404", AsyncMock(return_value=account))
+    monkeypatch.setattr(market_data, "get_worker_backend_manager", lambda: manager)
+    monkeypatch.setattr(manager, "_check_read_session", lambda account: None)
+    monkeypatch.setattr(
+        manager, "_request_blocking", lambda account_id, request, *args: worker._handle_worker_request(request, state)
+    )
+    monkeypatch.setattr(worker, "_resolve_prepared_executor", lambda **kwargs: executor)
+    monkeypatch.setattr(worker, "_finalize_with_orders", lambda *args: None)
+    monkeypatch.setattr(executor, "_require_session_ready", lambda: None)
+
+    app = FastAPI()
+    app.include_router(market_data.router)
+    route = "/market-data/accounts/41/quotes"
+    payload = {"symbols": [instrument.key]}
+    try:
+        with TestClient(app) as client:
+            response = client.post(route, json={**payload, "allow_stale": True})
+            assert response.status_code == 200
+            imported = response.json()["data"][instrument.key]
+            assert imported["timestamp"] == quote.timestamp
+            assert imported["last_price"] == quote.last_price
+            assert imported["extra"]["valuation_reference"] is True
+            assert imported["extra"]["volume_multiple"] == 10
+            read_market.assert_not_called()
+            assert client.post(route, json=payload).status_code == 504
+
+            monkeypatch.setattr(
+                manager, "_check_read_session", Mock(side_effect=AccountConnectionUnavailable("未连接"))
+            )
+            read_market.side_effect = None
+            read_market.return_value = {instrument.key: quote}
+            assert client.post(route, json={**payload, "allow_stale": True}).status_code == 200
+    finally:
+        manager.close()
 
 
 def test_cached_contract_specs_stay_available_after_trade_disconnect(monkeypatch):

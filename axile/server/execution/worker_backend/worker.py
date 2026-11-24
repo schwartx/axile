@@ -18,7 +18,8 @@ from axile.common.serialization import from_payload, to_payload
 from axile.domain.execution import ExecutionKind
 from axile.executor.abstract_executor.base import AbstractExecutor
 from axile.executor.account_control.models import AccountControlContextKind, AccountControlSource
-from axile.executor.algorithms.utils.clock import get_default_clock
+from axile.executor.algorithms.utils.clock import clock_monotonic, get_default_clock
+from axile.executor.instrument_catalog import CatalogError
 from axile.executor.models.portfolio_target import PortfolioTarget
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import UnifiedStandardInput
@@ -186,16 +187,33 @@ def _handle_account_read(
             allow_recovery=False,
             allow_connect=False,
         )
-        if request.command in {"query_margin_rates", "query_commission_rates", "query_settlement_info"}:
+        if request.command in {
+            "query_margin_rates",
+            "query_commission_rates",
+            "query_settlement_info",
+            "query_valuation_quotes",
+        }:
             from axile.executor.ctp.ctp_execute import CTPExecutor
 
             ctp = cast(CTPExecutor, executor)
-            query = {
-                "query_margin_rates": ctp.query_margin_rates,
-                "query_commission_rates": ctp.query_commission_rates,
-                "query_settlement_info": ctp.query_settlement_info,
-            }[request.command]
-            output = query(str(request.payload["argument"]))
+            if request.command == "query_valuation_quotes":
+                deadline = clock_monotonic() + cast(float, request.payload["timeout_seconds"])
+                output = {}
+                for symbol in cast(list[str], request.payload["argument"]):
+                    if clock_monotonic() >= deadline:
+                        break
+                    try:
+                        quote = ctp.get_valuation_quote(symbol)
+                    except (CatalogError, ValueError):
+                        continue
+                    output[symbol] = to_payload(quote, mode="json")
+            else:
+                query = {
+                    "query_margin_rates": ctp.query_margin_rates,
+                    "query_commission_rates": ctp.query_commission_rates,
+                    "query_settlement_info": ctp.query_settlement_info,
+                }[request.command]
+                output = query(str(request.payload["argument"]))
         elif request.command == "get_account_cash_flows":
             flows = cast(AbstractExecutor, executor).get_account_cash_flows()
             output = {"rows": [to_payload(flow, mode="json") for flow in flows]}
@@ -259,8 +277,14 @@ def _handle_calculate_portfolio(
         watchdog.start()
         long_leverage, short_leverage = resolve_account_leverages(account)
         overrides = cast("dict[str, float]", request.payload.get("leverage_overrides", {}))
+        reference_quote_reader = None
+        if is_trial and request.payload.get("trial") is True and account.trade_channel == "ctp":
+            from axile.executor.ctp.ctp_execute import CTPExecutor
+
+            reference_quote_reader = cast(CTPExecutor, executor).get_valuation_quote
         context = Context(
             cast("PortfolioExecutor", executor),
+            reference_quote_reader=reference_quote_reader,
             settings=ContextSettings(
                 long_leverage=overrides.get("long_leverage", long_leverage),
                 short_leverage=overrides.get("short_leverage", short_leverage),
@@ -658,6 +682,7 @@ def _handle_worker_request(
         "query_margin_rates",
         "query_commission_rates",
         "query_settlement_info",
+        "query_valuation_quotes",
     }:
         return _handle_account_read(request, state)
     if request.command == "calculate_portfolio":
