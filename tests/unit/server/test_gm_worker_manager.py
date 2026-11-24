@@ -13,6 +13,7 @@ import pytest
 from axile.channels.gm_sessions import SHANGHAI
 from axile.common.serialization import to_payload
 from axile.common.trade_channel import TradeChannel
+from axile.executor.account_control.models import AccountControlContextKind, AccountControlSource
 from axile.executor.algorithms.utils import clock as clock_module
 from axile.executor.instrument_catalog_records import Instrument
 from axile.executor.models.execution_result import ExecutionStatus
@@ -984,13 +985,15 @@ def test_query_waiting_on_disconnected_worker_cannot_use_or_recreate_it(monkeypa
 
 @pytest.mark.parametrize("mode", ["success", "script_error", "prepare_error"])
 @pytest.mark.parametrize("overrides", [None, {"long_leverage": 4.0, "short_leverage": 0.0}])
-def test_calculate_worker_keeps_script_and_prepare_error_channels(monkeypatch, mode, overrides):
+@pytest.mark.parametrize("execution_id", [None, "execution"])
+def test_calculate_worker_keeps_script_and_prepare_error_channels(monkeypatch, mode, overrides, execution_id):
     from axile.executor.ctp.ctp_execute import CtpSessionRecoveryRequired
     from axile.server.execution.worker_backend import worker
     from axile.server.execution.worker_backend.worker_state import _WorkerBackendState
 
     watches = []
     finalized = []
+    prepared = []
     executor = object()
 
     class Watchdog:
@@ -1001,6 +1004,7 @@ def test_calculate_worker_keeps_script_and_prepare_error_channels(monkeypatch, m
             pass
 
     def prepare(**kwargs):
+        prepared.append(kwargs)
         if mode == "prepare_error":
             raise CtpSessionRecoveryRequired("return_code=-2", return_code=-2)
         return executor
@@ -1018,7 +1022,7 @@ def test_calculate_worker_keeps_script_and_prepare_error_channels(monkeypatch, m
     request = WorkerBackendRequest(
         request_id="portfolio",
         command="calculate_portfolio",
-        execution_id=None,
+        execution_id=execution_id,
         account_payload=to_payload(
             build_account(id=2, long_leverage=2.0, short_leverage=0.5, weight_precision=0.001), mode="json"
         ),
@@ -1026,6 +1030,19 @@ def test_calculate_worker_keeps_script_and_prepare_error_channels(monkeypatch, m
     )
     state = _WorkerBackendState()
     response = worker._handle_calculate_portfolio(request, state)
+    assert len(prepared) == 1
+    kwargs = prepared[0]
+    if execution_id is None:
+        assert kwargs["execution_id"] == request.request_id
+        assert kwargs["context_kind"] is AccountControlContextKind.ACCOUNT_OPERATION
+        assert kwargs["source"] is AccountControlSource.ACCOUNT_ASSETS
+        assert not kwargs["allow_connect"]
+    else:
+        assert kwargs["execution_id"] == execution_id
+        assert kwargs["context_kind"] is AccountControlContextKind.EXECUTION
+        assert kwargs["source"] is AccountControlSource.ALGORITHM
+        assert kwargs["allow_connect"]
+    assert kwargs["audit_context"]["execution_id"] == execution_id
     assert len(finalized) == 1
     if mode == "prepare_error":
         assert response.kind == "error" and response.error.type == "ctp_session_recovery_required"

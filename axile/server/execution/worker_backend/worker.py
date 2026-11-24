@@ -231,18 +231,23 @@ def _handle_calculate_portfolio(
     account = from_payload(AccountSnapshot, request.account_payload)
     executor = None
     calculation_finished = threading.Event()
+    is_trial = request.execution_id is None
     try:
         executor = _resolve_prepared_executor(
             state=state,
             account=account,
-            execution_id=request.execution_id,
+            execution_id=request.request_id if is_trial else request.execution_id,
             audit_context={
                 "execution_id": request.execution_id,
                 "account_id": account.id,
                 "channel": str(account.trade_channel),
                 "trigger_source": "portfolio_calculation",
             },
-            allow_connect=request.execution_id is not None,
+            context_kind=AccountControlContextKind.ACCOUNT_OPERATION
+            if is_trial
+            else AccountControlContextKind.EXECUTION,
+            source=AccountControlSource.ACCOUNT_ASSETS if is_trial else AccountControlSource.ALGORITHM,
+            allow_connect=not is_trial,
         )
         code = str(request.payload.get("code", ""))
         watchdog = threading.Thread(
