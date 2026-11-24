@@ -26,13 +26,15 @@ test('首屏图表仅凭轻量曲线和执行摘要显示读数与键盘操作',
   }
   const html = renderToStaticMarkup(createElement(PerformanceChart, {
     accountId: 7, data, executionIndex: [execution], daily: false, backtestMode: 'sized', scaleMode: 'natural',
-    costs: new Map(), intervalCost: null, selection: null, onSelect: () => {}, portfolioNames: new Map(), showExecutions: true,
+    costs: new Map(), intervalCost: null, selection: null, onSelect: () => {}, portfolioNames: new Map(), showExecutions: true, returnReadout: null,
   }))
-  expect(html).toContain('本次执行')
-  expect(html).toContain('本次执行成交额 123.4')
+  expect(html).not.toMatch(/(?:本次|末次)执行/)
+  expect(html).toContain('成交额')
+  expect(html).toContain('<span class="opacity-0">123.4</span>')
   expect(html).toContain('数据不完整')
   expect(html).toContain('tabindex="0"')
   expect(html).toContain('data-chart="time-series"')
+  expect(html).toContain('data-testid="return-axis"')
   expect(html).toContain('Enter / 空格选择')
   expect(html).not.toContain('持仓状态未知')
 })
@@ -50,6 +52,7 @@ test('单品种曲线层与网格画布分离，仅主图参与品种切换', ()
   }))
   expect(main).toMatch(/<canvas aria-hidden="true"[^>]*><\/canvas><canvas aria-hidden="true"[^>]*data-chart-series="contribution-series"/)
   expect(main).toMatch(/data-chart-series="contribution-series"[^>]*><\/canvas>.*<canvas[^>]*data-chart-overlay=""/)
+  expect(main).toContain('data-testid="contribution-axis"')
   const panel = renderToStaticMarkup(createElement(ContributionChart, props))
   expect(panel).not.toContain('data-chart-series')
 })

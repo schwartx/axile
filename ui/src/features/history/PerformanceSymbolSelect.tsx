@@ -1,7 +1,7 @@
 import { Fragment, useState } from 'react'
-import { ChevronRight } from 'lucide-react'
 import { Select } from '@/components/ui/Select'
 import { OverflowText } from '@/components/ui/OverflowText'
+import { displayCurrencyUnit } from '@/lib/format'
 import { amount, lossClass } from './costs'
 import type { CostView } from './localAnalysis'
 
@@ -34,37 +34,31 @@ export function PerformanceSymbolSelect({ result, scope, symbols, symbol, busy, 
     }))]} />
 }
 
-const buckets = ['< −10', '−10 至 −5', '−5 至 −1', '−1 至 1', '1 至 5', '5 至 10', '≥ 10']
-
-export function SymbolSlippage({ result, symbol, side, onSelect }: {
-  result: CostView | null; symbol: string; side: string; onSelect: (symbol: string, side: string) => void
+export function SymbolSideSelect({ result, symbol, side, onChange }: {
+  result: CostView | null; symbol: string; side: string; onChange: (side: string) => void
 }) {
-  const [expanded, setExpanded] = useState(false)
   const row = result?.rows.find(row => row.symbol === symbol)
-  const detail = result?.detail?.symbol === symbol && result.detail.side === side ? result.detail.result : null
-  const peak = detail ? Math.max(...detail.histogram) : 0
   return (
-    <section aria-label={`${symbol}逐笔滑点分布`} className="w-fit max-w-full space-y-1 py-1 text-xs">
-      <header className="flex items-center justify-between gap-4">
-        <button type="button" className="min-h-6! text-ink-2 hover:text-ink-1" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
-          {detail ? `${detail.summary.count} 笔成交 · ${amount(detail.summary.lossBp)} BP` : '逐笔滑点'} <ChevronRight size={12} className={`inline ${expanded ? 'rotate-90' : ''}`} />
-        </button>
-        <div role="group" aria-label="详情方向" className="flex gap-2">
-          {[['', '全部'], ['buy', '买入'], ['sell', '卖出'], ...(row?.hasUnknownSide ? [['none', '未知']] : [])].map(([value, label]) =>
-            <button key={value} type="button" aria-pressed={side === value} onClick={() => onSelect(symbol, value)} className={`min-h-6! border-b ${side === value ? 'border-current font-medium' : 'border-transparent text-ink-3'}`}>{label}</button>)}
-        </div>
-      </header>
-      {expanded && detail && <>
-        <ul className="grid grid-cols-7 gap-1 text-center text-[10px] tabular-nums">
-          {buckets.map((label, i) => <li key={label} aria-label={`${label} BP，${detail.histogram[i]} 笔`}>
-            <div className="flex h-7 flex-col items-center justify-end border-b border-line">
-              {detail.histogram[i] > 0 && <><span className="leading-none">{detail.histogram[i]}</span><span className="w-1/2 bg-ink-3" style={{ height: `${16 * detail.histogram[i] / peak}px` }} /></>}
-            </div>
-            <span className="text-ink-2">{label.replace(' 至 ', '…').replaceAll(' ', '')}</span>
-          </li>)}
-        </ul>
-        <p className="flex flex-wrap gap-x-3 text-[11px] text-ink-2"><span>成本 {amount(detail.summary.cost)}</span><span>参考价覆盖 {detail.summary.coverage == null ? `${detail.summary.covered}/${detail.summary.count} 笔` : `${amount(detail.summary.coverage * 100)}%（成交额）`}</span></p>
-      </>}
+    <div role="group" aria-label="成交方向" className="flex flex-wrap justify-end gap-x-2 gap-y-1 text-sm text-ink-3">
+      {[['', '全部方向'], ['buy', '买入'], ['sell', '卖出'], ...(row?.hasUnknownSide || side === 'none' ? [['none', '未知']] : [])].map(([value, label]) =>
+        <button key={value} type="button" aria-pressed={side === value} onClick={() => onChange(value)} className={`min-h-7 whitespace-nowrap border-b ${side === value ? 'border-current font-medium text-ink-1' : 'border-transparent hover:text-ink-1'}`}>{label}</button>)}
+    </div>
+  )
+}
+
+export function SymbolSlippage({ result, symbol, side, currency }: {
+  result: CostView | null; symbol: string; side: string; currency?: string | null
+}) {
+  const summary = result?.detail?.symbol === symbol && result.detail.side === side ? result.detail.result.summary : null
+  const coverage = !summary ? '—' : summary.coverage == null ? `${summary.covered}/${summary.count} 笔` : `${amount(summary.coverage * 100)}%（成交额）`
+  return (
+    <section aria-label={`${symbol}成交滑点摘要`} className="flex min-h-7 min-w-0 max-w-full flex-wrap items-center gap-x-4 gap-y-1 text-sm text-ink-3 tabular-nums">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 [&>span]:whitespace-nowrap">
+        <span>{summary ? `${summary.count} 笔成交` : '成交 —'}</span>
+        <span>滑点损耗 <span className={lossClass(summary?.lossBp)}>{amount(summary?.lossBp ?? null)} BP</span></span>
+        <span>滑点成本 <span className={lossClass(summary?.cost)}>{amount(summary?.cost ?? null)} {displayCurrencyUnit(currency)}</span></span>
+        <span>参考价覆盖 {coverage}</span>
+      </div>
     </section>
   )
 }

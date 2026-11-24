@@ -14,12 +14,14 @@ import type { ComponentProps } from 'react'
 const SPIN_TIMING = { duration: 520, easing: 'cubic-bezier(0.32, 0.72, 0, 1)' }
 const TRANSFORM_TIMING = { duration: 200, easing: 'cubic-bezier(0.4, 0, 0.2, 1)' }
 const OPACITY_TIMING = { duration: 200, easing: 'cubic-bezier(0.4, 0, 0.2, 1)' }
+const SCRUB_SPIN_TIMING = { ...SPIN_TIMING, duration: 160 }
+const INSTANT_TIMING = { duration: 0 }
 
 /** `NumberTicker` props：NumberFlow 全量 props 去掉由本组件收口的 timing 三项。 */
 type NumberTickerProps = Omit<
   ComponentProps<typeof NumberFlow>,
   'spinTiming' | 'transformTiming' | 'opacityTiming'
->
+> & { scrub?: boolean }
 
 /**
  * 实时数字滚动组件。
@@ -39,16 +41,18 @@ type NumberTickerProps = Omit<
  *     数字格式（小数位、千分位分组等）。
  * locales : Intl.LocalesArgument, optional
  *     语言环境，默认 ``'zh-CN'``。
+ * scrub : boolean, optional
+ *     用于光标扫读，数位快速滚动，字符和宽度立即更新。
  * 其余
  *     透传 NumberFlow（``prefix`` / ``suffix`` / ``className`` / ``trend`` 等）。
  */
-export function NumberTicker({ locales = 'zh-CN', ...props }: NumberTickerProps) {
+export function NumberTicker({ locales = 'zh-CN', scrub = false, ...props }: NumberTickerProps) {
   return (
     <NumberFlow
       locales={locales}
-      spinTiming={SPIN_TIMING}
-      transformTiming={TRANSFORM_TIMING}
-      opacityTiming={OPACITY_TIMING}
+      spinTiming={scrub ? SCRUB_SPIN_TIMING : SPIN_TIMING}
+      transformTiming={scrub ? INSTANT_TIMING : TRANSFORM_TIMING}
+      opacityTiming={scrub ? INSTANT_TIMING : OPACITY_TIMING}
       {...props}
     />
   )

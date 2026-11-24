@@ -7,6 +7,7 @@ import { executionRecordView } from '@/features/account/executionOutcome'
 import { quantityUnit } from '@/features/history/executionEvidenceModel'
 import type { ChartSelection } from '@/features/history/chartModel'
 import type { ExecutionCursor } from './executionMarkers'
+import { hoverExecution } from './executionSelection'
 import { timeLabel } from '@/features/history/chartModel'
 import { useAnalysisExecutionDetail } from '@/features/history/useAnalysisExecutionDetail'
 import { checkPerformance } from '@/features/history/performanceCache'
@@ -32,16 +33,6 @@ function positionDirection(direction: string | null, quantity: number | null): s
 function stateLabel(row: AnalysisExecutionSummary): string {
   return row.noop ? '无需交易' : row.is_success === 1 ? '执行成功' : row.is_success === 0 ? '执行未成功' : '执行状态未知'
 }
-function hoverExecution(rows: AnalysisExecutionSummary[], cursor: ExecutionCursor | null): AnalysisExecutionSummary | null {
-  if (!cursor) return null
-  if (cursor.recordId != null) return rows.find(row => row.record_id === cursor.recordId) ?? null
-  let latest: AnalysisExecutionSummary | null = null
-  for (const row of rows) {
-    if (row.time_ms <= cursor.time && (!latest || row.time_ms > latest.time_ms || row.time_ms === latest.time_ms && row.record_id > latest.record_id)) latest = row
-  }
-  return latest
-}
-
 function PositionList({ detail, units, currency }: { detail: ExecutionEvidence; units?: ChannelCapability['units']; currency: string }) {
   const positions = detail.positions
   return <div className="mt-2 border-t border-line pt-2">

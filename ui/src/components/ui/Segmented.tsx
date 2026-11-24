@@ -39,6 +39,7 @@ export function Segmented<T extends string>({
   onChange,
   trailing,
   size = 'md',
+  highlight = 'neutral',
   className = '',
   ariaLabel,
   panelId,
@@ -48,6 +49,7 @@ export function Segmented<T extends string>({
   onChange: (value: T) => void
   trailing?: ReactNode
   size?: SegmentedSize
+  highlight?: 'neutral' | 'accent'
   className?: string
   ariaLabel?: string
   /** 关联面板时使用 tab 语义与方向键导航；面板由调用方渲染。 */
@@ -92,7 +94,7 @@ export function Segmented<T extends string>({
       <span
         ref={thumbRef}
         aria-hidden
-        className={`absolute left-0 z-0 bg-surface shadow-sm ${sz.thumb} ${
+        className={`absolute left-0 z-0 shadow-sm ${highlight === 'accent' ? 'bg-accent-mid' : 'bg-surface'} ${sz.thumb} ${
           mountedRef.current
             ? 'transition-[transform,width] duration-200 ease-[cubic-bezier(.32,.72,0,1)] motion-reduce:transition-none'
             : ''

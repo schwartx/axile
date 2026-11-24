@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useId, type PointerEvent, type ReactNode } from 'react'
+import { CircleHelp } from 'lucide-react'
+import { Tooltip } from '@/components/ui/Tooltip'
 import { TimeSeriesChart, type CanvasFrame, type WindowMotion } from '@/components/viz/TimeSeriesChart'
 import { drawCrosshair, drawSeries, drawTimeAxis, drawValueAxis, prepareCanvas, timeAtX, timeX, valueY, zoomTimeViewport } from '@/components/viz/chartCanvas'
-import { niceValueAxis } from '@/components/viz/chartAxis'
+import { niceValueAxis, rangedValueAxis, type ValueRange } from '@/components/viz/chartAxis'
+import { ValueAxisZoom } from '@/components/viz/ValueAxisZoom'
 import { seriesStyle } from '@/components/viz/seriesStyle'
 import { clampViewport, intervalSelection, nearestIndex, pointTime, timeLabel, type ChartSelection, type Viewport } from '@/features/history/chartModel'
 import { rangeContributionRows, rangeExecutions, rangeZoom, type RangeCurve } from './rangeZoom'
@@ -38,6 +41,7 @@ export function ContributionChart({ rows, points, navigationDomain, rangeTarget,
   const domain = navigationDomain ?? times
   const full = useMemo(() => ({ start: domain[0], end: domain.at(-1)! }), [domain])
   const [viewport, setViewport] = useState(full)
+  const [valueRange, setValueRange] = useState<ValueRange | null>(null)
   const symbol = executions?.symbol
   const [hover, setHover] = useState<number | null>(null)
   const [width, setWidth] = useState(0)
@@ -57,9 +61,10 @@ export function ContributionChart({ rows, points, navigationDomain, rangeTarget,
   }, [visibleExecutions, clearExecutionCursor])
   useEffect(() => { setViewport(full); setHover(null); clearExecutionCursor() }, [full, scaleMode, clearExecutionCursor])
   useEffect(() => { setSelected(null); setHover(null); clearExecutionCursor() }, [symbol, clearExecutionCursor])
+  useEffect(() => { setValueRange(null) }, [symbol])
   const pinned = selected?.kind === 'execution' ? visibleExecutions?.find(row => row.record_id === selected.recordId) : null
   const current = pinned ? nearestIndex(times, pinned.time_ms) : Math.min(hover ?? points.length - 1, points.length - 1)
-  const axis = useMemo(() => niceValueAxis(rows.flatMap(row => row.values.filter((value, i): value is number => value != null && (times[i] >= viewport.start && times[i] <= viewport.end || times[i] < viewport.start && (times[i + 1] ?? Infinity) >= viewport.start || times[i] > viewport.end && (times[i - 1] ?? -Infinity) <= viewport.end))), 1), [rows, times, viewport])
+  const axis = useMemo(() => valueRange ? rangedValueAxis(valueRange) : niceValueAxis(rows.flatMap(row => row.values.filter((value, i): value is number => value != null && (times[i] >= viewport.start && times[i] <= viewport.end || times[i] < viewport.start && (times[i + 1] ?? Infinity) >= viewport.start || times[i] > viewport.end && (times[i - 1] ?? -Infinity) <= viewport.end))), 1), [rows, times, viewport, valueRange])
   const segmented = rows.some(row => row.baselines.some(base => base != null && base > 0))
   const live = rows.find(row => row.symbol === 'actual')
   const markerPoint = useCallback((row: AnalysisExecutionSummary, width: number, window = viewport, timeScale = scale, anchors = times, series = live) => {
@@ -78,9 +83,12 @@ export function ContributionChart({ rows, points, navigationDomain, rangeTarget,
   const paintAxes = useCallback((ctx: CanvasRenderingContext2D, frame: CanvasFrame, window: Viewport, timeScale: TimeScale, tickDomain?: Viewport) => {
     const plot = plotBounds(frame.width), { theme } = frame
     ctx.font = `11px ${theme.font}`; ctx.lineWidth = 1
-    drawValueAxis(ctx, plot, axis, theme, value => Math.abs(value) >= 10000 ? `${(value / 10000).toFixed(1)}万` : amount(value))
+    const format = valueRange
+      ? (value: number) => String(Number(value.toFixed(Math.max(0, 1 - Math.floor(Math.log10(axis.step))))))
+      : (value: number) => Math.abs(value) >= 10000 ? `${(value / 10000).toFixed(1)}万` : amount(value)
+    drawValueAxis(ctx, plot, axis, theme, format)
     drawTimeAxis(ctx, plot, window, theme, height - 9, (time, intraday) => timeLabel(time).slice(intraday ? 11 : 0, intraday ? 16 : 10), timeScale, undefined, tickDomain)
-  }, [axis, plotBounds, height])
+  }, [axis, plotBounds, height, valueRange])
 
   const paintCurves = useCallback((ctx: CanvasRenderingContext2D, frame: CanvasFrame, rows: RangeCurve[], times: number[], window: Viewport, timeScale: TimeScale) => {
     const plot = plotBounds(frame.width), { theme } = frame, css = getComputedStyle(ctx.canvas)
@@ -132,7 +140,8 @@ export function ContributionChart({ rows, points, navigationDomain, rangeTarget,
     const plot = plotBounds(frame.width)
     if (visibleExecutions) drawExecutionMarkers(ctx, markerBounds(frame.width), frame.theme, visibleExecutions, row => markerPoint(row, frame.width))
     const row = pinned ?? visibleExecutions?.find(row => row.record_id === magnet)
-    const marker = row ? markerPoint(row, frame.width) : null
+    const point = row ? markerPoint(row, frame.width) : null
+    const marker = point && point.y >= plot.top && point.y <= markerBounds(frame.width).bottom ? point : null
     if (pinned) {
       if (marker) drawSelectionGuide(ctx, marker.x, plot.top, plot.bottom, frame.theme.accent)
       drawExecutionRing(ctx, marker, frame.theme, true)
@@ -143,7 +152,7 @@ export function ContributionChart({ rows, points, navigationDomain, rangeTarget,
     if ((!cursor && hover == null) || time < viewport.start || time > viewport.end) return
     const value = rows.length === 1 ? rows[0].values[current] : null
     const y = cursor ? Math.min(cursor.y, plot.bottom) : value == null ? undefined : valueY(value, axis, plot)
-    drawCrosshair(ctx, plot, timeX(time, plot, viewport, scale), frame.theme.muted, y)
+    drawCrosshair(ctx, plot, timeX(time, plot, viewport, scale), frame.theme.muted, y != null && y >= plot.top && y <= plot.bottom ? y : undefined)
   }, [hover, current, rows, times, viewport, scale, axis, plotBounds, pinned, magnet, visibleExecutions, markerBounds, markerPoint, cursor])
 
   const focusPoint = (index: number) => {
@@ -159,17 +168,24 @@ export function ContributionChart({ rows, points, navigationDomain, rangeTarget,
     const time = timeAtX(Math.max(plot.left, Math.min(plot.right, x)), plot, viewport, scale)
     return { x, y, time, index: nearestIndex(times, time) }
   }
+  const axisPlot = plotBounds(width)
+  const caption = `${segmented ? '分段毛盈亏贡献' : '累计毛盈亏贡献'} · ${displayCurrencyUnit(currency) || '按原币种'}`
+  const resetLabel = segmented ? '各段起点归零' : '区间起点归零'
   return <div className="min-w-0">
-    <div className={heading ? 'flex min-h-36 flex-col justify-center gap-1 @min-[40rem]:min-h-28 @min-[56rem]:min-h-16' : 'mb-1'}>
+    {heading ? <div className="flex min-h-9 flex-wrap content-center items-start gap-x-5 gap-y-1 border-b border-line py-0.5">
       {heading}
-      <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs"><span>{segmented ? '分段毛盈亏贡献' : '累计毛盈亏贡献'} · {displayCurrencyUnit(currency) || '按原币种'}</span><span className="text-ink-3">{segmented ? '各段起点归零' : '区间起点归零'}</span></div>
-    </div>
+      <Tooltip content={resetLabel} arrow>
+        <button type="button" className="ml-auto inline-flex min-h-7 items-center gap-1.5 rounded text-left text-sm text-ink-3 hover:text-ink-1 focus-visible:outline-accent">
+          {caption}<CircleHelp size={15} className="shrink-0" aria-hidden="true" />
+        </button>
+      </Tooltip>
+    </div> : <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2 text-xs"><span>{caption}</span><span className="text-ink-3">{resetLabel}</span></div>}
     <TimeSeriesChart height={height} label="所选品种毛盈亏贡献曲线，方向键查看日期，异常处分段并从可靠快照重新归零" draw={drawAxes} drawOverlay={drawOverlay} windowMotion={windowMotion} onResize={executions ? onResize : undefined}
       seriesLayer={{ draw: drawCurves, transitionName: executions ? 'contribution-series' : undefined }}
       interval={selection === undefined ? undefined : { selection, animate: slideInterval }}
       navigation={{ times, current, viewport, scale, plot: plotBounds, onFocus: focusPoint,
         onZoom: (factor, anchor = scale.invert((scale.project(viewport.start) + scale.project(viewport.end)) / 2)) => setViewport(view => zoomTimeViewport(view, factor, anchor, domain, scale)),
-        onReset: () => setViewport(full) }}
+        onReset: () => { setViewport(full); setValueRange(null) } }}
       interaction={{ 'data-testid': 'contribution-chart', 'aria-describedby': `${readingId} ${hintId}`,
         onPointerDown: event => {
           if ((!onInterval && !visibleExecutions) || !event.isPrimary || event.button !== 0) return
@@ -209,12 +225,15 @@ export function ContributionChart({ rows, points, navigationDomain, rangeTarget,
       }}>
       {width > 0 && executions && visibleExecutions && <ChartTradingOverlay width={width} xAtTime={xAtTime} {...executions}
         currency={currency ?? ''} cursor={cursor} selection={selected} onSelect={setSelected} onInspect={clearExecutionCursor} />}
+      {executions && <ValueAxisZoom key={symbol} label="毛盈亏贡献轴缩放" testId="contribution-axis"
+        top={axisPlot.top} height={axisPlot.bottom - axisPlot.top} width={width - axisPlot.right}
+        getRange={() => { setHover(null); clearExecutionCursor(); return axis }} onChange={setValueRange} />}
     </TimeSeriesChart>
     <div id={readingId} aria-live="polite" className={`flex flex-wrap gap-x-4 gap-y-2 text-xs tabular-nums ${heading ? 'min-h-7' : ''}`}><span className="text-ink-3">{timeLabel(times[current])}</span>{rows.map(row => {
       const base = row.baselines[current], value = row.values[current]
       return <span key={row.symbol}><SeriesSwatch symbol={row.symbol} /> {row.product} {base != null && base > 0 && '本段盈亏 '}<span className={returnColor(value)}>{value != null && value > 0 ? '+' : ''}{amount(value)}</span>{base != null && base > 0 && <span className="text-ink-3"> · 起点 {timeLabel(times[base]).slice(0, 16)}</span>}</span>
     })}</div>
     {rows.length === 0 && !executions && <p role="status" className="mt-2 text-xs text-ink-3">选择品种查看曲线</p>}
-    <p id={hintId} className="sr-only">方向键查看，Home / End 首末点，Ctrl + 滚轮或加减号缩放，双击或 0 恢复范围。{visibleExecutions && '回车查看执行成交，Escape 关闭。'}{rows.flatMap(row => row.baselines.flatMap((base, i) => base === i && i > 0 ? [`${row.product} · ${timeLabel(times[i])} 数据缺口后重新归零。`] : [])).join('')}</p>
+    <p id={hintId} className="sr-only">方向键查看，Home / End 首末点，Ctrl + 滚轮或加减号缩放，双击或 0 恢复范围。{executions && '拖动右侧纵轴缩放，双击纵轴恢复自动范围。'}{visibleExecutions && '回车查看执行成交，Escape 关闭。'}{rows.flatMap(row => row.baselines.flatMap((base, i) => base === i && i > 0 ? [`${row.product} · ${timeLabel(times[i])} 数据缺口后重新归零。`] : [])).join('')}</p>
   </div>
 }

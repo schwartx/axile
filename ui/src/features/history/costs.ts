@@ -5,7 +5,10 @@ import { dict, number, sideOf, shanghaiTime } from '@/features/account/execution
 import { loadJournal, type TimeWindow } from '@/features/account/journalActivity'
 export { shanghaiTime } from '@/features/account/executionValues'
 
-export const amount = (value: number | null) => value == null ? '—' : value.toLocaleString('zh-CN', { maximumFractionDigits: Math.abs(value) < 0.01 ? 8 : 2 })
+const amountFormatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 })
+const preciseAmountFormatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 8 })
+
+export const amount = (value: number | null) => value == null ? '—' : (Math.abs(value) < 0.01 ? preciseAmountFormatter : amountFormatter).format(value)
 export const quantityText = (value: number | null) => value == null ? '—' : value.toLocaleString('zh-CN', { maximumFractionDigits: 8 })
 export const feeText = (summary: CostSummary) => Object.entries(summary.fees).map(([currency, value]) => `${amount(value)} ${displayCurrencyUnit(currency)}`).join(' · ') || '—'
 export const coverageText = (summary: CostSummary) => summary.coverage == null
