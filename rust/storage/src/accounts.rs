@@ -414,9 +414,9 @@ fn signal_portfolio_market(
     connection: &Connection,
     portfolio_id: &Value,
 ) -> Result<Value, AnalysisError> {
-    let portfolio_id = portfolio_id
-        .as_i64()
-        .ok_or_else(|| invalid("调仓信号账户必须绑定组合"))?;
+    let Some(portfolio_id) = portfolio_id.as_i64() else {
+        return Ok(json!(""));
+    };
     ensure_portfolio_on(connection, Some(portfolio_id))?;
     let market = connection
         .query_row(

@@ -17,9 +17,10 @@ export const ACCT_STEPS: Step[] = [
 export const SIGNAL_STEPS: Step[] = [
   ACCT_STEPS[0],
   { path: '/setup/acct/signal', label: '账户与组合' },
-  { path: '/setup/acct/signal?step=3', label: '数据来源' },
-  { path: '/setup/acct/signal?step=4', label: '定时与通知' },
-  { path: '/setup/acct/signal?step=5', label: '试算与确认' },
+  { path: '/setup/acct/signal?step=3', label: '设置行情' },
+  { path: '/setup/acct/signal?step=4', label: '资金与持仓' },
+  { path: '/setup/acct/signal?step=5', label: '定时与通知' },
+  { path: '/setup/acct/signal?step=6', label: '试算与确认' },
 ]
 
 /** 由当前路径推断所属流程与步骤序号。组合新建不走向导（列表页弹层 → 编辑器）。 */

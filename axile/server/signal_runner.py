@@ -2,8 +2,6 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
-from math import isfinite
 from multiprocessing import get_context
 from multiprocessing.connection import Connection
 from typing import cast
@@ -75,35 +73,22 @@ class _SignalQueries:
         values = self._fetch(symbols)
         if not isinstance(values, dict):
             raise ValueError("行情函数必须返回按标的索引的字典")
-        return {symbol: _price(symbol, values.get(symbol)) for symbol in symbols}
+        quotes: dict[str, UnifiedPriceData] = {}
+        for symbol in symbols:
+            quote = values.get(symbol)
+            if quote is None:
+                raise ValueError(f"缺少行情：{symbol}")
+            if not isinstance(quote, UnifiedPriceData):
+                raise ValueError(f"行情函数必须返回 UnifiedPriceData：{symbol}")
+            quote.validate()
+            quotes[symbol] = quote
+        return quotes
 
     def get_pending_orders(self, symbol: str | None = None) -> list[UnifiedOrder]:
         return []
 
     def query_trades(self, symbol: str, order_id: str) -> list[TradeRecord]:
         return []
-
-
-def _price(symbol: str, value: object) -> UnifiedPriceData:
-    if not isinstance(value, dict):
-        raise ValueError(f"缺少行情：{symbol}")
-    price, update_time = value.get("last_price"), value.get("update_time")
-    if isinstance(price, bool) or not isinstance(price, (int, float)) or not isfinite(price) or price <= 0:
-        raise ValueError(f"行情价格无效：{symbol}")
-    if not isinstance(update_time, str):
-        raise ValueError(f"行情缺少时间：{symbol}")
-    observed = datetime.fromisoformat(update_time)
-    if observed.utcoffset() is None:
-        raise ValueError(f"行情时间需要时区：{symbol}")
-    return UnifiedPriceData(
-        symbol=symbol,
-        last_price=float(price),
-        bids=[],
-        asks=[],
-        volume=0,
-        update_time=observed.isoformat(),
-        timestamp=int(observed.timestamp() * 1000),
-    )
 
 
 class _SignalContext(Context):

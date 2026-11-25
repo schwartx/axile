@@ -25,12 +25,31 @@ from axile.server.signal_service import run_scheduled_signal
 
 TARGET = {"600000.SH": 300, "510300.SH": 500}
 QUOTES = """
+from axile.executor.models.unified_price import UnifiedPriceData
+
 def fetch_quotes(symbols):
-    return {symbol: {"last_price": 10, "update_time": "2026-11-23T15:00:00+08:00"} for symbol in symbols}
+    return {
+        symbol: UnifiedPriceData(
+            symbol=symbol,
+            last_price=10,
+            bids=[(9.9, 200), (9.8, 400)],
+            asks=[(10.2, 300), (10.3, 500)],
+            volume=125,
+            timestamp=1795417200000,
+            update_time="2026-11-23T15:00:00+08:00",
+        )
+        for symbol in symbols
+    }
 """
 CALCULATE = f"""
 def calculate_portfolio(context):
     assert context.get_price("510300.SH") == 10
+    quote = context.get_quote("510300.SH")
+    assert quote.book_valid
+    assert quote.bids == [(9.9, 200), (9.8, 400)]
+    assert quote.asks == [(10.2, 300), (10.3, 500)]
+    assert quote.volume == 125
+    assert quote.timestamp == 1795417200000
     assert context.account.total_asset == 10000
     assert not hasattr(context.executor, "place_order")
     return {{"mode": "quantity", "targets": {TARGET}}}
@@ -143,6 +162,20 @@ def test_signal_schedule_persists_complete_targets_once_and_rejects_trade(client
     assert all(symbol in sender.call_args.args[0]["elements"][0]["content"] for symbol in TARGET)
 
 
+def test_signal_preview_rejects_scalar_quote_payload(client):
+    portfolio = create_portfolio(client, "A股")
+    quote_code = """
+def fetch_quotes(symbols):
+    return {symbol: {"last_price": 10, "update_time": "2026-11-23T15:00:00+08:00"} for symbol in symbols}
+"""
+    preview = client.post(
+        "/account/signal/preview",
+        json={"portfolio_id": portfolio, "account_config": {"manual_assets": MANUAL, "quote_code": quote_code}},
+    )
+    assert preview.status_code == 422, preview.text
+    assert "行情函数必须返回 UnifiedPriceData：510300.SH" in str(preview.json()["detail"])
+
+
 def test_signal_rebinding_and_account_function_refresh(client):
     account = create_signal_account(client, create_portfolio(client, "A股"))
     account_id = account["id"]
@@ -171,3 +204,24 @@ def test_signal_rebinding_and_account_function_refresh(client):
     assert refreshed.status_code == 200, refreshed.text
     assert refreshed.json()["assets"]["available_cash"] == 9980
     assert refreshed.json()["assets"]["extra"]["positions_known"] is True
+
+
+def test_signal_account_allows_unbound_portfolio(client):
+    account = create_signal_account(client, None)
+    account_id = account["id"]
+    assert account["portfolio_id"] is None
+    assert account["market"] == ""
+
+    refreshed = client.post(f"/account/{account_id}/assets/refresh")
+    assert refreshed.status_code == 200, refreshed.text
+
+    portfolio = create_portfolio(client, "期货")
+    bound = client.patch(f"/account/{account_id}", json={"portfolio_id": portfolio})
+    assert bound.status_code == 200, bound.text
+    assert bound.json()["portfolio_id"] == portfolio
+    assert bound.json()["market"] == "期货"
+
+    unbound = client.patch(f"/account/{account_id}", json={"portfolio_id": None})
+    assert unbound.status_code == 200, unbound.text
+    assert unbound.json()["portfolio_id"] is None
+    assert unbound.json()["market"] == ""

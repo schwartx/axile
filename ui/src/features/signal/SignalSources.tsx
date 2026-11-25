@@ -19,10 +19,12 @@ export function SignalCodeEditor({ label, identity, code, onChange }: {
     layout="workbench" workbenchTitle={label} height="180px" result={null} running={false} runDisabled onRun={() => {}} />
 }
 
-export function SignalSources({ value, onChange, identity }: {
+export function SignalSources({ value, onChange, identity, only, exampleSymbol }: {
   value: SignalDraft
   onChange: (draft: SignalDraft) => void
   identity: string
+  only?: 'account' | 'quote'
+  exampleSymbol?: string
 }) {
   const [section, setSection] = useState<'account' | 'quote'>('account')
   const update = (next: Partial<SignalDraft>) => onChange({ ...value, ...next })
@@ -30,9 +32,9 @@ export function SignalSources({ value, onChange, identity }: {
     positions: value.positions.map((row) => row.id === id ? { ...row, ...next } : row),
   })
   return <div className="grid min-w-0 gap-4">
-    <Segmented value={section} onChange={setSection} ariaLabel="数据来源设置"
-      options={[{ value: 'account', label: '资金与持仓' }, { value: 'quote', label: '行情函数' }]} />
-    {section === 'account' ? <>
+    {!only && <Segmented value={section} onChange={setSection} ariaLabel="数据来源设置"
+      options={[{ value: 'account', label: '资金与持仓' }, { value: 'quote', label: '行情函数' }]} />}
+    {(only ?? section) === 'account' ? <>
       <Segmented value={value.mode} onChange={(mode) => update({ mode })} ariaLabel="账户数据来源"
         options={[{ value: 'manual', label: '手动设置' }, { value: 'function', label: '自定义函数' }]} />
       {value.mode === 'function' ? <>
@@ -72,7 +74,9 @@ export function SignalSources({ value, onChange, identity }: {
         </>}
       </>}
     </> : <>
-      <p className="text-[13px] text-ink-2">选择自己的行情源。函数按标的返回参考价格和行情时间。</p>
+      <p className="text-[13px] text-ink-2">
+        函数按标的返回参考价格和行情时间。{exampleSymbol && <>当前市场的标的示例 <code>{exampleSymbol}</code>。</>}
+      </p>
       <SignalCodeEditor label="行情函数" identity={`${identity}:quotes`} code={value.quoteCode} onChange={(quoteCode) => update({ quoteCode })} />
     </>}
   </div>

@@ -116,7 +116,7 @@ export const ConnectionFieldInput = forwardRef<HTMLInputElement, Props>(function
             aria-invalid={message ? true : undefined}
             aria-describedby={`${id}-keys${message || help ? ` ${id}-message` : ''}`}
             aria-keyshortcuts="Alt+ArrowDown"
-            className={`min-w-0 flex-1 bg-transparent text-[16px] leading-7 outline-none placeholder:text-ink-3 ${mono ? 'font-mono' : ''}`}
+            className={`min-w-0 flex-1 bg-transparent text-[16px] leading-7 outline-none placeholder:text-ink-3 ${mono ? 'font-mono' : ''} ${kind === 'money' ? 'num' : ''}`}
             style={maskStyle}
             onChange={(event) => onChange(event.target.value)}
             onPaste={handlePaste}

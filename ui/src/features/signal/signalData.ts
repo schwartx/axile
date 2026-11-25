@@ -63,11 +63,16 @@ function amount(value: string): number {
   return value.trim() ? Number(value) : NaN
 }
 
-export function signalConfig(draft: SignalDraft): SignalConfig {
-  if (!draft.quoteCode.trim()) throw new Error('请填写行情函数')
+export function validateSignalQuoteSetup(quoteCode: string) {
+  if (!quoteCode.trim() || quoteCode.trim() === initialSignalDraft.quoteCode.trim()) {
+    throw new Error('请填写行情函数，用你的行情源替换默认模板')
+  }
+}
+
+export function signalAccountConfig(draft: SignalDraft): Pick<SignalConfig, 'manual_assets' | 'account_code'> {
   if (draft.mode === 'function') {
     if (!draft.accountCode.trim()) throw new Error('请填写账户函数')
-    return { manual_assets: null, account_code: draft.accountCode, quote_code: draft.quoteCode }
+    return { manual_assets: null, account_code: draft.accountCode }
   }
   const total = amount(draft.equity), cash = amount(draft.cash)
   if (!Number.isFinite(total) || !Number.isFinite(cash) || !draft.currency.trim()) {
@@ -84,7 +89,11 @@ export function signalConfig(draft: SignalDraft): SignalConfig {
   }) : null
   return {
     account_code: null,
-    quote_code: draft.quoteCode,
     manual_assets: { total_asset: total, available_cash: cash, currency: draft.currency.trim(), positions },
   }
+}
+
+export function signalConfig(draft: SignalDraft): SignalConfig {
+  if (!draft.quoteCode.trim()) throw new Error('请填写行情函数')
+  return { ...signalAccountConfig(draft), quote_code: draft.quoteCode }
 }

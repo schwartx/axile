@@ -1,3 +1,4 @@
+import { Check } from 'lucide-react'
 import { useCallback, useState } from 'react'
 import { useParams } from 'react-router'
 import { ConnectionField } from '@/components/ui/ConnectionField'
@@ -131,7 +132,17 @@ function SignalSettings({ accountId, account, initial }: {
       <AccountPageTitle accountId={accountId} page="信号设置" name={account.name} channel={account.trade_channel} market={account.market} />
       <Link className={`${signalAction} ml-auto`} to={`/accounts/${accountId}/edit/notification`}>通知函数</Link>
     </div>
-    <Section label="跟随组合"><div className="py-3"><PortfolioChoiceList selectedId={portfolioId} onSelect={setPortfolioId} /></div></Section>
+    <Section
+      label="跟随组合"
+      action={<button
+        type="button"
+        aria-pressed={portfolioId === null}
+        onClick={() => setPortfolioId(null)}
+        className="inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[13px] text-ink-2 hover:bg-fill focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      >
+        {portfolioId === null && <Check size={14} aria-hidden />}不绑定组合
+      </button>}
+    ><div className="py-3"><PortfolioChoiceList selectedId={portfolioId} onSelect={setPortfolioId} /></div></Section>
     <Section label="数据来源"><div className="py-3"><SignalSources identity={`signal:${accountId}`} value={draft} onChange={setDraft} /></div></Section>
     <Section label="定时计算">
       <div className="grid gap-3 py-3">
@@ -141,7 +152,7 @@ function SignalSettings({ accountId, account, initial }: {
         </div>
       </div>
     </Section>
-    <EditSaveBar changes={fingerprint === baseline ? [] : ['信号设置已改']} blocked={busy || portfolioId === null || (started && !cron.trim())}
+    <EditSaveBar changes={fingerprint === baseline ? [] : ['信号设置已改']} blocked={busy || (started && !cron.trim())}
       onCancel={() => { const saved = JSON.parse(baseline); setDraft(saved.draft); setPortfolioId(saved.portfolioId); setCron(saved.cron); setStarted(saved.started); setError(null) }}
       onSave={() => void save()} error={error} />
   </div>
