@@ -120,7 +120,7 @@ test('连接和草稿状态约束全部试跑入口，连接就绪不自动运�
     const render = () => { at = 0; return useCustomCalcValidation('return {}', 'ctp') };
     let trial = render(); let calls = 0;
     const execute = async () => { calls++; return { valid: true, target: { A: 1 } } };
-    expect(trial.canRun).toBe(true); trial.setAccountId(7); trial = render();
+    expect(trial.accountId).toBe(7);
     expect(trial.canRun).toBe(false); await trial.run(execute); expect(calls).toBe(0);
     connection.status = 'disconnected'; trial = render();
     expect(trial.canRun).toBe(false); await trial.run(execute); expect(calls).toBe(0);
@@ -160,7 +160,7 @@ test('连接和草稿状态约束全部试跑入口，连接就绪不自动运�
   `)
 })
 
-test('默认模拟账户，异步加载后生效且保留用户手动选择', () => {
+test('默认优先使用绑定账户和同市场真实账户，保留用户手动选择', () => {
   check(hooks + `
     const ui = ${JSON.stringify(ui)};
     const domain = { accounts: null };
@@ -177,28 +177,33 @@ test('默认模拟账户，异步加载后生效且保留用户手动选择', ()
     let portfolioId = 9; let market;
     const render = () => { at = 0; return useCustomCalcValidation('return {}', market, portfolioId) };
     let trial = render(); expect(trial.accountId).toBeNull();
+    market = '期货';
+    catalog.channels = [{ channel: 'ctp', market: 'ctp', portfolio: { market_label: '期货' },
+      simulation_account: simulation, defaults: { long_leverage: 1, short_leverage: 1 } }];
+    trial = render(); expect(trial.canRun).toBe(false);
     domain.accounts = [
       { account_id: 6, market: 'stock', trade_channel: 'gm', portfolio_id: 9 },
+      { account_id: 5, market: '期货', trade_channel: 'ctp', archived_at: '2026-11-01' },
       { account_id: 7, market: '期货', trade_channel: 'ctp', portfolio_id: null },
       { account_id: 8, market: 'ctp', trade_channel: 'ctp', portfolio_id: 9 },
       { account_id: 9, market: '期货', trade_channel: 'ctp', portfolio_id: 9 },
       { account_id: 10, market: '期货', trade_channel: 'ctp', portfolio_id: 10 },
     ];
-    market = '期货'; trial = render(); expect(trial.accountId).toBeNull();
-    expect(trial.canRun).toBe(false);
-    catalog.channels = [{ channel: 'ctp', market: 'ctp', portfolio: { market_label: '期货' },
-      simulation_account: simulation, defaults: { long_leverage: 1, short_leverage: 1 } }];
-    trial = render(); expect(trial.accountId).toBeNull();
+    trial = render(); expect(trial.accountId).toBe(8);
     expect(requests).toHaveLength(0);
-    await trial.run(); expect(requests.at(-1).simulation_channel).toBe('ctp');
-    trial.setAccountId(null); trial = render(); expect(trial.accountId).toBeNull();
+    await trial.run(); expect(requests.at(-1).account_id).toBe(8);
+    trial.setSimulationChannel('ctp'); trial = render(); expect(trial.accountId).toBeNull();
     domain.accounts = domain.accounts.map(account => ({ ...account }));
     trial = render(); expect(trial.accountId).toBeNull();
     await trial.run(); expect(requests.at(-1).account_id).toBeNull();
+    expect(requests.at(-1).simulation_channel).toBe('ctp');
     trial.setAccountId(7); trial = render(); expect(trial.accountId).toBe(7);
     trial = render(); expect(trial.accountId).toBe(7);
-    portfolioId = 10; trial = render(); expect(trial.accountId).toBeNull();
-    portfolioId = 11; trial = render(); expect(trial.accountId).toBeNull();
+    portfolioId = 10; trial = render(); expect(trial.accountId).toBe(10);
+    portfolioId = 11; trial = render(); expect(trial.accountId).toBe(7);
+    domain.accounts = domain.accounts.filter(account => account.account_id < 7);
+    trial = render(); expect(trial.accountId).toBeNull();
+    expect(trial.canRun).toBe(true);
     trial.setAccountId(null);
     domain.accounts.push({ account_id: 11, market: '期货', trade_channel: 'ctp', portfolio_id: 11 });
     trial = render(); expect(trial.accountId).toBeNull();
@@ -236,15 +241,10 @@ test('候选账户不撑开列表，模拟账户显示配置入口且不出现�
     expect(html).toContain('已连接');
     expect(html).toContain('rounded-chip bg-fill');
     expect(html).not.toContain('天勤 · 期货');
-    expect(html).not.toContain('减少 1 倍杠杆');
-    expect(html).not.toContain('增加 1 倍杠杆');
     expect(html).toContain('h-7 rounded-md');
-    expect(html).toContain('减少 0.1 倍杠杆');
-    const { LeverageInput } = await import(ui + 'features/account/LeverageInput.tsx');
-    const full = renderToStaticMarkup(createElement(LeverageInput, { value: '3', onChange() {} }));
-    expect(full).toContain('减少 1 倍杠杆');
-    expect(full).toContain('增加 1 倍杠杆');
-    expect(full.match(/<button/g)).toHaveLength(4);
+    for (const action of ['减少 1 倍杠杆', '增加 1 倍杠杆', '减少 0.1 倍杠杆', '增加 0.1 倍杠杆']) {
+      expect(html.split('aria-label="' + action + '"')).toHaveLength(3);
+    }
     expect(html).toContain('role="switch"');
     expect(html).toContain('aria-checked="true"');
     expect(html).toContain('查看连接详情');

@@ -1,5 +1,4 @@
 import { CashFlowPanel } from '@/features/account/CashFlowPanel'
-import { SettlementStatement } from '@/features/channels/ctp/SettlementStatement'
 import { ArchiveAction } from '@/features/account/ArchiveAction'
 import { algorithmScheduleSummary } from '@/features/account/algorithmSchedule'
 import { shanghaiLabel } from '@/features/history/costs'
@@ -34,6 +33,7 @@ import { PerformanceCurveLink } from '@/features/history/PerformanceCurveLink'
 import { InkRewrite } from '@/components/ui/InkRewrite'
 import { NumberTicker } from '@/components/ui/NumberTicker'
 import { OverflowText } from '@/components/ui/OverflowText'
+import { ResizeHandle } from '@/components/ui/ResizeHandle'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { Skeleton, SkeletonGroup, SkeletonText } from '@/components/ui/Skeleton'
@@ -91,6 +91,10 @@ import type { AccountDashboardItem } from '@/types/api'
 import { TargetSnapshotControl } from '@/features/portfolio/TargetSnapshotControl'
 import { portfolioTargetSummary } from '@/features/portfolio/portfolioCardSummary'
 
+const DEFAULT_HOLDINGS_SPLIT = 40
+const MIN_HOLDINGS_SPLIT = 25
+const MAX_HOLDINGS_SPLIT = 50
+
 interface AccountDetailProps {
   accountId: number
   /** 若来自仪表盘可直接传入聚合项，省一次请求；否则组件自取。 */
@@ -134,6 +138,9 @@ export function AccountDetail({
   const nameVt = tDetail || tEdit
   const channelDescriptor = useChannelDescriptor(item.trade_channel)
   const [holdingSelection, setHoldingSelection] = useState<{ accountId: number; symbol: string; keyboardOpened: boolean } | null>(null)
+  const holdingsComparisonRef = useRef<HTMLDivElement>(null)
+  const [holdingsSplit, setHoldingsSplit] = useState(DEFAULT_HOLDINGS_SPLIT)
+  const [holdingsColumnWidths, setHoldingsColumnWidths] = useState<number[] | null>(null)
   const selectedSymbol = holdingSelection?.accountId === accountId ? holdingSelection.symbol : null
   const currentOrders = useCurrentOrders(accountId, () => {
     void refreshAssetSnapshots()
@@ -520,7 +527,6 @@ export function AccountDetail({
                 {item.performance?.status !== 'ready' && <PerformanceStatus status={item.performance?.status} />}
               </span>
               <CashFlowPanel key={accountId} accountId={accountId} />
-              {item.trade_channel === 'ctp' && <SettlementStatement key={`settlement-${accountId}`} accountId={accountId} />}
             </div>
             <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-ink-3">
               <span><AssetObservationTime observedAt={item.asset_observed_at} /></span>
@@ -718,6 +724,17 @@ export function AccountDetail({
               {targetSnapshotControl}
             </div>
             <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
+              {showComparisonPanel && currentHoldings.length > 0 && holdingsColumnWidths && (
+                <button type="button"
+                  className="inline-flex min-h-6 flex-none cursor-pointer items-center rounded-md px-1.5 text-xs whitespace-nowrap text-ink-3 hover:bg-fill hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  onClick={event => {
+                    setHoldingsColumnWidths(null)
+                    if (event.detail === 0) holdingsComparisonRef.current?.querySelector<HTMLElement>('table [role="separator"]')?.focus({ preventScroll: true })
+                  }}
+                >
+                  重置列宽
+                </button>
+              )}
               <CurrentOrdersButton state={currentOrders} />
               <Link
                 to={`/accounts/${accountId}/holdings`}
@@ -739,8 +756,12 @@ export function AccountDetail({
               </div>
             </SkeletonGroup>
           ) : showComparisonPanel ? (
-            <div className="grid min-h-48 gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.618fr)]">
-              <div className="border-t border-line pt-3">
+            <div
+              ref={holdingsComparisonRef}
+              className="relative grid min-h-48 gap-5 lg:grid-cols-[minmax(0,var(--holdings-split))_minmax(0,1fr)] lg:gap-0"
+              style={{ '--holdings-split': `${holdingsSplit}%` } as CSSProperties}
+            >
+              <div className="min-w-0 border-t border-line pt-3 lg:mr-5">
                 <div className={`text-[23px] font-[640] ${STATUS_TEXT_CLASS[driftLevel]}`}>
                   {driftHeadline}
                 </div>
@@ -764,7 +785,7 @@ export function AccountDetail({
                   </>
                 )}
               </div>
-              <div className="min-w-0 border-t border-line lg:border-t-0 lg:border-l lg:pl-5">
+              <div className="min-w-0 border-t border-line lg:border-t-0 lg:pl-5">
                 <HoldingsPreviewTable
                   holdings={currentHoldings}
                   onSelect={(symbol, keyboardOpened) => { setHoldingSelection({ accountId, symbol, keyboardOpened }) }}
@@ -773,8 +794,26 @@ export function AccountDetail({
                   positionValueLabel={positionValueLabel}
                   quantityMode={quantityTarget}
                   quantityLabel={channelDescriptor?.units?.quantity_label}
+                  columnWidths={holdingsColumnWidths}
+                  onColumnWidthsChange={setHoldingsColumnWidths}
                 />
               </div>
+              <ResizeHandle
+                aria-label="调整持仓摘要与表格宽度" orientation="vertical"
+                value={holdingsSplit} min={MIN_HOLDINGS_SPLIT} max={MAX_HOLDINGS_SPLIT} step={2}
+                aria-valuetext={`${holdingsSplit}%`}
+                title="左右拖动调整宽度 · 双击恢复默认"
+                className="absolute inset-y-0 z-10 hidden w-[7px] -translate-x-1/2 lg:block"
+                style={{ left: 'var(--holdings-split)' }}
+                valueAt={x => {
+                  const bounds = holdingsComparisonRef.current?.getBoundingClientRect()
+                  if (!bounds) return holdingsSplit
+                  const percent = Math.round((x - bounds.left) / bounds.width * 100)
+                  return Math.min(MAX_HOLDINGS_SPLIT, Math.max(MIN_HOLDINGS_SPLIT, percent))
+                }}
+                onChange={setHoldingsSplit} onCommit={setHoldingsSplit}
+                onReset={() => setHoldingsSplit(DEFAULT_HOLDINGS_SPLIT)}
+              />
             </div>
           ) : null}
           <CurrentOrdersDialog state={currentOrders} units={channelDescriptor?.units} channel={item.trade_channel} />

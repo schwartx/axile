@@ -29,7 +29,7 @@ export function PerformanceChartPlaceholder({ accountId, loading, failed, messag
     return () => { unregister(); clearTimeout(timer) }
   }, [accountId, points, loading, failed])
   return <div data-testid="performance-placeholder">
-    <div role="status" className="flex min-h-36 min-w-0 items-center py-1 text-xs text-ink-3 @min-[40rem]:min-h-28 @min-[56rem]:min-h-16">
+    <div role="status" className="flex min-h-9 min-w-0 items-center border-b border-line py-0.5 text-xs text-ink-3">
       {message ?? (failed ? '绩效读取失败' : loading ? '正在准备绩效' : '暂无有效绩效观测')}
     </div>
     <div ref={ref} className="relative w-full min-w-0" style={{ height: CHART_HEIGHT }}>

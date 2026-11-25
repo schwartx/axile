@@ -21,7 +21,7 @@ export const CONTEXT_FIELDS: ContextField[] = [
   { name: 'account', type: 'UnifiedAccountAssets', desc: '本次计算内缓存的账户资产快照' },
   { name: 'positions', type: 'list[Position]', desc: 'account.positions 的便捷入口' },
   { name: 'get_positions(symbol=None, direction=None)', type: 'list[Position]', desc: '按标的和多空方向筛选持仓' },
-  { name: 'get_quote(symbol)', type: 'UnifiedPriceData', desc: '获取并在本次计算内缓存统一行情' },
+  { name: 'get_quote(symbol, *, allow_stale=False)', type: 'UnifiedPriceData', desc: '获取并在本次计算内缓存统一行情。已连接的真实 CTP 账户试跑时可传 allow_stale=True，使用最近有效报价作为参考价。' },
   { name: 'get_price(symbol)', type: 'float', desc: '获取统一行情中的最新成交价' },
   { name: 'get_pending_orders(symbol=None)', type: 'list[UnifiedOrder]', desc: '查询全部或指定标的的未完成订单' },
   { name: 'query_trades(symbol, order_id)', type: 'list[TradeRecord]', desc: '查询指定订单的成交明细' },
@@ -60,7 +60,7 @@ export const EXECUTOR_RULES = [
   '`context.executor` 不是只读代理，而是当前账户完整、共享且常驻的真实渠道执行器。',
   '计算目标不会自动执行返回的权重；但代码主动调用 `execute`、`empty_positions` 或渠道下单方法会立即产生真实交易副作用。',
   '成功执行后 executor、回调和模块全局状态会继续复用；不要无意修改属性、遗留回调或启动永久后台线程。',
-  '自行创建的资源应在 `finally` 中释放。脚本失败、超时或 worker 异常后，系统会丢弃 worker，并在下次调用时重建。',
+  '自行创建的资源应在 `finally` 中释放。试跑返回普通脚本错误后，账户保持连接。正式目标计算中的脚本错误、连接故障、函数超时或 worker 异常仍可能触发 worker 回收。',
 ]
 
 export const CONTRACT_RULES = [

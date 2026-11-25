@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -48,12 +49,19 @@ class Context:
     全局状态的修改可能延续到后续成功请求；这是可信高级代码的既定能力。
     """
 
-    def __init__(self, executor: PortfolioExecutor | None = None, *, settings: ContextSettings | None = None) -> None:
+    def __init__(
+        self,
+        executor: PortfolioExecutor | None = None,
+        *,
+        settings: ContextSettings | None = None,
+        reference_quote_reader: Callable[[str], UnifiedPriceData] | None = None,
+    ) -> None:
         """初始化组合上下文."""
         self._executor = executor
         self._settings = settings if settings is not None else ContextSettings()
         self._account: UnifiedAccountAssets | None = None
-        self._quotes: dict[str, UnifiedPriceData] = {}
+        self._reference_quote_reader = reference_quote_reader
+        self._quotes: dict[tuple[str, bool], UnifiedPriceData] = {}
 
     @property
     def executor(self) -> PortfolioExecutor:
@@ -93,20 +101,25 @@ class Context:
             and (direction_value is None or position.direction == direction_value)
         ]
 
-    def get_quote(self, symbol: str) -> UnifiedPriceData:
-        """获取并缓存指定标的的统一行情快照."""
-        cached = self._quotes.get(symbol)
+    def get_quote(self, symbol: str, *, allow_stale: bool = False) -> UnifiedPriceData:
+        """获取并缓存统一行情；已连接的 CTP 账户试跑可显式使用参考价。"""
+        read_reference = self._reference_quote_reader if allow_stale else None
+        use_reference = read_reference is not None
+        cached = self._quotes.get((symbol, use_reference))
         if cached is not None:
             return cached
 
-        quotes = self.executor.get_market_data([symbol])
-        quote = quotes.get(symbol)
-        if quote is None and len(quotes) == 1:
-            quote = next(iter(quotes.values()))
-        if quote is None:
-            raise ValueError(f"无法获取行情: {symbol}")
-        self._quotes[symbol] = quote
-        self._quotes[quote.symbol] = quote
+        if read_reference is not None:
+            quote = read_reference(symbol)
+        else:
+            quotes = self.executor.get_market_data([symbol])
+            quote = quotes.get(symbol)
+            if quote is None and len(quotes) == 1:
+                quote = next(iter(quotes.values()))
+            if quote is None:
+                raise ValueError(f"无法获取行情: {symbol}")
+        self._quotes[symbol, use_reference] = quote
+        self._quotes[quote.symbol, use_reference] = quote
         return quote
 
     def get_price(self, symbol: str) -> float:

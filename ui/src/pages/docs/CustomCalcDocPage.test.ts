@@ -15,7 +15,7 @@ describe('customCalcMarkdown', () => {
     expect(markdown).toContain('## 函数契约')
     expect(markdown).toContain('```python\ndef calculate_portfolio(context):')
     expect(markdown).toContain('## Context 通用能力')
-    expect(markdown).toContain('| `get_quote(symbol)` | `UnifiedPriceData` |')
+    expect(markdown).toContain('| `get_quote(symbol, *, allow_stale=False)` | `UnifiedPriceData` |')
     expect(markdown).toContain('## 完整 executor（高级）')
     expect(markdown).toContain('### 读取 TQ 合约信息')
   })
@@ -26,7 +26,7 @@ describe('customCalcMarkdown', () => {
     expect(markdown).toContain('不会自动执行函数返回的目标')
     expect(markdown).toContain('主动调用 executor 的交易方法，仍会产生真实交易')
     expect(markdown).toContain('完整、共享且常驻的真实渠道执行器')
-    expect(markdown).toContain('系统会丢弃 worker，并在下次调用时重建')
+    expect(markdown).toContain('试跑返回普通脚本错误后，账户保持连接')
     expect(markdown).toContain('一次性子进程')
   })
 

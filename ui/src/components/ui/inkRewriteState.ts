@@ -7,11 +7,11 @@
 export const INK_REWRITE_MS_LABEL = 420
 export const INK_REWRITE_MS_PROSE = 620
 
-export type InkTone = 'label' | 'prose'
+export type InkTone = 'label' | 'prose' | 'quick'
 
 /** 按笔法取退场清理时长。 */
 export function inkRewriteMs(tone: InkTone): number {
-  return tone === 'prose' ? INK_REWRITE_MS_PROSE : INK_REWRITE_MS_LABEL
+  return tone === 'prose' ? INK_REWRITE_MS_PROSE : tone === 'quick' ? 120 : INK_REWRITE_MS_LABEL
 }
 
 export type InkPair = {

@@ -22,7 +22,7 @@ interface LeverageInputProps {
   describedBy?: string
   invalid?: boolean
   limits?: LeverageLimits
-  /** 工作台行内使用小尺寸，省略 ±1 快步进按钮。 */
+  /** 工作台行内使用小尺寸。 */
   compact?: boolean
 }
 
@@ -95,16 +95,16 @@ export function LeverageInput({
           : 'border-ink-3/30 contrast:border-border-strong focus-within:border-ink-2'
       }`}
     >
-      {!compact && <button
+      <button
         type="button"
         aria-label="减少 1 倍杠杆"
         title="减少 1"
-        className={`${fastStepButton} border-r border-r-line`}
+        className={`${fastStepButton} ${compact ? '' : 'border-r border-r-line'}`}
         disabled={decreaseDisabled}
         onClick={() => applyStep(fastDecreaseValue)}
       >
         −1
-      </button>}
+      </button>
       <button
         type="button"
         aria-label={`减少 ${baseStep} 倍杠杆`}
@@ -174,16 +174,16 @@ export function LeverageInput({
       >
         +
       </button>
-      {!compact && <button
+      <button
         type="button"
         aria-label="增加 1 倍杠杆"
         title="增加 1"
-        className={`${fastStepButton} border-l border-l-line`}
+        className={`${fastStepButton} ${compact ? '' : 'border-l border-l-line'}`}
         disabled={increaseDisabled}
         onClick={() => applyStep(fastIncreaseValue)}
       >
         +1
-      </button>}
+      </button>
     </div>
   )
 }

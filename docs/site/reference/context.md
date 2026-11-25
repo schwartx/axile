@@ -21,7 +21,7 @@ def calculate_portfolio(context):
 | `account` | `UnifiedAccountAssets` | 本次调用内缓存的账户资产快照 |
 | `positions` | `list[Position]` | `account.positions` 的便捷入口 |
 | `get_positions(symbol=None, direction=None)` | `list[Position]` | 按标的和方向筛选持仓 |
-| `get_quote(symbol)` | `UnifiedPriceData` | 获取并缓存统一行情 |
+| `get_quote(symbol, *, allow_stale=False)` | `UnifiedPriceData` | 获取并缓存统一行情。已连接的真实 CTP 账户试跑时可传 `allow_stale=True`，使用最近有效报价作为参考价。 |
 | `get_price(symbol)` | `float` | 统一行情的最新成交价 |
 | `get_pending_orders(symbol=None)` | `list[UnifiedOrder]` | 查询未完成订单 |
 | `query_trades(symbol, order_id)` | `list[TradeRecord]` | 查询指定订单的成交明细 |
@@ -55,6 +55,8 @@ quote = context.get_quote("rb2701")
 ## 缓存范围
 
 账户资产和已查询的行情只在本次函数调用内缓存，同一品种的行情会复用。下一次计算会创建新的 Context。行情 `extra` 里的渠道字段取决于所选账户的渠道。
+
+启用 `allow_stale=True` 时，已连接的真实 CTP 账户试跑优先读取最近有效报价，缓存缺价时限时查询柜台快照。返回值保留行情时间，并设置 `extra["valuation_reference"] = True`。正式目标计算继续使用渠道的默认取价规则。
 
 ## 完整 executor
 

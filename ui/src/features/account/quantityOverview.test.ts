@@ -1,7 +1,9 @@
 import { expect, test } from 'bun:test'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
+import { HoldingsPreviewTable } from '@/features/account/HoldingsPreviewTable'
 import { HoldingsView } from '@/features/account/HoldingsView'
+import { holdingPreviewRows } from '@/features/account/holdingDetailModel'
 import { rebalanceHeadline } from '@/features/account/holdingPreview'
 import { portfolioTargetSummary } from '@/features/portfolio/portfolioCardSummary'
 import { rebalancePlanOfServer } from '@/lib/derive'
@@ -20,6 +22,22 @@ const snapshot: TargetWeightSnapshot = {
   target_mode: 'quantity', raw_targets: targets, weights: {}, account_weights: null,
   calculated_at: comparison.target_calculated_at, source: 'execution', execution_id: 'quantity', context_account_id: 1,
 }
+
+test('持仓预览默认填满表格，有品种时提供三个列宽分隔条', () => {
+  const holdings = holdingPreviewRows([], 0, snapshot, true, comparison.rows)
+  const renderPreview = (rows: typeof holdings | null) => renderToStaticMarkup(createElement(HoldingsPreviewTable, {
+    holdings: rows, quantityMode: true, positionValueLabel: '名义价值', onColumnWidthsChange: () => {},
+  }))
+  const html = renderPreview(holdings)
+  expect(html).toContain('class="w-full table-auto')
+  expect(html.match(/role="separator"/g)).toHaveLength(3)
+  for (const label of ['品种', '持仓/可用', '目标数量']) {
+    expect(html).toContain(`aria-label="调整${label}列宽"`)
+  }
+  expect(html).not.toContain('rounded-full ring-2 ring-surface')
+  expect(renderPreview(null)).not.toContain('role="separator"')
+  expect(renderPreview([])).not.toContain('role="separator"')
+})
 
 test('数量目标空仓保留待建仓结论与买卖统计，不依赖百分比行', () => {
   expect(portfolioTargetSummary(snapshot).activeCount).toBe(2)

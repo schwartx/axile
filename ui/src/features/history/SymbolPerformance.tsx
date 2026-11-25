@@ -1,8 +1,10 @@
-import { useEffect, useMemo, type ReactNode } from 'react'
+import { useEffect, useMemo } from 'react'
 import type { AnalysisChart } from '@/lib/api/performance'
 import { CHART_HEIGHT } from '@/components/viz/performanceCanvas'
 import { ContributionChart } from './ContributionChart'
 import { PerformanceChartPlaceholder } from './PerformanceChartPlaceholder'
+import { SymbolSlippage } from './PerformanceSymbolSelect'
+import type { CostView } from './localAnalysis'
 import { contributionView } from './contributions'
 import { navigationTimes, pointTime, type ChartSelection } from './chartModel'
 import type { TimeScaleMode } from './timeScale'
@@ -32,13 +34,13 @@ function symbolCurves(chart: AnalysisChart, symbol: string, samples: [number, nu
   return { view, live, comparable, rows }
 }
 
-export function SymbolPerformance({ chart, rangeTarget, targetSamples, selection, slideInterval, symbol, samples, currency, scaleMode, accountId, channel, showExecutions, onInterval, heading }: {
+export function SymbolPerformance({ chart, rangeTarget, targetSamples, selection, slideInterval, symbol, samples, currency, scaleMode, accountId, channel, showExecutions, onInterval, slippage, side }: {
   chart: AnalysisChart; selection: ChartSelection; symbol: string; samples: [number, number][] | null
   rangeTarget?: RangeTarget; targetSamples?: [number, number][] | null
   currency: string | null; scaleMode: TimeScaleMode; accountId: number; channel?: string | null; showExecutions: boolean
   slideInterval?: boolean
   onInterval: (start: number, end: number) => void
-  heading: ReactNode
+  slippage: CostView | null; side: string
 }) {
   const units = useChannelDescriptor(channel)?.units
   const curves = useMemo(() => symbolCurves(chart, symbol, samples, currency), [chart, symbol, samples, currency])
@@ -57,12 +59,12 @@ export function SymbolPerformance({ chart, rangeTarget, targetSamples, selection
   const executions = useMemo(() => chart.execution_index.filter(row => row.trade_symbols.includes(symbol)), [chart.execution_index, symbol])
   if (!curves) return <PerformanceChartPlaceholder accountId={accountId} loading={false} failed={false} message="有效观测不足两条" />
   const { rows, view, live, comparable } = curves
-  return <ContributionChart rows={rows} points={view.points} navigationDomain={domain} rangeTarget={target} scaleMode={scaleMode}
-    currency={live?.currency ?? currency} height={CHART_HEIGHT} onInterval={onInterval} selection={selection} slideInterval={slideInterval}
-    heading={<>
-      {heading}
-      {!live && <p className="text-xs text-ink-2">本区间缺少该品种的实盘盈亏观测。</p>}
-      {!comparable && <p className="text-xs text-ink-2">实盘与回测计价币种不同，无法同轴比较。</p>}
-    </>}
-    executions={{ rows: executions, symbol, accountId, snapshotId: chart.version, range: chart.range, units, visible: showExecutions }} />
+  return <>
+    {!live && <p role="status" className="py-1 text-xs text-ink-2">本区间缺少该品种的实盘盈亏观测。</p>}
+    {!comparable && <p role="status" className="py-1 text-xs text-ink-2">实盘与回测计价币种不同，无法同轴比较。</p>}
+    <ContributionChart rows={rows} points={view.points} navigationDomain={domain} rangeTarget={target} scaleMode={scaleMode}
+      currency={live?.currency ?? currency} height={CHART_HEIGHT} onInterval={onInterval} selection={selection} slideInterval={slideInterval}
+      heading={<SymbolSlippage result={slippage} symbol={symbol} side={side} currency={live?.currency} />}
+      executions={{ rows: executions, symbol, accountId, snapshotId: chart.version, range: chart.range, units, visible: showExecutions }} />
+  </>
 }

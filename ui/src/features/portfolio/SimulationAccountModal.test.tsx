@@ -112,8 +112,15 @@ test('弹窗草稿跨页签保留、恢复可撤回、隐藏错误可定位，�
     const original = ${JSON.stringify(account)};
     const preset = structuredClone(original); preset.account.available_cash = 900;
     const channel = { currency: 'CNY', label: '本地', ui: { long_leverage_label: '多头杠杆', short_leverage_label: '空头杠杆' }, leverage: { min: 0, max: 5, step: 0.5 }, simulation_account: preset };
-    let saved = []; let closed = 0; let fail = false;
-    const props = { channel, value: original, onSave(value) { if (fail) throw new Error('存储已满'); saved.push(value) }, onClose() { closed++ } };
+    let saved = []; let closed = 0; let fail = false; let quoteStatus = 503;
+    globalThis.fetch = async (url, request) => {
+      expect(url).toBe('/api/v1/market-data/accounts/41/quotes');
+      expect(JSON.parse(request.body)).toEqual({ symbols: ['SHFE.ag'], allow_stale: true });
+      if (quoteStatus === 200) return Response.json({ data: { 'SHFE.ag': { ...original.quotes[0], last_price: 104 } } });
+      const detail = quoteStatus === 504 ? '等待 CTP 行情回报超时' : 'CTP 行情订阅遭拒';
+      return Response.json({ detail }, { status: quoteStatus });
+    };
+    const props = { channel, value: original, sources: [{ account_id: 41, name: 'CTP' }], onSave(value) { if (fail) throw new Error('存储已满'); saved.push(value) }, onClose() { closed++ } };
     function all(node) { return Array.isArray(node) ? node.flatMap(all) : node?.props ? [node, ...all(node.props.children), ...all(node.props.footer)] : [] }
     let nodes;
     function render() { at = 0; effects = []; nodes = all(SimulationAccountModal(props)); for (const effect of effects) effect(); }
@@ -138,11 +145,21 @@ test('弹窗草稿跨页签保留、恢复可撤回、隐藏错误可定位，�
     edit('行情 1 最新价 last_price', '102');
     await click('恢复渠道预设'); expect(field('可用资金').props.value).toBe('900'); expect(saved).toHaveLength(0);
     await click('撤回恢复'); expect(field('可用资金').props.value).toBe('700'); expect(field('行情 1 最新价 last_price').props.value).toBe('102');
+    await click('获取行情 1');
+    expect(nodes.find(n => n.props.role === 'status').props.children).toContain('CTP 行情订阅遭拒');
+    quoteStatus = 504;
+    await click('获取行情 1');
+    expect(nodes.find(n => n.props.role === 'status').props.children).toContain('等待 CTP 行情回报超时');
+    expect(field('行情 1 最新价 last_price').props.value).toBe('102');
+    quoteStatus = 200;
+    await click('获取行情 1');
+    expect(nodes.find(n => n.props.role === 'status').props.children).toContain('行情已填入草稿');
+    expect(field('行情 1 最新价 last_price').props.value).toBe('104');
     fail = true; await click('保存配置'); expect(closed).toBe(0); expect(nodes.find(n => n.props.role === 'alert').props.children).toBe('存储已满');
     expect(field('可用资金').props.value).toBe('700'); expect(original.account.available_cash).toBe(500);
     await click('取消'); expect(closed).toBe(1); expect(saved).toHaveLength(0);
     fail = false; await click('保存配置'); expect(saved).toHaveLength(1); expect(closed).toBe(2);
-    expect(saved[0].account.available_cash).toBe(700); expect(saved[0].account.positions[0].volume).toBe(4); expect(saved[0].quotes[0].last_price).toBe(102);
+    expect(saved[0].account.available_cash).toBe(700); expect(saved[0].account.positions[0].volume).toBe(4); expect(saved[0].quotes[0].last_price).toBe(104);
     tab('positions'); await click('添加持仓'); expect(field('持仓 2 标的 symbol')).toBeDefined();
     await click('删除持仓 2'); expect(field('持仓 2 标的 symbol')).toBeUndefined();
     tab('quotes'); await click('添加行情'); expect(field('行情 2 标的 symbol')).toBeDefined();

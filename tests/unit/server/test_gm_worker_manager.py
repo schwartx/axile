@@ -13,6 +13,7 @@ import pytest
 from axile.channels.gm_sessions import SHANGHAI
 from axile.common.serialization import to_payload
 from axile.common.trade_channel import TradeChannel
+from axile.executor.account_control.models import AccountControlContextKind, AccountControlSource
 from axile.executor.algorithms.utils import clock as clock_module
 from axile.executor.instrument_catalog_records import Instrument
 from axile.executor.models.execution_result import ExecutionStatus
@@ -743,12 +744,18 @@ def test_execution_activity_keeps_latest_catalog_source_in_negative_timezone(mon
         manager.close()
 
 
-def test_calculate_portfolio_drops_worker_after_script_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("trial", "error_scope", "expected_drops"),
+    [(True, None, []), (True, "account_connection", [2]), (False, None, [2])],
+)
+def test_calculate_portfolio_preserves_trial_connection_after_script_error(
+    monkeypatch: pytest.MonkeyPatch, trial: bool, error_scope: str | None, expected_drops: list[int]
+) -> None:
     manager = WorkerBackendManager()
     monkeypatch.setattr(manager, "_check_read_session", lambda _: None)
     account = build_account(id=2)
     dropped: list[int] = []
-    error = PortfolioFunctionError("boom", error_line=2, error_type="RuntimeError")
+    error = PortfolioFunctionError("boom", error_line=2, error_type="RuntimeError", error_scope=error_scope)
 
     async def fake_to_thread(func: object, *args: object) -> WorkerBackendResponse:
         del func
@@ -767,9 +774,9 @@ def test_calculate_portfolio_drops_worker_after_script_failure(monkeypatch: pyte
     monkeypatch.setattr(manager, "drop_account", fake_drop_account)
 
     with pytest.raises(PortfolioFunctionError) as caught:
-        asyncio.run(manager.calculate_portfolio(account, "code"))
+        asyncio.run(manager.calculate_portfolio(account, "code", trial=trial))
     assert caught.value is error and caught.value.error_line == 2
-    assert dropped == [2]
+    assert dropped == expected_drops
 
 
 def test_calculate_portfolio_drops_worker_after_worker_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -984,13 +991,15 @@ def test_query_waiting_on_disconnected_worker_cannot_use_or_recreate_it(monkeypa
 
 @pytest.mark.parametrize("mode", ["success", "script_error", "prepare_error"])
 @pytest.mark.parametrize("overrides", [None, {"long_leverage": 4.0, "short_leverage": 0.0}])
-def test_calculate_worker_keeps_script_and_prepare_error_channels(monkeypatch, mode, overrides):
+@pytest.mark.parametrize("execution_id", [None, "execution"])
+def test_calculate_worker_keeps_script_and_prepare_error_channels(monkeypatch, mode, overrides, execution_id):
     from axile.executor.ctp.ctp_execute import CtpSessionRecoveryRequired
     from axile.server.execution.worker_backend import worker
     from axile.server.execution.worker_backend.worker_state import _WorkerBackendState
 
     watches = []
     finalized = []
+    prepared = []
     executor = object()
 
     class Watchdog:
@@ -1001,6 +1010,7 @@ def test_calculate_worker_keeps_script_and_prepare_error_channels(monkeypatch, m
             pass
 
     def prepare(**kwargs):
+        prepared.append(kwargs)
         if mode == "prepare_error":
             raise CtpSessionRecoveryRequired("return_code=-2", return_code=-2)
         return executor
@@ -1018,7 +1028,7 @@ def test_calculate_worker_keeps_script_and_prepare_error_channels(monkeypatch, m
     request = WorkerBackendRequest(
         request_id="portfolio",
         command="calculate_portfolio",
-        execution_id=None,
+        execution_id=execution_id,
         account_payload=to_payload(
             build_account(id=2, long_leverage=2.0, short_leverage=0.5, weight_precision=0.001), mode="json"
         ),
@@ -1026,6 +1036,19 @@ def test_calculate_worker_keeps_script_and_prepare_error_channels(monkeypatch, m
     )
     state = _WorkerBackendState()
     response = worker._handle_calculate_portfolio(request, state)
+    assert len(prepared) == 1
+    kwargs = prepared[0]
+    if execution_id is None:
+        assert kwargs["execution_id"] == request.request_id
+        assert kwargs["context_kind"] is AccountControlContextKind.ACCOUNT_OPERATION
+        assert kwargs["source"] is AccountControlSource.ACCOUNT_ASSETS
+        assert not kwargs["allow_connect"]
+    else:
+        assert kwargs["execution_id"] == execution_id
+        assert kwargs["context_kind"] is AccountControlContextKind.EXECUTION
+        assert kwargs["source"] is AccountControlSource.ALGORITHM
+        assert kwargs["allow_connect"]
+    assert kwargs["audit_context"]["execution_id"] == execution_id
     assert len(finalized) == 1
     if mode == "prepare_error":
         assert response.kind == "error" and response.error.type == "ctp_session_recovery_required"
@@ -1050,6 +1073,46 @@ def test_calculate_worker_keeps_script_and_prepare_error_channels(monkeypatch, m
             again = worker._handle_calculate_portfolio(request, state)
             assert again.output_payload["portfolio_result"]["targets"]["long"] == 2.0
             assert again.output_payload["portfolio_result"]["targets"]["short"] == 0.5
+
+
+@pytest.mark.parametrize("trial", [False, True])
+def test_calculate_portfolio_opt_in_to_reference_quote_only_in_trial(monkeypatch, trial):
+    pytest.importorskip("openctp_ctp")
+    from axile.executor.ctp.ctp_execute import CTPExecutor
+    from axile.server.execution.worker_backend import worker
+    from axile.server.execution.worker_backend.worker_state import _WorkerBackendState
+    from tests.unit.executor.ctp._quote_test_support import fresh_quote
+
+    executor = CTPExecutor(TradeChannel("ctp"))
+    current = fresh_quote("rb2701", "20261124")
+    reference = fresh_quote("rb2701", "20261124")
+    reference.timestamp -= 30 * 60 * 1000
+    reference.last_price = 3000
+    executor._valuation_quotes[reference.symbol] = reference
+    monkeypatch.setattr(executor, "_require_session_ready", lambda: None)
+    monkeypatch.setattr(executor, "get_market_data", lambda symbols: {symbol: current for symbol in symbols})
+    monkeypatch.setattr(worker, "_resolve_prepared_executor", lambda **kwargs: executor)
+    monkeypatch.setattr(worker, "_finalize_with_orders", lambda *args: None)
+
+    manager = WorkerBackendManager()
+    state = _WorkerBackendState()
+    monkeypatch.setattr(manager, "_check_read_session", lambda account: None)
+    monkeypatch.setattr(
+        manager,
+        "_request_blocking",
+        lambda account_id, request, *args: worker._handle_calculate_portfolio(request, state),
+    )
+    code = (
+        "def calculate_portfolio(context):\n"
+        "    reference = context.get_quote('rb2701', allow_stale=True)\n"
+        "    current = context.get_quote('rb2701')\n"
+        "    return {'rb2701': reference.last_price / current.last_price}\n"
+    )
+    try:
+        target = asyncio.run(manager.calculate_portfolio(build_account(), code, trial=trial))
+        assert target.targets == {"rb2701": 3000 / 3036 if trial else 1.0}
+    finally:
+        manager.close()
 
 
 def test_termination_cancellation_facts_survive_worker_response_and_manager():
