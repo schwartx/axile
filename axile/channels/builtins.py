@@ -474,7 +474,12 @@ def _ctp_plugin() -> ChannelPlugin:
             account_form=ChannelAccountForm(
                 fields=(
                     ChannelAccountField(
-                        name="broker_id", label="期货公司代码", kind="identifier", width="half", placeholder="如 9999"
+                        name="broker_id",
+                        label="期货公司代码",
+                        kind="identifier",
+                        width="half",
+                        placeholder="9999",
+                        fillable_placeholder=True,
                     ),
                     ChannelAccountField(name="investor_id", label="投资者号", kind="identifier", width="half"),
                     ChannelAccountField(name="password", label="密码", kind="secret", width="full"),

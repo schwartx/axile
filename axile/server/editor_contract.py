@@ -8,7 +8,7 @@ from typing import Literal
 
 from axile.common.function_contract import has_generator_yield
 
-type EditorKind = Literal["portfolio", "account_notification", "system_notification"]
+type EditorKind = Literal["portfolio", "account_notification", "system_notification", "signal_quotes", "signal_account"]
 
 
 @dataclass(frozen=True)
@@ -16,14 +16,17 @@ class EntryContract:
     """入口名称及其公开参数类型。"""
 
     name: str
-    module: str
+    module: str | None
     type_name: str
+    parameter_name: str = "context"
 
 
 CONTRACTS: dict[EditorKind, EntryContract] = {
     "portfolio": EntryContract("calculate_portfolio", "axile.server.context", "Context"),
     "account_notification": EntryContract("notify", "axile.common.notification_context", "AccountNotificationContext"),
     "system_notification": EntryContract("notify", "axile.common.notification_context", "SystemNotificationContext"),
+    "signal_quotes": EntryContract("fetch_quotes", None, "list[str]", "symbols"),
+    "signal_account": EntryContract("fetch_account", "axile.channels.rebalance_signal", "SignalAccountContext"),
 }
 
 
@@ -74,7 +77,7 @@ def _annotation_fix(tree: ast.Module, code: str, argument: ast.arg, contract: En
         and any(alias.name == contract.type_name and alias.asname is None for alias in node.names)
         for node in tree.body
     )
-    if not imported:
+    if contract.module is not None and not imported:
         insert_line = _import_position(tree)
         edits.append(
             {
@@ -100,11 +103,11 @@ def check_editor_contract(code: str, kind: EditorKind) -> dict[str, list[dict[st
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == contract.name
     ]
     if not functions:
-        diagnostics.append(_diagnostic(f"必须定义 {contract.name}(context) 函数", 0, 0, 0))
+        diagnostics.append(_diagnostic(f"必须定义 {contract.name}({contract.parameter_name}) 函数", 0, 0, 0))
         return {"diagnostics": diagnostics, "fixes": fixes}
     function = functions[-1]
     line = function.lineno - 1
-    if kind == "portfolio" and isinstance(function, ast.AsyncFunctionDef):
+    if kind in {"portfolio", "signal_quotes", "signal_account"} and isinstance(function, ast.AsyncFunctionDef):
         diagnostics.append(
             _diagnostic(
                 f"{contract.name} 必须是同步函数", line, function.col_offset, function.col_offset + len("async def")
@@ -113,7 +116,7 @@ def check_editor_contract(code: str, kind: EditorKind) -> dict[str, list[dict[st
     if kind != "portfolio" and has_generator_yield(function):
         diagnostics.append(
             _diagnostic(
-                "notify 不支持生成器或异步生成器函数",
+                f"{contract.name} 不支持生成器或异步生成器函数",
                 line,
                 function.col_offset,
                 function.col_offset + len(function.name),
@@ -124,7 +127,7 @@ def check_editor_contract(code: str, kind: EditorKind) -> dict[str, list[dict[st
     if len(positional) != 1 or args.vararg or args.kwarg or args.kwonlyargs:
         diagnostics.append(
             _diagnostic(
-                f"{contract.name} 必须且只能接收一个位置参数 context",
+                f"{contract.name} 必须且只能接收一个位置参数 {contract.parameter_name}",
                 line,
                 function.col_offset,
                 function.col_offset + len(function.name),

@@ -1,7 +1,7 @@
 import { useRef, type ReactNode } from 'react'
 
-export interface ConditionalRevealOption {
-  value: string
+export interface ConditionalRevealOption<T extends string = string> {
+  value: T
   label: string
   description?: string
 }
@@ -12,7 +12,7 @@ export interface ConditionalRevealOption {
  * 所有参数区始终挂载，通过布局流收放；折叠区不可聚焦。选项使用 radio
  * 语义，并支持方向键、Home 与 End 导航。
  */
-export function ConditionalReveal({
+export function ConditionalReveal<T extends string>({
   label,
   help,
   value,
@@ -23,11 +23,11 @@ export function ConditionalReveal({
 }: {
   label: string
   help?: string
-  value: string
-  options: ConditionalRevealOption[]
+  value: T
+  options: ConditionalRevealOption<T>[]
   error?: string
-  onChange: (value: string) => void
-  renderPanel: (optionValue: string) => ReactNode
+  onChange: (value: T) => void
+  renderPanel: (optionValue: T) => ReactNode
 }) {
   const buttonRefs = useRef<Record<string, HTMLButtonElement | null>>({})
   const selectedIndex = options.findIndex((option) => option.value === value)
@@ -59,7 +59,7 @@ export function ConditionalReveal({
                 role="radio"
                 aria-checked={selected}
                 tabIndex={selected || (selectedIndex === -1 && index === 0) ? 0 : -1}
-                className="group -mx-2 flex w-[calc(100%+1rem)] cursor-pointer items-start rounded-lg bg-transparent px-2 py-3.5 text-left transition-colors duration-200 hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none"
+                className="group -ml-2 flex w-[calc(100%+0.5rem)] cursor-pointer items-start rounded-lg bg-transparent px-2 py-3.5 text-left transition-colors duration-200 hover:bg-fill focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none"
                 onClick={() => onChange(option.value)}
                 onKeyDown={(event) => {
                   let nextIndex: number | null = null

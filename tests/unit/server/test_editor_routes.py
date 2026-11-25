@@ -90,6 +90,33 @@ def test_contract_rejects_uncallable_signatures(client):
     assert report["fixes"][0]["edits"][1]["range"]["start"]["line"] == 1
 
 
+def test_signal_quote_editor_checks_fetch_quotes_without_import_fix(client):
+    def check(code):
+        response = client.post("/editor/contract", json={"kind": "signal_quotes", "code": code})
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    assert "fetch_quotes(symbols)" in check("def calculate_portfolio(context): return {}")["diagnostics"][0]["message"]
+    assert "必须是同步函数" in check("async def fetch_quotes(symbols): return {}")["diagnostics"][0]["message"]
+    report = check("def fetch_quotes(symbols): return {}")
+    assert [edit["newText"] for edit in report["fixes"][0]["edits"]] == [": list[str]"]
+    assert check("def fetch_quotes(symbols: list[str]): return {}") == {"diagnostics": [], "fixes": []}
+
+
+def test_signal_account_editor_checks_fetch_account(client):
+    response = client.post(
+        "/editor/contract", json={"kind": "signal_account", "code": "def fetch_account(context): return {}"}
+    )
+    assert response.status_code == 200
+    edits = response.json()["fixes"][0]["edits"]
+    assert edits[0]["newText"] == ": SignalAccountContext"
+    assert edits[1]["newText"] == "from axile.channels.rebalance_signal import SignalAccountContext\n"
+    invalid = client.post(
+        "/editor/contract", json={"kind": "signal_account", "code": "async def fetch_account(context): return {}"}
+    )
+    assert "必须是同步函数" in invalid.json()["diagnostics"][0]["message"]
+
+
 def test_source_path_is_not_an_http_endpoint(client):
     response = client.get("/editor/source", params={"uri": Path(editor.__file__).resolve().as_uri()})
     assert response.status_code == 404

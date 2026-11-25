@@ -42,6 +42,7 @@ import {
   schedulePreviewRows,
 } from '@/features/setup/previewTimeline'
 import { previewSchedule, type SchedulePreview } from '@/lib/api/accounts'
+import { SIGNAL_CHANNEL } from '@/features/signal/signalData'
 import type { TradeChannel } from '@/types/api'
 
 export type { TimerEditorState }
@@ -123,6 +124,8 @@ function calendarSummary(preview: SchedulePreview | null): { text: string; warni
 
 export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, onChange, layout = 'step', leading }: TimerEditorProps) {
   const v = value
+  const signalChannel = tradeChannel === SIGNAL_CHANNEL
+  const autoLabel = signalChannel ? '自动生成信号' : '自动调仓'
   const tabFade = useRemountFade(v.timerTab)
   const [schedulePreview, setSchedulePreview] = useState<SchedulePreview | null>(null)
   const [previewLoadingMore, setPreviewLoadingMore] = useState(false)
@@ -442,7 +445,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
 
       <GMSessionControls channel={tradeChannel} value={v.gm_sessions} onChange={(gm_sessions) => patch({ gm_sessions })} />
 
-      <div
+      {!signalChannel && <div
         className={`grid transition-[grid-template-rows] ${MOTION_LAYOUT} ${
           'grid-rows-[1fr]'
         }`}
@@ -455,7 +458,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
             onM={(supM) => patch({ supM })}
           />
         </div>
-      </div>
+      </div>}
     </>
   )
 
@@ -474,7 +477,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
 
   // !v.autoOn 只在 page 布局可达（step 的预览随总开关收进折叠区，不会渲染）。
   const previewBody = !v.autoOn ? (
-    <p className="text-[14px] text-ink-3">开启自动调仓后显示。</p>
+    <p className="text-[14px] text-ink-3">开启{autoLabel}后显示。</p>
   ) : !tradeChannel ? (
     <p className="text-[14px] text-ink-3">选择交易渠道后显示。</p>
   ) : rawErr ? (
@@ -491,7 +494,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
         const presentation = schedulePreviewItemPresentation(item, executionReasonText, v.supN > 0 ? v.supM : undefined)
         const supplement = supplementSummaries.get(Date.parse(item.scheduled_at))
         const executionLabel = <span className="inline-flex flex-wrap items-baseline gap-x-1">
-          <span>{item.phase_label || '常规调仓'}</span>
+          <span>{signalChannel ? '生成调仓信号' : item.phase_label || '常规调仓'}</span>
           {supplement && supplement.configuredCount > 0 && <>
             <span aria-hidden="true">·</span>
             {supplement.count < supplement.configuredCount
@@ -562,9 +565,9 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
 
   const switchRow = (
     <div className="flex items-center gap-3">
-      <Switch ariaLabel="自动调仓" on={v.autoOn} onClick={() => patch({ autoOn: !v.autoOn })} />
+      <Switch ariaLabel={autoLabel} on={v.autoOn} onClick={() => patch({ autoOn: !v.autoOn })} />
       <div>
-        <div className="text-sm font-[640]">{v.autoOn ? '自动调仓已开' : '自动调仓已关'}</div>
+        <div className="text-sm font-[640]">{autoLabel}{v.autoOn ? '已开' : '已关'}</div>
         <div className="text-xs text-ink-3">{v.autoOn ? '按下面的节奏自动执行' : '仅手动 / 外接触发'}</div>
       </div>
     </div>
@@ -572,6 +575,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
 
   const autoOnCollapse = (children: ReactNode) => (
     <div
+      inert={!v.autoOn}
       className={`grid transition-[grid-template-rows,opacity] ${MOTION_LAYOUT} ${
         v.autoOn ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
       }`}

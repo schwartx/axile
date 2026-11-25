@@ -11,7 +11,7 @@ import { PortfolioChoiceList } from '@/features/portfolio/PortfolioChoiceList'
 import { WeightResult } from '@/features/portfolio/WeightResult'
 import { SignalSources, signalAction } from '@/features/signal/SignalSources'
 import { getSignalConfig } from '@/features/signal/signalApi'
-import { configToSignalDraft, signalConfig } from '@/features/signal/signalData'
+import { configToSignalDraft, initialSignalDraft, signalConfig } from '@/features/signal/signalData'
 import { getAccount, getAccountAssetSnapshots, getAccountTargetSnapshot, refreshAccountAssets, refreshAccountTargetSnapshot, updateAccount } from '@/lib/api/accounts'
 import { usePolling } from '@/lib/hooks/usePolling'
 import { shanghaiLabel } from '@/features/history/costs'
@@ -111,15 +111,16 @@ function SignalSettings({ accountId, account, initial }: {
   const [started, setStarted] = useState(account.is_started)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<Error | null>(null)
-  const [baseline, setBaseline] = useState(() => JSON.stringify({ draft, portfolioId, cron, started }))
+  const [baseline, setBaseline] = useState(() => ({ draft, portfolioId, cron, started }))
   const refreshAccounts = useDomainStore((state) => state.refreshAccounts)
-  const fingerprint = JSON.stringify({ draft, portfolioId, cron, started })
+  const current = { draft, portfolioId, cron, started }
+  const savedQuoteCode = baseline.draft.quoteKind === 'custom' ? baseline.draft.quoteCode : initialSignalDraft.quoteCode
   const save = async () => {
     setBusy(true)
     setError(null)
     try {
       await updateAccount(accountId, { account_config: { ...signalConfig(draft) }, portfolio_id: portfolioId, cron_expr: cron.trim(), is_started: started })
-      setBaseline(fingerprint)
+      setBaseline(current)
       await refreshAccounts()
     } catch (cause) {
       setError(cause instanceof Error ? cause : new Error(String(cause)))
@@ -143,17 +144,19 @@ function SignalSettings({ accountId, account, initial }: {
         {portfolioId === null && <Check size={14} aria-hidden />}不绑定组合
       </button>}
     ><div className="py-3"><PortfolioChoiceList selectedId={portfolioId} onSelect={setPortfolioId} /></div></Section>
-    <Section label="数据来源"><div className="py-3"><SignalSources identity={`signal:${accountId}`} value={draft} onChange={setDraft} /></div></Section>
+    <Section label="数据来源"><div className="py-3">
+      <SignalSources identity={`signal:${accountId}`} value={draft} onChange={setDraft} savedQuoteCode={savedQuoteCode} />
+    </div></Section>
     <Section label="定时计算">
       <div className="grid gap-3 py-3">
-        <ConnectionField label="定时表达式" kind="text" value={cron} onChange={setCron} placeholder="30 15 * * 1-5" />
+        <ConnectionField label="定时表达式" kind="text" value={cron} onChange={setCron} placeholder="30 15 * * 1-5" fillablePlaceholder />
         <div className="flex items-center gap-2 text-[13px] text-ink-2">
           <Toggle on={started} onClick={() => setStarted(!started)} ariaLabel="启用定时任务" /><span>启用定时任务</span>
         </div>
       </div>
     </Section>
-    <EditSaveBar changes={fingerprint === baseline ? [] : ['信号设置已改']} blocked={busy || (started && !cron.trim())}
-      onCancel={() => { const saved = JSON.parse(baseline); setDraft(saved.draft); setPortfolioId(saved.portfolioId); setCron(saved.cron); setStarted(saved.started); setError(null) }}
+    <EditSaveBar changes={JSON.stringify(current) === JSON.stringify(baseline) ? [] : ['信号设置已改']} blocked={busy || (started && !cron.trim())}
+      onCancel={() => { setDraft(baseline.draft); setPortfolioId(baseline.portfolioId); setCron(baseline.cron); setStarted(baseline.started); setError(null) }}
       onSave={() => void save()} error={error} />
   </div>
 }

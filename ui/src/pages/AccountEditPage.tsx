@@ -519,17 +519,19 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
           <SymbolTagInput
             id="edit-forbidden-symbols"
             value={d.forbidden}
-            otherValue={d.risk}
-            variant="forbidden"
+            warn
             placeholder="输入禁投品种…"
-            otherLabel="风险品种"
             onChange={(forbidden) => set({ forbidden })}
-            onMoveFromOther={(symbols) => {
-              const moving = new Set(symbols)
-              set({
-                forbidden: [...d.forbidden, ...symbols.filter((symbol) => !d.forbidden.includes(symbol))],
-                risk: d.risk.filter((symbol) => !moving.has(symbol)),
-              })
+            otherGroup={{
+              label: '风险品种',
+              value: d.risk,
+              onMove: (symbols) => {
+                const moving = new Set(symbols)
+                set({
+                  forbidden: [...d.forbidden, ...symbols.filter((symbol) => !d.forbidden.includes(symbol))],
+                  risk: d.risk.filter((symbol) => !moving.has(symbol)),
+                })
+              },
             }}
           />
         </Row>
@@ -537,17 +539,18 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
           <SymbolTagInput
             id="edit-risk-symbols"
             value={d.risk}
-            otherValue={d.forbidden}
-            variant="risk"
             placeholder="输入风险品种…"
-            otherLabel="禁投"
             onChange={(risk) => set({ risk })}
-            onMoveFromOther={(symbols) => {
-              const moving = new Set(symbols)
-              set({
-                forbidden: d.forbidden.filter((symbol) => !moving.has(symbol)),
-                risk: [...d.risk, ...symbols.filter((symbol) => !d.risk.includes(symbol))],
-              })
+            otherGroup={{
+              label: '禁投',
+              value: d.forbidden,
+              onMove: (symbols) => {
+                const moving = new Set(symbols)
+                set({
+                  forbidden: d.forbidden.filter((symbol) => !moving.has(symbol)),
+                  risk: [...d.risk, ...symbols.filter((symbol) => !d.risk.includes(symbol))],
+                })
+              },
             }}
           />
           </Row>

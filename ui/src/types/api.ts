@@ -43,6 +43,7 @@ export interface ChannelAccountField {
   width: 'half' | 'full'
   required: boolean
   placeholder?: string
+  fillable_placeholder?: boolean
   help?: string
   default?: unknown
   options?: Array<{ value: string; label: string; description?: string }>

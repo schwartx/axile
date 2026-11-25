@@ -21,8 +21,8 @@ function storedSplit(storageKey: string): number | null {
 /** 工作台的代码区、静态问题与试跑结果；业务页提供代码、执行行为和状态栏槽位。 */
 export function PythonWorkbenchPane({
   kind,
-  code, onChange, running, runDisabled = false, stale, result, onRun, editorRef, statusTarget, storageKey,
-  title, dirty = false, docHref, onResizeChange, savedCode, draftKey, localOnly,
+  code, onChange, running, runDisabled = false, stale, result, onRun, editorRef, statusTarget, compactStatus, storageKey,
+  title, dirty = false, docHref, onResizeChange, savedCode, draftKey, localOnly, inputError,
 }: {
   kind: PythonEditorKind
   code: string
@@ -34,9 +34,11 @@ export function PythonWorkbenchPane({
   runDisabled?: boolean
   stale: boolean
   result: PythonValidationState | null
-  onRun: () => void
+  onRun?: () => void
   editorRef: Ref<PythonEditorHandle>
   statusTarget: HTMLElement | null
+  compactStatus?: boolean
+  inputError?: string | null
   storageKey: string
   title: string
   dirty?: boolean
@@ -56,11 +58,11 @@ export function PythonWorkbenchPane({
   const previousStaticCount = useRef(0)
 
   useEffect(() => {
-    if (result) {
-      setActiveTab('result')
+    if (inputError || result) {
+      setActiveTab(inputError ? 'problems' : 'result')
       setProblemsOpen(true)
     }
-  }, [result])
+  }, [inputError, result])
 
   const currentChecks = checks?.document === code ? checks : null
   const staticProblems = [...(currentChecks?.lsp.diagnostics ?? []), ...(currentChecks?.contract.diagnostics ?? [])].map(item => ({
@@ -121,7 +123,7 @@ export function PythonWorkbenchPane({
       : `minmax(0, ${1 - split}fr) 5px 36px minmax(0, ${split}fr)`
     : 'minmax(0, 1fr) 0px 36px minmax(0, 0fr)'
   const run = () => {
-    if (running || runDisabled || !code.trim()) return
+    if (!onRun || running || runDisabled || !code.trim()) return
     setActiveTab('result')
     setProblemsOpen(true)
     onRun()
@@ -140,6 +142,7 @@ export function PythonWorkbenchPane({
           }}
           headerTarget={header}
           statusTarget={statusTarget}
+          compactStatus={compactStatus}
           onChecks={setChecks}
           layout="workbench"
           fill
@@ -149,7 +152,7 @@ export function PythonWorkbenchPane({
           localOnly={localOnly}
           onChange={onChange}
           running={running}
-          runDisabled={runDisabled}
+          runDisabled={runDisabled || !onRun}
           stale={stale}
           result={result}
           onRun={run}
@@ -171,12 +174,18 @@ export function PythonWorkbenchPane({
       <PythonRunPanel
         kind="problems"
         title="代码检查"
-        hideTitle
-        headerExtra={<Segmented size="sm" className="my-auto" value={activeTab} options={outputTabs} onChange={(tab) => { setActiveTab(tab); setProblemsOpen(true) }} />}
-        statusOverride={activeTab === 'result' ? <span className="ml-auto self-center px-3 text-[12px] text-ink-3">{running ? '试跑中…' : stale ? '上次试跑结果' : result ? (result.valid ? '试跑通过' : '试跑失败') : '尚未试跑'}</span> : <span className="ml-auto self-center px-3 text-[12px] text-ink-3">{currentChecks?.lsp.status === 'disabled' ? '代码辅助需连接 Axile' : checkFailed ? '检查失败' : checkUnavailable ? '检查暂不可用' : quickFixFailed ? '快速修复暂不可用' : currentChecks?.lsp.status === 'succeeded' && currentChecks?.contract.status === 'succeeded' ? '检查完成' : '检查中…'}</span>}
+        hideTitle={!!onRun}
+        headerExtra={onRun && <Segmented size="sm" className="my-auto" value={activeTab} options={outputTabs} onChange={(tab) => { setActiveTab(tab); setProblemsOpen(true) }} />}
+        statusOverride={inputError && !problemsOpen ? <span className="ml-auto self-center px-3 text-[12px] text-warn">请配置函数</span>
+          : activeTab === 'result' ? <span className="ml-auto self-center px-3 text-[12px] text-ink-3">{running ? '试跑中…' : stale ? '上次试跑结果' : result ? (result.valid ? '试跑通过' : '试跑失败') : '尚未试跑'}</span>
+          : <span className="ml-auto self-center px-3 text-[12px] text-ink-3">{currentChecks?.lsp.status === 'disabled' ? '代码辅助需连接 Axile' : checkFailed ? '检查失败' : checkUnavailable ? '检查暂不可用' : quickFixFailed ? '快速修复暂不可用' : currentChecks?.lsp.status === 'succeeded' && currentChecks?.contract.status === 'succeeded' ? '检查完成' : '检查中…'}</span>}
         contentOverride={(
           activeTab === 'problems' ? (
             <div className="-mx-3.5 -my-3 divide-y divide-line/60">
+              {inputError && <p role="alert" className="flex items-start gap-2.5 px-3.5 py-2 text-[13px] text-warn">
+                <TriangleAlert size={15} className="mt-0.5 flex-none" aria-hidden />
+                {inputError}
+              </p>}
               <PythonCheckStatus checks={currentChecks} onRetry={() => internalEditorRef.current?.check()} onQuickFixRetry={() => internalEditorRef.current?.retryQuickFix()} />
               {staticProblems.map((problem, index) => (
                 <button key={`${index}-${problem.line}`} type="button" className="flex w-full cursor-pointer items-start gap-2.5 px-3.5 py-2 text-left transition-colors hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent focus-visible:-outline-offset-2 motion-reduce:transition-none" onClick={() => internalEditorRef.current?.revealLine(problem.line)}>

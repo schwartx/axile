@@ -286,6 +286,8 @@ class ChannelAccountField:
         是否要求用户填写。
     help : str | None
         输入项下方展示的渠道专属说明。
+    fillable_placeholder : bool
+        占位文本是可直接填入的输入示例。
     """
 
     name: Annotated[str, Meta(min_length=1)]
@@ -294,6 +296,7 @@ class ChannelAccountField:
     width: Literal["half", "full"]
     required: bool = True
     placeholder: str | None = None
+    fillable_placeholder: bool = False
     help: str | None = None
     default: object | None = None
     options: tuple[ChannelAccountOption, ...] = ()

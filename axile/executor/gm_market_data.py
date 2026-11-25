@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from math import isfinite
 from multiprocessing import get_context
 from multiprocessing.connection import Connection
 from multiprocessing.context import SpawnContext, SpawnProcess
+from pathlib import Path
 from threading import Lock
 from typing import cast
 
 from axile.channels.market_data import MarketDataStatus, MarketDataUnavailable
 from axile.common.gm_symbols import GM_SYMBOL_RESOLVER
 from axile.executor.algorithms.utils.clock import clock_monotonic
+from axile.executor.gm_terminal import gm_rpc_port, launch_gm_terminal, wait_for_gm_port
 from axile.executor.models.unified_input_accounts import GMAccountConfig
 from axile.executor.models.unified_price import UnifiedPriceData
 
@@ -24,9 +26,12 @@ class GMMarketDataConfig:
 
     token: str = field(repr=False)
     address: str | None
+    terminal_path: str | None = None
 
     @classmethod
-    def from_account_config(cls, values: Mapping[str, object]) -> GMMarketDataConfig:
+    def from_account_config(
+        cls, values: Mapping[str, object], *, terminal_path: str | None = None
+    ) -> GMMarketDataConfig:
         """提取行情 SDK 配置，不读取交易账户 ID。"""
         token = values.get("token")
         mode = values.get("connection_mode")
@@ -38,6 +43,7 @@ class GMMarketDataConfig:
         return cls(
             GMAccountConfig.validate_required_field(token, "token"),
             GMAccountConfig.validate_service_address(cast(str, address)) if mode == "service" else None,
+            GMAccountConfig.validate_terminal_path(terminal_path) if mode == "terminal" else None,
         )
 
     def open(self) -> GMMarketData:
@@ -99,14 +105,19 @@ class GMMarketData:
                 pass
         return self._status
 
-    def snapshot(self, symbols: Sequence[str], *, timeout: float) -> dict[str, UnifiedPriceData]:
-        """读取掘金 current，并保留请求标识供上层关联。"""
+    def snapshot(
+        self, symbols: Sequence[str], *, timeout: float, allow_partial: bool = False
+    ) -> dict[str, UnifiedPriceData]:
+        """读取掘金 current，诊断查询可保留已返回的部分标的。"""
         native = {symbol: GM_SYMBOL_RESOLVER.to_gm(symbol) for symbol in symbols}
         deadline = clock_monotonic() + timeout
         if not self._io.acquire(timeout=max(0.0, timeout)):
             raise TimeoutError("等待掘金行情查询超时")
         try:
-            return self._read(native, deadline)
+            quotes = self._read(native, deadline)
+            if not allow_partial and (missing := [symbol for symbol in native if symbol not in quotes]):
+                raise MarketDataUnavailable(f"掘金暂无行情：{', '.join(missing)}")
+            return quotes
         finally:
             self._io.release()
 
@@ -117,7 +128,7 @@ class GMMarketData:
             self._stop()
             self._status = "connecting"
         try:
-            pipe = self._pipe if self._pipe is not None else self._start()
+            pipe = self._pipe if self._pipe is not None else self._start(deadline)
             pipe.send(list(dict.fromkeys(native.values())))
             if not pipe.poll(max(0.0, deadline - clock_monotonic())):
                 raise TimeoutError("掘金行情查询超时")
@@ -125,6 +136,9 @@ class GMMarketData:
         except TimeoutError:
             self._status = "unavailable"
             self._stop()
+            raise
+        except MarketDataUnavailable:
+            self._status = "unavailable"
             raise
         except (EOFError, OSError, RuntimeError):
             self._status = "unavailable"
@@ -134,14 +148,26 @@ class GMMarketData:
             self._status = "unavailable"
             raise MarketDataUnavailable("掘金行情查询失败，请检查终端和行情权限")
         self._status = "ready"
-        if missing := [symbol for symbol, code in native.items() if code not in rows]:
-            raise MarketDataUnavailable(f"掘金暂无行情：{', '.join(missing)}")
-        return {symbol: rows[code] for symbol, code in native.items()}
+        return {symbol: rows[code] for symbol, code in native.items() if code in rows}
 
-    def _start(self) -> Connection:
+    def _start(self, deadline: float) -> Connection:
+        config = self._config
+        if config.terminal_path is not None:
+            directory = Path(config.terminal_path)
+            try:
+                port = gm_rpc_port(directory)
+                if not wait_for_gm_port(port, 0.1):
+                    launch_gm_terminal(directory)
+                    if not wait_for_gm_port(port, deadline - clock_monotonic()):
+                        raise TimeoutError("掘金本机终端仍在启动，请就绪后重试")
+            except TimeoutError:
+                raise
+            except (OSError, ValueError, KeyError) as exc:
+                raise MarketDataUnavailable(f"准备掘金本机终端失败：{exc}") from exc
+            config = replace(config, address=f"127.0.0.1:{port}")
         context = cast(SpawnContext, get_context("spawn"))
         parent, child = cast("tuple[Connection, Connection]", context.Pipe())
-        process = context.Process(target=_gm_quotes_worker, args=(child, self._config), daemon=True)
+        process = context.Process(target=_gm_quotes_worker, args=(child, config), daemon=True)
         try:
             process.start()
         except BaseException:

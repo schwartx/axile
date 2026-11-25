@@ -279,7 +279,7 @@ export function SimulationAccountModal({ channel, value, sources = [], onSave, o
         <section aria-label="模拟账户资金" className="space-y-3">
           <h3 className="text-sm font-semibold">资金<span className="ml-2 text-xs font-normal text-ink-3">{channel.currency}</span></h3>
           {([['total_asset', '账户权益'], ['available_cash', '可用资金']] as const).map(([field, label]) => <label key={field} data-field={`account.${field}`} className="flex flex-col gap-1 text-xs text-ink-2">
-            {label}<AmountInput value={draft.account[field]} onChange={(next) => accountChange(field, next)}
+            {label}<AmountInput inlineHint value={draft.account[field]} onChange={(next) => accountChange(field, next)}
               unit={channel.currency === 'CNY' ? '元' : channel.currency} ariaLabel={label}
               invalid={!!errorFor(`account.${field}`)} describedBy={errorFor(`account.${field}`) ? `${id}-errors` : undefined} />
           </label>)}

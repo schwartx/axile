@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
+import { InputHint } from '@/components/ui/InputHint'
 import { OverflowText } from '@/components/ui/OverflowText'
 import {
   portfolioMarketOptions,
@@ -185,18 +186,21 @@ export function CreatePortfolioModal({
               <label className="mb-1.5 block text-[14px] text-ink-2" htmlFor="create-portfolio-name">
                 组合名称
               </label>
-              <input
-                id="create-portfolio-name"
-                ref={nameRef}
-                className="w-full rounded-[11px] border border-ink-3/30 bg-surface px-3.5 py-3 text-[16px] outline-none focus:border-accent disabled:opacity-45"
-                value={name}
-                onChange={(event) => {
-                  setName(event.target.value)
-                  setCreateError(null)
-                }}
-                placeholder="例如：我的趋势组合"
-                disabled={submitting}
-              />
+              <div className="relative">
+                <input
+                  id="create-portfolio-name"
+                  ref={nameRef}
+                  className="w-full rounded-[11px] border border-ink-3/30 bg-surface px-3.5 py-3 text-[16px] outline-none focus:border-accent disabled:opacity-45"
+                  value={name}
+                  onChange={(event) => {
+                    setName(event.target.value)
+                    setCreateError(null)
+                  }}
+                  disabled={submitting}
+                />
+                <InputHint inputId="create-portfolio-name" value={name} suggestion="我的趋势组合" disabled={submitting}
+                  className="left-[15px] text-[16px]" onFill={(value) => { setName(value); setCreateError(null) }} />
+              </div>
               <div className="mb-1.5 mt-5 flex items-baseline justify-between">
                 <span className="block text-[14px] text-ink-2">市场</span>
                 <span className="text-[12.5px] text-ink-3">创建后固定，不可更改</span>

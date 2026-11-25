@@ -117,7 +117,7 @@ export function AccountEditConnectionPage() {
     const raw = draft[field.name] ?? field.default ?? ''
     if (field.kind === 'boolean') return <Segmented value={raw === true ? 'true' : 'false'} options={[{ value: 'false', label: '关闭' }, { value: 'true', label: '启用' }]} onChange={(value) => setField(field, value === 'true')} />
     if (field.kind === 'select') return <Segmented value={String(raw)} options={field.options ?? []} onChange={(value) => setField(field, value)} />
-    return <ConnectionField label={field.label} kind={field.kind} value={String(raw)} required={field.required} placeholder={field.placeholder} help={field.help} error={errors[field.name]} constraints={field.constraints} clipboard={field.clipboard} onChange={(value) => setField(field, value)} />
+    return <ConnectionField label={field.label} kind={field.kind} value={String(raw)} required={field.required} placeholder={field.placeholder} fillablePlaceholder={field.fillable_placeholder} help={field.help} error={errors[field.name]} constraints={field.constraints} clipboard={field.clipboard} onChange={(value) => setField(field, value)} />
   }
 
   const renderForm = (action?: ReactNode) => (

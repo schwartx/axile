@@ -36,6 +36,7 @@ import { WizardLayout } from '@/features/setup/WizardLayout'
 import { SetupHub } from '@/pages/setup/SetupHub'
 import { CustomCalcDocPage } from '@/pages/docs/CustomCalcDocPage'
 import { NotificationDocPage } from '@/pages/docs/NotificationDocPage'
+import { SignalQuotesDocPage } from '@/pages/docs/SignalQuotesDocPage'
 import {
   AcctChannel,
   AcctConnect,
@@ -139,6 +140,7 @@ const router = createBrowserRouter([
         ],
       },
       { path: 'docs/custom-calc', element: <CustomCalcDocPage /> },
+      { path: 'docs/signal-quotes', element: <SignalQuotesDocPage /> },
       { path: 'docs/system-notification', element: <SystemNotificationDocPage /> },
       { path: 'docs/notification', element: <NotificationDocPage /> },
       {

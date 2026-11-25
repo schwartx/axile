@@ -9,9 +9,9 @@ import { executionTimeoutError } from '@/features/account/executionTimeout'
 import { formatDuration } from '@/components/ui/duration'
 import { LeverageInput } from '@/features/account/LeverageInput'
 import { leverageError } from '@/features/account/leverage'
-import { WizardHeading, WizardPage, WizardNav } from '@/features/setup/WizardNav'
+import { WizardHeading, WizardPage, WizardNav, WizardTimerPage } from '@/features/setup/WizardNav'
 import { Segmented } from '@/components/ui/Segmented'
-import { ConditionalReveal } from '@/components/ui/ConditionalReveal'
+import { ChannelConditionalReveal } from '@/features/setup/ChannelConditionalReveal'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { WeightBars } from '@/components/viz/WeightBars'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
@@ -33,11 +33,11 @@ import { initialTimerForSchedule, useWizardStore } from '@/stores/wizard'
 import { useToastStore } from '@/stores/ui'
 import { resolveCronList, cronToExpr, describeCron, fmtFire, nextFires } from '@/features/setup/cron'
 import { TimerEditor, type TimerEditorState } from '@/features/setup/TimerEditor'
+import { ACCT_STEPS, SIGNAL_STEPS } from '@/features/setup/steps'
 import { algoLabel, validateAlgorithmRef } from '@/features/setup/algorithms'
 import { AlgorithmEditor } from '@/features/setup/AlgorithmEditor'
 import {
   channelAccountFieldVisible,
-  conditionalRevealFields,
   isConditionalRevealField,
   updateChannelAccountConfig,
   visibleChannelAccountConfig,
@@ -108,11 +108,12 @@ export function AcctChannel() {
 
   const selected = channels?.find((channel) => channel.channel === acct.channel)
   const nextDisabled = !selected?.available
+  const steps = selected?.supports_trading === false ? SIGNAL_STEPS : ACCT_STEPS
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex-1 overflow-y-auto">
-        <WizardPage kicker={selected?.supports_trading === false ? '账户设置 · 1 / 5' : '账户设置 · 1 / 6'} title="选择账户渠道">
+        <WizardPage kicker={`账户设置 · 1 / ${steps.length}`} title="选择账户渠道">
           <div className="grid grid-cols-1 gap-3">
             {loading && channels === null && <p className="text-[15px] text-ink-2">加载渠道…</p>}
             <ErrorNotice intent="read" title="渠道目录加载失败" error={channels === null ? error : null} onRetry={refresh} />
@@ -147,7 +148,7 @@ export function AcctChannel() {
           </div>
         </WizardPage>
       </div>
-      <WizardNav nextTo={selected?.supports_trading === false ? '/setup/acct/signal' : '/setup/acct/connect'} nextDisabled={nextDisabled} />
+      <WizardNav nextTo={steps[1].path} nextDisabled={nextDisabled} />
     </div>
   )
 }
@@ -355,6 +356,7 @@ export function AcctConnect() {
         value={String(value)}
         required={field.required}
         placeholder={field.placeholder}
+        fillablePlaceholder={field.fillable_placeholder}
         help={field.help}
         error={errors[field.name]}
         onChange={(next) => setField(field.name, next === '' ? undefined : next)}
@@ -424,16 +426,13 @@ export function AcctConnect() {
                 >
                   <div className="min-h-0 overflow-hidden">
                     {field.kind === 'select' && field.presentation === 'conditional_reveal' ? (
-                      <ConditionalReveal
-                        label={field.label}
-                        help={field.help}
+                      <ChannelConditionalReveal
+                        field={field}
+                        fields={fields}
                         value={String(value)}
-                        options={field.options ?? []}
                         error={errors[field.name]}
                         onChange={(next) => setField(field.name, next)}
-                        renderPanel={(optionValue) => conditionalRevealFields(fields, field.name, optionValue).map(
-                          (dependentField) => <div key={dependentField.name}>{renderFieldControl(dependentField)}</div>,
-                        )}
+                        renderField={renderFieldControl}
                       />
                     ) : renderFieldControl(field)}
                   </div>
@@ -651,48 +650,25 @@ export function AcctTimer() {
     />
   )
 
-  // 与账户编辑定时页同一套 page 布局：标题进左列，预览从标题通高到导航条。
-  // 宽视口撑高度链、两列各自滚；窄视口退回单列，本层滚动、底栏钉住。
   return (
-    <div className="flex h-full min-h-0 flex-col min-[1120px]:overflow-hidden">
-      <div className="min-h-0 flex-1 overflow-y-auto min-[1120px]:overflow-hidden">
-        <div className="mx-auto h-full max-w-[1728px] px-5 pt-8 pb-6 sm:px-12 min-[1120px]:flex min-[1120px]:min-h-0 min-[1120px]:flex-col min-[1120px]:pb-4">
-          {scheduleKind ? (
-            <div className="min-[1120px]:min-h-0 min-[1120px]:flex-1">
-              <TimerEditor
-                tradeChannel={acct.channel}
-                scheduleKind={scheduleKind}
-                nightSchedule={descriptor?.schedule.night}
-                value={timerValue}
-                layout="page"
-                leading={heading}
-                onChange={(next) => {
-                  const v = typeof next === 'function' ? next(timerValue) : next
-                  setAcct({
-                    autoOn: v.autoOn,
-                    presetIds: v.presetIds,
-                    nightOn: v.nightOn,
-                    gm_sessions: v.gm_sessions,
-                    supN: v.supN,
-                    supM: v.supM,
-                    rawCron: v.rawCron,
-                    timerTab: v.timerTab,
-                    scheduleRules: v.scheduleRules,
-                    selectedRuleId: v.selectedRuleId,
-                  })
-                }}
-              />
-            </div>
-          ) : (
-            <>
-              {heading}
-              <p className="mt-[18px] text-[15px] text-ink-2">渠道能力加载中…</p>
-            </>
-          )}
-        </div>
-      </div>
-      <WizardNav prevTo="/setup/acct/trade" nextTo="/setup/acct/confirm" nextDisabled={!scheduleKind} />
-    </div>
+    <WizardTimerPage footer={<WizardNav prevTo="/setup/acct/trade" nextTo="/setup/acct/confirm" nextDisabled={!scheduleKind} />}>
+      {scheduleKind ? (
+        <TimerEditor
+          tradeChannel={acct.channel}
+          scheduleKind={scheduleKind}
+          nightSchedule={descriptor?.schedule.night}
+          value={timerValue}
+          layout="page"
+          leading={heading}
+          onChange={(next) => setAcct(typeof next === 'function' ? next(timerValue) : next)}
+        />
+      ) : (
+        <>
+          {heading}
+          <p className="mt-[18px] text-[15px] text-ink-2">渠道能力加载中…</p>
+        </>
+      )}
+    </WizardTimerPage>
   )
 }
 
