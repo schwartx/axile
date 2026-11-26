@@ -8,7 +8,6 @@ import { ThemeToggle } from '@/components/ThemeToggle'
 import { Menu, PanelLeftClose, PanelLeftOpen, TriangleAlert } from 'lucide-react'
 import { ServiceConnectionStatus } from '@/components/ServiceConnectionStatus'
 import { BrandWordmark } from '@/components/brand/BrandWordmark'
-import { Tooltip } from '@/components/ui/Tooltip'
 
 /**
  * 顶栏 —— 品牌、后端活性点、风险提示与主题切换。
@@ -45,13 +44,11 @@ export function TopBar({
       >
         <Menu size={18} aria-hidden />
       </button>
-      <Tooltip content={sidebarLabel}>
-        <button type="button" aria-label={sidebarLabel} aria-controls="desktop-account-navigation" aria-expanded={!sidebarCollapsed}
-          className="hidden size-7 shrink-0 cursor-pointer place-items-center rounded-md text-ink-2 hover:bg-fill hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-accent md:grid"
-          onClick={onToggleSidebar}>
-          <SidebarIcon size={16} aria-hidden />
-        </button>
-      </Tooltip>
+      <button type="button" aria-label={sidebarLabel} aria-controls="desktop-account-navigation" aria-expanded={!sidebarCollapsed}
+        className="hidden size-7 shrink-0 cursor-pointer place-items-center rounded-md text-ink-2 hover:bg-fill hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-accent md:grid"
+        onClick={onToggleSidebar}>
+        <SidebarIcon size={16} aria-hidden />
+      </button>
       <Link to="/" aria-label="axile 首页">
         <BrandWordmark />
       </Link>

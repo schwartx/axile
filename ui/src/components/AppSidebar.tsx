@@ -400,7 +400,10 @@ export function AppSidebar({
       />
       <aside
         ref={sidebarRef}
-        style={{ '--sidebar-width': `${desktopCollapsed ? RAIL_WIDTH : (dragWidth ?? width)}px` } as CSSProperties}
+        style={{
+          '--sidebar-width': `${desktopCollapsed ? RAIL_WIDTH : (dragWidth ?? width)}px`,
+          '--sidebar-expanded-width': `${dragWidth ?? width}px`,
+        } as CSSProperties}
         className={`fixed inset-y-0 left-0 z-40 flex w-[184px] flex-none flex-col border-r border-line bg-surface py-3.5 pr-2.5 pl-3 duration-200 motion-reduce:transition-none md:relative md:z-10 md:w-[var(--sidebar-width)] md:translate-x-0 ${
           dragWidth == null ? 'transition-[width,transform]' : 'transition-transform'
         } ${desktopCollapsed ? 'md:px-1' : 'md:border-r-0'} ${
@@ -415,7 +418,8 @@ export function AppSidebar({
         </button>
       </div>
       {desktopCollapsed && <SidebarRail accountName={accountId == null ? null : activeAccount?.name ?? '当前账户'} accountLinks={accountLinks} />}
-      <div id="desktop-account-navigation" className={`flex min-h-0 flex-1 flex-col ${desktopCollapsed ? 'md:hidden' : ''}`}>
+      <div id="desktop-account-navigation" className={`flex min-h-0 flex-1 overflow-clip ${desktopCollapsed ? 'md:hidden' : ''}`}>
+      <div className="flex min-h-0 w-full flex-none flex-col md:w-[calc(var(--sidebar-expanded-width)-1.375rem)]">
       <div className="relative flex min-h-0 flex-1 flex-col">
         <nav ref={navRef} className="quiet-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-2" aria-label="功能导航">
           <div className="flex min-h-full flex-col justify-between">
@@ -469,6 +473,7 @@ export function AppSidebar({
             {item.label}
           </Link>)}
         </div>
+      </div>
       </div>
       </div>
       {!desktopCollapsed && <ResizeHandle orientation="vertical" aria-label="调整侧栏宽度"
