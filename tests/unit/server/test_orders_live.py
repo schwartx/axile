@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import asdict
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -199,6 +200,7 @@ def test_recovery_stays_bounded_and_never_runs_during_execution_or_disconnect(mo
     factory = Mock(return_value=thread)
     monkeypatch.setattr(order_monitor, "Thread", factory)
     monkeypatch.setattr(order_monitor, "clock_monotonic", lambda: 100)
+    monkeypatch.setattr(order_monitor, "clock_now", lambda **_: datetime.fromisoformat("2026-11-26T10:00:00+08:00"))
     state.executor.connection_recovery_in_progress = True
     order_monitor._schedule_recovery(state)
     factory.assert_not_called()
@@ -220,6 +222,45 @@ def test_recovery_stays_bounded_and_never_runs_during_execution_or_disconnect(mo
     order_monitor._recover(state)
     prepare.assert_called_once()
     finalize.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("hour", "last_pending", "current_pending", "should_recover"),
+    [(16, False, False, False), (16, True, False, True), (16, False, True, True), (21, False, False, True)],
+)
+def test_background_recovery_uses_trading_hours_and_unresolved_orders(
+    monkeypatch, hour, last_pending, current_pending, should_recover
+):
+    from unittest.mock import Mock
+
+    from axile.server.execution.worker_backend import order_monitor, worker_state
+
+    account, binding = session()
+    last_book, current_book = AccountOrderBook(), AccountOrderBook()
+    last_book.replace([order()] if last_pending else [], 0)
+    last_book.invalidate("账户连接已中断")
+    if current_pending:
+        current_book.apply(order())
+    state = _WorkerBackendState(
+        executor=SimpleNamespace(account_orders=current_book),
+        orders_executor=SimpleNamespace(account_orders=last_book),
+        connection_collector=ConnectionCollector(binding),
+        orders_account=account,
+        orders_recovery_enabled=True,
+        orders_binding=binding,
+        connected_once=True,
+    )
+    now = datetime.fromisoformat(f"2026-11-26T{hour:02}:00:00+08:00")
+    monkeypatch.setattr(order_monitor, "clock_now", lambda **_: now)
+    prepare, finalize = Mock(), Mock()
+    monkeypatch.setattr(worker_state, "_resolve_prepared_executor", prepare)
+    monkeypatch.setattr(worker_state, "_finalize_executor", finalize)
+
+    order_monitor._recover(state)
+
+    assert prepare.called is should_recover
+    assert finalize.called is should_recover
+    assert state.connected_once is not should_recover
 
 
 def test_new_binding_cannot_publish_old_executor_orders_before_preparation():
