@@ -7,9 +7,19 @@ import { Toast } from '@/components/Toast'
 import { RouteWorkspace } from '@/components/RouteWorkspace'
 import { ControlWarningPanel } from '@/features/account/ControlWarningPanel'
 
+const SIDEBAR_COLLAPSED_KEY = 'axon.sidebarCollapsed'
+
 /** 应用外壳：状态带、贴边导航栏与独立滚动工作区——一体化驾驶舱框架。 */
 export function AppShell() {
   const [navigationOpen, setNavigationOpen] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
+    typeof window !== 'undefined' && window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true',
+  )
+  const toggleSidebar = () => {
+    const collapsed = !sidebarCollapsed
+    setSidebarCollapsed(collapsed)
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed))
+  }
   const navigationTriggerRef = useRef<HTMLButtonElement>(null)
   const closeNavigation = useCallback(() => setNavigationOpen(false), [])
   const location = useLocation()
@@ -22,9 +32,11 @@ export function AppShell() {
 
   return (
     <GlobalErrorContext.Provider value={true}><div className="flex h-full flex-col overflow-hidden bg-bg">
-      <TopBar navigationTriggerRef={navigationTriggerRef} onOpenNavigation={() => setNavigationOpen(true)} />
+      <TopBar navigationTriggerRef={navigationTriggerRef} onOpenNavigation={() => setNavigationOpen(true)}
+        sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} />
       <div className="flex min-h-0 flex-1">
         <AppSidebar
+          desktopCollapsed={sidebarCollapsed}
           mobileOpen={navigationOpen}
           navigationTriggerRef={navigationTriggerRef}
           onClose={closeNavigation}

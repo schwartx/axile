@@ -5,9 +5,10 @@ import { Link } from '@/components/ui/nav'
 import { useDomainStore } from '@/stores/domain'
 import { needsAdjustmentAttention } from '@/lib/derive'
 import { ThemeToggle } from '@/components/ThemeToggle'
-import { Menu, TriangleAlert } from 'lucide-react'
+import { Menu, PanelLeftClose, PanelLeftOpen, TriangleAlert } from 'lucide-react'
 import { ServiceConnectionStatus } from '@/components/ServiceConnectionStatus'
 import { BrandWordmark } from '@/components/brand/BrandWordmark'
+import { Tooltip } from '@/components/ui/Tooltip'
 
 /**
  * 顶栏 —— 品牌、后端活性点、风险提示与主题切换。
@@ -18,14 +19,20 @@ import { BrandWordmark } from '@/components/brand/BrandWordmark'
 export function TopBar({
   navigationTriggerRef,
   onOpenNavigation,
+  sidebarCollapsed,
+  onToggleSidebar,
 }: {
   navigationTriggerRef?: RefObject<HTMLButtonElement | null>
   onOpenNavigation?: () => void
+  sidebarCollapsed: boolean
+  onToggleSidebar: () => void
 }) {
   const accounts = useDomainStore((s) => s.accounts)
   // 全舰队「偏离」计数（风险轴）：常驻顶栏、跟着翻页；随 5s 轮询自动增减，账户对回目标即清零。
   // 主动暂停的持仓偏离属于预期状态，不计入调仓提醒。
   const offCount = (accounts ?? []).filter(needsAdjustmentAttention).length
+  const sidebarLabel = sidebarCollapsed ? '展开侧栏' : '收起侧栏'
+  const SidebarIcon = sidebarCollapsed ? PanelLeftOpen : PanelLeftClose
 
   return (
     <header className="flex flex-none flex-wrap items-center gap-3 border-b border-line bg-surface px-5 py-3">
@@ -38,6 +45,13 @@ export function TopBar({
       >
         <Menu size={18} aria-hidden />
       </button>
+      <Tooltip content={sidebarLabel}>
+        <button type="button" aria-label={sidebarLabel} aria-controls="desktop-account-navigation" aria-expanded={!sidebarCollapsed}
+          className="hidden size-7 shrink-0 cursor-pointer place-items-center rounded-md text-ink-2 hover:bg-fill hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-accent md:grid"
+          onClick={onToggleSidebar}>
+          <SidebarIcon size={16} aria-hidden />
+        </button>
+      </Tooltip>
       <Link to="/" aria-label="axile 首页">
         <BrandWordmark />
       </Link>
