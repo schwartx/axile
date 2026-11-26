@@ -258,8 +258,6 @@ export function AppSidebar({
   const accountParameters: NavItemSpec[] = [
     { label: '基本信息', to: accountPath('/edit'), active: exact(accountPath('/edit')) },
     { label: '连接设置', to: accountPath('/edit/connection'), active: exact(accountPath('/edit/connection')) },
-    { label: '杠杆设置', to: accountPath('/edit/leverage'), active: exact(accountPath('/edit/leverage')) },
-    { label: '品种控制', to: accountPath('/edit/symbols'), active: exact(accountPath('/edit/symbols')) },
   ]
   const accountExecution: NavItemSpec[] = [
     { label: '定时任务', to: accountPath('/edit/timer'), active: exact(accountPath('/edit/timer')) },

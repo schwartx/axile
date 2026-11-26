@@ -37,8 +37,6 @@ describe('describeSymbolControl', () => {
 
 describe('accountConfigVtName', () => {
   it('按种类 + 账户生成共享名', () => {
-    expect(accountConfigVtName(7, 'leverage')).toBe('account-config-leverage-7')
-    expect(accountConfigVtName(7, 'symbols')).toBe('account-config-symbols-7')
     expect(accountConfigVtName(7, 'algorithm')).toBe('account-config-algorithm-7')
     expect(accountConfigVtName(7, 'empty')).toBe('account-config-empty-7')
   })

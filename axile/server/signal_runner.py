@@ -15,7 +15,7 @@ from axile.executor.models.portfolio_target import PortfolioTarget
 from axile.executor.models.unified_account_assets import Position, UnifiedAccountAssets
 from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
-from axile.server.context import Context
+from axile.server.context import Context, ContextSettings
 from axile.server.market_data import read_configured_market_data, read_market_data
 from axile.server.portfolio_function import PortfolioFunctionError, _error_from_exception, calculate_portfolio_target
 from axile.server.portfolio_runner import (
@@ -127,12 +127,14 @@ def _run_child(
     quote_code: str | None,
     metadata: SignalAccountContext,
     code: str | None,
+    settings: ContextSettings | None = None,
 ) -> None:
     try:
         assets = _account_assets(manual_assets, account_code, metadata)
         target = None
         if code is not None:
-            target = calculate_portfolio_target(code, _SignalContext(_SignalQueries(assets, quote_code, pipe)))
+            context = _SignalContext(_SignalQueries(assets, quote_code, pipe), settings=settings)
+            target = calculate_portfolio_target(code, context)
             if target.mode != "quantity":
                 raise ValueError("调仓信号的组合函数必须返回数量模式")
         pipe.send(SignalCalculation(assets, target))
@@ -147,6 +149,8 @@ def _read_channel_quotes(source: SignalQuoteSource, symbols: list[str], timeout:
         if source.connection_mode == "terminal" and source.terminal_path is not None:
             return read_configured_market_data(("gm", source.gm_config()), symbols, timeout=timeout)
         return read_market_data("gm", source.gm_values(), symbols, timeout=timeout)
+    if source.kind in ("ctp", "tq"):
+        return read_configured_market_data((source.kind, source.futures_config()), symbols, timeout=timeout)
     return read_tushare_quotes(source.url, source.token, symbols, timeout)
 
 
@@ -181,12 +185,13 @@ def run_signal(
     metadata: SignalAccountContext,
     code: str | None,
     timeout: float,
+    settings: ContextSettings | None = None,
 ) -> SignalCalculation:
     """用与组合试跑相同的进程隔离策略，超时后终止计算。"""
     source = config.quote_source
     quote_code = source.code if source.kind == "custom" else None
     read_quotes = partial(_read_channel_quotes, source) if quote_code is None and code is not None else None
-    args = (config.manual_assets, config.account_code, quote_code, metadata, code)
+    args = (config.manual_assets, config.account_code, quote_code, metadata, code, settings)
     return cast(SignalCalculation, _run_isolated_signal(_run_child, args, timeout, read_quotes))
 
 

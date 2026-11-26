@@ -33,6 +33,17 @@ class CtpMarketDataConfig:
     investor_id: str
     password: str = field(repr=False)
 
+    @staticmethod
+    def _validate_front(front: str) -> str:
+        return validate_connection_endpoint(
+            front, scheme="required", allowed_schemes=frozenset({"tcp"}), port="required"
+        )
+
+    @classmethod
+    def from_front(cls, front: str) -> CtpMarketDataConfig:
+        """使用空凭据登录允许匿名访问的行情前置。"""
+        return cls(cls._validate_front(front), "", "", "")
+
     @classmethod
     def from_account_config(cls, values: Mapping[str, object]) -> CtpMarketDataConfig:
         """读取行情地址和行情登录字段。"""
@@ -42,7 +53,7 @@ class CtpMarketDataConfig:
         if not isinstance(password, str) or not password or any(char in password for char in "\r\n\0"):
             raise ValueError("CTP 行情密码格式不正确")
         return cls(
-            validate_connection_endpoint(front, scheme="required", allowed_schemes=frozenset({"tcp"}), port="required"),
+            cls._validate_front(front),
             validate_credential("broker_id", values.get("broker_id")),
             validate_credential("investor_id", values.get("investor_id")),
             password,

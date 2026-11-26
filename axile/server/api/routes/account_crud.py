@@ -14,7 +14,12 @@ from starlette.concurrency import run_in_threadpool
 
 from axile.channels import get_channel, list_channels
 from axile.channels.gm_sessions import GMSessionSettings
-from axile.channels.rebalance_signal import SIGNAL_CHANNEL
+from axile.channels.rebalance_signal import (
+    SIGNAL_CHANNEL,
+    SignalAccountConfig,
+    signal_market_descriptor,
+    validate_signal_quote_market,
+)
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.notification_function import validate_notification_function
 from axile.common.serialization import from_payload, parse_input, provided_fields, to_payload
@@ -69,6 +74,13 @@ async def _account_response(account: dict[str, Any], sync: dict[str, Any]) -> di
     )
 
 
+def _validate_gm_schedule(channel: TradeChannel | str, market: str, options: dict[str, Any]) -> None:
+    """调仓信号的特殊阶段按市场校验，交易账户仍按交易渠道校验。"""
+    sessions = GMSessionSettings.from_channel_options(options)
+    if sessions is not None:
+        sessions.validate_channel(signal_market_descriptor(market).channel if channel == SIGNAL_CHANNEL else channel)
+
+
 def _account_read_request() -> dict[str, object]:
     """只传入渠道白名单与进程会话快照，账户查询直接返回最终 JSON。"""
     return {
@@ -81,11 +93,15 @@ def _account_read_request() -> dict[str, object]:
     }
 
 
-def _validate_channel_account_config(channel: TradeChannel | str, config: dict[str, object]) -> dict[str, object]:
+def _validate_channel_account_config(
+    channel: TradeChannel | str, config: dict[str, object], market: str
+) -> dict[str, object]:
     """按渠道模型校验账户配置并返回可直接持久化的规范化结果。"""
     plugin = get_channel(str(channel))
     try:
         validated = parse_input(plugin.account_config_model, config)
+        if isinstance(validated, SignalAccountConfig):
+            validate_signal_quote_market(market, validated.quote_source.kind)
     except ValueError as exc:
         raise ValueError(f"account_config: {exc}") from exc
     normalized = cast(
@@ -261,9 +277,8 @@ async def create_account(
                 return await _account_response(existing, sync)
         ensure_account_control_preset_compatible(account.account_control_preset, account.trade_channel)
         account.futures_close_policy.validate_channel(account.trade_channel)
-        if "gm" in account.channel_options:
-            from_payload(GMSessionSettings, account.channel_options["gm"]).validate_channel(account.trade_channel)
-        account_config = _validate_channel_account_config(account.trade_channel, account.account_config)
+        _validate_gm_schedule(account.trade_channel, account.market, account.channel_options)
+        account_config = _validate_channel_account_config(account.trade_channel, account.account_config, account.market)
         _check_algorithm_channel_compat(account.algorithm, str(account.trade_channel), "下单算法")
         _check_algorithm_channel_compat(account.empty_positions_algorithm, str(account.trade_channel), "清仓算法")
         if account.execution_notification_code and account.execution_notification_code.strip():
@@ -349,7 +364,7 @@ async def copy_account(
                 | {"name": request.name.strip(), "is_started": False, "replay_recording_enabled": False},
             )
             ensure_account_control_preset_compatible(payload.account_control_preset, payload.trade_channel)
-            config = _validate_channel_account_config(payload.trade_channel, payload.account_config)
+            config = _validate_channel_account_config(payload.trade_channel, payload.account_config, payload.market)
             _check_algorithm_channel_compat(payload.algorithm, str(payload.trade_channel), "下单算法")
             _check_algorithm_channel_compat(payload.empty_positions_algorithm, str(payload.trade_channel), "清仓算法")
             parse_cron_expr(payload.cron_expr)
@@ -663,7 +678,9 @@ async def account_next_run_time(
     next_execution_times = (
         _next_job_execution_times(
             job,
-            account.trade_channel,
+            signal_market_descriptor(account.market).channel
+            if account.trade_channel == SIGNAL_CHANNEL
+            else account.trade_channel,
             gm_sessions=GMSessionSettings.from_channel_options(account.channel_options),
         )
         if job is not None
@@ -751,7 +768,9 @@ async def _update_account(
             if next_trade_channel != db_account.trade_channel
             else {**db_account.account_config, **account.account_config}
         )
-        normalized_account_config = _validate_channel_account_config(next_trade_channel, next_account_config)
+        normalized_account_config = _validate_channel_account_config(
+            next_trade_channel, next_account_config, db_account.market
+        )
         # 算法与渠道按"更新后的目标状态"配对校验:PATCH 可能只改其一,必须取生效后的组合。
         next_close_policy = (
             db_account.futures_close_policy
@@ -760,8 +779,7 @@ async def _update_account(
         )
         next_close_policy.validate_channel(next_trade_channel)
         next_options = account.channel_options if account.channel_options is not UNSET else db_account.channel_options
-        if "gm" in next_options:
-            from_payload(GMSessionSettings, next_options["gm"]).validate_channel(next_trade_channel)
+        _validate_gm_schedule(next_trade_channel, db_account.market, next_options)
         next_algorithm = (
             account.algorithm
             if account.algorithm is not None and account.algorithm is not UNSET

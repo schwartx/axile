@@ -12,6 +12,8 @@ from axile.channels.contracts import (
     ChannelPlugin,
     ChannelSchedule,
 )
+from axile.channels.market_data import MarketDataConfiguration
+from axile.channels.registry import list_channels
 from axile.common.trade_channel import TradeChannel
 from axile.executor.gm_market_data import GMMarketDataConfig
 from axile.executor.models.unified_account_assets import Position
@@ -20,6 +22,23 @@ from axile.executor.models.unified_input_accounts import BaseAccountConfig, vali
 SIGNAL_CHANNEL = "rebalance_signal"
 SIGNAL_EVENT = "signal.calculated"
 TUSHARE_API_URL = "https://api.tushare.pro"
+_QUOTE_MARKETS = {"gm": "ashare", "tushare": "ashare", "ctp": "ctp", "tq": "ctp"}
+
+
+def signal_market_descriptor(market: str) -> ChannelDescriptor:
+    """按组合使用的市场名称获取渠道声明的市场规则。"""
+    for plugin in list_channels():
+        descriptor = plugin.descriptor
+        if descriptor.market and descriptor.portfolio and descriptor.portfolio.market_label == market:
+            return descriptor
+    raise ValueError("请选择已注册的调仓信号市场")
+
+
+def validate_signal_quote_market(market: str, kind: str) -> None:
+    """校验账户的预置行情与所选市场一致。"""
+    descriptor = signal_market_descriptor(market)
+    if kind != "custom" and _QUOTE_MARKETS[kind] != descriptor.market:
+        raise ValueError("所选行情来源不支持该市场")
 
 
 class SignalAccountContext(TypedDict):
@@ -60,12 +79,15 @@ class SignalAssets:
 class SignalQuoteSource:
     """调仓信号使用的一种独立行情来源。"""
 
-    kind: Literal["gm", "tushare", "custom"]
+    kind: Literal["gm", "tushare", "ctp", "tq", "custom"]
     token: str = field(default="", repr=False)
     connection_mode: Literal["terminal", "service"] = "terminal"
     serv_addr: str | None = None
     terminal_path: str | None = None
     url: str = TUSHARE_API_URL
+    md_front: str = ""
+    tq_username: str = field(default="", repr=False)
+    tq_password: str = field(default="", repr=False)
     code: str = ""
 
     __forbid_unknown__ = True
@@ -78,10 +100,27 @@ class SignalQuoteSource:
         """提取掘金行情终端设置。"""
         return GMMarketDataConfig.from_account_config(self.gm_values(), terminal_path=self.terminal_path)
 
+    def futures_config(self) -> MarketDataConfiguration:
+        """从行情草稿构建独立期货行情配置。"""
+        if self.kind == "ctp":
+            try:
+                from axile.executor.ctp.market_data import CtpMarketDataConfig
+            except ImportError as exc:
+                raise ValueError("当前服务未安装 CTP 行情依赖") from exc
+            return CtpMarketDataConfig.from_front(self.md_front)
+
+        from axile.executor.tq.market_data import TQMarketDataConfig
+
+        return TQMarketDataConfig.from_account_config(
+            {"tq_username": self.tq_username, "tq_password": self.tq_password}
+        )
+
     def validate(self) -> None:
         """在保存和试算时校验所选来源的配置。"""
         if self.kind == "gm":
             self.gm_config()
+        elif self.kind in ("ctp", "tq"):
+            self.futures_config()
         elif self.kind == "tushare":
             self.token = self.token.strip()
             if not self.token or any(character.isspace() for character in self.token):
@@ -115,7 +154,7 @@ class SignalAccountConfig(BaseAccountConfig):
 
 
 def signal_plugin() -> ChannelPlugin:
-    """发出目标数量及通知的渠道，市场由当前组合决定。"""
+    """发出所选市场的目标数量及通知。"""
     return ChannelPlugin(
         descriptor=ChannelDescriptor(
             channel=SIGNAL_CHANNEL,
@@ -130,7 +169,7 @@ def signal_plugin() -> ChannelPlugin:
                 execution_timeout=30,
                 trade_algorithm=None,
             ),
-            leverage=ChannelLeverage(min=1, max=1, step=1),
+            leverage=ChannelLeverage(min=0, max=125, step=0.1),
             account_form=ChannelAccountForm(),
             schedule=ChannelSchedule(kind="continuous"),
             portfolio=None,

@@ -8,7 +8,7 @@ from typing import cast
 from fastapi import HTTPException, status
 
 from axile.channels.gm_sessions import GMSessionSettings
-from axile.channels.rebalance_signal import SIGNAL_CHANNEL
+from axile.channels.rebalance_signal import SIGNAL_CHANNEL, signal_market_descriptor
 from axile.server.api.deps import SchedDep
 from axile.server.cron import (
     combine_cron_triggers,
@@ -117,11 +117,11 @@ async def _apply_account_job(sched: SchedDep, account: AccountContext, latest_po
             delete_job(sched, account_id)
         return
 
-    triggers = effective_triggers(
-        account.cron_expr,
-        account.trade_channel,
-        GMSessionSettings.from_channel_options(account.channel_options),
-    )
+    sessions = GMSessionSettings.from_channel_options(account.channel_options)
+    channel = account.trade_channel
+    if sessions is not None and channel == SIGNAL_CHANNEL:
+        channel = signal_market_descriptor(account.market).channel
+    triggers = effective_triggers(account.cron_expr, channel, sessions)
     desired_trigger = combine_cron_triggers(triggers)
     # CompactOrTrigger.__str__ 只有条数，不能当排程指纹。
     from axile.server.execution.scheduler import _scheduled_signal

@@ -1,5 +1,5 @@
 import { connectionValueError, normalizeMoneyValue } from '@/components/ui/connectionFieldValue'
-import type { ChannelAccountFieldConstraints, Position } from '@/types/api'
+import type { ChannelAccountFieldConstraints, ChannelCapability, Position } from '@/types/api'
 
 export const SIGNAL_CHANNEL = 'rebalance_signal'
 export const TUSHARE_API_URL = 'https://api.tushare.pro'
@@ -10,11 +10,31 @@ export const TUSHARE_URL_CONSTRAINTS: ChannelAccountFieldConstraints = {
 export const GM_ADDRESS_CONSTRAINTS: ChannelAccountFieldConstraints = {
   endpoint: { scheme: 'forbidden', allowed_schemes: [], port: 'required', allow_path: false },
 }
+const CTP_FRONT_CONSTRAINTS: ChannelAccountFieldConstraints = {
+  endpoint: { scheme: 'required', allowed_schemes: ['tcp'], port: 'required', allow_path: false },
+}
 
 export type SignalQuoteSource =
   | { kind: 'gm'; token: string; connection_mode: 'terminal' | 'service'; serv_addr: string | null; terminal_path?: string }
   | { kind: 'tushare'; token: string; url: string }
+  | { kind: 'ctp'; md_front: string }
+  | { kind: 'tq'; tq_username: string; tq_password: string }
   | { kind: 'custom'; code: string }
+
+export function signalQuoteOptions(market: string, channels: ChannelCapability[]) {
+  const options = [
+    { market: 'ashare', value: 'gm', label: '掘金' },
+    { market: 'ashare', value: 'tushare', label: 'Tushare' },
+    { market: 'ctp', value: 'ctp', label: 'CTP' },
+    { market: 'ctp', value: 'tq', label: '天勤' },
+    { market: null, value: 'custom', label: '自定义函数' },
+  ] as const
+  return options.filter((option) => option.market === null || (
+    option.market === market && (
+      option.value === 'tushare' || channels.some((channel) => channel.channel === option.value && channel.independent_market_data)
+    )
+  ))
+}
 
 export interface SignalAssetSnapshot {
   total_asset: number
@@ -60,6 +80,9 @@ export interface SignalDraft {
   gmAddress: string
   tushareToken: string
   tushareUrl: string
+  md_front: string
+  tq_username: string
+  tq_password: string
   quoteCode: string
 }
 
@@ -98,6 +121,7 @@ def fetch_account(_context: SignalAccountContext) -> dict[str, object]:
     }
 `,
   quoteKind: 'gm', gmToken: '', gmMode: 'service', gmTerminalPath: '', gmAddress: '', tushareToken: '', tushareUrl: TUSHARE_API_URL,
+  md_front: '', tq_username: '', tq_password: '',
   quoteCode: `from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.models.unified_price import UnifiedPriceData
 
@@ -168,6 +192,8 @@ export function configToSignalDraft(config: SignalConfig): SignalDraft {
       gmAddress: quotes.serv_addr ?? '',
     } : {}),
     ...(quotes.kind === 'tushare' ? { tushareToken: quotes.token, tushareUrl: quotes.url } : {}),
+    ...(quotes.kind === 'ctp' ? { md_front: quotes.md_front } : {}),
+    ...(quotes.kind === 'tq' ? { tq_username: quotes.tq_username, tq_password: quotes.tq_password } : {}),
     ...(quotes.kind === 'custom' ? { quoteCode: quotes.code } : {}),
   }
 }
@@ -177,6 +203,7 @@ function amount(value: string): number {
 }
 
 type SignalQuoteField = 'quoteKind' | 'gmToken' | 'gmAddress' | 'gmTerminalPath' | 'tushareToken' | 'tushareUrl' | 'quoteCode'
+  | 'md_front' | 'tq_username' | 'tq_password'
 export type SignalQuoteErrors = Partial<Record<SignalQuoteField, string | null>>
 
 export function signalQuoteErrors(draft: SignalDraft): SignalQuoteErrors {
@@ -194,6 +221,15 @@ export function signalQuoteErrors(draft: SignalDraft): SignalQuoteErrors {
       return {
         tushareToken: connectionValueError({ kind: 'secret', value: draft.tushareToken, required: true, label: 'Tushare Token' }),
         tushareUrl: connectionValueError({ kind: 'endpoint', value: draft.tushareUrl.trim() || TUSHARE_API_URL, required: true, label: 'API URL', constraints: TUSHARE_URL_CONSTRAINTS }),
+      }
+    case 'ctp':
+      return {
+        md_front: connectionValueError({ kind: 'endpoint', value: draft.md_front, required: true, label: '行情前置', constraints: CTP_FRONT_CONSTRAINTS }),
+      }
+    case 'tq':
+      return {
+        tq_username: connectionValueError({ kind: 'identifier', value: draft.tq_username, required: true, label: '天勤账号' }),
+        tq_password: connectionValueError({ kind: 'secret', value: draft.tq_password, required: true, label: '天勤密码' }),
       }
     case 'custom':
       return draft.quoteCode.trim() ? {} : { quoteCode: '请填写行情函数' }
@@ -213,6 +249,10 @@ export function signalQuoteConfig(draft: SignalDraft): SignalQuoteSource {
     }
     case 'tushare':
       return { kind: 'tushare', token: draft.tushareToken.trim(), url: draft.tushareUrl.trim() || TUSHARE_API_URL }
+    case 'ctp':
+      return { kind: 'ctp', md_front: draft.md_front.trim() }
+    case 'tq':
+      return { kind: 'tq', tq_username: draft.tq_username, tq_password: draft.tq_password }
     case 'custom':
       return { kind: 'custom', code: draft.quoteCode }
     default:

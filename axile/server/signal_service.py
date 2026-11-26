@@ -6,48 +6,64 @@ from typing import Any
 
 from loguru import logger
 
-from axile.channels import list_channels
-from axile.channels.rebalance_signal import SIGNAL_CHANNEL, SIGNAL_EVENT, SignalAccountConfig
+from axile.channels.rebalance_signal import (
+    SIGNAL_CHANNEL,
+    SIGNAL_EVENT,
+    SignalAccountConfig,
+    SignalAccountContext,
+    signal_market_descriptor,
+)
 from axile.common.serialization import parse_input, to_payload
 from axile.executor.algorithms.utils.clock import clock_now_iso
+from axile.executor.models.portfolio_target import PortfolioTarget
+from axile.executor.models.unified_account_assets import UnifiedAccountAssets
+from axile.server.context import ContextSettings
 from axile.server.db.models.account import Account, AccountContext
+from axile.server.execution.execution_algorithms import resolve_account_leverages
 from axile.server.execution.notification_outbox import wake_notifications
 from axile.server.native_store import native_operation
 from axile.server.repositories import get_account
 from axile.server.signal_runner import SignalCalculation, run_signal
 
 
-async def calculate_signal(account: AccountContext, portfolio_code: str | None) -> SignalCalculation:
+async def calculate_signal(
+    account: AccountContext,
+    portfolio_code: str | None,
+    *,
+    leverage_overrides: dict[str, float] | None = None,
+) -> SignalCalculation:
     """手动刷新、试跑与定时计算共用账户与行情函数。"""
     config = parse_input(SignalAccountConfig, account.account_config)
+    long_leverage, short_leverage = resolve_account_leverages(account)
+    overrides = leverage_overrides or {}
+    settings = ContextSettings(
+        long_leverage=overrides.get("long_leverage", long_leverage),
+        short_leverage=overrides.get("short_leverage", short_leverage),
+        weight_precision=account.weight_precision,
+    )
     return await asyncio.to_thread(
         run_signal,
         config,
         {"account_id": account.id, "name": account.name, "market": account.market},
         portfolio_code,
         account.execution_timeout,
+        settings,
     )
 
 
 def signal_quantity_unit(market: str) -> str:
-    """按组合已有的市场契约选取数量单位。"""
-    return next(
-        (
-            descriptor.units.quantity_label
-            for plugin in list_channels()
-            if (descriptor := plugin.descriptor).portfolio is not None
-            and market in {descriptor.market, descriptor.portfolio.market_label}
-        ),
-        "",
-    )
+    """按账户已选市场提供目标数量单位。"""
+    return signal_market_descriptor(market).units.quantity_label
 
 
 def _signal_notification(
-    account: Account,
+    account: SignalAccountContext,
     event_id: str,
     at: str,
     scheduled_at: str,
     result: SignalCalculation | None,
+    *,
+    is_test: bool = False,
 ) -> dict[str, object]:
     failed = result is None
     targets = result.target.targets if result is not None and result.target is not None else {}
@@ -60,20 +76,20 @@ def _signal_notification(
     return {
         "event_id": event_id,
         "event_type": SIGNAL_EVENT,
-        "account": {"id": account.id, "name": account.name, "market": account.market},
+        "account": {"id": account["account_id"], "name": account.get("name", ""), "market": account["market"]},
         "execution": {
             "id": None,
             "kind": "signal",
-            "trigger_source": "scheduler",
+            "trigger_source": "notification_test" if is_test else "scheduler",
             "status": "FAILED" if failed else "SUCCEEDED",
             "success": not failed,
             "error": "账户数据、行情或组合计算失败，请查看服务日志" if failed else None,
             "notified_at": at,
-            "is_test": False,
+            "is_test": is_test,
         },
         "scheduled_at": scheduled_at,
-        "quantity_unit": signal_quantity_unit(account.market),
-        "is_test": False,
+        "quantity_unit": signal_quantity_unit(account["market"]),
+        "is_test": is_test,
         "strategy": {},
         "assets": {}
         if assets is None
@@ -91,6 +107,28 @@ def _signal_notification(
         "summary": {"symbol_count": len(targets), "order_count": 0, "trade_count": 0},
         "default_feishu_variables": {},
     }
+
+
+def signal_notification_sample(name: str, market: str) -> tuple[dict[str, object], dict[str, float], str]:
+    """从已选市场生成测试卡片与通知函数共用的样例。"""
+    descriptor = signal_market_descriptor(market)
+    assert descriptor.portfolio is not None
+    quantity = 100.0 if descriptor.units.quantity_kind == "share" else 1.0
+    targets = dict.fromkeys(descriptor.portfolio.example_symbols[:2], quantity)
+    at = clock_now_iso()
+    assets = UnifiedAccountAssets(
+        total_asset=10000,
+        available_cash=10000,
+        market_value=0,
+        currency=descriptor.currency,
+        update_time=at,
+        extra={"positions_known": True},
+    )
+    result = SignalCalculation(assets, PortfolioTarget(mode="quantity", targets=targets))
+    context = _signal_notification(
+        {"account_id": None, "name": name, "market": market}, "signal:test", at, at, result, is_test=True
+    )
+    return context, targets, descriptor.units.quantity_label
 
 
 async def run_scheduled_signal(account_id: int, scheduled_at: datetime) -> None:
@@ -131,7 +169,13 @@ async def run_scheduled_signal(account_id: int, scheduled_at: datetime) -> None:
                     "event_type": SIGNAL_EVENT,
                     "account_id": account_id,
                     "created_at": at,
-                    "context": _signal_notification(account, event_id, at, planned, result),
+                    "context": _signal_notification(
+                        {"account_id": account.id, "name": account.name, "market": account.market},
+                        event_id,
+                        at,
+                        planned,
+                        result,
+                    ),
                 },
             },
         )

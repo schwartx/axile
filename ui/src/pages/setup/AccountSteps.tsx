@@ -1,7 +1,7 @@
 import { FuturesClosePolicyEditor } from '@/features/account/FuturesClosePolicyEditor'
 import { defaultClosePolicy } from '@/features/account/futuresClosePolicy'
 import { useEffect, useRef, useState } from 'react'
-import { Bitcoin, ChartCandlestick, Check, CircleHelp, Landmark, Monitor, RadioTower, type LucideIcon } from 'lucide-react'
+import { Bitcoin, ChartCandlestick, Check, CircleHelp, createLucideIcon, Landmark, Monitor, RadioTower, SquareTerminal, Target, type LucideIcon } from 'lucide-react'
 import { useNavigate } from '@/components/ui/nav'
 import { ConnectionValidationAside } from '@/features/account/connectionValidation/ConnectionValidationAside'
 import { ExecutionTimeoutInput } from '@/features/account/ExecutionTimeoutInput'
@@ -12,8 +12,6 @@ import { leverageError } from '@/features/account/leverage'
 import { WizardHeading, WizardPage, WizardNav, WizardTimerPage } from '@/features/setup/WizardNav'
 import { Segmented } from '@/components/ui/Segmented'
 import { ChannelConditionalReveal } from '@/features/setup/ChannelConditionalReveal'
-import { Skeleton } from '@/components/ui/Skeleton'
-import { WeightBars } from '@/components/viz/WeightBars'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { ConnectionField } from '@/components/ui/ConnectionField'
 import { CreatePortfolioModal } from '@/features/portfolio/CreatePortfolioModal'
@@ -25,7 +23,6 @@ import {
   normalizeMoneyValue,
   type ConnectionValidationContext,
 } from '@/components/ui/connectionFieldValue'
-import { refreshPortfolioTargetSnapshot } from '@/lib/api/portfolios'
 import { createAccount } from '@/lib/api/accounts'
 import { useDomainStore } from '@/stores/domain'
 import { useChannelCatalogStore, useChannelDescriptor } from '@/stores/channels'
@@ -57,11 +54,21 @@ const CHANNEL_ICONS: Record<string, LucideIcon> = {
   landmark: Landmark,
   monitor: Monitor,
   'radio-tower': RadioTower,
-  signal: RadioTower,
+  signal: Target,
 }
 
-function ChannelIcon({ name }: { name: string }) {
-  const Icon = CHANNEL_ICONS[name] ?? CircleHelp
+const CHANNEL_ICON_OVERRIDES: Record<string, LucideIcon> = {
+  gm: SquareTerminal,
+  binance: createLucideIcon('Binance', [['path', {
+    key: 'mark',
+    d: 'M12 2l6.14 6.14-2.27 2.27L12 6.51l-3.87 3.9-2.27-2.27L12 2Zm0 20-6.14-6.14 2.27-2.27 3.87 3.9 3.87-3.9 2.27 2.27L12 22ZM2 12l2.27-2.27L6.54 12l-2.27 2.27L2 12Zm7.73 0L12 9.73 14.27 12 12 14.27 9.73 12Zm7.73 0 2.27-2.27L22 12l-2.27 2.27L17.46 12Z',
+    fill: 'currentColor',
+    stroke: 'none',
+  }]]),
+}
+
+function ChannelIcon({ channel }: { channel: ChannelCapability }) {
+  const Icon = CHANNEL_ICON_OVERRIDES[channel.channel] ?? CHANNEL_ICONS[channel.icon] ?? CircleHelp
   return <Icon aria-hidden="true" className="h-6 w-6" strokeWidth={1.8} />
 }
 
@@ -134,7 +141,7 @@ export function AcctChannel() {
                   onClick={() => available && selectChannel(ch)}
                 >
                   <span className="grid h-11 w-11 flex-none place-items-center rounded-xl bg-fill">
-                    <ChannelIcon name={ch.icon} />
+                    <ChannelIcon channel={ch} />
                   </span>
                   <span>
                     <span className={`block text-[17px] font-[620] ${available ? '' : 'text-ink-3'}`}>{ch.label}</span>
@@ -680,9 +687,6 @@ export function AcctConfirm() {
   const descriptor = useChannelDescriptor(acct.channel)
   const scheduleKind = descriptor?.schedule.kind
   const showShortLeverage = descriptor?.ui.show_short_leverage ?? true
-  const [previewState, setPreviewState] = useState<
-    { status: 'idle' | 'loading' } | { status: 'success'; rows: [string, number][] } | { status: 'error'; message: string }
-  >({ status: 'idle' })
   const [createError, setCreateError] = useState<Error | null>(null)
 
   const cronList = scheduleKind ? resolveCronList(scheduleKind, { ...acct, supN: 0 }, descriptor?.schedule.night) : []
@@ -699,21 +703,6 @@ export function AcctConfirm() {
   const levText = showShortLeverage
     ? `做多 ${acct.longLeverage}x / 做空 ${acct.shortLeverage}x`
     : `${descriptor?.ui.long_leverage_label ?? '做多杠杆'} ${acct.longLeverage}`
-
-  const preview = async () => {
-    if (acct.portfolioId == null) {
-      toast('请先绑定组合再试跑')
-      return
-    }
-    try {
-      setPreviewState({ status: 'loading' })
-      const w = (await refreshPortfolioTargetSnapshot(acct.portfolioId)).weights
-      setPreviewState({ status: 'success', rows: Object.entries(w).filter(([, v]) => Math.abs(v) > 1e-9).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])) })
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e)
-      setPreviewState({ status: 'error', message })
-    }
-  }
 
   const submit = async () => {
     setCreateError(null)
@@ -782,7 +771,7 @@ export function AcctConfirm() {
   return (
     <div className="flex h-full flex-col">
       <div className="flex-1 overflow-y-auto">
-        <WizardPage kicker="账户设置 · 6 / 6" title={acct.portfolioId == null ? '确认并创建账户' : '确认无误就开跑'}>
+        <WizardPage kicker="账户设置 · 6 / 6" title="确认并创建账户">
           <div className="rounded-2xl bg-ok-soft px-7 py-6 text-[20px] leading-loose">
             这个账户 <b className="font-[680]">{acct.name || '（未命名）'}</b> 在 <b className="font-[680]">{descriptor?.label ?? acct.channel}</b> 上，
             {acct.portfolioId == null ? '暂不绑定组合' : <>绑定组合 <b className="font-[680]">#{acct.portfolioId}</b></>}，用 <b className="font-[680]">{intentText}</b> 的方式，
@@ -796,23 +785,10 @@ export function AcctConfirm() {
               接下来：{scheduleFires.map(fmtFire).join(' · ')}
             </div>
           )}
-
-          <div className="mt-5">
-            <button disabled={acct.portfolioId == null || previewState.status === 'loading'} className="cursor-pointer rounded-[11px] border-0 bg-ink-1 px-[22px] py-2.5 text-[15px] font-[550] text-surface disabled:cursor-not-allowed disabled:opacity-45" onClick={preview}>
-              {previewState.status === 'loading' ? '计算中…' : '▶ 计算目标'}
-            </button>
-            <div className="mt-[18px] max-w-[460px] rounded-[14px] border border-dashed border-line bg-surface p-5">
-              {previewState.status === 'idle' && <div className="py-5 text-center text-[15px] text-ink-3">{acct.portfolioId == null ? '绑定组合后可计算目标持仓' : '试跑看这套组合此刻会调成什么样'}</div>}
-              {previewState.status === 'loading' && <div aria-busy="true"><Skeleton className="h-4 w-full" /><Skeleton className="mt-3 h-4 w-4/5" /><Skeleton className="mt-3 h-4 w-3/5" /></div>}
-              <ErrorNotice intent="mutation" title="试跑失败" error={previewState.status === 'error' ? previewState.message : null} onRetry={preview} />
-              {previewState.status === 'success' && previewState.rows.length === 0 && <div className="py-5 text-center text-[15px] text-ink-3">无目标持仓。</div>}
-              {previewState.status === 'success' && <WeightBars weights={previewState.rows} />}
-            </div>
-          </div>
           <ErrorNotice intent="mutation" title="创建账户失败" error={createError} variant="mutation" onRetry={submit} />
         </WizardPage>
       </div>
-      <WizardNav prevTo="/setup/acct/timer" nextLabel={acct.portfolioId == null ? '创建账户' : '创建并开跑'} onNext={submit} nextDisabled={!acct.name.trim()} />
+      <WizardNav prevTo="/setup/acct/timer" nextLabel="创建账户" onNext={submit} nextDisabled={!acct.name.trim()} />
     </div>
   )
 }

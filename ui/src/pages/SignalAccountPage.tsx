@@ -1,22 +1,27 @@
 import { Check } from 'lucide-react'
 import { useCallback, useState } from 'react'
 import { useParams } from 'react-router'
-import { ConnectionField } from '@/components/ui/ConnectionField'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { Link } from '@/components/ui/nav'
 import { CashFlowPanel } from '@/features/account/CashFlowPanel'
-import { EditLoading, EditSaveBar, Section, Toggle } from '@/features/account/editUi'
+import { EditLoading, EditSaveBar, Section } from '@/features/account/editUi'
+import { leverageError } from '@/features/account/leverage'
 import { AccountPageTitle } from '@/features/account/pageHead'
 import { PortfolioChoiceList } from '@/features/portfolio/PortfolioChoiceList'
+import { portfolioMarketDescriptor } from '@/features/portfolio/portfolioMarkets'
 import { WeightResult } from '@/features/portfolio/WeightResult'
+import { gmTimerSessions, parseSavedTimer, timerEditorError, timerStateToCronExpr } from '@/features/setup/cron'
+import { TimerEditor } from '@/features/setup/TimerEditor'
+import { SignalLeverageFields } from '@/features/signal/SignalLeverageFields'
 import { SignalSources, signalAction } from '@/features/signal/SignalSources'
 import { getSignalConfig } from '@/features/signal/signalApi'
 import { configToSignalDraft, initialSignalDraft, signalConfig } from '@/features/signal/signalData'
 import { getAccount, getAccountAssetSnapshots, getAccountTargetSnapshot, refreshAccountAssets, refreshAccountTargetSnapshot, updateAccount } from '@/lib/api/accounts'
 import { usePolling } from '@/lib/hooks/usePolling'
 import { shanghaiLabel } from '@/features/history/costs'
+import { useChannelCatalogStore } from '@/stores/channels'
 import { useDomainStore } from '@/stores/domain'
-import type { Account, AccountDashboardItem, Position } from '@/types/api'
+import type { Account, AccountDashboardItem, ChannelCapability, Position } from '@/types/api'
 
 export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
   const id = item.account_id
@@ -100,26 +105,49 @@ export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
   </div>
 }
 
-function SignalSettings({ accountId, account, initial }: {
+function SignalSettings({ accountId, account, initial, descriptor, signalDescriptor }: {
   accountId: number
   account: Account
   initial: Awaited<ReturnType<typeof getSignalConfig>>['account_config']
+  descriptor: ChannelCapability
+  signalDescriptor: ChannelCapability
 }) {
-  const [draft, setDraft] = useState(() => configToSignalDraft(initial))
+  const [draft, setDraft] = useState(() => ({
+    ...configToSignalDraft(initial), currency: initial.manual_assets?.currency ?? descriptor.currency,
+  }))
   const [portfolioId, setPortfolioId] = useState(account.portfolio_id)
-  const [cron, setCron] = useState(account.cron_expr)
-  const [started, setStarted] = useState(account.is_started)
+  const [leverage, setLeverage] = useState(() => ({
+    long: String(account.long_leverage ?? signalDescriptor.defaults.long_leverage),
+    short: String(account.short_leverage ?? signalDescriptor.defaults.short_leverage),
+  }))
+  const leverageInvalid = Object.values(leverage).some((value) => leverageError(value, signalDescriptor.leverage))
+  const { kind, night } = descriptor.schedule
+  const [timer, setTimer] = useState(() => ({
+    ...parseSavedTimer(kind, account.cron_expr, night, null, account.channel_options.gm),
+    autoOn: account.is_started && Boolean(account.cron_expr),
+  }))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<Error | null>(null)
-  const [baseline, setBaseline] = useState(() => ({ draft, portfolioId, cron, started }))
+  const [baseline, setBaseline] = useState(() => ({ draft, portfolioId, timer, leverage }))
   const refreshAccounts = useDomainStore((state) => state.refreshAccounts)
-  const current = { draft, portfolioId, cron, started }
+  const current = { draft, portfolioId, timer, leverage }
+  const timerChanged = JSON.stringify(timer) !== JSON.stringify(baseline.timer)
+  const cron = timerStateToCronExpr(kind, timer, night)
+  const gmSessions = gmTimerSessions(descriptor.channel, timer)
+  const sessionsChanged = JSON.stringify(gmSessions) !== JSON.stringify(gmTimerSessions(descriptor.channel, baseline.timer))
   const savedQuoteCode = baseline.draft.quoteKind === 'custom' ? baseline.draft.quoteCode : initialSignalDraft.quoteCode
   const save = async () => {
     setBusy(true)
     setError(null)
     try {
-      await updateAccount(accountId, { account_config: { ...signalConfig(draft) }, portfolio_id: portfolioId, cron_expr: cron.trim(), is_started: started })
+      await updateAccount(accountId, {
+        account_config: { ...signalConfig(draft) },
+        portfolio_id: portfolioId,
+        ...(Number(leverage.long) !== Number(baseline.leverage.long) ? { long_leverage: Number(leverage.long) } : {}),
+        ...(Number(leverage.short) !== Number(baseline.leverage.short) ? { short_leverage: Number(leverage.short) } : {}),
+        ...(timerChanged ? { cron_expr: cron, is_started: timer.autoOn } : {}),
+        ...(gmSessions && sessionsChanged ? { channel_options: { ...account.channel_options, gm: gmSessions } } : {}),
+      })
       setBaseline(current)
       await refreshAccounts()
     } catch (cause) {
@@ -143,20 +171,25 @@ function SignalSettings({ accountId, account, initial }: {
       >
         {portfolioId === null && <Check size={14} aria-hidden />}不绑定组合
       </button>}
-    ><div className="py-3"><PortfolioChoiceList selectedId={portfolioId} onSelect={setPortfolioId} /></div></Section>
+    ><div className="py-3"><PortfolioChoiceList market={account.market} selectedId={portfolioId} onSelect={setPortfolioId} /></div></Section>
+    <Section label="杠杆"><div className="py-3">
+      <SignalLeverageFields limits={signalDescriptor.leverage} value={leverage} onChange={setLeverage} />
+    </div></Section>
     <Section label="数据来源"><div className="py-3">
-      <SignalSources identity={`signal:${accountId}`} value={draft} onChange={setDraft} savedQuoteCode={savedQuoteCode} />
+      <SignalSources market={descriptor.market ?? ''} identity={`signal:${accountId}`} value={draft} onChange={setDraft} savedQuoteCode={savedQuoteCode} />
     </div></Section>
     <Section label="定时计算">
       <div className="grid gap-3 py-3">
-        <ConnectionField label="定时表达式" kind="text" value={cron} onChange={setCron} placeholder="30 15 * * 1-5" fillablePlaceholder />
-        <div className="flex items-center gap-2 text-[13px] text-ink-2">
-          <Toggle on={started} onClick={() => setStarted(!started)} ariaLabel="启用定时任务" /><span>启用定时任务</span>
-        </div>
+        <TimerEditor tradeChannel={account.trade_channel} scheduleChannel={descriptor.channel}
+          scheduleKind={kind} nightSchedule={night} value={timer} onChange={setTimer} />
       </div>
     </Section>
-    <EditSaveBar changes={JSON.stringify(current) === JSON.stringify(baseline) ? [] : ['信号设置已改']} blocked={busy || (started && !cron.trim())}
-      onCancel={() => { setDraft(baseline.draft); setPortfolioId(baseline.portfolioId); setCron(baseline.cron); setStarted(baseline.started); setError(null) }}
+    <EditSaveBar changes={JSON.stringify(current) === JSON.stringify(baseline) ? [] : ['信号设置已改']}
+      blocked={busy || leverageInvalid || Boolean(timerEditorError(timer)) || (timer.autoOn && !cron)}
+      onCancel={() => {
+        setDraft(baseline.draft); setPortfolioId(baseline.portfolioId); setTimer(baseline.timer)
+        setLeverage(baseline.leverage); setError(null)
+      }}
       onSave={() => void save()} error={error} />
   </div>
 }
@@ -168,7 +201,15 @@ export function SignalAccountSettingsPage() {
     { queryKey: `signal-settings-account:${accountId}`, intervalMs: 0 })
   const config = usePolling(useCallback((signal: AbortSignal) => getSignalConfig(accountId, signal), [accountId]),
     { queryKey: `signal-settings-config:${accountId}`, intervalMs: 0 })
-  if (account.error || config.error) return <ErrorNotice title="信号设置读取失败" intent="read" error={account.error ?? config.error} />
-  if (!account.data || !config.data) return <EditLoading />
-  return <SignalSettings key={accountId} accountId={accountId} account={account.data} initial={config.data.account_config} />
+  const channels = useChannelCatalogStore((state) => state.channels)
+  const catalogError = useChannelCatalogStore((state) => state.error)
+  if (account.error || config.error || catalogError) return <ErrorNotice title="信号设置读取失败" intent="read" error={account.error ?? config.error ?? catalogError} />
+  if (!account.data || !config.data || !channels) return <EditLoading />
+  const descriptor = portfolioMarketDescriptor(channels, account.data.market)
+  if (!descriptor) return <ErrorNotice title="信号设置读取失败" intent="read" error="所选市场未注册" />
+  const tradeChannel = account.data.trade_channel
+  const signalDescriptor = channels.find((channel) => channel.channel === tradeChannel)
+  if (!signalDescriptor) return <ErrorNotice title="信号设置读取失败" intent="read" error="调仓信号渠道未注册" />
+  return <SignalSettings key={accountId} accountId={accountId} account={account.data} initial={config.data.account_config}
+    descriptor={descriptor} signalDescriptor={signalDescriptor} />
 }

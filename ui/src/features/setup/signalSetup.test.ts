@@ -5,16 +5,18 @@ import { MemoryRouter } from 'react-router'
 
 import { flowOf } from '@/features/setup/steps'
 import { SignalNotificationSetup } from '@/features/signal/SignalNotificationSetup'
-import { configToSignalDraft, initialSignalDraft, positionVolumePatch, SIGNAL_CHANNEL, signalAccountConfig, signalAccountErrors, signalConfig, signalEquityPatch, signalQuoteConfig, signalQuoteErrors, TUSHARE_API_URL } from '@/features/signal/signalData'
+import { configToSignalDraft, initialSignalDraft, positionVolumePatch, signalAccountConfig, signalAccountErrors, signalConfig, signalEquityPatch, signalQuoteConfig, signalQuoteErrors, signalQuoteOptions, TUSHARE_API_URL } from '@/features/signal/signalData'
+import { AcctConfirm } from '@/pages/setup/AccountSteps'
 import { SignalSetupPage } from '@/pages/setup/SignalSetupPage'
 import { useChannelCatalogStore } from '@/stores/channels'
+import { useWizardStore } from '@/stores/wizard'
 import type { ChannelCapability } from '@/types/api'
 
 test('信号向导依次进入行情、资金、定时、通知和确认', () => {
   const path = '/setup/acct/signal'
   const { steps } = flowOf(path)
   expect(steps.map((step) => step.label)).toEqual([
-    '选渠道', '账户与组合', '设置行情', '资金与持仓', '定时', '通知', '试算与确认',
+    '选渠道', '账户与组合', '设置行情', '资金与持仓', '定时', '通知', '确认',
   ])
   for (const [index, step] of steps.entries()) {
     const search = new URL(step.path, 'http://localhost').search
@@ -22,21 +24,28 @@ test('信号向导依次进入行情、资金、定时、通知和确认', () =>
   }
 })
 
-test('信号向导复用定时预览，并在单独的一步配置通知', () => {
+test('信号向导先选择市场，并在单独的一步配置通知', () => {
   const catalog = useChannelCatalogStore.getInitialState()
   const previousChannels = catalog.channels
-  catalog.channels = [{ channel: SIGNAL_CHANNEL, schedule: { kind: 'continuous' } } as ChannelCapability]
+  catalog.channels = [{
+    channel: 'ctp', market: 'ctp', portfolio: { market_label: '期货', example_symbols: [] },
+    schedule: { kind: 'cn_futures' },
+  } as unknown as ChannelCapability, {
+    channel: 'rebalance_signal', leverage: { min: 0, max: 125, step: 0.1 },
+  } as ChannelCapability]
   try {
     const render = (step: number) => renderToStaticMarkup(createElement(MemoryRouter, {
       initialEntries: [`/setup/acct/signal?step=${step}`],
     }, createElement(SignalSetupPage)))
 
-    const timer = render(5)
-    expect(timer).toContain('aria-label="自动生成信号" aria-checked="false"')
-    expect(timer).toContain('排程预览 · 北京时间')
-    expect(timer).toContain('<aside')
-    expect(timer).not.toContain('补发')
-    expect(timer).not.toContain('飞书 Webhook')
+    const market = render(2)
+    expect(market).toContain('aria-label="市场"')
+    expect(market).toContain('role="radio" aria-checked="false" tabindex="0"')
+    expect(market).toContain('>期货</button>')
+    expect(market).toContain('>做多杠杆</label>')
+    expect(market).toContain('>做空杠杆</label>')
+    expect(market).toContain('先选择市场，再查看同市场的组合。')
+    expect(render(5)).toContain('请先在「账户与组合」选择市场。')
 
     const notification = render(6)
     expect(notification).toContain('aria-label="通知方式"')
@@ -49,7 +58,8 @@ test('信号向导复用定时预览，并在单独的一步配置通知', () =>
     const confirmation = render(7)
     expect(confirmation).toContain('账户设置 · 7 / 7')
     expect(confirmation).toContain('暂不绑定组合')
-    expect(confirmation).toContain('disabled="">试算目标数量</button>')
+    expect(confirmation).toContain('>确认</div>')
+    expect(confirmation).not.toContain('试算目标数量')
     expect(confirmation).toContain('>创建账户</button>')
     expect(confirmation).toContain('>通知</dt><dd>未配置</dd>')
   } finally {
@@ -57,14 +67,43 @@ test('信号向导复用定时预览，并在单独的一步配置通知', () =>
   }
 })
 
-test('飞书通知显示录入状态并默认明文显示 Webhook', () => {
+test('交易账户确认页已绑定组合也直接创建账户', () => {
+  const wizard = useWizardStore.getInitialState()
+  const previousAccount = wizard.acct
+  wizard.acct = { ...previousAccount, name: '交易账户', portfolioId: 7 }
+  try {
+    const confirmation = renderToStaticMarkup(createElement(MemoryRouter, {
+      initialEntries: ['/setup/acct/confirm'],
+    }, createElement(AcctConfirm)))
+    expect(confirmation).toContain('确认并创建账户')
+    expect(confirmation).toContain('#7')
+    expect(confirmation).toContain('>创建账户</button>')
+    expect(confirmation).not.toContain('计算目标')
+  } finally {
+    wizard.acct = previousAccount
+  }
+})
+
+test('信号行情按市场筛选，外部渠道市场可用自定义函数', () => {
+  const channels = ['gm', 'ctp', 'tq'].map((channel) => ({ channel, independent_market_data: true }) as ChannelCapability)
+  const kinds = (market: string) => signalQuoteOptions(market, channels).map((source) => source.value)
+  expect(kinds('ashare')).toEqual(['gm', 'tushare', 'custom'])
+  expect(kinds('ctp')).toEqual(['ctp', 'tq', 'custom'])
+  expect(kinds('external')).toEqual(['custom'])
+  expect(signalQuoteOptions('ctp', channels.slice(2)).map((source) => source.value)).toEqual(['tq', 'custom'])
+})
+
+test('飞书通知提供可选的测试按钮并默认明文显示 Webhook', () => {
   const render = (webhook: string) => renderToStaticMarkup(createElement(SignalNotificationSetup, {
-    mode: 'feishu', webhook, code: '', heading: null, footer: null,
+    mode: 'feishu', webhook, code: '', name: '草稿账户', market: 'A股', heading: null, footer: null,
     onModeChange: () => {}, onWebhookChange: () => {}, onCodeChange: () => {},
   }))
-  expect(render('  ')).toContain('role="status">待填写')
+  const testButton = (html: string) => html.match(/<aside aria-label="通知测试">.*?<button ([^>]+)>/)?.[1]
+  expect(testButton(render('  '))).toContain('disabled=""')
   const filled = render('fixture-key')
-  expect(filled).toContain('role="status">已填写')
+  expect(filled).toContain('aria-label="通知测试"')
+  expect(filled).toContain('发送测试卡片')
+  expect(testButton(filled)).not.toContain('disabled=""')
   expect(filled).toContain('aria-label="飞书 Webhook" type="text"')
   expect(filled).toContain('placeholder="可粘贴整条 webhook 链接"')
 })
@@ -141,4 +180,20 @@ test('预置行情只提交当前渠道字段，并恢复自定义 API URL', () 
   const config = signalConfig({ ...tushare, tushareUrl: url })
   expect(config.quote_source).toEqual({ kind: 'tushare', token: 'ts-fixture', url })
   expect(signalConfig(configToSignalDraft(config))).toEqual(config)
+})
+
+test('期货行情只保存所选来源的字段，编辑时恢复已保存的配置', () => {
+  const draft = {
+    ...initialSignalDraft, equity: '100000', cash: '80000',
+    md_front: 'tcp://quotes.example.test:15000', tq_username: 'fixture-user', tq_password: ' fixture-password ',
+  }
+  const ctp = signalConfig({ ...draft, quoteKind: 'ctp' })
+  expect(ctp.quote_source).toEqual({ kind: 'ctp', md_front: draft.md_front })
+  expect(signalConfig(configToSignalDraft(ctp))).toEqual(ctp)
+  expect(signalQuoteErrors({ ...draft, quoteKind: 'ctp', md_front: 'https://quotes.example.test:15000' }).md_front).toBeTruthy()
+
+  const tq = signalConfig({ ...draft, quoteKind: 'tq' })
+  expect(tq.quote_source).toEqual({ kind: 'tq', tq_username: draft.tq_username, tq_password: draft.tq_password })
+  expect(signalConfig(configToSignalDraft(tq))).toEqual(tq)
+  expect(signalQuoteErrors({ ...draft, quoteKind: 'tq', tq_password: '' }).tq_password).toBe('请填写天勤密码')
 })

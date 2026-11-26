@@ -410,22 +410,30 @@ fn settings(data: &Value, fields: &[&str]) -> Value {
 
 pub(crate) const SIGNAL_CHANNEL: &str = "rebalance_signal";
 
-fn signal_portfolio_market(
+fn validate_signal_market(
     connection: &Connection,
-    portfolio_id: &Value,
-) -> Result<Value, AnalysisError> {
-    let Some(portfolio_id) = portfolio_id.as_i64() else {
-        return Ok(json!(""));
+    market: &Value,
+    portfolio_id: Option<i64>,
+) -> Result<(), AnalysisError> {
+    let market = market
+        .as_str()
+        .filter(|market| !market.trim().is_empty())
+        .ok_or_else(|| invalid("请选择调仓信号账户市场"))?;
+    let Some(portfolio_id) = portfolio_id else {
+        return Ok(());
     };
     ensure_portfolio_on(connection, Some(portfolio_id))?;
-    let market = connection
+    let portfolio_market = connection
         .query_row(
             "SELECT market FROM portfolio WHERE id=?1",
             [portfolio_id],
             |row| row.get::<_, String>(0),
         )
         .map_err(sql)?;
-    Ok(json!(market))
+    if market != portfolio_market {
+        return Err(invalid("调仓信号账户只能绑定同市场的组合"));
+    }
+    Ok(())
 }
 
 fn insert_on(connection: &Connection, data: &Value, now: &str) -> Result<i64, AnalysisError> {
@@ -433,14 +441,9 @@ fn insert_on(connection: &Connection, data: &Value, now: &str) -> Result<i64, An
     crate::control_policy::parse_override(data["account_control_override"].clone())
         .map_err(|error| AnalysisError::caused_by("ACCOUNT_INPUT", error))?;
     ensure_portfolio_on(connection, data["portfolio_id"].as_i64())?;
-    let mut signal_data;
-    let data = if data["trade_channel"] == SIGNAL_CHANNEL {
-        signal_data = data.clone();
-        signal_data["market"] = signal_portfolio_market(connection, &data["portfolio_id"])?;
-        &signal_data
-    } else {
-        data
-    };
+    if data["trade_channel"] == SIGNAL_CHANNEL {
+        validate_signal_market(connection, &data["market"], data["portfolio_id"].as_i64())?;
+    }
     let identity = [
         "name",
         "market",
@@ -849,11 +852,6 @@ pub fn account_update(path: &str, request: &Value) -> Result<Value, AnalysisErro
                 now,
             )?;
         }
-        if let Some(portfolio_id) = data.get("portfolio_id") {
-            if portfolio_id != &previous["portfolio_id"] {
-                bind_on(&connection, account_id, portfolio_id.as_i64(), now)?;
-            }
-        }
         let is_signal = previous["trade_channel"] == SIGNAL_CHANNEL;
         let becomes_signal = data
             .get("trade_channel")
@@ -863,18 +861,26 @@ pub fn account_update(path: &str, request: &Value) -> Result<Value, AnalysisErro
             return Err(invalid("调仓信号账户与交易账户不能互换渠道"));
         }
         if is_signal {
-            let mut signal_data = data.clone();
-            let portfolio_id = data
-                .get("portfolio_id")
-                .unwrap_or(&previous["portfolio_id"]);
-            signal_data.insert(
-                "market".to_owned(),
-                signal_portfolio_market(&connection, portfolio_id)?,
-            );
-            patch_on(&connection, account_id, &signal_data, now)?;
-        } else {
-            patch_on(&connection, account_id, data, now)?;
+            if data
+                .get("market")
+                .is_some_and(|market| market != &previous["market"])
+            {
+                return Err(invalid("调仓信号账户创建后不可更改市场"));
+            }
+            validate_signal_market(
+                &connection,
+                &previous["market"],
+                data.get("portfolio_id")
+                    .unwrap_or(&previous["portfolio_id"])
+                    .as_i64(),
+            )?;
         }
+        if let Some(portfolio_id) = data.get("portfolio_id") {
+            if portfolio_id != &previous["portfolio_id"] {
+                bind_on(&connection, account_id, portfolio_id.as_i64(), now)?;
+            }
+        }
+        patch_on(&connection, account_id, data, now)?;
         if runtime_changed {
             let channel = data
                 .get("trade_channel")

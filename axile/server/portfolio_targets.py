@@ -31,7 +31,7 @@ async def calculate_portfolio_for_account(
         if resolved_account.trade_channel == SIGNAL_CHANNEL:
             from axile.server.signal_service import calculate_signal
 
-            target = (await calculate_signal(resolved_account, code)).target
+            target = (await calculate_signal(resolved_account, code, leverage_overrides=leverage_overrides)).target
             assert target is not None
             return target
         return await get_worker_backend_manager().calculate_portfolio(

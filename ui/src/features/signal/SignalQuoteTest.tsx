@@ -76,11 +76,21 @@ export function QuoteDetails({ quote, error, currency }: SignalQuoteTestResult['
   </div>
 }
 
-export function SignalQuoteTest({ draft, onValidate }: { draft: SignalDraft; onValidate?: () => boolean }) {
+export function SignalQuoteTest({ draft, examples, onValidate }: {
+  draft: SignalDraft
+  examples: string[]
+  onValidate?: () => boolean
+}) {
   const symbolInputId = useId()
   const custom = draft.quoteKind === 'custom'
+  const uppercase = draft.quoteKind === 'gm' || draft.quoteKind === 'tushare'
   const currency = custom ? '' : 'CNY'
-  const [symbols, setSymbols] = useState(['600000.SH', '000001.SZ', '510300.SH'])
+  const [symbols, setSymbols] = useState(() => {
+    if (draft.quoteKind === 'ctp') return ['rb2701']
+    if (draft.quoteKind === 'tq') return ['SHFE.rb2701']
+    if (custom) return examples.slice(0, MAX_SYMBOLS)
+    return ['600000.SH', '000001.SZ', '510300.SH']
+  })
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<SignalQuoteTestResult | null>(null)
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null)
@@ -92,8 +102,14 @@ export function SignalQuoteTest({ draft, onValidate }: { draft: SignalDraft; onV
 
   // 连接草稿只在内存中比较，避免把令牌写入 DOM 或持久化。
   const target = draft.gmMode === 'service' ? draft.gmAddress.trim() : draft.gmTerminalPath?.trim()
-  const config = custom ? draft.quoteCode : draft.quoteKind === 'tushare'
-    ? [draft.tushareToken.trim(), draft.tushareUrl.trim()] : [draft.gmToken.trim(), draft.gmMode, target]
+  const config = {
+    gm: [draft.gmToken.trim(), draft.gmMode, target],
+    tushare: [draft.tushareToken.trim(), draft.tushareUrl.trim()],
+    ctp: draft.md_front.trim(),
+    tq: [draft.tq_username, draft.tq_password],
+    custom: draft.quoteCode,
+    '': null,
+  }[draft.quoteKind]
   const version = JSON.stringify([config, symbols])
   const stale = testedVersion !== null && testedVersion !== version
   const rows = result?.items ?? []
@@ -143,7 +159,7 @@ export function SignalQuoteTest({ draft, onValidate }: { draft: SignalDraft; onV
             </div>
             <SymbolTagInput id={symbolInputId} value={symbols} compact invalid={tooMany}
               describedBy={`${symbolInputId}-help`} placeholder="输入或粘贴标的"
-              onChange={(next) => setSymbols(custom ? next : appendUniqueSymbols([], next.map((symbol) => symbol.toUpperCase())))} />
+              onChange={(next) => setSymbols(uppercase ? appendUniqueSymbols([], next.map((symbol) => symbol.toUpperCase())) : next)} />
           </div>
         </form>
         {rows.length > 0 && <div aria-label="测试结果 · 行情时间为北京时间" className="mt-2.5 divide-y divide-line border-t border-line">

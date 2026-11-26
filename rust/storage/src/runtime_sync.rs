@@ -300,15 +300,15 @@ pub fn scheduler_account(path: &str, value: &Value) -> Result<Value, AnalysisErr
     let connection = open_reader(Path::new(path))?;
     let row = connection
         .query_row(
-            "SELECT a.trade_channel,s.schedule,
+            "SELECT a.trade_channel,s.schedule,a.market,
              (SELECT portfolio_id FROM portfolioaccount WHERE account_id=a.id ORDER BY id DESC LIMIT 1)
              FROM account a JOIN account_settings s ON s.account_id=a.id WHERE a.id=?1",
             [input.account_id],
-            |row| Ok((row.get::<_, String>(0)?,row.get::<_, String>(1)?,row.get::<_, Option<i64>>(2)?)),
+            |row| Ok((row.get::<_, String>(0)?,row.get::<_, String>(1)?,row.get::<_, String>(2)?,row.get::<_, Option<i64>>(3)?)),
         )
         .optional()
         .map_err(database)?;
-    let Some((channel, schedule, portfolio_id)) = row else {
+    let Some((channel, schedule, market, portfolio_id)) = row else {
         return Ok(Value::Null);
     };
     let mut values = serde_json::from_str::<Value>(&schedule)
@@ -321,7 +321,7 @@ pub fn scheduler_account(path: &str, value: &Value) -> Result<Value, AnalysisErr
     let schedule: Schedule = serde_json::from_value(values)
         .map_err(|error| AnalysisError::new("INVALID_DATA", error.to_string()))?;
     Ok(
-        json!({"trade_channel":channel,"is_started":schedule.is_started,
+        json!({"trade_channel":channel,"market":market,"is_started":schedule.is_started,
         "cron_expr":schedule.cron_expr,"channel_options":schedule.channel_options,"supplement":schedule.supplement,"portfolio_id":portfolio_id}),
     )
 }

@@ -115,6 +115,20 @@ fn update_on(connection: &Connection, request: &Value) -> Result<Value, Analysis
             return Err(invalid(format!("组合字段 {key} 必须是文本或空值")));
         }
     }
+    if changes
+        .get("market")
+        .is_some_and(|market| market != &existing["market"])
+    {
+        let bound_signal: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM account a WHERE a.trade_channel=?2 AND
+             (SELECT b.portfolio_id FROM portfolioaccount b WHERE b.account_id=a.id ORDER BY b.id DESC LIMIT 1)=?1)",
+            params![id, accounts::SIGNAL_CHANNEL],
+            |row| row.get(0),
+        ).map_err(sql)?;
+        if bound_signal {
+            return Err(invalid("已绑定调仓信号账户的组合不可更改市场"));
+        }
+    }
     if let Some(code) = changes.get("custom_calc_py_code") {
         if code.as_str().is_none_or(|code| code.trim().is_empty()) {
             return Err(invalid("自定义组合计算函数不可清空"));

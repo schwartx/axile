@@ -38,6 +38,8 @@ import { Tooltip } from '@/components/ui/Tooltip'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { Skeleton, SkeletonGroup, SkeletonText } from '@/components/ui/Skeleton'
 import { AccountActions } from '@/features/account/AccountActions'
+import { AccountLeverageDialog } from '@/features/account/AccountLeverageDialog'
+import { AccountSymbolsDialog } from '@/features/account/AccountSymbolsDialog'
 import { CopyAccountDialog } from '@/features/account/CopyAccountDialog'
 import { useExecutionRunner } from '@/features/account/useExecutionRunner'
 import { useTerminateAction } from '@/features/account/useTerminateAction'
@@ -87,7 +89,7 @@ import { describeCron } from '@/features/setup/cron'
 import { TimerQuickModal } from '@/features/setup/TimerQuickModal'
 import { useToastStore } from '@/stores/ui'
 import { useChannelDescriptor } from '@/stores/channels'
-import type { AccountDashboardItem } from '@/types/api'
+import type { Account, AccountDashboardItem } from '@/types/api'
 import { TargetSnapshotControl } from '@/features/portfolio/TargetSnapshotControl'
 import { portfolioTargetSummary } from '@/features/portfolio/portfolioCardSummary'
 
@@ -128,6 +130,8 @@ export function AccountDetail({
   }, [accountId])
   const [timerOpen, setTimerOpen] = useState(false)
   const [refreshingAssets, setRefreshingAssets] = useState(false)
+  const [editingConfig, setEditingConfig] = useState<'leverage' | 'symbols' | null>(null)
+  const [savedConfig, setSavedConfig] = useState<{ account: Account; time: number } | null>(null)
   const [copyOpen, setCopyOpen] = useState(false)
   // 启停乐观态：确认后立刻翻转，驱动按钮/状态句日记式换字；与 item 对齐后清除。
   const [startedOverride, setStartedOverride] = useState<boolean | null>(null)
@@ -289,14 +293,12 @@ export function AccountDetail({
 
   // Hero 配置带（杠杆 / 品种控制 / 算法）：取自本组件已在轮询的账户详情，零新增请求。
   // 配置事实而非盈亏或偏离：中性色、零动效；每项兼作对应编辑分区的入口。
-  // 杠杆 / 品种值落在编辑页摘要；算法名落在对应选择器的选中名称。
+  // 杠杆和品种原位编辑，算法保留编辑页过渡。
   const acc = account.data ?? readAlgorithmAccountPreview(accountId)
   const catalog = useSyncExternalStore(algorithmCatalog.subscribe, algorithmCatalog.getSnapshot, algorithmCatalog.getSnapshot)
   useEffect(() => {
     if (!catalog.data && !catalog.error) void algorithmCatalog.load()
   }, [catalog.data, catalog.error])
-  const tEditLeverage = useViewTransitionState(`/accounts/${accountId}/edit/leverage`)
-  const tEditSymbols = useViewTransitionState(`/accounts/${accountId}/edit/symbols`)
   const tEditAlgorithm = useViewTransitionState(`/accounts/${accountId}/edit/algorithm`)
   const showShortLeverage = channelDescriptor?.ui.show_short_leverage ?? true
   const positionValueLabel = positionValueLabelOf(channelDescriptor?.ui)
@@ -312,12 +314,26 @@ export function AccountDetail({
   const configLoading = acc == null && account.loading && cachedConfig == null
   const portfolioName =
     portfolioId != null ? (portfolios?.find((p) => p.id === portfolioId)?.name ?? null) : null
-  const leverageText = acc
-    ? describeLeverage(acc.long_leverage, acc.short_leverage, showShortLeverage)
+  // 保存响应先更新摘要，下一次成功读回后恢复使用轮询数据。
+  const configAccount = savedConfig && (account.updatedAt ?? 0) <= savedConfig.time
+    ? savedConfig.account
+    : account.data
+  const displayConfig = configAccount ?? acc
+  const leverageText = displayConfig
+    ? describeLeverage(displayConfig.long_leverage, displayConfig.short_leverage, showShortLeverage)
     : (cachedConfig?.leverage ?? null)
-  const symbolsText = acc
-    ? describeSymbolControl(acc.forbidden_symbols, acc.risk_symbols)
+  const symbolsText = displayConfig
+    ? describeSymbolControl(displayConfig.forbidden_symbols, displayConfig.risk_symbols)
     : (cachedConfig?.symbols ?? null)
+  const closeConfig = () => setEditingConfig(null)
+  const saveConfig = (updated: Account) => {
+    setSavedConfig({ account: updated, time: Date.now() })
+    writeAccountConfigSummary(accountId, updated, { showShortLeverage })
+    closeConfig()
+    toast('设置已保存')
+    void account.refresh()
+    void useDomainStore.getState().refreshAccounts()
+  }
   // 算法摘要不收短：TARGET-POS-TASK 等直接给完整参数句，配置带里整项分组 + 截断兜底。
   const algorithmText = acc
     ? algorithmScheduleSummary(algorithmRefOf(acc.algorithm), acc.algorithm_schedule?.length ?? 0, Object.keys(acc.product_algorithms ?? {}).length)
@@ -401,7 +417,7 @@ export function AccountDetail({
 
   const remark = item.remark
   const connection = useAccountConnection(accountId)
-  const connectedAssets = useConnectedAssets(accountId, () => {
+  const connectedAssets = useConnectedAssets(accountId, item.trade_channel, () => {
     void refreshAssetSnapshots()
     void refreshComparison()
     void account.refresh()
@@ -660,24 +676,14 @@ export function AccountDetail({
          * 配置带：hero 最后一层（名称 → 状态 → 资产 → 配置），label 领值的「· 外分组」
          * 形态——每项是独立 inline 单元，折行只发生在项间，算法参数句内部的「·」不再
          * 与分段符糊成一片。带常挂（缓存/骨架占位），卡高不随账户详情到位而长个。
-         * 五项等距左对齐；算法名过长时 OverflowText 截断。整项可点跳编辑分区。
-         * 杠杆 / 品种值去摘要；算法名去对应选择器。算法入口只飞本次点击的名称。
+         * 五项等距左对齐；算法名过长时 OverflowText 截断。整项可点打开对应设置。
+         * 算法名去对应选择器，过渡只使用本次点击的名称。
          */}
         <div className="mt-2 flex flex-wrap items-center gap-x-6 gap-y-1.5 border-t border-line pt-2 text-[14px]">
-          <HeroConfigItem
-            label="杠杆"
-            to={`/accounts/${accountId}/edit/leverage`}
-            title="杠杆设置"
-            value={configLoading ? null : (leverageText ?? '—')}
-            vtName={tEditLeverage ? accountConfigVtName(accountId, 'leverage') : undefined}
-          />
-          <HeroConfigItem
-            label="品种"
-            to={`/accounts/${accountId}/edit/symbols`}
-            title="品种控制"
-            value={configLoading ? null : (symbolsText ?? '—')}
-            vtName={tEditSymbols ? accountConfigVtName(accountId, 'symbols') : undefined}
-          />
+          <HeroConfigButton label="杠杆" title="杠杆设置" value={configLoading ? null : (leverageText ?? '—')}
+            disabled={!configAccount || !channelDescriptor} onClick={() => setEditingConfig('leverage')} />
+          <HeroConfigButton label="品种" title="品种控制" value={configLoading ? null : (symbolsText ?? '—')}
+            disabled={!configAccount} onClick={() => setEditingConfig('symbols')} />
           <div className="flex min-w-0 items-center gap-1.5">
             <HeroConfigItem
               label="算法"
@@ -713,6 +719,14 @@ export function AccountDetail({
           </div>}
         </div>
       </Card>
+      {editingConfig === 'leverage' && configAccount && channelDescriptor && (
+        <AccountLeverageDialog accountId={accountId} account={configAccount} channel={channelDescriptor}
+          onClose={closeConfig} onSaved={saveConfig} />
+      )}
+      {editingConfig === 'symbols' && configAccount && (
+        <AccountSymbolsDialog accountId={accountId} account={configAccount}
+          onClose={closeConfig} onSaved={saveConfig} />
+      )}
       <CopyAccountDialog accountId={accountId} name={item.name} isStarted={isStarted} isBusy={isBusy} open={copyOpen} onClose={() => setCopyOpen(false)} />
 
       <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
@@ -1043,6 +1057,24 @@ function RecentAmount({ amount, currency }: { amount: string; currency: string }
       {amount}
       {unit ? <span className="ml-1 font-medium text-ink-3">{unit}</span> : null}
     </span>
+  )
+}
+
+function HeroConfigButton({ label, title, value, disabled, onClick }: {
+  label: string
+  title: string
+  value: string | null
+  disabled: boolean
+  onClick: () => void
+}) {
+  return (
+    <button type="button" title={title} aria-haspopup="dialog" disabled={disabled} onClick={onClick}
+      className="group flex flex-none items-center gap-1.5 rounded-sm enabled:cursor-pointer focus-visible:outline-2 focus-visible:outline-accent">
+      <span className="text-ink-3">{label}</span>
+      {value === null ? <SkeletonText className="w-14" /> : (
+        <span className="num whitespace-nowrap font-medium text-ink-1 group-enabled:group-hover:underline">{value}</span>
+      )}
+    </button>
   )
 }
 

@@ -9,10 +9,12 @@ import { Select } from '@/components/ui/Select'
 import { Skeleton, SkeletonLines } from '@/components/ui/Skeleton'
 import { Toggle } from '@/features/account/editUi'
 import { useRemountFade } from '@/lib/viewTransition'
+import { useChannelCatalogStore } from '@/stores/channels'
+import { SignalFuturesConnection } from './SignalFuturesConnection'
 import { SignalGmConnection } from './SignalGmConnection'
 import { SignalQuoteTest } from './SignalQuoteTest'
 import { SignalSetupColumns } from './SignalSetupColumns'
-import { signalEquityPatch, TUSHARE_API_URL, TUSHARE_URL_CONSTRAINTS, type PositionDraft, type SignalDraft, type SignalQuoteErrors } from './signalData'
+import { signalEquityPatch, signalQuoteOptions, TUSHARE_API_URL, TUSHARE_URL_CONSTRAINTS, type PositionDraft, type SignalDraft, type SignalQuoteErrors } from './signalData'
 
 export const signalAction = 'cursor-pointer rounded-[8px] border border-line bg-surface px-3 py-2 text-[13px] text-ink-1 enabled:hover:border-border-strong disabled:cursor-default disabled:opacity-50'
 
@@ -38,7 +40,8 @@ function QuoteSourceSkeleton({ kind, onDone }: { kind: SignalDraft['quoteKind'];
     ) : (
       <div className="grid gap-3">
         <Skeleton className="h-[67px]" />
-        {kind === 'tushare' ? <Skeleton className="h-[67px]" /> : <>
+        {(kind === 'tushare' || kind === 'tq') && <Skeleton className="h-[67px]" />}
+        {kind === 'gm' && <>
           <Skeleton className="h-4 w-28" />
           <Skeleton className="h-44" />
           <Skeleton className="h-20" />
@@ -48,11 +51,13 @@ function QuoteSourceSkeleton({ kind, onDone }: { kind: SignalDraft['quoteKind'];
   </div>
 }
 
-export function SignalSources({ value, onChange, identity, savedQuoteCode, only, quoteHeading, quoteFooter, quoteErrors, onValidateQuotes }: {
+export function SignalSources({ value, onChange, identity, savedQuoteCode, market, exampleSymbols = [], only, quoteHeading, quoteFooter, quoteErrors, onValidateQuotes }: {
   value: SignalDraft
   onChange: (draft: SignalDraft) => void
   identity: string
   savedQuoteCode: string
+  market: string
+  exampleSymbols?: string[]
   only?: 'account' | 'quote'
   quoteHeading?: ReactNode
   quoteFooter?: ReactNode
@@ -62,6 +67,7 @@ export function SignalSources({ value, onChange, identity, savedQuoteCode, only,
   const [section, setSection] = useState<'account' | 'quote'>('account')
   const [skeletonKind, setSkeletonKind] = useState<SignalDraft['quoteKind']>('')
   const [quoteEditorStatus, setQuoteEditorStatus] = useState<HTMLDivElement | null>(null)
+  const channels = useChannelCatalogStore((state) => state.channels)
   const sourceErrorId = useId()
   const quoteFade = useRemountFade(value.quoteKind)
   const quoteStep = only === 'quote'
@@ -73,6 +79,8 @@ export function SignalSources({ value, onChange, identity, savedQuoteCode, only,
   const quoteFields = value.quoteKind && (
     <div key={value.quoteKind} className={`relative isolate grid min-w-0 gap-3 ${quoteStep ? `min-h-0 flex-1 ${fullHeightQuote ? 'grid-rows-[minmax(0,1fr)]' : 'content-start overflow-y-auto'}` : quoteFade ? 'panel-fade-in' : ''}`}>
       {value.quoteKind === 'gm' && <SignalGmConnection draft={value} errors={quoteErrors} onChange={update} />}
+      {(value.quoteKind === 'ctp' || value.quoteKind === 'tq') && <SignalFuturesConnection
+        channel={value.quoteKind} draft={value} errors={quoteErrors} onChange={update} />}
       {value.quoteKind === 'tushare' && <div className="grid min-w-0 gap-3">
         <ConnectionField label="Tushare Token" kind="secret" required error={quoteErrors?.tushareToken}
           value={value.tushareToken} onChange={(tushareToken) => update({ tushareToken })} />
@@ -135,26 +143,23 @@ export function SignalSources({ value, onChange, identity, savedQuoteCode, only,
         </>}
       </>}
     </> : <>
-      <div className={`flex shrink-0 justify-between gap-4 ${quoteStep ? 'items-start' : 'items-center'}`}>
+      <div className={`flex shrink-0 justify-between gap-4 ${quoteStep ? 'flex-wrap items-start' : 'items-center'}`}>
         {quoteHeading}
-        <div className={quoteStep ? 'grid justify-items-end' : 'w-full'}>
+        <div className={quoteStep ? 'ml-auto grid min-w-0 justify-items-end' : 'w-full'}>
           <ChoiceGroup variant={quoteStep ? 'compact' : 'cards'} ariaLabel="行情来源" value={value.quoteKind}
+            className={quoteStep ? 'flex-wrap justify-end' : undefined}
             invalid={Boolean(quoteErrors?.quoteKind)} describedBy={quoteErrors?.quoteKind ? sourceErrorId : undefined}
             onChange={(quoteKind) => {
               if (quoteKind === value.quoteKind) return
               if (quoteStep) setSkeletonKind(window.matchMedia('(prefers-reduced-motion: reduce)').matches ? '' : quoteKind)
               update({ quoteKind })
             }}
-            options={[
-              { value: 'gm', label: '掘金' },
-              { value: 'tushare', label: 'Tushare' },
-              { value: 'custom', label: '自定义函数' },
-            ]} />
+            options={signalQuoteOptions(market, channels ?? [])} />
           {quoteErrors?.quoteKind && <p id={sourceErrorId} role="alert" className="mt-1 text-xs text-warn">{quoteErrors.quoteKind}</p>}
         </div>
       </div>
       {quoteStep ? <SignalSetupColumns footer={quoteFooter} sidebar={value.quoteKind && (
-        <SignalQuoteTest key={value.quoteKind} draft={value} onValidate={onValidateQuotes} />
+        <SignalQuoteTest key={value.quoteKind} draft={value} examples={exampleSymbols} onValidate={onValidateQuotes} />
       )}>{quoteFields}</SignalSetupColumns> : quoteFields}
     </>}
   </div>

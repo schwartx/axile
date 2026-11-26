@@ -31,6 +31,11 @@ export function portfolioMarketOptions(channels: ChannelCapability[]): Portfolio
   return options
 }
 
+/** 找到与组合创建时使用的市场名称对应的渠道描述。 */
+export function portfolioMarketDescriptor(channels: ChannelCapability[], market: string) {
+  return channels.find((channel) => channel.market && channel.portfolio?.market_label === market)
+}
+
 /** 根据渠道提供的标的生成最小可运行组合函数。 */
 export function portfolioTemplate(option: PortfolioMarketOption): string {
   const weight = 1 / option.exampleSymbols.length

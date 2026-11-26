@@ -1,7 +1,7 @@
 /**
  * 账户浅配置页 /accounts/:id/edit/*。
  *
- * 基本信息、杠杆、品种控制、组合执行各走可直达子路由；连接设置、定时、算法、流控
+ * 基本信息、组合执行各走可直达子路由；连接设置、定时、算法、流控
  * 仍由各自的完整编辑器承载。保存保持最小 PATCH + 底栏变更摘要；保存与取消都不离开本页。
  */
 
@@ -11,24 +11,12 @@ import { basicNotificationPatch, basicNotificationStatus } from '@/features/acco
 import { NOTIFICATION_STATUS_LABEL } from '@/features/account/notificationStatus'
 import { InkRewrite } from '@/components/ui/InkRewrite'
 import { Link } from '@/components/ui/nav'
-import { useCallback, useEffect, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Check, ExternalLink } from 'lucide-react'
-import { useParams, useViewTransitionState } from 'react-router'
+import { useParams } from 'react-router'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { PortfolioChoiceList } from '@/features/portfolio/PortfolioChoiceList'
-import { SymbolTagInput } from '@/components/ui/SymbolTagInput'
-import { LeverageInput } from '@/features/account/LeverageInput'
-import { leverageError } from '@/features/account/leverage'
 import { AccountPageTitle } from '@/features/account/pageHead'
-import { WeightPrecisionInput } from '@/features/account/WeightPrecisionInput'
-import { weightPrecisionError } from '@/features/account/weightPrecision'
-import {
-  accountConfigVtName,
-  describeLeverage,
-  describeSymbolControl,
-  readAccountConfigSummary,
-  writeAccountConfigSummary,
-} from '@/features/account/configSummary'
 import { getAccount, getDefaultAccountNotification, testAccountFeishu, updateAccount, type AccountFeishuTestResult, type AccountUpdatePayload } from '@/lib/api/accounts'
 import { usePolling } from '@/lib/hooks/usePolling'
 import { useDomainStore } from '@/stores/domain'
@@ -39,7 +27,6 @@ import {
   EditError,
   EditLoading,
   EditSaveBar,
-  EditSynopsis,
   Row,
   Section,
   Toggle,
@@ -53,17 +40,8 @@ interface Draft {
   notificationCode: string | null
   clearFeishu: boolean
   feishu: string
-  longLev: string
-  shortLev: string
   portfolioId: number | null
-  forbidden: string[]
-  risk: string[]
-  weightPrecision: string
   writeEmpty: boolean
-}
-
-function sameList(a: string[], b: string[]): boolean {
-  return a.length === b.length && a.every((x, i) => x === b[i])
 }
 
 function draftOf(acc: Account): Draft {
@@ -73,39 +51,20 @@ function draftOf(acc: Account): Draft {
     notificationCode: acc.execution_notification_code,
     clearFeishu: false,
     feishu: '',
-    longLev: String(acc.long_leverage ?? ''),
-    shortLev: String(acc.short_leverage ?? ''),
     portfolioId: acc.portfolio_id,
-    forbidden: acc.forbidden_symbols ?? [],
-    risk: acc.risk_symbols ?? [],
-    weightPrecision: String(acc.weight_precision ?? ''),
     writeEmpty: Boolean(acc.write_empty_record),
   }
 }
 
-function buildPatch(draft: Draft, acc: Account, showShortLeverage: boolean, defaultCode: string | null): AccountUpdatePayload {
+function buildPatch(draft: Draft, acc: Account, defaultCode: string | null): AccountUpdatePayload {
   const patch: AccountUpdatePayload = {}
   const name = draft.name.trim()
   if (name && name !== acc.name) patch.name = name
   if (draft.remark !== (acc.remark ?? '')) patch.remark = draft.remark || null
   Object.assign(patch, basicNotificationPatch(acc.execution_notification_code, draft.notificationCode, draft.feishu, draft.clearFeishu, defaultCode))
 
-  const nl = Number(draft.longLev) || 0
-  if (nl !== (acc.long_leverage ?? 0)) patch.long_leverage = nl
-  const ns = showShortLeverage ? Number(draft.shortLev) || 0 : 0
-  if (ns !== (acc.short_leverage ?? 0)) patch.short_leverage = ns
-
   if (draft.portfolioId !== acc.portfolio_id) patch.portfolio_id = draft.portfolioId
 
-  const fb = draft.forbidden
-  if (!sameList(fb, acc.forbidden_symbols ?? [])) patch.forbidden_symbols = fb.length ? fb : null
-  const rk = draft.risk
-  if (!sameList(rk, acc.risk_symbols ?? [])) patch.risk_symbols = rk.length ? rk : null
-
-  if (draft.weightPrecision.trim() !== '') {
-    const wp = Number(draft.weightPrecision)
-    if (Number.isFinite(wp) && wp !== acc.weight_precision) patch.weight_precision = wp
-  }
   const we = draft.writeEmpty ? 1 : 0
   if (we !== (acc.write_empty_record ?? 0)) patch.write_empty_record = we
 
@@ -116,12 +75,7 @@ const FIELD_LABEL: Record<string, string> = {
   name: '名称',
   remark: '备注',
   feishu_key: '飞书',
-  long_leverage: '做多杠杆',
-  short_leverage: '做空杠杆',
-  weight_precision: '权重精度',
   portfolio_id: '跟随组合',
-  forbidden_symbols: '禁投',
-  risk_symbols: '风险品种',
   write_empty_record: '空仓记录',
 }
 
@@ -130,10 +84,7 @@ function summarize(patch: Partial<Account>, acc: Account, portfolios: PortfolioL
     v == null ? '未绑定' : (portfolios?.find((p) => p.id === v)?.name ?? `#${v}`)
   const out: string[] = []
   for (const k of Object.keys(patch)) {
-    if (k === 'long_leverage') out.push(`做多杠杆 ${acc.long_leverage ?? 0}→${patch.long_leverage}`)
-    else if (k === 'short_leverage') out.push(`做空杠杆 ${acc.short_leverage ?? 0}→${patch.short_leverage}`)
-    else if (k === 'weight_precision') out.push(`权重精度 ${acc.weight_precision}→${patch.weight_precision}`)
-    else if (k === 'portfolio_id') out.push(`组合 ${pname(acc.portfolio_id)}→${pname(patch.portfolio_id)}`)
+    if (k === 'portfolio_id') out.push(`组合 ${pname(acc.portfolio_id)}→${pname(patch.portfolio_id)}`)
     else if (k === 'write_empty_record')
       out.push(`空仓记录 ${acc.write_empty_record ? '开' : '关'}→${patch.write_empty_record ? '开' : '关'}`)
     else if (k === 'execution_notification_code') continue
@@ -142,12 +93,10 @@ function summarize(patch: Partial<Account>, acc: Account, portfolios: PortfolioL
   return out
 }
 
-type EditSection = 'basic' | 'leverage' | 'symbols' | 'portfolio'
+type EditSection = 'basic' | 'portfolio'
 
 const SECTION_TITLE: Record<EditSection, string> = {
   basic: '基本信息',
-  leverage: '杠杆设置',
-  symbols: '品种控制',
   portfolio: '组合执行',
 }
 
@@ -168,25 +117,10 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
   })
   const acc = account.data
   const channelDescriptor = useChannelDescriptor(acc?.trade_channel)
-  const showShortLeverage = channelDescriptor?.ui.show_short_leverage ?? true
   const item = accounts?.find((a) => a.account_id === accountId) ?? null
   // 首帧用仪表盘缓存名/渠道挂标题，避免等 getAccount 时落点缺失、FLIP 断档，
   // 也避免 Chip 在过渡尾巴上闪现。
   const displayName = acc?.name ?? item?.name
-
-  // Hero 配置带值 ↔ 本页「当前配置」摘要值的 FLIP：useViewTransitionState 对过渡的
-  // current/next 双向匹配，两侧用同一精确路径判定即去程返程一致挂名。本页首帧必冷
-  // （usePolling 无跨页缓存），落点靠模块级摘要缓存同步读出；真源到位即写新值。
-  const tSelfSection = useViewTransitionState(`/accounts/${accountId}/edit/${section}`)
-  const cachedConfig = acc ? null : readAccountConfigSummary(accountId)
-  useEffect(() => {
-    if (acc) writeAccountConfigSummary(accountId, acc, { showShortLeverage })
-  }, [acc, accountId, showShortLeverage])
-  /** 当前分区（杠杆/品种）的共享名 style；其余分区不挂。 */
-  const sectionVtStyle = (kind: 'leverage' | 'symbols'): CSSProperties | undefined =>
-    tSelfSection && section === kind
-      ? { viewTransitionName: accountConfigVtName(accountId, kind) }
-      : undefined
 
   const [defaultCode, setDefaultCode] = useState<string | null>(null)
   const [resetting, setResetting] = useState(false)
@@ -225,54 +159,7 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
   if (account.error && !acc)
     return <EditError error={account.error} onRetry={account.refresh} />
 
-  // 「当前配置」摘要常挂：加载（缓存/真源）→ 就绪（草稿）只换文本、不换节点。
-  // view transition 的具名捕获认 DOM 节点——摘要若随加载/就绪分支整体重挂，
-  // 进行中的组动画会被浏览器杀掉（表现就是「正向 FLIP 不飞」）。
-  const draftNum = (s: string) => (s.trim() === '' ? null : Number(s) || 0)
-  const savedLeverageText = acc
-    ? describeLeverage(acc.long_leverage, acc.short_leverage, showShortLeverage)
-    : null
-  const savedSymbolsText = acc ? describeSymbolControl(acc.forbidden_symbols, acc.risk_symbols) : null
-  const draftLeverageText = draft
-    ? describeLeverage(
-        draftNum(draft.longLev),
-        showShortLeverage ? draftNum(draft.shortLev) : null,
-        showShortLeverage,
-      )
-    : null
-  const draftSymbolsText = draft ? describeSymbolControl(draft.forbidden, draft.risk) : null
-  const leverageSynopsis = draftLeverageText ?? savedLeverageText ?? cachedConfig?.leverage ?? null
-  const symbolsSynopsis = draftSymbolsText ?? savedSymbolsText ?? cachedConfig?.symbols ?? null
-  // 同文才挂名：草稿被改后文本分岔，挂名即成内容 morph（假连续），退化为整页交叉淡。
-  const leverageSame = draftLeverageText == null || draftLeverageText === savedLeverageText
-  const symbolsSame = draftSymbolsText == null || draftSymbolsText === savedSymbolsText
-
-  /** 标题 + 当前配置摘要：加载与就绪两态共用的页面 chrome（同位同节点）。 */
-  const pageChrome = (
-    <>
-      <div className="flex flex-wrap items-center gap-3">{titleName}</div>
-      {section === 'leverage' && leverageSynopsis != null && (
-        <EditSynopsis>
-          <span
-            className="inline-block"
-            style={leverageSame ? sectionVtStyle('leverage') : undefined}
-          >
-            {leverageSynopsis}
-          </span>
-        </EditSynopsis>
-      )}
-      {section === 'symbols' && symbolsSynopsis != null && (
-        <EditSynopsis>
-          <span
-            className="inline-block"
-            style={symbolsSame ? sectionVtStyle('symbols') : undefined}
-          >
-            {symbolsSynopsis}
-          </span>
-        </EditSynopsis>
-      )}
-    </>
-  )
+  const pageChrome = <div className="flex flex-wrap items-center gap-3">{titleName}</div>
 
   if (account.loading || !ready || !acc || !draft || (channelDescriptor == null && channelCatalogLoading)) {
     return (
@@ -301,14 +188,6 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
   }
 
 
-  // 杠杆边界校验由渠道目录给出；空=不改，0=该方向不启用。与服务端同口径，
-  // 避免像旧版那样「填 999 也能保存、错误配置直进仓位计算」。
-  const leverageOptions = { ...channelDescriptor?.leverage, allowEmpty: true }
-  const longLevErr = leverageError(d.longLev, leverageOptions)
-  const shortLevErr = showShortLeverage ? leverageError(d.shortLev, leverageOptions) : null
-  const weightPrecisionErr = weightPrecisionError(d.weightPrecision, { allowEmpty: true })
-  const levErr = longLevErr ?? shortLevErr
-
   const notificationStatus = basicNotificationStatus(acc, d.notificationCode, d.clearFeishu, defaultCode)
   const resetNotification = async () => {
     if (resetting || saving) return
@@ -324,7 +203,7 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
       setResetting(false)
     }
   }
-  const patch = buildPatch(d, acc, showShortLeverage, defaultCode)
+  const patch = buildPatch(d, acc, defaultCode)
   const changes = summarize(patch, acc, portfolios)
   const nextStatus = feishuKey && notificationStatus === 'none' && !d.clearFeishu ? 'default' : notificationStatus
   if ('execution_notification_code' in patch || nextStatus !== acc.execution_notification_status) {
@@ -332,13 +211,11 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
   }
   const dirty = changes.length > 0
   const blocked = Boolean(
-    levErr || weightPrecisionErr || portfolios == null || portfoliosError || channelCatalogError,
+    portfolios == null || portfoliosError || channelCatalogError,
   )
 
   const save = async () => {
     if (saving || resetting) return
-    if (levErr) return toast(`杠杆有误：${levErr}`)
-    if (weightPrecisionErr) return toast(`权重精度有误：${weightPrecisionErr}`)
     if (!dirty) return toast('没有改动')
     setSaveError(null)
     setSaving(true)
@@ -348,11 +225,9 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
         template = await getDefaultAccountNotification(accountId)
         setDefaultCode(template)
       }
-      const updated = await updateAccount(accountId, buildPatch(d, acc, showShortLeverage, template))
+      const updated = await updateAccount(accountId, buildPatch(d, acc, template))
       setDraft(draftOf(updated))
       setFeishuTest(null)
-      // 保存响应直接写摘要缓存：返回详情时 hero 配置带首帧即新值，FLIP 落地同文。
-      writeAccountConfigSummary(accountId, updated, { showShortLeverage })
       toast('账户已更新')
       void refreshAccounts()
       account.refresh()
@@ -436,103 +311,6 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
           </div>
         </Section>
         </>
-      )}
-
-      {section === 'leverage' && (
-        <>
-          <Section label="杠杆设置">
-          <div className="flex flex-wrap gap-x-8 gap-y-3 md:col-span-2">
-          <div className="flex flex-col gap-1">
-            <label htmlFor="edit-long-leverage" className="text-[14px] text-ink-2">
-              {channelDescriptor?.ui.long_leverage_label ?? '做多杠杆'}
-              {longLevErr && <span className="ml-1.5 text-[12px] text-warn">{longLevErr}</span>}
-            </label>
-            <LeverageInput
-              limits={channelDescriptor?.leverage}
-              id="edit-long-leverage"
-              invalid={Boolean(longLevErr)}
-              value={d.longLev}
-              onChange={(longLev) => set({ longLev })}
-            />
-          </div>
-          {showShortLeverage && (
-            <div className="flex flex-col gap-1">
-              <label htmlFor="edit-short-leverage" className="text-[14px] text-ink-2">
-                {channelDescriptor?.ui.short_leverage_label ?? '做空杠杆'}
-                <span className="ml-1.5 text-[12px] text-ink-3">0 = 不做空</span>
-                {shortLevErr && <span className="ml-1.5 text-[12px] text-warn">{shortLevErr}</span>}
-              </label>
-              <LeverageInput
-                limits={channelDescriptor?.leverage}
-                id="edit-short-leverage"
-                invalid={Boolean(shortLevErr)}
-                value={d.shortLev}
-                onChange={(shortLev) => set({ shortLev })}
-              />
-            </div>
-          )}
-          </div>
-          </Section>
-          <Section label="权重精度">
-            <div className="w-fit">
-              <label htmlFor="edit-weight-precision" className="sr-only">
-                权重精度
-              </label>
-              <WeightPrecisionInput
-                id="edit-weight-precision"
-                value={d.weightPrecision}
-                invalid={Boolean(weightPrecisionErr)}
-                error={weightPrecisionErr}
-                onChange={(weightPrecision) => set({ weightPrecision })}
-              />
-            </div>
-          </Section>
-        </>
-      )}
-
-      {section === 'symbols' && (
-        <Section label="品种控制">
-          <Row label="禁投" hint="永不建仓" top span>
-          <SymbolTagInput
-            id="edit-forbidden-symbols"
-            value={d.forbidden}
-            warn
-            placeholder="输入禁投品种…"
-            onChange={(forbidden) => set({ forbidden })}
-            otherGroup={{
-              label: '风险品种',
-              value: d.risk,
-              onMove: (symbols) => {
-                const moving = new Set(symbols)
-                set({
-                  forbidden: [...d.forbidden, ...symbols.filter((symbol) => !d.forbidden.includes(symbol))],
-                  risk: d.risk.filter((symbol) => !moving.has(symbol)),
-                })
-              },
-            }}
-          />
-        </Row>
-        <Row label="风险品种" hint="仅减不加" top span>
-          <SymbolTagInput
-            id="edit-risk-symbols"
-            value={d.risk}
-            placeholder="输入风险品种…"
-            onChange={(risk) => set({ risk })}
-            otherGroup={{
-              label: '禁投',
-              value: d.forbidden,
-              onMove: (symbols) => {
-                const moving = new Set(symbols)
-                set({
-                  forbidden: d.forbidden.filter((symbol) => !moving.has(symbol)),
-                  risk: [...d.risk, ...symbols.filter((symbol) => !d.risk.includes(symbol))],
-                })
-              },
-            }}
-          />
-          </Row>
-          <p className="md:col-span-2 text-[12px] text-ink-3">Enter、Tab、逗号或空格确认；支持批量粘贴</p>
-        </Section>
       )}
 
       {section === 'portfolio' && (

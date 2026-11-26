@@ -90,7 +90,7 @@ useDomainStore.subscribe((state, previous) => {
  * 账户（活数据）按间隔轮询；组合列表变动稀疏（仅建/改/删时），首屏拉一次、
  * 之后由写操作显式 refresh。
  */
-export function useDomainSync(accountIntervalMs = 5000) {
+export function useDomainSync(accountIntervalMs = 10000) {
   const refreshAccounts = useDomainStore((s) => s.refreshAccounts)
   const refreshPortfolios = useDomainStore((s) => s.refreshPortfolios)
   useReadRecovery(refreshPortfolios)

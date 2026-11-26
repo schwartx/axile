@@ -43,6 +43,7 @@ export function Segmented<T extends string>({
   className = '',
   ariaLabel,
   panelId,
+  radio = false,
 }: {
   value: T
   options: SegmentedOption<T>[]
@@ -54,17 +55,18 @@ export function Segmented<T extends string>({
   ariaLabel?: string
   /** 关联面板时使用 tab 语义与方向键导航；面板由调用方渲染。 */
   panelId?: string
+  /** 表单单选模式允许初始未选中，方向键在选项间移动。 */
+  radio?: boolean
 }): ReactElement {
   const sz = SIZE_CLASS[size]
   const trackRef = useRef<HTMLDivElement>(null)
   const thumbRef = useRef<HTMLSpanElement>(null)
   const btnRefs = useRef<(HTMLButtonElement | null)[]>([])
-  const mountedRef = useRef(false)
+  const previousIndex = useRef(-1)
 
-  const activeIndex = Math.max(
-    0,
-    options.findIndex((o) => o.value === value),
-  )
+  const selected = options.findIndex((option) => option.value === value && (!radio || !option.disabled))
+  const activeIndex = radio ? selected : Math.max(0, selected)
+  const focusIndex = selected >= 0 ? selected : options.findIndex((option) => !option.disabled)
 
   useLayoutEffect(() => {
     const measure = () => {
@@ -75,7 +77,7 @@ export function Segmented<T extends string>({
       thumb.style.width = `${el.offsetWidth}px`
     }
     measure()
-    mountedRef.current = true
+    previousIndex.current = activeIndex
 
     const track = trackRef.current
     if (!track) return
@@ -87,15 +89,16 @@ export function Segmented<T extends string>({
   return (
     <div
       ref={trackRef}
-      role={panelId ? 'tablist' : undefined}
+      role={radio ? 'radiogroup' : panelId ? 'tablist' : undefined}
       aria-label={ariaLabel}
       className={`relative inline-flex bg-fill ${sz.track} ${className}`}
     >
       <span
         ref={thumbRef}
         aria-hidden
+        hidden={activeIndex < 0}
         className={`absolute left-0 z-0 shadow-sm ${highlight === 'accent' ? 'bg-accent-mid' : 'bg-surface'} ${sz.thumb} ${
-          mountedRef.current
+          previousIndex.current >= 0 && activeIndex >= 0
             ? 'transition-[transform,width] duration-200 ease-[cubic-bezier(.32,.72,0,1)] motion-reduce:transition-none'
             : ''
         }`}
@@ -108,23 +111,25 @@ export function Segmented<T extends string>({
           }}
           type="button"
           id={panelId ? `${panelId}-${o.value}` : undefined}
-          role={panelId ? 'tab' : undefined}
+          role={radio ? 'radio' : panelId ? 'tab' : undefined}
           disabled={o.disabled}
-          aria-pressed={panelId ? undefined : o.value === value}
+          aria-pressed={panelId || radio ? undefined : o.value === value}
+          aria-checked={radio ? o.value === value : undefined}
           aria-selected={panelId ? o.value === value : undefined}
           aria-controls={panelId}
-          tabIndex={panelId ? (o.value === value ? 0 : -1) : undefined}
+          tabIndex={radio ? (i === focusIndex ? 0 : -1) : panelId ? (i === selected ? 0 : -1) : undefined}
           className={`relative z-10 inline-flex items-center justify-center gap-1.5 cursor-pointer transition-colors disabled:cursor-default disabled:opacity-40 ${sz.button} ${
-            o.value === value ? 'font-semibold text-ink-1' : 'text-ink-2'
+            radio ? 'font-semibold motion-reduce:transition-none' : o.value === value ? 'font-semibold' : ''
+          } ${o.value === value ? 'text-ink-1' : 'text-ink-2'
           }`}
           onClick={() => onChange(o.value)}
           onKeyDown={(event) => {
-            if (!panelId) return
+            if (!panelId && !radio) return
             const enabled = options.map((option, index) => option.disabled ? -1 : index).filter((index) => index >= 0)
             const current = enabled.indexOf(i)
             let next: number | undefined
-            if (event.key === 'ArrowRight') next = enabled[(current + 1) % enabled.length]
-            else if (event.key === 'ArrowLeft') next = enabled[(current + enabled.length - 1) % enabled.length]
+            if (event.key === 'ArrowRight' || (radio && event.key === 'ArrowDown')) next = enabled[(current + 1) % enabled.length]
+            else if (event.key === 'ArrowLeft' || (radio && event.key === 'ArrowUp')) next = enabled[(current + enabled.length - 1) % enabled.length]
             else if (event.key === 'Home') next = enabled[0]
             else if (event.key === 'End') next = enabled.at(-1)
             else return

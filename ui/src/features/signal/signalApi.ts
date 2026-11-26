@@ -1,10 +1,6 @@
 import { apiGet, apiSend } from '@/lib/api/client'
+import type { AccountFeishuTestResult } from '@/lib/api/accounts'
 import type { SignalAssetSnapshot, SignalQuoteSource, SignalConfig } from './signalData'
-
-export interface SignalPreview {
-  target: { mode: 'quantity'; targets: Record<string, number> }
-  quantity_unit: string
-}
 
 export interface SignalQuoteTestResult {
   items: Array<{
@@ -22,10 +18,10 @@ export function testSignalAccount(code: string, name: string, market: string, si
   return apiSend<SignalAssetSnapshot>('POST', '/account/signal/account-test', { code, name, market }, signal)
 }
 
-export function getSignalConfig(accountId: number, signal?: AbortSignal) {
-  return apiGet<{ account_config: SignalConfig; quantity_unit: string }>(`/account/${accountId}/signal-config`, signal)
+export function testSignalNotification(mode: 'feishu' | 'function', draft: string, name: string, market: string) {
+  return apiSend<AccountFeishuTestResult>('POST', '/account/signal/notification-test', { mode, draft, name, market })
 }
 
-export function previewSignal(portfolioId: number, config: SignalConfig) {
-  return apiSend<SignalPreview>('POST', '/account/signal/preview', { portfolio_id: portfolioId, account_config: config })
+export function getSignalConfig(accountId: number, signal?: AbortSignal) {
+  return apiGet<{ account_config: SignalConfig; quantity_unit: string }>(`/account/${accountId}/signal-config`, signal)
 }

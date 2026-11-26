@@ -1,18 +1,27 @@
+import { Check } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { Card } from '@/components/ui/Card'
 import { ChoiceGroup } from '@/components/ui/ChoiceGroup'
 import { PythonWorkbenchPane } from '@/components/ui/PythonWorkbenchPane'
 import { checksAreEmpty, type PythonChecks } from '@/components/ui/pythonChecks'
+import { usePythonRun } from '@/components/ui/pythonWorkbenchState'
+import { ValidationCardHeader } from '@/features/account/connectionValidation/ValidationCardHeader'
 import { Row } from '@/features/account/editUi'
 import { FeishuWebhookInput } from '@/features/account/FeishuWebhookInput'
+import { extractFeishuKey } from '@/features/account/feishuUpdate'
+import type { AccountFeishuTestResult } from '@/lib/api/accounts'
+import { shortErrorReason } from '@/lib/errorInfo'
+import { testSignalNotification } from './signalApi'
 import { SignalSetupColumns } from './SignalSetupColumns'
 
 export type SignalNotificationMode = 'feishu' | 'function'
 
-export function SignalNotificationSetup({ mode, webhook, code, heading, footer, onModeChange, onWebhookChange, onCodeChange }: {
+export function SignalNotificationSetup({ mode, webhook, code, name, market, heading, footer, onModeChange, onWebhookChange, onCodeChange }: {
   mode: SignalNotificationMode
   webhook: string
   code: string
+  name: string
+  market: string
   heading: ReactNode
   footer: ReactNode
   onModeChange: (mode: SignalNotificationMode) => void
@@ -21,7 +30,19 @@ export function SignalNotificationSetup({ mode, webhook, code, heading, footer, 
 }) {
   const [editorStatus, setEditorStatus] = useState<HTMLDivElement | null>(null)
   const [checks, setChecks] = useState<PythonChecks | null>(null)
+  const [revision, setRevision] = useState(0)
   const custom = mode === 'function'
+  const test = usePythonRun<AccountFeishuTestResult>({
+    code: custom ? code : extractFeishuKey(webhook),
+    contextKey: JSON.stringify([mode, name, market, revision]),
+    enabled: Boolean(market),
+    execute: (draft) => testSignalNotification(mode, draft, name, market),
+    failed: (cause) => ({ ok: false, message: shortErrorReason(cause) }),
+    toEditorResult: (result) => ({
+      valid: result.ok, errorMessage: result.ok ? null : result.message, errorLine: result.error_line, traceback: result.traceback,
+    }),
+  })
+  const result = test.stale || test.running ? null : test.result
   const currentChecks = checks?.document === code ? checks : null
   const diagnosticCount = currentChecks ? currentChecks.lsp.diagnostics.length + currentChecks.contract.diagnostics.length : 0
   const checksUnavailable = currentChecks?.lsp.status === 'failed' || currentChecks?.contract.status === 'failed'
@@ -29,16 +50,32 @@ export function SignalNotificationSetup({ mode, webhook, code, heading, footer, 
     : diagnosticCount ? `${diagnosticCount} 条诊断`
     : checksUnavailable ? '检查暂不可用'
     : checksAreEmpty(currentChecks) ? '代码检查通过' : '检查中…'
-  const sidebar = <aside aria-label="录入检查">
+  const sidebar = <aside aria-label="通知测试">
     <Card className="p-3.5">
-      <h2 className="text-[15px] font-semibold text-ink-1">录入检查</h2>
-      <dl className="mt-3 flex flex-wrap justify-between gap-x-3 gap-y-1 border-t border-line pt-3 text-[13px]">
-        <dt className="text-ink-2">{custom ? '通知函数' : '飞书 Webhook'}</dt>
-        <dd className={custom && code.trim() && (diagnosticCount > 0 || checksUnavailable) ? 'text-warn' : undefined}>
-          <span role="status">{custom ? codeStatus : webhook.trim() ? '已填写' : '待填写'}</span>
-        </dd>
-      </dl>
-      {custom && <p className="mt-3 text-[13px] text-ink-2">通知渠道和凭据由函数配置。</p>}
+      <ValidationCardHeader title="通知测试" status={custom ? codeStatus : ''}
+        statusClassName={diagnosticCount > 0 || checksUnavailable ? 'text-warn' : undefined}
+        action={test.running ? '测试中…' : custom ? '试跑通知' : '发送测试卡片'}
+        disabled={!test.canRun} loading={test.running} onAction={() => void test.run()} />
+      <div role="status" className="mt-3 border-t border-line pt-3 text-[13px] leading-5">
+        {result ? result.ok ? (
+          <p className="flex flex-wrap items-center gap-x-2 text-ink-2">
+            <span className="inline-flex items-center gap-1.5 font-medium text-accent">
+              <Check size={14} aria-hidden="true" />
+              {custom ? '试跑完成' : '已发送'}
+            </span>
+            {!custom && <span>· 请到飞书群确认</span>}
+          </p>
+        ) : (
+          <>
+            <p className="font-medium text-warn">{custom ? '试跑失败' : '发送失败'}</p>
+            <p className="mt-1 wrap-break-word text-ink-2">{result.message}</p>
+          </>
+        ) : (
+          <p className="text-ink-2">{!market ? '请先在「账户与组合」选择市场。' : custom
+            ? '用样例信号试跑，可能实际发送消息。'
+            : '向飞书群发送一张样例调仓卡片。'}</p>
+        )}
+      </div>
     </Card>
   </aside>
 
@@ -48,6 +85,7 @@ export function SignalNotificationSetup({ mode, webhook, code, heading, footer, 
       <ChoiceGroup variant="compact" ariaLabel="通知方式" value={mode} onChange={(next) => {
         if (next === mode) return
         setChecks(null)
+        setRevision((value) => value + 1)
         onModeChange(next)
       }} options={[
         { value: 'feishu', label: '飞书' },
@@ -56,13 +94,20 @@ export function SignalNotificationSetup({ mode, webhook, code, heading, footer, 
     </div>
     <SignalSetupColumns sidebar={sidebar} footer={footer}>
       {mode === 'feishu' && <Row label="飞书 Webhook">
-        <FeishuWebhookInput value={webhook} required onChange={onWebhookChange} />
+        <FeishuWebhookInput value={webhook} required onChange={(next) => {
+          setRevision((value) => value + 1)
+          onWebhookChange(next)
+        }} />
       </Row>}
       {custom && <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden rounded-[8px] border border-line">
         <PythonWorkbenchPane kind="account_notification" title="通知函数" code={code} savedCode=""
           draftKey="signal:setup:notify" storageKey="axile.signalNotification.editorSplit" docHref="/docs/notification"
-          onChange={onCodeChange} onChecks={setChecks} editorRef={null} statusTarget={editorStatus} compactStatus={false}
-          running={false} stale={false} result={null} skipEmptyChecks />
+          onChange={(next) => {
+            if (next === code) return
+            setRevision((value) => value + 1)
+            onCodeChange(next)
+          }} onChecks={setChecks} editorRef={null} statusTarget={editorStatus} compactStatus={false}
+          running={test.running} stale={false} result={result ? test.editorResult : null} skipEmptyChecks />
         <div ref={setEditorStatus} />
       </div>}
     </SignalSetupColumns>

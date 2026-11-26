@@ -77,6 +77,7 @@ function Switch({ on, ariaLabel, onClick }: { on: boolean; ariaLabel: string; on
 
 export interface TimerEditorProps {
   tradeChannel: TradeChannel
+  scheduleChannel?: TradeChannel
   scheduleKind: ScheduleKind
   nightSchedule?: NightSchedule | null
   value: TimerEditorState
@@ -122,7 +123,7 @@ function calendarSummary(preview: SchedulePreview | null): { text: string; warni
   }
 }
 
-export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, onChange, layout = 'step', leading }: TimerEditorProps) {
+export function TimerEditor({ tradeChannel, scheduleChannel = tradeChannel, scheduleKind, nightSchedule, value, onChange, layout = 'step', leading }: TimerEditorProps) {
   const v = value
   const signalChannel = tradeChannel === SIGNAL_CHANNEL
   const autoLabel = signalChannel ? '自动生成信号' : '自动调仓'
@@ -181,9 +182,9 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
   const rawErr = timerEditorError(v)
   const cronList = v.autoOn ? resolveCronList(scheduleKind, { ...v, supN: 0 }, nightSchedule) : []
   const cronExpr = rawErr ? '' : cronToExpr(cronList)
-  const gmSessions = useMemo(() => gmTimerSessions(tradeChannel, { gm_sessions: v.gm_sessions }), [tradeChannel, v.gm_sessions])
+  const gmSessions = useMemo(() => gmTimerSessions(scheduleChannel, { gm_sessions: v.gm_sessions }), [scheduleChannel, v.gm_sessions])
   const sessionsKey = JSON.stringify(gmSessions)
-  const previewKey = tradeChannel && cronExpr ? `${tradeChannel}\u0000${cronExpr}\u0000${sessionsKey}` : ''
+  const previewKey = scheduleChannel && cronExpr ? `${scheduleChannel}\u0000${cronExpr}\u0000${sessionsKey}` : ''
   // 是否会发起预览请求（与下方 effect 的提前返回条件一致）：首帧据此直接上骨架，
   // 避免「占位文案 → 骨架 → 列表」三段跳闪。
   const expectPreview = Boolean(tradeChannel) && v.autoOn && !rawErr && Boolean(cronExpr)
@@ -271,7 +272,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
     const controller = new AbortController()
     const timer = window.setTimeout(() => {
       const limit = layout === 'page' ? previewLimitRef.current : PREVIEW_MIN_ITEMS
-      void previewSchedule(tradeChannel, cronExpr, { limit, gm_sessions: gmSessions }, controller.signal)
+      void previewSchedule(scheduleChannel, cronExpr, { limit, gm_sessions: gmSessions }, controller.signal)
         .then((next) => {
           if (requestId !== previewRequestId.current) return
           previewResultKey.current = previewKey
@@ -291,7 +292,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
       window.clearTimeout(timer)
       controller.abort()
     }
-  }, [tradeChannel, v.autoOn, rawErr, cronExpr, layout, previewKey, previewRetry, gmSessions])
+  }, [tradeChannel, scheduleChannel, v.autoOn, rawErr, cronExpr, layout, previewKey, previewRetry, gmSessions])
 
   // 基础时间线独立于补发配置。仅为已显示的有效基础触发补算摘要，保留旧值直至结果就绪。
   useEffect(() => {
@@ -314,7 +315,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
       void (async () => {
         try {
           for (let start = 0; start < missing.length; start += 100) {
-            const response = await previewSchedule(tradeChannel, cronExpr, {
+            const response = await previewSchedule(scheduleChannel, cronExpr, {
               gm_sessions: gmSessions,
               scheduled_ats: missing.slice(start, start + 100).map((item) => item.scheduled_at),
               supplement: { count: v.supN, interval_minutes: v.supM },
@@ -332,7 +333,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
       })()
     }, 250)
     return () => { window.clearTimeout(timer); controller.abort() }
-  }, [schedulePreview, previewKey, expectPreview, tradeChannel, cronExpr, v.supN, v.supM, supplementPreviewRetry, gmSessions])
+  }, [schedulePreview, previewKey, expectPreview, scheduleChannel, cronExpr, v.supN, v.supM, supplementPreviewRetry, gmSessions])
 
   const loadMore = useCallback(() => {
     const cursor = previewCursor
@@ -355,7 +356,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
     setPreviewLoadingMore(true)
     setPreviewMoreError(null)
     void previewSchedule(
-      tradeChannel,
+      scheduleChannel,
       cronExpr,
       { after: cursor, limit: previewTargetRows, gm_sessions: gmSessions },
       controller.signal,
@@ -380,6 +381,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
     rawErr,
     cronExpr,
     previewKey,
+    scheduleChannel,
     gmSessions,
     previewTargetRows,
     previewCursor,
@@ -443,7 +445,8 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
           </div>
         ) : undefined} />
 
-      <GMSessionControls channel={tradeChannel} value={v.gm_sessions} onChange={(gm_sessions) => patch({ gm_sessions })} />
+      <GMSessionControls channel={scheduleChannel} signalOnly={signalChannel} value={gmSessions}
+        onChange={(gm_sessions) => patch({ gm_sessions })} />
 
       {!signalChannel && <div
         className={`grid transition-[grid-template-rows] ${MOTION_LAYOUT} ${
@@ -494,7 +497,9 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
         const presentation = schedulePreviewItemPresentation(item, executionReasonText, v.supN > 0 ? v.supM : undefined)
         const supplement = supplementSummaries.get(Date.parse(item.scheduled_at))
         const executionLabel = <span className="inline-flex flex-wrap items-baseline gap-x-1">
-          <span>{signalChannel ? '生成调仓信号' : item.phase_label || '常规调仓'}</span>
+          <span>{signalChannel
+            ? `生成调仓信号${item.phase_label ? ` · ${item.phase_label}` : ''}`
+            : item.phase_label || '常规调仓'}</span>
           {supplement && supplement.configuredCount > 0 && <>
             <span aria-hidden="true">·</span>
             {supplement.count < supplement.configuredCount
