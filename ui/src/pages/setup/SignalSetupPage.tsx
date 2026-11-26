@@ -5,19 +5,20 @@ import { SectionLabel } from '@/components/ui/Card'
 import { ConnectionField } from '@/components/ui/ConnectionField'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { useNavigate } from '@/components/ui/nav'
+import { SkeletonGroup, SkeletonLines } from '@/components/ui/Skeleton'
 import { extractFeishuKey } from '@/features/account/feishuUpdate'
 import { PortfolioChoiceList } from '@/features/portfolio/PortfolioChoiceList'
 import { WeightResult } from '@/features/portfolio/WeightResult'
 import { cronToExpr, defaultTimerEditorState, describeCron, resolveCronList, timerEditorError } from '@/features/setup/cron'
 import { flowOf } from '@/features/setup/steps'
 import { TimerEditor, type TimerEditorState } from '@/features/setup/TimerEditor'
-import { WizardHeading, WizardNav, WizardTimerPage } from '@/features/setup/WizardNav'
+import { WizardHeading, WizardNav, WizardPage, WizardTimerPage } from '@/features/setup/WizardNav'
 import { SignalAssetsSetup } from '@/features/signal/SignalAssetsSetup'
 import { SignalNotificationSetup, type SignalNotificationMode } from '@/features/signal/SignalNotificationSetup'
-import { SignalSources, signalAction } from '@/features/signal/SignalSources'
+import { SignalSources } from '@/features/signal/SignalSources'
 import { previewSignal, type SignalPreview } from '@/features/signal/signalApi'
 import { SIGNAL_NOTIFICATION_EXAMPLE } from '@/features/signal/signalNotificationExample'
-import { initialSignalDraft, refreshSignalAccountExample, refreshSignalQuoteExample, SIGNAL_CHANNEL, signalAccountErrors, signalConfig, signalQuoteErrors, type SignalDraft } from '@/features/signal/signalData'
+import { initialSignalDraft, refreshSignalAccountExample, SIGNAL_CHANNEL, signalAccountErrors, signalConfig, signalQuoteErrors, type SignalDraft } from '@/features/signal/signalData'
 import { createAccount } from '@/lib/api/accounts'
 import { useChannelDescriptor } from '@/stores/channels'
 import { useDomainStore } from '@/stores/domain'
@@ -34,16 +35,14 @@ export function SignalSetupPage() {
   const [portfolioId, setPortfolioId] = useState<number | null>(null)
   const [data, setData] = useState(initialSignalDraft)
   useLayoutEffect(() => {
-    const quoteCode = refreshSignalQuoteExample(data.quoteCode)
     const accountCode = refreshSignalAccountExample(data.accountCode)
-    if (quoteCode !== data.quoteCode || accountCode !== data.accountCode) {
+    if (accountCode !== data.accountCode) {
       setData((draft) => ({
         ...draft,
-        quoteCode: refreshSignalQuoteExample(draft.quoteCode),
         accountCode: refreshSignalAccountExample(draft.accountCode),
       }))
     }
-  }, [data.quoteCode, data.accountCode])
+  }, [data.accountCode])
   const [showQuoteErrors, setShowQuoteErrors] = useState(false)
   const [showAccountErrors, setShowAccountErrors] = useState(false)
   const schedule = useChannelDescriptor(SIGNAL_CHANNEL)?.schedule
@@ -157,6 +156,52 @@ export function SignalSetupPage() {
   const kicker = `账户设置 · ${step + 1} / ${steps.length}`
   const errorNotice = <ErrorNotice title="调仓信号设置失败" intent="mutation" error={error} />
 
+  if (!nextStep) {
+    return <div className="flex h-full min-h-0 flex-col">
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <WizardPage kicker={kicker} title={steps[step].label}>
+          <div className="wrap-break-word rounded-2xl bg-ok-soft px-7 py-6 text-[20px] leading-loose">
+            账户 <b className="font-[680]">{name.trim() || '（未命名）'}</b>，
+            {portfolio
+              ? <>已绑定组合 <b className="font-[680]">{portfolio.name}</b>（{portfolio.market}）。</>
+              : '暂不绑定组合。'}
+          </div>
+          <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs text-ink-3">
+            <dt>定时任务</dt>
+            <dd>{timer?.autoOn && scheduleKind ? describeCron(scheduleKind, cron, schedule.night) ?? cron : '已暂停'}</dd>
+            <dt>通知</dt>
+            <dd>{confirmedNotificationBlocked ? '待填写' : confirmedNotification === 'feishu' ? '飞书' : confirmedNotification === 'function' ? '自定义函数' : '未配置'}</dd>
+          </dl>
+          <div className="mt-5">
+            <button
+              type="button"
+              className="cursor-pointer rounded-[11px] border-0 bg-ink-1 px-[22px] py-2.5 text-[15px] font-[550] text-surface disabled:cursor-not-allowed disabled:opacity-45"
+              onClick={() => void runPreview()}
+              disabled={running || portfolioId === null}
+            >
+              {running ? '计算中…' : '试算目标数量'}
+            </button>
+            <div className="mt-[18px] max-w-[460px] rounded-[14px] border border-dashed border-line bg-surface p-5">
+              {running ? (
+                <SkeletonGroup label="正在试算目标数量" className="py-5">
+                  <SkeletonLines />
+                </SkeletonGroup>
+              ) : preview ? (
+                <WeightResult target={preview.target.targets} mode="quantity" quantityUnit={preview.quantity_unit} />
+              ) : (
+                <p className="py-5 text-center text-[15px] text-ink-3">
+                  {portfolioId === null ? '绑定组合后可试算目标数量' : '试算查看组合当前的目标持仓'}
+                </p>
+              )}
+            </div>
+          </div>
+          {errorNotice}
+        </WizardPage>
+      </div>
+      <WizardNav onPrev={previous} onNext={advance} nextDisabled={blocked} nextLabel="创建账户" />
+    </div>
+  }
+
   if (step === 4) {
     const heading = <WizardHeading
       kicker={kicker}
@@ -194,8 +239,8 @@ export function SignalSetupPage() {
   </div>
   const footer = <>
     {errorNotice}
-    <WizardNav inline onPrev={previous} onNext={advance} nextDisabled={blocked} nextLabel={nextStep ? '下一步' : '创建账户'}
-      secondaryAction={notificationStep && nextStep && <button type="button"
+    <WizardNav inline onPrev={previous} onNext={advance} nextDisabled={blocked}
+      secondaryAction={notificationStep && <button type="button"
         className="cursor-pointer rounded-[11px] px-3 py-2.5 text-[15px] text-ink-2 hover:bg-fill hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-accent"
         onClick={() => { setError(null); setConfirmedNotification(null); navigate(nextStep.path) }}>
         跳过通知
@@ -248,28 +293,6 @@ export function SignalSetupPage() {
         onChange={(patch) => updateDraft({ ...data, ...patch })} onMissingCode={() => setShowAccountErrors(true)} />}
       {notificationStep && <SignalNotificationSetup mode={notificationMode} webhook={webhook} code={notification}
         heading={heading} footer={footer} onModeChange={setNotificationMode} onWebhookChange={setWebhook} onCodeChange={setNotification} />}
-      {!nextStep && <>
-        <dl className="grid grid-cols-[auto_1fr] gap-x-5 gap-y-2 text-[14px]">
-          <dt className="text-ink-3">账户</dt><dd>{name}</dd>
-          <dt className="text-ink-3">组合</dt><dd>{portfolio ? `${portfolio.name} · ${portfolio.market}` : '未绑定'}</dd>
-          <dt className="text-ink-3">定时任务</dt>
-          <dd>{timer?.autoOn && scheduleKind ? describeCron(scheduleKind, cron, schedule.night) ?? cron : '已暂停'}</dd>
-          <dt className="text-ink-3">通知</dt>
-          <dd>{confirmedNotificationBlocked ? '待填写' : confirmedNotification === 'feishu' ? '飞书' : confirmedNotification === 'function' ? '自定义函数' : '未配置'}</dd>
-        </dl>
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            className={signalAction}
-            onClick={() => void runPreview()}
-            disabled={running || portfolioId === null}
-          >
-            {running ? '计算中…' : '试算目标数量'}
-          </button>
-          {portfolioId === null && <span className="text-[13px] text-ink-3">绑定组合后可试算目标数量</span>}
-        </div>
-        {preview && <WeightResult target={preview.target.targets} mode="quantity" quantityUnit={preview.quantity_unit} />}
-      </>}
       {!workspaceStep && footer}
     </div>
   </section>

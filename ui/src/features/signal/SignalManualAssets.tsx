@@ -7,7 +7,7 @@ import { Segmented } from '@/components/ui/Segmented'
 import { amountMagnitude } from '@/components/ui/amountMagnitude'
 import { isDecimalDraft, normalizeMoneyValue } from '@/components/ui/connectionFieldValue'
 import { MOTION_LAYOUT } from '@/lib/viewTransition'
-import { positionVolumePatch, type PositionDraft, type SignalAccountErrors, type SignalDraft, type SignalPositionErrors } from './signalData'
+import { positionVolumePatch, signalEquityPatch, type PositionDraft, type SignalAccountErrors, type SignalDraft, type SignalPositionErrors } from './signalData'
 
 const directions = [{ value: '多头' as const, label: '多头' }, { value: '空头' as const, label: '空头' }]
 
@@ -83,9 +83,9 @@ export function SignalManualAssets({ value, errors, onChange }: {
       </div>
       <div className="grid grid-cols-2 items-start gap-3">
         <ConnectionField kind="money" label="账户权益" required value={value.equity} error={errors?.equity}
-          valueHint={magnitudeHint(value.equity)} onChange={(equity) => onChange({ equity })} />
+          valueHint={magnitudeHint(value.equity)} onChange={(equity) => onChange(signalEquityPatch(value, equity))} />
         <ConnectionField kind="money" label="可用资金" required value={value.cash} error={errors?.cash}
-          valueHint={magnitudeHint(value.cash)} onChange={(cash) => onChange({ cash })} />
+          valueHint={magnitudeHint(value.cash)} onChange={(cash) => onChange({ cash, cashFromEquity: false })} />
       </div>
     </section>
     <section aria-label="实际持仓" className="border-t border-line pt-3">

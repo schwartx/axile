@@ -5,7 +5,7 @@ import { MemoryRouter } from 'react-router'
 
 import { flowOf } from '@/features/setup/steps'
 import { SignalNotificationSetup } from '@/features/signal/SignalNotificationSetup'
-import { configToSignalDraft, initialSignalDraft, positionVolumePatch, refreshSignalQuoteExample, SIGNAL_CHANNEL, signalAccountConfig, signalAccountErrors, signalConfig, signalQuoteConfig, signalQuoteErrors, TUSHARE_API_URL } from '@/features/signal/signalData'
+import { configToSignalDraft, initialSignalDraft, positionVolumePatch, SIGNAL_CHANNEL, signalAccountConfig, signalAccountErrors, signalConfig, signalEquityPatch, signalQuoteConfig, signalQuoteErrors, TUSHARE_API_URL } from '@/features/signal/signalData'
 import { SignalSetupPage } from '@/pages/setup/SignalSetupPage'
 import { useChannelCatalogStore } from '@/stores/channels'
 import type { ChannelCapability } from '@/types/api'
@@ -47,7 +47,10 @@ test('信号向导复用定时预览，并在单独的一步配置通知', () =>
     expect(notification).toContain('disabled="">下一步</button>')
     expect(notification).not.toContain('排程预览')
     const confirmation = render(7)
-    expect(confirmation).toContain('试算目标数量')
+    expect(confirmation).toContain('账户设置 · 7 / 7')
+    expect(confirmation).toContain('暂不绑定组合')
+    expect(confirmation).toContain('disabled="">试算目标数量</button>')
+    expect(confirmation).toContain('>创建账户</button>')
     expect(confirmation).toContain('>通知</dt><dd>未配置</dd>')
   } finally {
     catalog.channels = previousChannels
@@ -71,7 +74,7 @@ test('行情和资金各自验证本步配置', () => {
   expect(() => signalQuoteConfig(initialSignalDraft)).toThrow('掘金 Token')
   expect(() => signalQuoteConfig({ ...initialSignalDraft, quoteKind: '' })).toThrow('请选择行情来源')
   const custom = { ...initialSignalDraft, quoteKind: 'custom' as const }
-  expect(() => signalQuoteConfig(custom)).toThrow('示例行情用于测试')
+  expect(signalQuoteConfig(custom)).toEqual({ kind: 'custom', code: initialSignalDraft.quoteCode })
   expect(() => signalQuoteConfig({ ...custom, quoteCode: ' ' })).toThrow('请填写行情函数')
   expect(signalQuoteConfig({ ...custom, quoteCode: 'def fetch_quotes(symbols):\n    return {}' }).kind).toBe('custom')
 
@@ -80,44 +83,6 @@ test('行情和资金各自验证本步配置', () => {
   expect(signalAccountConfig(draft).manual_assets).toEqual({
     total_asset: 100000, available_cash: 0, currency: 'CNY', positions: null,
   })
-})
-
-test('只替换原样的旧行情示例', () => {
-  const oldExample = `from axile.executor.models.unified_price import UnifiedPriceData
-
-def fetch_quotes(symbols: list[str]) -> dict[str, UnifiedPriceData]:
-    # 每个标的返回 UnifiedPriceData。bids 和 asks 分别是 [(价格, 数量), ...]。
-    raise NotImplementedError("请接入你的行情来源")
-`
-  const edited = oldExample.replace('raise NotImplementedError("请接入你的行情来源")', 'return {}')
-  expect(refreshSignalQuoteExample(oldExample)).toBe(initialSignalDraft.quoteCode)
-  expect(refreshSignalQuoteExample(edited)).toBe(edited)
-})
-
-test('原样的一档行情示例升级为五档，用户改过的代码保留', () => {
-  const oneLevel = `from axile.executor.algorithms.utils.clock import clock_now
-from axile.executor.models.unified_price import UnifiedPriceData
-
-def fetch_quotes(symbols: list[str]) -> dict[str, UnifiedPriceData]:
-    # 测试用的演示行情。接入实际行情时，替换下方的价格和盘口数据。
-    now = clock_now()
-    return {
-        symbol: UnifiedPriceData(
-            symbol=symbol,
-            last_price=10.0,
-            bids=[(9.99, 100.0)],
-            asks=[(10.01, 100.0)],
-            volume=1000.0,
-            timestamp=int(now.timestamp() * 1000),
-            update_time=now.isoformat(),
-        )
-        for symbol in symbols
-    }
-`
-  expect(refreshSignalQuoteExample(oneLevel)).toBe(initialSignalDraft.quoteCode)
-  expect(() => signalQuoteConfig({ ...initialSignalDraft, quoteKind: 'custom', quoteCode: oneLevel })).toThrow('示例行情用于测试')
-  const edited = oneLevel.replace('last_price=10.0', 'last_price=11.0')
-  expect(refreshSignalQuoteExample(edited)).toBe(edited)
 })
 
 test('资金与持仓校验标出对应行，并保留未提供与空仓两种状态', () => {
@@ -143,19 +108,33 @@ test('填写持仓数量时同步自动补全的可用数量，保留手填的�
   expect(positionVolumePatch({ ...completed, available: '', availableFromVolume: false }, '2000').available).toBe('2000')
 })
 
+test('填写账户权益时同步自动补全的可用资金，保留手填和已保存的金额', () => {
+  const first = { ...initialSignalDraft, ...signalEquityPatch(initialSignalDraft, '1') }
+  expect(first.cash).toBe('1')
+  const completed = { ...first, ...signalEquityPatch(first, '100000') }
+  expect(signalAccountConfig(completed).manual_assets?.available_cash).toBe(100000)
+  const manual = { ...completed, cash: '0', cashFromEquity: false }
+  expect(signalEquityPatch(manual, '200000')).toEqual({ equity: '200000' })
+  expect(signalEquityPatch({ ...manual, cash: '' }, '200000').cash).toBe('200000')
+  const saved = configToSignalDraft({
+    ...signalAccountConfig(completed), quote_source: { kind: 'gm', token: 'fixture', connection_mode: 'terminal', serv_addr: null },
+  })
+  expect(signalEquityPatch(saved, '200000')).toEqual({ equity: '200000' })
+})
+
 test('预置行情只提交当前渠道字段，并恢复自定义 API URL', () => {
   const gm = { ...initialSignalDraft, quoteKind: 'gm' as const, gmToken: 'gm-fixture' }
-  expect(signalQuoteErrors({ ...gm, gmToken: '' })).toEqual({ gmToken: '请填写掘金 Token', gmTerminalPath: '请填写本机终端目录' })
-  expect(signalQuoteErrors({ ...gm, gmMode: 'service' })).toEqual({ gmToken: null, gmAddress: '请填写终端 RPC 地址' })
+  expect(signalQuoteErrors(gm)).toEqual({ gmToken: null, gmAddress: '请填写终端 RPC 地址' })
+  expect(signalQuoteErrors({ ...gm, gmToken: '', gmMode: 'terminal' })).toEqual({ gmToken: '请填写掘金 Token', gmTerminalPath: '请填写本机终端目录' })
   const terminalPath = 'C:\\Program Files\\GoldMiner3'
-  const local = { ...gm, gmTerminalPath: terminalPath }
+  const local = { ...gm, gmMode: 'terminal' as const, gmTerminalPath: terminalPath }
   expect(signalQuoteConfig(local)).toEqual({ kind: 'gm', token: 'gm-fixture', connection_mode: 'terminal', serv_addr: null, terminal_path: terminalPath })
   expect(signalQuoteConfig({ ...local, gmMode: 'service', gmAddress: '127.0.0.1:7001' })).toEqual({
     kind: 'gm', token: 'gm-fixture', connection_mode: 'service', serv_addr: '127.0.0.1:7001',
   })
   const legacy = { kind: 'gm', token: 'gm-fixture', connection_mode: 'terminal', serv_addr: null } as const
   expect(signalQuoteConfig(configToSignalDraft({ manual_assets: null, account_code: null, quote_source: legacy }))).toEqual(legacy)
-  expect(() => signalQuoteConfig({ ...gm, gmMode: 'service' })).toThrow('终端 RPC 地址')
+  expect(() => signalQuoteConfig(gm)).toThrow('终端 RPC 地址')
   const url = 'https://quotes.example.test/v1/tushare'
   const tushare = { ...gm, equity: '10', cash: '10', quoteKind: 'tushare' as const, tushareToken: 'ts-fixture' }
   expect(signalQuoteConfig({ ...tushare, tushareUrl: '' })).toEqual({ kind: 'tushare', token: 'ts-fixture', url: TUSHARE_API_URL })

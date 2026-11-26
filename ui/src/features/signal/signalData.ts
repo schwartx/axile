@@ -48,6 +48,7 @@ export interface SignalDraft {
   mode: 'manual' | 'function'
   equity: string
   cash: string
+  cashFromEquity?: boolean
   currency: string
   positionsKnown: boolean
   positions: PositionDraft[]
@@ -60,6 +61,12 @@ export interface SignalDraft {
   tushareToken: string
   tushareUrl: string
   quoteCode: string
+}
+
+export function signalEquityPatch(draft: SignalDraft, equity: string): Partial<SignalDraft> {
+  return !draft.cash || draft.cashFromEquity
+    ? { equity, cash: equity, cashFromEquity: true }
+    : { equity }
 }
 
 export const initialSignalDraft: SignalDraft = {
@@ -90,7 +97,7 @@ def fetch_account(_context: SignalAccountContext) -> dict[str, object]:
         ],
     }
 `,
-  quoteKind: 'gm', gmToken: '', gmMode: 'terminal', gmTerminalPath: '', gmAddress: '', tushareToken: '', tushareUrl: TUSHARE_API_URL,
+  quoteKind: 'gm', gmToken: '', gmMode: 'service', gmTerminalPath: '', gmAddress: '', tushareToken: '', tushareUrl: TUSHARE_API_URL,
   quoteCode: `from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.models.unified_price import UnifiedPriceData
 
@@ -122,40 +129,6 @@ def fetch_quotes(symbols: list[str]) -> dict[str, UnifiedPriceData]:
         for symbol in symbols
     }
 `,
-}
-
-export function isSignalQuoteExample(code: string): boolean {
-  return refreshSignalQuoteExample(code).trim() === initialSignalDraft.quoteCode.trim()
-}
-
-const previousQuoteExamples = [
-  `from axile.executor.models.unified_price import UnifiedPriceData
-
-def fetch_quotes(symbols: list[str]) -> dict[str, UnifiedPriceData]:
-    # 每个标的返回 UnifiedPriceData。bids 和 asks 分别是 [(价格, 数量), ...]。
-    raise NotImplementedError("请接入你的行情来源")`,
-  `from axile.executor.algorithms.utils.clock import clock_now
-from axile.executor.models.unified_price import UnifiedPriceData
-
-def fetch_quotes(symbols: list[str]) -> dict[str, UnifiedPriceData]:
-    # 测试用的演示行情。接入实际行情时，替换下方的价格和盘口数据。
-    now = clock_now()
-    return {
-        symbol: UnifiedPriceData(
-            symbol=symbol,
-            last_price=10.0,
-            bids=[(9.99, 100.0)],
-            asks=[(10.01, 100.0)],
-            volume=1000.0,
-            timestamp=int(now.timestamp() * 1000),
-            update_time=now.isoformat(),
-        )
-        for symbol in symbols
-    }`,
-]
-
-export function refreshSignalQuoteExample(code: string): string {
-  return previousQuoteExamples.includes(code.trim()) ? initialSignalDraft.quoteCode : code
 }
 
 const previousAccountExample = `def fetch_account(context):
@@ -223,8 +196,7 @@ export function signalQuoteErrors(draft: SignalDraft): SignalQuoteErrors {
         tushareUrl: connectionValueError({ kind: 'endpoint', value: draft.tushareUrl.trim() || TUSHARE_API_URL, required: true, label: 'API URL', constraints: TUSHARE_URL_CONSTRAINTS }),
       }
     case 'custom':
-      if (!draft.quoteCode.trim()) return { quoteCode: '请填写行情函数' }
-      return isSignalQuoteExample(draft.quoteCode) ? { quoteCode: '示例行情用于测试，请接入你的行情源后继续' } : {}
+      return draft.quoteCode.trim() ? {} : { quoteCode: '请填写行情函数' }
     default:
       return { quoteKind: '请选择行情来源' }
   }

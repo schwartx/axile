@@ -8,7 +8,7 @@ import { ValidationCardHeader } from '@/features/account/connectionValidation/Va
 import { errorInfo, shortErrorReason, type ErrorInfo } from '@/lib/errorInfo'
 import { withCurrency } from '@/lib/format'
 import { testSignalQuote, type SignalQuoteTestResult } from './signalApi'
-import { isSignalQuoteExample, signalQuoteConfig, type SignalDraft } from './signalData'
+import { signalQuoteConfig, type SignalDraft } from './signalData'
 
 const MAX_SYMBOLS = 10
 const MAX_DEPTH_LEVELS = 5
@@ -79,7 +79,6 @@ export function QuoteDetails({ quote, error, currency }: SignalQuoteTestResult['
 export function SignalQuoteTest({ draft, onValidate }: { draft: SignalDraft; onValidate?: () => boolean }) {
   const symbolInputId = useId()
   const custom = draft.quoteKind === 'custom'
-  const example = custom && isSignalQuoteExample(draft.quoteCode)
   const currency = custom ? '' : 'CNY'
   const [symbols, setSymbols] = useState(['600000.SH', '000001.SZ', '510300.SH'])
   const [running, setRunning] = useState(false)
@@ -87,7 +86,7 @@ export function SignalQuoteTest({ draft, onValidate }: { draft: SignalDraft; onV
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null)
   const [error, setError] = useState<Error | null>(null)
   const [details, setDetails] = useState<ErrorInfo | null>(null)
-  const [tested, setTested] = useState<{ version: string; example: boolean } | null>(null)
+  const [testedVersion, setTestedVersion] = useState<string | null>(null)
   const request = useRef<AbortController | null>(null)
   useEffect(() => () => request.current?.abort(), [])
 
@@ -96,23 +95,22 @@ export function SignalQuoteTest({ draft, onValidate }: { draft: SignalDraft; onV
   const config = custom ? draft.quoteCode : draft.quoteKind === 'tushare'
     ? [draft.tushareToken.trim(), draft.tushareUrl.trim()] : [draft.gmToken.trim(), draft.gmMode, target]
   const version = JSON.stringify([config, symbols])
-  const stale = tested !== null && tested.version !== version
+  const stale = testedVersion !== null && testedVersion !== version
   const rows = result?.items ?? []
   const returned = rows.filter((row) => row.quote !== null).length
   const tooMany = symbols.length > MAX_SYMBOLS
 
   const run = async () => {
-    if (request.current || !symbols.length || tooMany || (!example && onValidate?.() === false)) return
+    if (request.current || !symbols.length || tooMany || onValidate?.() === false) return
     const controller = new AbortController()
     request.current = controller
     setResult(null)
     setSelectedSymbol(null)
     setError(null)
-    setTested({ version, example })
+    setTestedVersion(version)
     setRunning(true)
     try {
-      const source = example ? { kind: 'custom' as const, code: draft.quoteCode } : signalQuoteConfig(draft)
-      const result = await testSignalQuote(source, symbols, controller.signal)
+      const result = await testSignalQuote(signalQuoteConfig(draft), symbols, controller.signal)
       if (!controller.signal.aborted) setResult(result)
     } catch (cause) {
       if (!controller.signal.aborted) setError(cause instanceof Error ? cause : new Error(String(cause)))
@@ -122,7 +120,7 @@ export function SignalQuoteTest({ draft, onValidate }: { draft: SignalDraft; onV
     }
   }
 
-  const resultContext = `${stale ? '上次 · ' : ''}${tested?.example ? '示例 · ' : ''}`
+  const resultContext = stale ? '上次 · ' : ''
   const status = running
     ? '正在读取…'
     : rows.length ? `${resultContext}${returned} / ${rows.length} 有报价` : error ? '测试失败' : '尚未测试'

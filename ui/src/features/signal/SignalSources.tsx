@@ -12,7 +12,7 @@ import { useRemountFade } from '@/lib/viewTransition'
 import { SignalGmConnection } from './SignalGmConnection'
 import { SignalQuoteTest } from './SignalQuoteTest'
 import { SignalSetupColumns } from './SignalSetupColumns'
-import { TUSHARE_API_URL, TUSHARE_URL_CONSTRAINTS, type PositionDraft, type SignalDraft, type SignalQuoteErrors } from './signalData'
+import { signalEquityPatch, TUSHARE_API_URL, TUSHARE_URL_CONSTRAINTS, type PositionDraft, type SignalDraft, type SignalQuoteErrors } from './signalData'
 
 export const signalAction = 'cursor-pointer rounded-[8px] border border-line bg-surface px-3 py-2 text-[13px] text-ink-1 enabled:hover:border-border-strong disabled:cursor-default disabled:opacity-50'
 
@@ -104,10 +104,10 @@ export function SignalSources({ value, onChange, identity, savedQuoteCode, only,
       </> : <>
         <div className="grid min-w-0 gap-3 sm:grid-cols-3">
           <label className="grid gap-1 text-[13px] text-ink-2">账户权益
-            <AmountInput ariaLabel="账户权益" unit={value.currency} value={value.equity} onChange={(equity) => update({ equity })} />
+            <AmountInput ariaLabel="账户权益" unit={value.currency} value={value.equity} onChange={(equity) => update(signalEquityPatch(value, equity))} />
           </label>
           <label className="grid gap-1 text-[13px] text-ink-2">可用资金
-            <AmountInput ariaLabel="可用资金" unit={value.currency} value={value.cash} onChange={(cash) => update({ cash })} />
+            <AmountInput ariaLabel="可用资金" unit={value.currency} value={value.cash} onChange={(cash) => update({ cash, cashFromEquity: false })} />
           </label>
           <ConnectionField label="计价币种" kind="text" value={value.currency} onChange={(currency) => update({ currency })} />
         </div>
