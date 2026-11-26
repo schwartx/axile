@@ -8,8 +8,11 @@ from typing import Any
 
 from loguru import logger
 
-from axile.executor.algorithms.utils.clock import clock_monotonic
+from axile.channels.gm_sessions import GMSessionSettings
+from axile.executor.algorithms.utils.clock import clock_monotonic, clock_now
 from axile.server.account_orders_runtime import _cancellation_failures, public_order
+from axile.server.cron import SCHEDULER_TIMEZONE
+from axile.server.trading_calendar import CalendarDecisionStatus, evaluate_channel_calendar_moment, schedule_windows
 
 
 def sample_orders(state: Any, *, force: bool = False) -> dict[str, Any] | None:
@@ -92,6 +95,23 @@ def _recover(state: Any) -> None:
             or state.active_execution_id is not None
         ):
             return
+        decision = evaluate_channel_calendar_moment(
+            account.trade_channel,
+            clock_now(tz=SCHEDULER_TIMEZONE),
+            windows=schedule_windows(
+                account.trade_channel, GMSessionSettings.from_channel_options(account.channel_options)
+            ),
+        )
+        if decision.status is CalendarDecisionStatus.AVAILABLE_CLOSED:
+            # 重连失败后，新执行器可能还没有同步上一会话的委托。
+            last_book = getattr(state.orders_executor, "account_orders", None)
+            current_book = getattr(state.executor, "account_orders", None)
+            if (
+                last_book is not None
+                and not last_book.snapshot()["data"]
+                and (current_book is None or current_book is last_book or not current_book.snapshot()["data"])
+            ):
+                return
         try:
             state.connected_once = False
             _resolve_prepared_executor(state=state, account=account, execution_id=None, audit_context={})
