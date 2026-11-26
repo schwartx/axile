@@ -1,4 +1,4 @@
-"""调仓信号向导试算、数据测试及配置读取。"""
+"""调仓信号数据测试、配置读取与发布。"""
 
 import asyncio
 from contextlib import closing
@@ -12,10 +12,8 @@ from msgspec import Meta
 from axile.channels.market_data import MarketDataUnavailable
 from axile.channels.rebalance_signal import (
     SIGNAL_CHANNEL,
-    SignalAccountConfig,
     SignalAccountContext,
     SignalQuoteSource,
-    validate_signal_quote_market,
 )
 from axile.common.default_account_notification import build_signal_feishu_card
 from axile.common.feishu import push_feishu_card
@@ -29,23 +27,12 @@ from axile.server.api.inputs import json_body
 from axile.server.api.routes.account_support import _get_account_or_404, ensure_account_current
 from axile.server.error_details import exception_details
 from axile.server.native_store import native_operation
-from axile.server.signal_runner import run_signal, run_signal_account_test, run_signal_quote_test
-from axile.server.signal_service import publish_account_signal, signal_notification_sample, signal_quantity_unit
+from axile.server.signal_runner import run_signal_account_test, run_signal_quote_test
+from axile.server.signal_service import publish_account_signal, signal_notification_sample
 from axile.server.tushare_quotes import read_tushare_quotes
 
 router = APIRouter()
 QUOTE_TEST_TIMEOUT = 5
-
-
-@dataclass(kw_only=True)
-class SignalPreviewRequest:
-    """以未保存的数据配置试算选中组合。"""
-
-    portfolio_id: int
-    market: str
-    account_config: SignalAccountConfig
-
-    __forbid_unknown__ = True
 
 
 @dataclass(kw_only=True)
@@ -143,7 +130,6 @@ def _test_quotes(payload: SignalQuoteTestRequest) -> dict[str, Any]:
     }
 
 
-@router.post("/signal/gm-quote-test", response_model=None, include_in_schema=False)
 @router.post("/signal/quote-test", response_model=None)
 async def test_signal_quotes(
     payload: Annotated[SignalQuoteTestRequest, Depends(json_body(SignalQuoteTestRequest))],
@@ -203,7 +189,7 @@ async def signal_config(account_id: int) -> dict[str, Any]:
     account = await _get_account_or_404(account_id)
     if account.trade_channel != SIGNAL_CHANNEL:
         raise HTTPException(404, detail="该账户不是调仓信号账户")
-    return {"account_config": account.account_config, "quantity_unit": signal_quantity_unit(account.market)}
+    return {"account_config": account.account_config}
 
 
 @router.post("/{account_id}/signal/run", response_model=None)
@@ -253,34 +239,3 @@ async def list_signal_records(
             "symbol": (symbol or "").strip() or None,
         },
     )
-
-
-@router.post("/signal/preview", response_model=None)
-async def preview_signal(
-    payload: Annotated[SignalPreviewRequest, Depends(json_body(SignalPreviewRequest))],
-) -> dict[str, Any]:
-    """运行真实的自定义函数和组合代码，返回原始组合目标。"""
-    try:
-        context = await native_operation(
-            "portfolio_operation", {"op": "context", "portfolio_id": payload.portfolio_id, "account_id": None}
-        )
-    except _core.NativeError as exc:
-        raise HTTPException(422, detail=exc.args[1]) from exc
-    portfolio = context["portfolio"]
-    try:
-        validate_signal_quote_market(payload.market, payload.account_config.quote_source.kind)
-        if portfolio["market"] != payload.market:
-            raise ValueError("调仓信号账户只能试算同市场的组合")
-        result = await asyncio.to_thread(
-            run_signal,
-            payload.account_config,
-            {"account_id": None, "market": payload.market},
-            portfolio["custom_calc_py_code"],
-            30,
-        )
-    except (ValueError, TimeoutError) as exc:
-        raise HTTPException(422, detail=exception_details(exc, "调仓信号试算失败")) from exc
-    return {
-        "target": to_payload(result.target, mode="json"),
-        "quantity_unit": signal_quantity_unit(payload.market),
-    }

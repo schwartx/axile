@@ -148,12 +148,22 @@ async def update_portfolio(
     return Response(value, media_type="application/json", status_code=200)
 
 
-async def resolve_portfolio_target(portfolio: Portfolio, account: AccountContext | None) -> PortfolioTarget:
-    """执行组合函数并返回未经账户杠杆和精度处理的目标权重."""
+async def resolve_target_snapshot_fields(portfolio: Portfolio, account: AccountContext | None) -> dict[str, Any]:
+    """生成目标快照字段，并保存同一轮计算得到的信号数量。"""
+    if account is None:
+        raise HTTPException(status_code=422, detail="保存或刷新生效目标需要真实账户，请先绑定或选择账户")
+    if account.trade_channel == SIGNAL_CHANNEL:
+        from axile.server.signal_service import calculate_signal
+
+        try:
+            return (await calculate_signal(account, portfolio.custom_calc_py_code, size_weights=True)).snapshot_fields()
+        except (ValueError, TimeoutError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=exception_details(exc, "调仓信号目标计算失败"),
+            ) from exc
     try:
-        if account is None:
-            raise HTTPException(status_code=422, detail="保存或刷新生效目标需要真实账户，请先绑定或选择账户")
-        return await calculate_portfolio_for_account(account, portfolio.custom_calc_py_code)
+        result = await calculate_portfolio_for_account(account, portfolio.custom_calc_py_code)
     except HTTPException:
         raise
     except PortfolioFunctionError as exc:
@@ -163,19 +173,12 @@ async def resolve_portfolio_target(portfolio: Portfolio, account: AccountContext
         ) from exc
     except Exception as exc:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, exception_details(exc, "目标计算失败")) from exc
-
-
-async def resolve_signal_target_snapshot(portfolio: Portfolio, account: AccountContext) -> dict[str, Any]:
-    """在发布时冻结信号权重及同一轮换算出的数量。"""
-    from axile.server.signal_service import calculate_signal
-
-    try:
-        return (await calculate_signal(account, portfolio.custom_calc_py_code, size_weights=True)).snapshot_fields()
-    except (ValueError, TimeoutError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=exception_details(exc, "调仓信号目标计算失败"),
-        ) from exc
+    raw_target = PortfolioTarget.from_result(result)
+    return {
+        "target_mode": raw_target.mode,
+        "raw_weights": raw_target.targets,
+        "normalized_weights": _normalize_rebalance_target(account, raw_target.targets, target_mode=raw_target.mode),
+    }
 
 
 @router.get("/{portfolio_id:int}/target_snapshot", response_model=None)
@@ -201,19 +204,7 @@ async def refresh_portfolio_target_snapshot(portfolio_id: int) -> dict[str, Any]
         context = await _portfolio_native("portfolio_operation", {"op": "context", "portfolio_id": portfolio_id})
         portfolio = from_payload(Portfolio, context["portfolio"])
         account = from_payload(AccountSnapshot, context["account"]) if context["account"] is not None else None
-        if account is not None and account.trade_channel == SIGNAL_CHANNEL:
-            fields = await resolve_signal_target_snapshot(portfolio, account)
-        else:
-            raw_target = PortfolioTarget.from_result(await resolve_portfolio_target(portfolio, account))
-            fields = {
-                "target_mode": raw_target.mode,
-                "raw_weights": raw_target.targets,
-                "normalized_weights": _normalize_rebalance_target(
-                    account, raw_target.targets, target_mode=raw_target.mode
-                )
-                if account is not None
-                else None,
-            }
+        fields = await resolve_target_snapshot_fields(portfolio, account)
         snapshot = await append_target_weight_snapshot(
             portfolio_id=portfolio_id, account_id=account_id, source="manual", **fields
         )

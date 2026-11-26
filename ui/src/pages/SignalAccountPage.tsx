@@ -13,7 +13,7 @@ import { formatBeijingTimestamp, formatObservedAt, formatPlannedAt, formatRecent
 import { portfolioMarketDescriptor } from '@/features/portfolio/portfolioMarkets'
 import { describeCron } from '@/features/setup/cron'
 import { TimerQuickModal } from '@/features/setup/TimerQuickModal'
-import { getSignalConfig, getSignalRecords } from '@/features/signal/signalApi'
+import { getSignalRecords } from '@/features/signal/signalApi'
 import { SignalRecordList } from '@/features/signal/SignalRecordList'
 import { deleteAccount, getAccount, getAccountAssetSnapshots, getAccountTargetSnapshot, getNextRun, refreshAccountAssets, refreshAccountTargetSnapshot, runAccountSignal, updateAccount } from '@/lib/api/accounts'
 import { currentEquity } from '@/features/dashboard/performance'
@@ -37,8 +37,6 @@ export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
   const enteringOverview = useViewTransitionState(`/accounts/${id}`)
   const account = usePolling(useCallback((signal: AbortSignal) => getAccount(id, signal), [id]),
     { queryKey: `signal-account:${id}`, intervalMs: 15000 })
-  const config = usePolling(useCallback((signal: AbortSignal) => getSignalConfig(id, signal), [id]),
-    { queryKey: `signal-config:${id}`, intervalMs: 0 })
   const targets = usePolling(useCallback((signal: AbortSignal) => getAccountTargetSnapshot(id, signal), [id]),
     { queryKey: `signal-targets:${id}:${item.portfolio_id}`, intervalMs: 15000, enabled: item.portfolio_id != null })
   const assets = usePolling(useCallback((signal: AbortSignal) => getAccountAssetSnapshots(id, { limit: 1 }, signal), [id]),
@@ -207,13 +205,12 @@ export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
           </div>
           {holdings.length > 0 && <div className="min-w-0 border-t border-line lg:border-t-0 lg:border-l lg:pl-5">
             <HoldingsPreviewTable observed={positionsKnown} holdings={holdings} quantityMode
-              currency={currency} quantityLabel={config.data?.quantity_unit}
+              currency={currency} quantityLabel={market?.units.quantity_label}
               positionValueLabel={holdings.some((row) => row.value != null) ? '市值' : undefined} compact />
           </div>}
         </div>
         <ErrorNotice intent="read" title="目标快照读取失败" error={targets.error} hasData={snapshot != null} onRetry={targets.refresh} />
         <ErrorNotice intent="read" title="资产快照读取失败" error={assets.error} hasData={latest != null} onRetry={assets.refresh} />
-        <ErrorNotice intent="read" title="信号配置读取失败" error={config.error} onRetry={config.refresh} />
       </Card>
 
       <Card className="min-w-0 px-6 py-4">

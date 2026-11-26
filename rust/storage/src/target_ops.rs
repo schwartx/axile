@@ -506,16 +506,23 @@ pub(crate) fn account_evidence_on(
     Ok(Value::Object(result))
 }
 
+fn signal_exists(
+    connection: &Connection,
+    account_id: i64,
+    event_id: &str,
+) -> Result<bool, AnalysisError> {
+    connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM notification_event WHERE id=?1 AND account_id=?2 AND event_type='signal.calculated')",
+        params![event_id, account_id],
+        |row| row.get(0),
+    ).map_err(sql)
+}
+
 fn commit_signal(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {
     let account_id = integer(request, "account_id")?;
     let portfolio_id = integer(request, "portfolio_id")?;
     let event_id = text(&request["notification"], "id")?;
-    let duplicate: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM notification_event WHERE id=?1 AND account_id=?2 AND event_type='signal.calculated')",
-        params![event_id, account_id],
-        |row| row.get(0),
-    ).map_err(sql)?;
-    if duplicate {
+    if signal_exists(connection, account_id, event_id)? {
         return Ok(Value::Null);
     }
     crate::accounts::ensure_current_on(connection, account_id)?;
@@ -556,6 +563,11 @@ pub fn target_operation(path: &str, request: &Value) -> Result<Value, AnalysisEr
     let connection = crate::storage_connection::open_reader(Path::new(path))?;
     connection.execute_batch("BEGIN DEFERRED;").map_err(sql)?;
     match operation {
+        "signal_exists" => Ok(json!(signal_exists(
+            &connection,
+            integer(request, "account_id")?,
+            text(request, "event_id")?,
+        )?)),
         "account_evidence" => account_evidence_on(&connection, &request["pairs"]),
         "execution" => Ok(
             execution_target_snapshot(&connection, text(request, "execution_id")?)?

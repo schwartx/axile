@@ -25,7 +25,10 @@ export function SignalFuturesConnection({ channel, draft, errors, onChange }: {
       return <ConnectionField key={name} label={field.label} kind={field.kind} required
         constraints={field.constraints} clipboard={field.clipboard}
         placeholder={field.placeholder} fillablePlaceholder={field.fillable_placeholder}
-        help={field.help} value={draft[name]} error={errors?.[name]}
+        help={channel === 'ctp'
+          ? '权重目标需要共享合约目录中的乘数。启用定时执行前，请用此账户试跑组合，检查能否换算手数。'
+          : field.help}
+        value={draft[name]} error={errors?.[name]}
         onChange={(value) => onChange({ [name]: value })} />
     })}
   </div>

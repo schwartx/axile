@@ -20,13 +20,13 @@ from axile.common.default_account_notification import SIGNAL_NOTIFICATION_CODE
 from axile.executor import gm_market_data
 from axile.executor.gm_market_data import GMMarketData, GMMarketDataConfig
 from axile.executor.models.unified_price import UnifiedPriceData
-from axile.server import market_data, signal_runner, tushare_quotes
+from axile.server import market_data, signal_runner, signal_service, tushare_quotes
 from axile.server.api.deps import get_scheduler
-from axile.server.api.routes import account_signal
+from axile.server.api.routes import account_feishu, account_signal
 from axile.server.api.routes.account import router as account_router
 from axile.server.api.routes.portfolio import router as portfolio_router
 from axile.server.core import db
-from axile.server.execution import intents, scheduler
+from axile.server.execution import intents, notification_outbox, scheduler
 from axile.server.execution.factory import create_executor_instance
 from axile.server.repositories import get_account_snapshot
 from axile.server.signal_service import run_scheduled_signal
@@ -67,6 +67,18 @@ MANUAL = {"total_asset": 10000, "available_cash": 8000, "currency": "CNY"}
 CUSTOM_SOURCE = {"kind": "custom", "code": QUOTES}
 
 
+@pytest.mark.parametrize(
+    ("code", "timeout", "error", "message"),
+    [
+        ("def fetch_quotes(symbols):\n    while True:\n        pass\n", 0.2, TimeoutError, "计算超时"),
+        ("import os\ndef fetch_quotes(symbols):\n    os._exit(7)\n", 5, ValueError, "进程异常退出"),
+    ],
+)
+def test_signal_quote_process_preserves_timeout_and_exit_errors(code, timeout, error, message):
+    with pytest.raises(error, match=message):
+        signal_runner.run_signal_quote_test(code, ["600000.SH"], timeout)
+
+
 @pytest.fixture
 def client(native_database, monkeypatch):
     monkeypatch.setattr(db, "database_path", lambda: str(native_database))
@@ -98,7 +110,7 @@ def test_gm_quote_draft_keeps_partial_results_and_closes_market(client, monkeypa
     opened = Mock(return_value=market)
     monkeypatch.setattr(GMMarketDataConfig, "open", opened)
     response = client.post(
-        "/account/signal/gm-quote-test",
+        "/account/signal/quote-test",
         json={
             "symbols": [" 600000.sh ", "000001.SZ", "invalid"],
             "quote_source": {
@@ -336,16 +348,6 @@ def test_signal_schedule_persists_complete_targets_once_and_rejects_trade(client
     assert flows["currency"] == "CNY"
     assert client.get("/account/dashboard").status_code == 200
 
-    preview = client.post(
-        "/account/signal/preview",
-        json={
-            "portfolio_id": portfolio,
-            "market": "A股",
-            "account_config": {"manual_assets": MANUAL, "quote_source": CUSTOM_SOURCE},
-        },
-    )
-    assert preview.status_code == 200, preview.text
-    assert preview.json()["target"] == {"mode": "quantity", "targets": TARGET}
     assert client.post(f"/account/execute/{account_id}").status_code == 409
     assert client.post(f"/account/empty_positions/{account_id}").status_code == 409
     assert client.post(f"/account/{account_id}/connection/reconnect").status_code == 409
@@ -365,8 +367,11 @@ def test_signal_schedule_persists_complete_targets_once_and_rejects_trade(client
     with closing(connect(native_database)) as connection:
         assert connection.execute("SELECT COUNT(*) FROM target_weight_snapshot").fetchone() == (0,)
     scheduled = opened
+    calculate = AsyncMock(wraps=signal_service.calculate_signal)
+    monkeypatch.setattr(signal_service, "calculate_signal", calculate)
     asyncio.run(scheduler.execute_scheduled_rebalance(account_id, scheduled))
     asyncio.run(run_scheduled_signal(account_id, datetime.fromisoformat(scheduled)))
+    assert calculate.await_count == 1
 
     target = client.get(f"/account/{account_id}/target_snapshot").json()
     assert target["target_mode"] == "quantity"
@@ -468,7 +473,28 @@ def test_signal_records_page_filters_saved_signals(client, monkeypatch):
     assert client.get(f"/account/{other_id + 999}/signal/records").status_code == 404
 
 
-def test_weight_signal_trial_and_snapshots_keep_weights_and_publish_quantities(client, native_database):
+def test_manual_signal_failure_is_recorded_without_sending_notification(client, monkeypatch):
+    portfolio = create_portfolio(client, "A股")
+    account_id = create_signal_account(client, portfolio)["id"]
+    url = f"/account/{account_id}"
+    updated = client.patch(url, json={"execution_notification_code": "def notify(context): pass"})
+    assert updated.status_code == 200, updated.text
+    monkeypatch.setattr(signal_service, "calculate_signal", AsyncMock(side_effect=ValueError("模拟行情错误")))
+    monkeypatch.setattr(signal_service, "wake_notifications", Mock())
+    send = Mock()
+    monkeypatch.setattr(notification_outbox, "run_account_notification", send)
+
+    response = client.post(f"{url}/signal/run")
+    assert response.status_code == 422 and "模拟行情错误" in response.text
+    asyncio.run(notification_outbox._dispatch(account_id))
+    send.assert_not_called()
+    (record,) = client.get(f"{url}/signal/records", params={"status": "FAILED"}).json()["items"]
+    assert record["trigger_source"] == "manual" and record["error"]
+    assert record["notification_status"] == "succeeded"
+    assert client.get(f"{url}/target_snapshot").json()["calculated_at"] is None
+
+
+def test_weight_signal_trial_and_snapshots_keep_weights_and_publish_quantities(client, native_database, monkeypatch):
     weights = {"600000.SH": 0.48, "510300.SH": -0.23}
     code = f"""
 def calculate_portfolio(context):
@@ -507,6 +533,17 @@ def calculate_portfolio(context):
     assert portfolio_refresh.json()["weights"] == weights
     assert client.get(f"{account_url}/target_snapshot").json()["quantities"] == quantities
 
+    sender = Mock()
+    monkeypatch.setattr(account_feishu, "push_feishu_card", sender)
+    tested = client.post(f"{account_url}/feishu/test", json={"feishu_key": "fixture-key"})
+    assert tested.status_code == 200 and tested.json()["ok"], tested.text
+    (card, _key) = sender.call_args.args
+    assert set(card["elements"][0]["content"].splitlines()) == {
+        "**目标持仓**",
+        "600000.SH  600 股",
+        "510300.SH  -500 股",
+    }
+
     asyncio.run(run_scheduled_signal(account_id, datetime.fromisoformat("2026-11-23T10:30:00+08:00")))
     target = client.get(f"{account_url}/target_snapshot").json()
     assert target | expected == target
@@ -536,6 +573,41 @@ def test_futures_weight_signal_requires_contract_multiplier_on_publication(clien
     else:
         assert response.status_code == 400
         assert "缺少有效合约乘数" in response.text
+
+
+def test_ctp_portfolio_trial_reports_missing_catalog_multiplier(client, monkeypatch):
+    pytest.importorskip("openctp_ctp")
+    from axile.server.execution.worker_backend import manager
+
+    symbol = "rb2701"
+    quote = UnifiedPriceData(
+        symbol=symbol,
+        last_price=10,
+        bids=[],
+        asks=[],
+        volume=1,
+        timestamp=1795417200000,
+        update_time="2026-11-23T15:00:00+08:00",
+        extra={"exchange_id": "SHFE"},
+    )
+    monkeypatch.setattr(signal_runner, "read_configured_market_data", Mock(return_value={symbol: quote}))
+    catalog = Mock()
+    catalog.cached.return_value = None
+    code = f"def calculate_portfolio(context): return {{{symbol!r}: 0.2}}"
+    portfolio = create_portfolio(client, "期货", code)
+    source = {"kind": "ctp", "md_front": "tcp://quotes.example.test:15000"}
+    account_id = create_signal_account(client, portfolio, source, market="期货")["id"]
+    monkeypatch.setattr(manager, "get_worker_backend_manager", Mock(return_value=Mock(instrument_catalog=catalog)))
+    payload = {"account_id": account_id, "custom_calc_py_code": code}
+    trial = client.post("/portfolio/validate_custom_calc", json=payload)
+    assert trial.status_code == 200, trial.text
+    assert not trial.json()["valid"]
+    assert "刷新共享合约目录" in trial.json()["error"]
+
+    catalog.cached.return_value = Mock(has_specs=True, multiplier=10)
+    trial = client.post("/portfolio/validate_custom_calc", json=payload)
+    assert trial.status_code == 200, trial.text
+    assert trial.json()["valid"] and trial.json()["target"] == {symbol: 0.2}
 
 
 def test_stock_signal_auction_options_preview_persist_and_schedule(client, monkeypatch):
@@ -588,22 +660,20 @@ def test_stock_signal_auction_options_preview_persist_and_schedule(client, monke
     assert client.patch(f"/account/{future_account_id}", json={"channel_options": options}).status_code == 422
 
 
-def test_signal_preview_rejects_scalar_quote_payload(client):
+def test_signal_portfolio_trial_rejects_scalar_quote_payload(client):
     portfolio = create_portfolio(client, "A股")
     quote_code = """
 def fetch_quotes(symbols):
     return {symbol: {"last_price": 10, "update_time": "2026-11-23T15:00:00+08:00"} for symbol in symbols}
 """
-    preview = client.post(
-        "/account/signal/preview",
-        json={
-            "portfolio_id": portfolio,
-            "market": "A股",
-            "account_config": {"manual_assets": MANUAL, "quote_source": {"kind": "custom", "code": quote_code}},
-        },
+    account_id = create_signal_account(client, portfolio, {"kind": "custom", "code": quote_code})["id"]
+    trial = client.post(
+        "/portfolio/validate_custom_calc",
+        json={"account_id": account_id, "custom_calc_py_code": CALCULATE},
     )
-    assert preview.status_code == 422, preview.text
-    assert "行情函数必须返回 UnifiedPriceData：510300.SH" in str(preview.json()["detail"])
+    assert trial.status_code == 200, trial.text
+    assert trial.json()["valid"] is False
+    assert "行情函数必须返回 UnifiedPriceData：510300.SH" in trial.json()["error"]
 
 
 @pytest.mark.parametrize(
@@ -613,7 +683,7 @@ def fetch_quotes(symbols):
         {"kind": "tushare", "token": "ts-fixture", "url": "https://quotes.example.test/v1/tushare"},
     ],
 )
-def test_signal_presets_read_quotes_in_preview_and_schedule(client, monkeypatch, source):
+def test_signal_presets_read_quotes_in_portfolio_trial_and_schedule(client, monkeypatch, source):
     quote = UnifiedPriceData(
         symbol="510300.SH",
         last_price=10,
@@ -625,30 +695,25 @@ def test_signal_presets_read_quotes_in_preview_and_schedule(client, monkeypatch,
     )
     gm = Mock(return_value={quote.symbol: quote})
     tushare = Mock(return_value={quote.symbol: quote})
-    monkeypatch.setattr(signal_runner, "read_market_data", gm)
+    monkeypatch.setattr(signal_runner, "read_configured_market_data", gm)
     monkeypatch.setattr(signal_runner, "read_tushare_quotes", tushare)
     portfolio = create_portfolio(client, "A股")
     account_id = create_signal_account(client, portfolio, source)["id"]
     saved = client.get(f"/account/{account_id}/signal-config").json()["account_config"]["quote_source"]
     assert all(saved[key] == value for key, value in source.items())
-    preview = client.post(
-        "/account/signal/preview",
-        json={
-            "portfolio_id": portfolio,
-            "market": "A股",
-            "account_config": {"manual_assets": MANUAL, "quote_source": source},
-        },
+    trial = client.post(
+        "/portfolio/validate_custom_calc",
+        json={"account_id": account_id, "custom_calc_py_code": CALCULATE},
     )
-    assert preview.status_code == 200, preview.text
-    assert preview.json()["target"]["targets"] == TARGET
+    assert trial.status_code == 200, trial.text
+    assert trial.json()["target"] == TARGET
 
     asyncio.run(run_scheduled_signal(account_id, datetime.fromisoformat("2026-11-23T15:30:00+08:00")))
     assert client.get(f"/account/{account_id}/target_snapshot").json()["quantities"] == TARGET
     if source["kind"] == "gm":
         assert gm.call_count == 2
         assert gm.call_args.args == (
-            "gm",
-            {key: value for key, value in source.items() if key != "kind"},
+            ("gm", GMMarketDataConfig(source["token"], source["serv_addr"])),
             [quote.symbol],
         )
         tushare.assert_not_called()
@@ -665,7 +730,7 @@ def test_signal_presets_read_quotes_in_preview_and_schedule(client, monkeypatch,
         ({"kind": "tq", "tq_username": "fixture-user", "tq_password": "fixture-password"}, "SHFE.rb2701"),
     ],
 )
-def test_signal_futures_quotes_work_in_draft_preview_and_schedule(client, monkeypatch, source, symbol):
+def test_signal_futures_quotes_work_in_quote_test_portfolio_trial_and_schedule(client, monkeypatch, source, symbol):
     if source["kind"] == "ctp":
         pytest.importorskip("openctp_ctp")
         from axile.executor.ctp.market_data import CtpMarketDataConfig
@@ -702,22 +767,17 @@ def test_signal_futures_quotes_work_in_draft_preview_and_schedule(client, monkey
     draft_feed.snapshot.assert_called_once_with([symbol], timeout=5)
     draft_feed.close.assert_called_once_with()
 
-    portfolio = create_portfolio(
-        client, "期货", CALCULATE.replace(str(TARGET), repr({symbol: 2})).replace("510300.SH", symbol)
-    )
+    code = CALCULATE.replace(str(TARGET), repr({symbol: 2})).replace("510300.SH", symbol)
+    portfolio = create_portfolio(client, "期货", code)
     account_id = create_signal_account(client, portfolio, source, market="期货")["id"]
     saved = client.get(f"/account/{account_id}/signal-config").json()["account_config"]["quote_source"]
     assert {key: saved[key] for key in source} == source
-    preview = client.post(
-        "/account/signal/preview",
-        json={
-            "portfolio_id": portfolio,
-            "market": "期货",
-            "account_config": {"manual_assets": MANUAL, "quote_source": source},
-        },
+    trial = client.post(
+        "/portfolio/validate_custom_calc",
+        json={"account_id": account_id, "custom_calc_py_code": code},
     )
-    assert preview.status_code == 200, preview.text
-    assert preview.json()["target"]["targets"] == {symbol: 2}
+    assert trial.status_code == 200, trial.text
+    assert trial.json()["target"] == {symbol: 2}
     asyncio.run(run_scheduled_signal(account_id, datetime.fromisoformat("2026-11-23T15:30:00+08:00")))
     assert client.get(f"/account/{account_id}/target_snapshot").json()["quantities"] == {symbol: 2}
     assert [call.args for call in opened.call_args_list] == [(expected_config,), (expected_config,)]
@@ -798,16 +858,6 @@ def test_signal_market_is_required_and_cannot_drift_from_binding(client):
     assert client.patch(f"/account/{account_id}", json={"market": "A股"}).status_code == 422
     assert client.patch(f"/account/{account_id}", json={"portfolio_id": stock}).status_code == 422
     assert client.patch(f"/portfolio/{futures}", json={"market": "A股"}).status_code == 422
-    preview = client.post(
-        "/account/signal/preview",
-        json={
-            "market": "期货",
-            "portfolio_id": stock,
-            "account_config": {"manual_assets": MANUAL, "quote_source": CUSTOM_SOURCE},
-        },
-    )
-    assert preview.status_code == 422
-    assert "同市场" in preview.text
 
 
 def test_registered_plugin_market_drives_signal_schedule(client, monkeypatch):

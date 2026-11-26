@@ -65,7 +65,7 @@ CTP 与天勤共用内存合约目录，服务重启后按执行所需补齐，�
 从「新建账户」选择「调仓信号」，绑定已有组合。账户继承组合的市场。可以填写权益、可用资金、币种及实际持仓，也可以配置账户函数。首次入金单独记入资金流水。
 
 - `fetch_account(context)` 返回包含 `total_asset`、`available_cash`、`currency` 和可选 `positions` 的字典。定时计算前和手动刷新权益时调用。省略 `positions` 表示未知持仓，返回空列表表示确认空仓。上下文提供市场、账户名称及账户 ID，开户试算时还没有账户 ID。
-- 行情来源可以选掘金、Tushare 或自定义函数。掘金填写 Token，远程连接时另填服务地址。Tushare 填写 Token 与 API URL，使用 HTTP 协议查询 A 股和 ETF 实时报价。最新价和盘口以来源实际返回的字段为准。
+- 行情来源可以选掘金、Tushare、CTP、天勤或自定义函数。掘金填写 Token，远程连接时另填服务地址。Tushare 填写 Token 与 API URL，使用 HTTP 协议查询 A 股和 ETF 实时报价。最新价和盘口以来源实际返回的字段为准。
 - 自定义 `fetch_quotes(symbols)` 返回 `dict[str, UnifiedPriceData]`。`UnifiedPriceData` 从 `axile.executor.models.unified_price` 导入。三种来源都在组合取价时按需查询。`context.get_price()` 读取最新成交价，`context.get_quote()` 取得统一行情快照。
-- 组合函数返回 `{"mode": "quantity", "targets": {...}}`。编辑页试算和手动重算可预览目标。定时任务保存目标并按账户通知配置推送。默认卡片按完整目标列出数量，账户由用户自行在券商端交易。
+- 组合可以返回权重目标或数量目标 `{"mode": "quantity", "targets": {...}}`。CTP 独立行情的权重目标需要共享合约目录提供乘数。启用定时执行前，可在组合编辑页选此账户试跑，检查能否换算手数。缺少乘数时，可通过已连接的期货账户刷新共享合约目录，或改用数量目标。定时任务保存目标并按账户通知配置推送。默认卡片按完整目标列出数量，账户由用户自行在券商端交易。
 - 自定义通知可判断 `event_type == "signal.calculated"`，并从 `targets.current` 读取完整目标数量。有实际持仓时，`positions` 提供当前持仓供自定义通知计算差额。

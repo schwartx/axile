@@ -2,7 +2,7 @@
 
 import asyncio
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Literal
 from uuid import uuid4
 
 from loguru import logger
@@ -33,6 +33,7 @@ async def calculate_signal(
     *,
     leverage_overrides: dict[str, float] | None = None,
     size_weights: bool = False,
+    trial: bool = False,
 ) -> SignalCalculation:
     """手动刷新、试跑与定时计算共用账户与行情函数。"""
     config = parse_input(SignalAccountConfig, account.account_config)
@@ -50,7 +51,7 @@ async def calculate_signal(
         portfolio_code,
         account.execution_timeout,
         settings,
-        size_weights=size_weights,
+        size_weights=size_weights or (trial and config.quote_source.kind == "ctp"),
     )
 
 
@@ -157,17 +158,25 @@ async def publish_account_signal(account: Account, scheduled_at: datetime | None
     if portfolio_id is None or not try_register_account_asset_refresh(account_id):
         return None
     try:
+        planned = scheduled_at.astimezone(UTC).isoformat() if scheduled_at is not None else None
+        event_id = f"signal:{account_id}:{planned or uuid4()}"
+        if planned is not None and await native_operation(
+            "target_operation", {"op": "signal_exists", "account_id": account_id, "event_id": event_id}
+        ):
+            wake_notifications(account_id)
+            return event_id
+
         bound = await native_operation("portfolio_operation", {"op": "bound_context", "account_id": account_id})
         portfolio = bound["portfolio"]
         if portfolio is None or portfolio["id"] != portfolio_id:
             return None
-        if scheduled_at is None:
+        failure = None
+        try:
             result = await calculate_signal(account, portfolio["custom_calc_py_code"], size_weights=True)
-            planned = None
-        else:
-            result = await _scheduled_calculation(account, portfolio)
-            planned = scheduled_at.astimezone(UTC).isoformat()
-        event_id = f"signal:{account_id}:{planned or uuid4()}"
+        except (ValueError, TimeoutError) as error:
+            logger.bind(account_id=account_id).exception("调仓信号计算失败")
+            result = None
+            failure = error
         at = clock_now_iso()
         await native_operation(
             "target_operation",
@@ -197,14 +206,8 @@ async def publish_account_signal(account: Account, scheduled_at: datetime | None
             },
         )
         wake_notifications(account_id)
+        if failure is not None and planned is None:
+            raise failure
         return event_id
     finally:
         clear_account_asset_refresh(account_id)
-
-
-async def _scheduled_calculation(account: Account, portfolio: dict[str, Any]) -> SignalCalculation | None:
-    try:
-        return await calculate_signal(account, portfolio["custom_calc_py_code"], size_weights=True)
-    except (ValueError, TimeoutError):
-        logger.bind(account_id=account.id).exception("调仓信号计算失败")
-        return None

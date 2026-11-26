@@ -9,11 +9,10 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from loguru import logger
 
 from axile.channels import get_channel
-from axile.channels.rebalance_signal import SIGNAL_CHANNEL
 from axile.common.serialization import from_payload
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionTaskStatus
-from axile.executor.models.portfolio_target import PortfolioTarget, TargetMode
+from axile.executor.models.portfolio_target import TargetMode
 from axile.server._native import _core
 from axile.server.api.deps import HistoryPaginationDep, SchedDep
 from axile.server.api.inputs import json_body
@@ -23,13 +22,12 @@ from axile.server.api.routes.account_support import (
     ensure_account_current,
     ensure_trading_account,
 )
-from axile.server.api.routes.portfolio import resolve_portfolio_target, resolve_signal_target_snapshot
+from axile.server.api.routes.portfolio import resolve_target_snapshot_fields
 from axile.server.business_facts.assets import latest_asset_snapshot
 from axile.server.db.models import ExecutionTerminateRequest, Portfolio
 from axile.server.error_details import exception_details
 from axile.server.execution.ctp_channels import reconcile_china_channel_account
 from axile.server.execution.lifecycle import enqueue_empty_positions, enqueue_execute_trade
-from axile.server.execution.rebalance import _normalize_rebalance_target
 from axile.server.execution.registry import (
     AccountExecutionAlreadyRunningError,
     clear_target_refresh,
@@ -206,18 +204,7 @@ async def refresh_account_target_snapshot(account_id: int) -> dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="账户正在执行或刷新，请稍后再试")
 
     try:
-        model = from_payload(Portfolio, portfolio)
-        if account.trade_channel == SIGNAL_CHANNEL:
-            fields = await resolve_signal_target_snapshot(model, account)
-        else:
-            raw_target = PortfolioTarget.from_result(await resolve_portfolio_target(model, account))
-            fields = {
-                "raw_weights": raw_target.targets,
-                "target_mode": raw_target.mode,
-                "normalized_weights": _normalize_rebalance_target(
-                    account, raw_target.targets, target_mode=raw_target.mode
-                ),
-            }
+        fields = await resolve_target_snapshot_fields(from_payload(Portfolio, portfolio), account)
         snapshot = await append_target_weight_snapshot(
             portfolio_id=portfolio_id, account_id=account_id, source="manual", **fields
         )

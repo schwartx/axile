@@ -33,6 +33,7 @@ from axile.server.error_details import exception_details
 from axile.server.execution.notification_data import run_account_notification
 from axile.server.execution.registry import clear_account_asset_refresh, try_register_account_asset_refresh
 from axile.server.native_store import native_operation
+from axile.server.target_sizing import read_account_target
 from axile.server.target_weight_snapshots import get_latest_account_target_snapshot
 
 router = APIRouter()
@@ -254,18 +255,18 @@ async def _build_test_card(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="账户不存在")
     if account.trade_channel == SIGNAL_CHANNEL:
         from axile.server.signal_service import signal_quantity_unit
-        from axile.server.target_weight_snapshots import get_latest_account_target_snapshot
 
         signal = (
             await get_latest_account_target_snapshot(account_id, account.portfolio_id)
             if account.portfolio_id is not None
             else None
         )
+        quantities = (await read_account_target(account, signal))["quantities"]
         return build_signal_feishu_card(
             account.name,
-            (signal or {}).get("raw_weights") or {},
+            quantities or {},
             signal_quantity_unit(account.market),
-            "尚未计算目标持仓" if signal is None else None,
+            "尚未计算目标持仓" if quantities is None else None,
         )
     if not try_register_account_asset_refresh(account_id):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="账户正在执行或刷新资产，请稍后再试")

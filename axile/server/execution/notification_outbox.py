@@ -4,6 +4,7 @@ import asyncio
 
 import loguru
 
+from axile.channels.rebalance_signal import SIGNAL_EVENT
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.notification_context import SYSTEM_NOTIFICATION_EVENTS
 from axile.common.notification_function import NotificationFunctionResult
@@ -38,7 +39,11 @@ async def _dispatch(account_id: int) -> None:
                 from axile.server.error_notifications import send_system_notification
 
                 result = await send_system_notification(context)
-            elif code:
+            elif code and not (
+                event["event_type"] == SIGNAL_EVENT
+                and context["execution"]["trigger_source"] == "manual"
+                and context["execution"]["status"] == "FAILED"
+            ):
                 result = (
                     NotificationFunctionResult(False, "未配置飞书 Webhook，无法发送通知")
                     if code == DEFAULT_ACCOUNT_NOTIFICATION_CODE and not key

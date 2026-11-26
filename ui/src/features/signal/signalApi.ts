@@ -23,7 +23,7 @@ export function testSignalNotification(mode: 'feishu' | 'function', draft: strin
 }
 
 export function getSignalConfig(accountId: number, signal?: AbortSignal) {
-  return apiGet<{ account_config: SignalConfig; quantity_unit: string }>(`/account/${accountId}/signal-config`, signal)
+  return apiGet<{ account_config: SignalConfig }>(`/account/${accountId}/signal-config`, signal)
 }
 
 export type SignalRecordStatus = 'SUCCEEDED' | 'FAILED'

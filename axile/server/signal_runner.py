@@ -4,7 +4,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from math import isfinite, trunc
-from multiprocessing import get_context
 from multiprocessing.connection import Connection
 from typing import cast
 
@@ -18,20 +17,18 @@ from axile.channels.rebalance_signal import (
 )
 from axile.common.function_contract import accepts_context
 from axile.common.serialization import parse_input
-from axile.executor.algorithms.utils.clock import clock_monotonic, clock_now_iso
+from axile.executor.algorithms.utils.clock import clock_now_iso
 from axile.executor.models.portfolio_target import PortfolioTarget, normalize_target_weights
 from axile.executor.models.unified_account_assets import Position, UnifiedAccountAssets
 from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
 from axile.server.context import Context, ContextSettings
-from axile.server.market_data import read_configured_market_data, read_market_data
+from axile.server.market_data import read_configured_market_data
 from axile.server.portfolio_function import PortfolioFunctionError, _error_from_exception, calculate_portfolio_target
 from axile.server.portfolio_runner import (
-    PORTFOLIO_FUNCTION_IPC_GRACE_SECONDS,
+    QuoteReader,
     _MarketPortfolioExecutor,
-    _quote_reply,
-    _QuoteRequest,
-    _stop_process,
+    run_portfolio_child,
 )
 from axile.server.tushare_quotes import read_tushare_quotes
 
@@ -182,7 +179,10 @@ def _size_weight_target(
                 or not isinstance(multiplier, int | float)
                 or not 0 < multiplier < float("inf")
             ):
-                raise ValueError(f"{symbol} 缺少有效合约乘数，无法换算目标手数")
+                raise ValueError(
+                    f"{symbol} 缺少有效合约乘数，无法换算目标手数。"
+                    "使用 CTP 独立行情时，可通过已连接的期货账户刷新共享合约目录，或让组合返回数量目标。"
+                )
             unit_value *= multiplier
         if channel.quantize_target_quantity is not None:
             quantity = channel.quantize_target_quantity(weights[symbol], assets.total_asset, unit_value)
@@ -223,9 +223,7 @@ def _run_child(
 
 def _read_channel_quotes(source: SignalQuoteSource, symbols: list[str], timeout: float) -> dict[str, UnifiedPriceData]:
     if source.kind == "gm":
-        if source.connection_mode == "terminal" and source.terminal_path is not None:
-            return read_configured_market_data(("gm", source.gm_config()), symbols, timeout=timeout)
-        return read_market_data("gm", source.gm_values(), symbols, timeout=timeout)
+        return read_configured_market_data(("gm", source.gm_config()), symbols, timeout=timeout)
     if source.kind in ("ctp", "tq"):
         rows = read_configured_market_data((source.kind, source.futures_config()), symbols, timeout=timeout)
         if source.kind == "ctp":
@@ -290,34 +288,11 @@ def _run_isolated_signal(
     target: Callable[..., None],
     args: tuple[object, ...],
     timeout: float,
-    read_quotes: Callable[[list[str], float], dict[str, UnifiedPriceData]] | None = None,
+    read_quotes: QuoteReader | None = None,
 ) -> object:
-    context = get_context("spawn")
-    parent, child = context.Pipe(duplex=read_quotes is not None)
-    process = context.Process(target=target, args=(child, *args), daemon=True)
     try:
-        process.start()
-        child.close()
-        deadline = clock_monotonic() + timeout
-        while (remaining := deadline - clock_monotonic()) > 0 and parent.poll(remaining):
-            result = parent.recv()
-            if isinstance(result, _QuoteRequest) and read_quotes is not None:
-                remaining = deadline - clock_monotonic()
-                if remaining <= 0:
-                    break
-                parent.send(_quote_reply(result, read_quotes, remaining))
-                continue
-            if isinstance(result, PortfolioFunctionError):
-                raise result
-            return result
-        _stop_process(process)
-        raise TimeoutError("调仓信号取数或计算超时")
+        return run_portfolio_child(target, args, timeout, read_quotes)
+    except TimeoutError as error:
+        raise TimeoutError("调仓信号取数或计算超时") from error
     except (EOFError, BrokenPipeError) as error:
         raise ValueError("调仓信号计算进程异常退出") from error
-    finally:
-        parent.close()
-        child.close()
-        if process.pid is not None:
-            process.join(timeout=PORTFOLIO_FUNCTION_IPC_GRACE_SECONDS)
-            _stop_process(process)
-        process.close()
