@@ -22,7 +22,7 @@ function storedSplit(storageKey: string): number | null {
 export function PythonWorkbenchPane({
   kind,
   code, onChange, running, runDisabled = false, stale, result, onRun, editorRef, statusTarget, compactStatus, storageKey,
-  title, dirty = false, docHref, onResizeChange, savedCode, draftKey, localOnly, inputError,
+  title, dirty = false, docHref, onResizeChange, savedCode, draftKey, localOnly, inputError, onChecks, skipEmptyChecks = false,
 }: {
   kind: PythonEditorKind
   code: string
@@ -39,11 +39,13 @@ export function PythonWorkbenchPane({
   statusTarget: HTMLElement | null
   compactStatus?: boolean
   inputError?: string | null
+  skipEmptyChecks?: boolean
   storageKey: string
   title: string
   dirty?: boolean
   docHref?: string
   onResizeChange?: (resizing: boolean) => void
+  onChecks?: (checks: PythonChecks) => void
 }) {
   const [problemsOpen, setProblemsOpen] = useState(false)
   const [checks, setChecks] = useState<PythonChecks | null>(null)
@@ -64,7 +66,8 @@ export function PythonWorkbenchPane({
     }
   }, [inputError, result])
 
-  const currentChecks = checks?.document === code ? checks : null
+  const waitingForCode = skipEmptyChecks && !code.trim()
+  const currentChecks = !waitingForCode && checks?.document === code ? checks : null
   const staticProblems = [...(currentChecks?.lsp.diagnostics ?? []), ...(currentChecks?.contract.diagnostics ?? [])].map(item => ({
     line: item.range.start.line + 1, message: typeof item.message === 'string' ? item.message : item.message.value,
     severity: item.severity === 1 ? 'error' : 'warning',
@@ -130,7 +133,7 @@ export function PythonWorkbenchPane({
   }
 
   return (
-    <div ref={paneRef} className={`grid min-h-0 transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${resizing ? '!transition-none' : ''}`} style={{ gridTemplateRows: rows }}>
+    <div ref={paneRef} className={`grid min-h-0 transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${resizing ? '!transition-none' : ''}`} style={{ gridTemplateRows: waitingForCode ? 'minmax(0, 1fr)' : rows }}>
       <div className="flex min-h-[420px] min-w-0 flex-col bg-code-bg md:min-h-0">
         <div ref={setHeader} className="h-8 flex-none" />
         <PythonFunctionEditor
@@ -143,13 +146,14 @@ export function PythonWorkbenchPane({
           headerTarget={header}
           statusTarget={statusTarget}
           compactStatus={compactStatus}
-          onChecks={setChecks}
+          onChecks={(next) => { setChecks(next); onChecks?.(next) }}
           layout="workbench"
           fill
           code={code}
           savedCode={savedCode}
           draftKey={draftKey}
           localOnly={localOnly}
+          skipEmptyChecks={skipEmptyChecks}
           onChange={onChange}
           running={running}
           runDisabled={runDisabled || !onRun}
@@ -161,7 +165,7 @@ export function PythonWorkbenchPane({
           docHref={docHref}
         />
       </div>
-      <ResizeHandle
+      {!waitingForCode && <ResizeHandle
         aria-label="调整代码与问题的高度" orientation="horizontal"
         value={split} min={0} max={0.8} step={-0.05}
         aria-valuetext={fitProblems ? '代码问题按内容高度展开' : `${Math.round(split * 100)}%`}
@@ -170,8 +174,8 @@ export function PythonWorkbenchPane({
         valueAt={splitAt} keyboardValue={() => fitProblems ? currentSplit() : split}
         onChange={setSplit} onCommit={persistSplit} onReset={() => persistSplit(DEFAULT_SPLIT)}
         onResizeChange={setResizingState}
-      />
-      <PythonRunPanel
+      />}
+      {!waitingForCode && <PythonRunPanel
         kind="problems"
         title="代码检查"
         hideTitle={!!onRun}
@@ -211,7 +215,7 @@ export function PythonWorkbenchPane({
         result={result}
         stale={false}
         onRevealError={(line) => internalEditorRef.current?.revealLine(line)}
-      />
+      />}
     </div>
   )
 }

@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { MemoryRouter } from 'react-router'
 
 import { flowOf } from '@/features/setup/steps'
+import { SignalNotificationSetup } from '@/features/signal/SignalNotificationSetup'
 import { configToSignalDraft, initialSignalDraft, positionVolumePatch, refreshSignalQuoteExample, SIGNAL_CHANNEL, signalAccountConfig, signalAccountErrors, signalConfig, signalQuoteConfig, signalQuoteErrors, TUSHARE_API_URL } from '@/features/signal/signalData'
 import { SignalSetupPage } from '@/pages/setup/SignalSetupPage'
 import { useChannelCatalogStore } from '@/stores/channels'
@@ -38,13 +39,31 @@ test('信号向导复用定时预览，并在单独的一步配置通知', () =>
     expect(timer).not.toContain('飞书 Webhook')
 
     const notification = render(6)
-    expect(notification).toContain('飞书 Webhook（选填）')
-    expect(notification).toContain('使用自定义通知函数')
+    expect(notification).toContain('aria-label="通知方式"')
+    expect(notification).not.toContain('不通知')
+    expect(notification).toContain('飞书 Webhook')
+    expect(notification).toContain('自定义函数')
+    expect(notification).toContain('>跳过通知</button>')
+    expect(notification).toContain('disabled="">下一步</button>')
     expect(notification).not.toContain('排程预览')
-    expect(render(7)).toContain('试算目标数量')
+    const confirmation = render(7)
+    expect(confirmation).toContain('试算目标数量')
+    expect(confirmation).toContain('>通知</dt><dd>未配置</dd>')
   } finally {
     catalog.channels = previousChannels
   }
+})
+
+test('飞书通知显示录入状态并默认明文显示 Webhook', () => {
+  const render = (webhook: string) => renderToStaticMarkup(createElement(SignalNotificationSetup, {
+    mode: 'feishu', webhook, code: '', heading: null, footer: null,
+    onModeChange: () => {}, onWebhookChange: () => {}, onCodeChange: () => {},
+  }))
+  expect(render('  ')).toContain('role="status">待填写')
+  const filled = render('fixture-key')
+  expect(filled).toContain('role="status">已填写')
+  expect(filled).toContain('aria-label="飞书 Webhook" type="text"')
+  expect(filled).toContain('placeholder="可粘贴整条 webhook 链接"')
 })
 
 test('行情和资金各自验证本步配置', () => {

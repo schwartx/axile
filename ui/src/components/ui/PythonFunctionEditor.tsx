@@ -120,6 +120,7 @@ export function PythonFunctionEditor({
   savedCode,
   draftKey,
   localOnly = false,
+  skipEmptyChecks = false,
   onChange,
   running,
   runDisabled = false,
@@ -151,6 +152,7 @@ export function PythonFunctionEditor({
   savedCode?: string
   draftKey?: string
   localOnly?: boolean
+  skipEmptyChecks?: boolean
   onChange: (code: string) => void
   running: boolean
   /** 保存等外部操作期间阻止试跑；按钮和 Ctrl/Cmd+Enter 使用同一条件。 */
@@ -255,8 +257,8 @@ export function PythonFunctionEditor({
       if (existing) { resolve(existing); return }
       pendingSourceViews.current.set(uri, [...(pendingSourceViews.current.get(uri) ?? []), resolve])
       setSourceTabs((tabs) => tabs.some((tab) => tab.uri === uri) ? tabs : [...tabs, { uri, code }])
-    }), (next) => setSymbols(next), setLanguageClient, (next) => { setChecks(next); checksCallback.current?.(next) })
-  }, [view, languageSlot, kind, localOnly])
+    }), (next) => setSymbols(next), setLanguageClient, (next) => { setChecks(next); checksCallback.current?.(next) }, skipEmptyChecks)
+  }, [view, languageSlot, kind, localOnly, skipEmptyChecks])
 
   useEffect(() => {
     if (!localOnly) return
@@ -580,7 +582,7 @@ export function PythonFunctionEditor({
       />
       {!hasCode && (
         <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2">
-          <button className="pointer-events-auto inline-flex cursor-pointer items-center gap-2 rounded-[8px] border border-line bg-surface px-5 py-3 text-[15px] font-[550] text-ink-1 shadow-sm hover:border-ink-3" onClick={() => void paste()}>
+          <button type="button" className="pointer-events-auto inline-flex cursor-pointer items-center gap-2 rounded-[8px] border border-line bg-surface px-5 py-3 text-[15px] font-[550] text-ink-1 shadow-sm hover:border-ink-3" onClick={() => void paste()}>
             <Clipboard size={16} /> 从剪贴板粘贴代码
           </button>
           <span className="text-[13.5px] text-ink-3">或点此直接输入</span>

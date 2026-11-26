@@ -67,6 +67,7 @@ export function WizardNav({
   onNext,
   nextDisabled,
   inline,
+  secondaryAction,
 }: {
   prevTo?: string
   onPrev?: () => void
@@ -75,6 +76,7 @@ export function WizardNav({
   onNext?: () => void | Promise<void>
   nextDisabled?: boolean
   inline?: boolean
+  secondaryAction?: ReactNode
 }) {
   const navigate = useNavigate()
   const [busy, setBusy] = useState(false)
@@ -108,6 +110,7 @@ export function WizardNav({
         <span />
       )}
       {!inline && <span className="flex-1" />}
+      {secondaryAction}
       <button
         className={`cursor-pointer rounded-[11px] border px-[22px] py-2.5 text-[15px] disabled:opacity-45 ${nextCls}`}
         onClick={handleNext}

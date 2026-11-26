@@ -5,17 +5,18 @@ import { SectionLabel } from '@/components/ui/Card'
 import { ConnectionField } from '@/components/ui/ConnectionField'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { useNavigate } from '@/components/ui/nav'
-import { Toggle } from '@/features/account/editUi'
 import { extractFeishuKey } from '@/features/account/feishuUpdate'
 import { PortfolioChoiceList } from '@/features/portfolio/PortfolioChoiceList'
 import { WeightResult } from '@/features/portfolio/WeightResult'
 import { cronToExpr, defaultTimerEditorState, describeCron, resolveCronList, timerEditorError } from '@/features/setup/cron'
 import { flowOf } from '@/features/setup/steps'
 import { TimerEditor, type TimerEditorState } from '@/features/setup/TimerEditor'
-import { WizardHeading, WizardNav, WizardPage, WizardTimerPage } from '@/features/setup/WizardNav'
+import { WizardHeading, WizardNav, WizardTimerPage } from '@/features/setup/WizardNav'
 import { SignalAssetsSetup } from '@/features/signal/SignalAssetsSetup'
-import { SignalCodeEditor, SignalSources, signalAction } from '@/features/signal/SignalSources'
+import { SignalNotificationSetup, type SignalNotificationMode } from '@/features/signal/SignalNotificationSetup'
+import { SignalSources, signalAction } from '@/features/signal/SignalSources'
 import { previewSignal, type SignalPreview } from '@/features/signal/signalApi'
+import { SIGNAL_NOTIFICATION_EXAMPLE } from '@/features/signal/signalNotificationExample'
 import { initialSignalDraft, refreshSignalAccountExample, refreshSignalQuoteExample, SIGNAL_CHANNEL, signalAccountErrors, signalConfig, signalQuoteErrors, type SignalDraft } from '@/features/signal/signalData'
 import { createAccount } from '@/lib/api/accounts'
 import { useChannelDescriptor } from '@/stores/channels'
@@ -28,6 +29,7 @@ export function SignalSetupPage() {
   const { pathname, search } = useLocation()
   const { index: step, steps } = flowOf(pathname, search)
   const nextStep = steps[step + 1]
+  const notificationStep = step === 5
   const [name, setName] = useState('')
   const [portfolioId, setPortfolioId] = useState<number | null>(null)
   const [data, setData] = useState(initialSignalDraft)
@@ -50,15 +52,19 @@ export function SignalSetupPage() {
   const [timerDraft, setTimerDraft] = useState<TimerEditorState | null>(null)
   const timer = timerDraft ?? initialTimer
   const [webhook, setWebhook] = useState('')
-  const [customNotify, setCustomNotify] = useState(false)
-  const [notification, setNotification] = useState('')
+  const [notificationMode, setNotificationMode] = useState<SignalNotificationMode>('feishu')
+  const [confirmedNotification, setConfirmedNotification] = useState<SignalNotificationMode | null>(null)
+  const [notification, setNotification] = useState(SIGNAL_NOTIFICATION_EXAMPLE)
   const [error, setError] = useState<Error | null>(null)
   const [preview, setPreview] = useState<SignalPreview | null>(null)
   const [running, setRunning] = useState(false)
   const portfolio = portfolios?.find((item) => item.id === portfolioId)
   const cron = scheduleKind && timer ? cronToExpr(resolveCronList(scheduleKind, timer, schedule.night)) : ''
   const timerBlocked = !scheduleKind || !timer || Boolean(timerEditorError(timer)) || (timer.autoOn && !cron)
-  const notificationBlocked = customNotify && !notification.trim()
+  const feishuKey = extractFeishuKey(webhook)
+  const missingNotification = { feishu: !feishuKey, function: !notification.trim() }
+  const notificationBlocked = missingNotification[notificationMode]
+  const confirmedNotificationBlocked = confirmedNotification !== null && missingNotification[confirmedNotification]
 
   const runPreview = async () => {
     if (portfolioId === null) return
@@ -98,10 +104,14 @@ export function SignalSetupPage() {
         if (Object.keys(accountErrors).length) return
       }
       if (nextStep) {
+        if (notificationStep) {
+          if (notificationBlocked) return
+          setConfirmedNotification(notificationMode)
+        }
         navigate(nextStep.path)
         return
       }
-      if (!timer || timerBlocked || notificationBlocked) return
+      if (!timer || timerBlocked || confirmedNotificationBlocked) return
       if (portfolioId !== null && !portfolio) return
       const account = await createAccount({
         name: name.trim(),
@@ -120,8 +130,8 @@ export function SignalSetupPage() {
         forbidden_symbols: null,
         risk_symbols: null,
         write_empty_record: null,
-        feishu_key: customNotify ? null : extractFeishuKey(webhook) || null,
-        ...(customNotify ? { execution_notification_code: notification } : {}),
+        feishu_key: confirmedNotification === 'feishu' ? feishuKey : null,
+        ...(confirmedNotification === 'function' ? { execution_notification_code: notification } : {}),
       })
       void refreshAccounts()
       navigate(`/accounts/${account.id}`)
@@ -142,7 +152,7 @@ export function SignalSetupPage() {
     false,
     timerBlocked,
     notificationBlocked,
-    running || timerBlocked || notificationBlocked,
+    running || timerBlocked || confirmedNotificationBlocked,
   ][step]
   const kicker = `账户设置 · ${step + 1} / ${steps.length}`
   const errorNotice = <ErrorNotice title="调仓信号设置失败" intent="mutation" error={error} />
@@ -172,38 +182,24 @@ export function SignalSetupPage() {
     </WizardTimerPage>
   }
 
-  if (step === 5) {
-    return <div className="flex h-full min-h-0 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <WizardPage kicker={kicker} title={steps[step].label} lead="设置调仓信号生成后的通知方式，此步可跳过。">
-          <div className="grid gap-4">
-            <div className="flex items-center gap-2 text-[13px] text-ink-2">
-              <Toggle on={customNotify} onClick={() => setCustomNotify(!customNotify)} ariaLabel="使用自定义通知函数" />
-              <span>使用自定义通知函数</span>
-            </div>
-            {customNotify
-              ? <SignalCodeEditor label="自定义通知函数" identity="signal:setup:notify" code={notification} onChange={setNotification} />
-              : <ConnectionField label="飞书 Webhook（选填）" kind="secret" value={webhook} onChange={setWebhook} />}
-          </div>
-        </WizardPage>
-      </div>
-      {errorNotice}
-      <WizardNav onPrev={previous} onNext={advance} nextDisabled={blocked} />
-    </div>
-  }
-
   const quoteStep = step === 2
   const assetStep = step === 3
-  const workspaceStep = quoteStep || assetStep
+  const workspaceStep = quoteStep || assetStep || notificationStep
   const lead = quoteStep ? '选择组合计算使用的行情来源，可在右侧用指定标的测试。'
-    : assetStep ? '提供组合计算使用的账户权益、可用资金和币种。实际持仓可选填。' : null
+    : assetStep ? '提供组合计算使用的账户权益、可用资金和币种。实际持仓可选填。'
+    : notificationStep ? '选择调仓信号生成后的通知方式。' : null
   const heading = <div className="min-w-0">
     <h1 id="signal-step-title" className="text-[23px] font-[680] tracking-tight">{steps[step].label}</h1>
     {lead && <p className="mt-1.5 max-w-[560px] text-[15px] text-ink-2">{lead}</p>}
   </div>
   const footer = <>
     {errorNotice}
-    <WizardNav inline onPrev={previous} onNext={advance} nextDisabled={blocked} nextLabel={nextStep ? '下一步' : '创建账户'} />
+    <WizardNav inline onPrev={previous} onNext={advance} nextDisabled={blocked} nextLabel={nextStep ? '下一步' : '创建账户'}
+      secondaryAction={notificationStep && nextStep && <button type="button"
+        className="cursor-pointer rounded-[11px] px-3 py-2.5 text-[15px] text-ink-2 hover:bg-fill hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-accent"
+        onClick={() => { setError(null); setConfirmedNotification(null); navigate(nextStep.path) }}>
+        跳过通知
+      </button>} />
   </>
 
   return <section aria-labelledby="signal-step-title" className={`grid min-w-0 gap-4 px-8 ${workspaceStep ? 'h-full grid-rows-[minmax(0,1fr)] py-4' : 'py-8'}`}>
@@ -250,12 +246,16 @@ export function SignalSetupPage() {
       {assetStep && <SignalAssetsSetup value={data} errors={accountErrors} showErrors={showAccountErrors}
         name={name.trim()} market={portfolio?.market ?? ''} heading={heading} footer={footer}
         onChange={(patch) => updateDraft({ ...data, ...patch })} onMissingCode={() => setShowAccountErrors(true)} />}
+      {notificationStep && <SignalNotificationSetup mode={notificationMode} webhook={webhook} code={notification}
+        heading={heading} footer={footer} onModeChange={setNotificationMode} onWebhookChange={setWebhook} onCodeChange={setNotification} />}
       {!nextStep && <>
         <dl className="grid grid-cols-[auto_1fr] gap-x-5 gap-y-2 text-[14px]">
           <dt className="text-ink-3">账户</dt><dd>{name}</dd>
           <dt className="text-ink-3">组合</dt><dd>{portfolio ? `${portfolio.name} · ${portfolio.market}` : '未绑定'}</dd>
           <dt className="text-ink-3">定时任务</dt>
           <dd>{timer?.autoOn && scheduleKind ? describeCron(scheduleKind, cron, schedule.night) ?? cron : '已暂停'}</dd>
+          <dt className="text-ink-3">通知</dt>
+          <dd>{confirmedNotificationBlocked ? '待填写' : confirmedNotification === 'feishu' ? '飞书' : confirmedNotification === 'function' ? '自定义函数' : '未配置'}</dd>
         </dl>
         <div className="flex flex-wrap items-center gap-3">
           <button

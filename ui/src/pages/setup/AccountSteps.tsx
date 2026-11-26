@@ -114,9 +114,9 @@ export function AcctChannel() {
     <div className="flex h-full flex-col">
       <div className="flex-1 overflow-y-auto">
         <WizardPage kicker={`账户设置 · 1 / ${steps.length}`} title="选择账户渠道">
-          <div className="grid grid-cols-1 gap-3">
-            {loading && channels === null && <p className="text-[15px] text-ink-2">加载渠道…</p>}
-            <ErrorNotice intent="read" title="渠道目录加载失败" error={channels === null ? error : null} onRetry={refresh} />
+          {loading && channels === null && <p className="text-[15px] text-ink-2">加载渠道…</p>}
+          <ErrorNotice intent="read" title="渠道目录加载失败" error={channels === null ? error : null} onRetry={refresh} />
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             {channels?.map((ch) => {
               const available = ch.available
               const isSelected = acct.channel === ch.channel

@@ -6,12 +6,13 @@
  */
 
 import { extractFeishuKey } from '@/features/account/feishuUpdate'
+import { FeishuWebhookInput } from '@/features/account/FeishuWebhookInput'
 import { basicNotificationPatch, basicNotificationStatus } from '@/features/account/basicNotification'
 import { NOTIFICATION_STATUS_LABEL } from '@/features/account/notificationStatus'
 import { InkRewrite } from '@/components/ui/InkRewrite'
 import { Link } from '@/components/ui/nav'
 import { useCallback, useEffect, useState, type CSSProperties } from 'react'
-import { Check, ExternalLink, Eye, EyeOff } from 'lucide-react'
+import { Check, ExternalLink } from 'lucide-react'
 import { useParams, useViewTransitionState } from 'react-router'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { PortfolioChoiceList } from '@/features/portfolio/PortfolioChoiceList'
@@ -194,7 +195,6 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
   const [ready, setReady] = useState(false)
   const [draft, setDraft] = useState<Draft | null>(null)
   const [feishuTest, setFeishuTest] = useState<AccountFeishuTestResult | 'busy' | null>(null)
-  const [feishuKeyRevealed, setFeishuKeyRevealed] = useState(false)
   const [saveError, setSaveError] = useState<Error | null>(null)
 
   /** 草稿重置为服务端当前值；数据未就绪时返回 false（供首帧初始化门控）。 */
@@ -395,33 +395,10 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
           <div className="min-h-0 overflow-hidden">
             <Row label="Webhook" hint={d.clearFeishu ? '保存后关闭' : (feishuKey || acc.feishu_configured ? '已配置' : '未配置')} top span>
             <div className="flex items-center gap-2">
-              <div className="relative min-w-0 flex-1">
-                <input
-                  type={feishuKeyRevealed ? 'text' : 'password'}
-                  className={`${TEXT} pr-10`}
-                  value={d.feishu}
-                  placeholder={acc.feishu_configured ? '已配置 · 留空保持不变' : '可粘贴整条 webhook 链接'}
-                  spellCheck={false}
-                  autoComplete="off"
-                  onChange={(e) => {
-                    set({ feishu: e.target.value, clearFeishu: false })
-                    if (feishuTest) setFeishuTest(null)
-                  }}
-                  onBlur={() => {
-                    const key = extractFeishuKey(d.feishu)
-                    if (key !== d.feishu) set({ feishu: key })
-                  }}
-                />
-                <button
-                  type="button"
-                  title={feishuKeyRevealed ? '隐藏机器人 Key' : '显示机器人 Key'}
-                  aria-label={feishuKeyRevealed ? '隐藏机器人 Key' : '显示机器人 Key'}
-                  className="absolute right-1 top-1/2 flex h-8 w-8 -translate-y-1/2 cursor-pointer items-center justify-center rounded-md text-ink-3 transition-colors hover:bg-fill hover:text-ink-1"
-                  onClick={() => setFeishuKeyRevealed((value) => !value)}
-                >
-                  {feishuKeyRevealed ? <EyeOff size={16} /> : <Eye size={16} />}
-                </button>
-              </div>
+              <FeishuWebhookInput value={d.feishu} configured={acc.feishu_configured} onChange={(feishu) => {
+                set({ feishu, clearFeishu: false })
+                if (feishuTest) setFeishuTest(null)
+              }} />
               <button
                 type="button"
                 className="flex-none cursor-pointer text-[13px] text-ink-2 disabled:opacity-45"
