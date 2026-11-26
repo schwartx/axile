@@ -3,12 +3,12 @@ import { useEffect, useLayoutEffect, useRef, useState, type ComponentType, type 
 import { matchPath, useLocation } from 'react-router'
 import {
   BellRing,
-  Boxes,
-  CircleGauge,
   CircleUserRound,
   FolderPlus,
+  Layers,
   Settings2,
   UserRoundPlus,
+  Wallet,
   X,
 } from 'lucide-react'
 import { Link } from '@/components/ui/nav'
@@ -40,8 +40,8 @@ const ACCOUNT_POPOVER_ID = 'sidebar-account-navigation'
 
 type RailItem = NavItemSpec & { icon: NonNullable<NavItemSpec['icon']>; to: string }
 const MAIN_NAV: RailItem[] = [
-  { label: '所有账户', icon: CircleGauge, to: '/', active: pathname => pathname === '/' },
-  { label: '所有组合', icon: Boxes, to: '/portfolios', active: pathname => pathname.startsWith('/portfolios') },
+  { label: '所有账户', icon: Wallet, to: '/', active: pathname => pathname === '/' },
+  { label: '所有组合', icon: Layers, to: '/portfolios', active: pathname => pathname.startsWith('/portfolios') },
 ]
 const SETTINGS_NAV: RailItem[] = [
   { label: '系统告警', icon: BellRing, to: '/settings', active: pathname => pathname === '/settings' || pathname === '/settings/notification' },
