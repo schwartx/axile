@@ -13,8 +13,9 @@ export function useTargetSnapshot(
   recalculator: () => Promise<TargetWeightSnapshot>,
   queryKey: string,
   enabled = true,
+  intervalMs = 0,
 ) {
-  const snapshot = usePolling(reader, { queryKey, intervalMs: 0, enabled })
+  const snapshot = usePolling(reader, { queryKey, intervalMs, enabled })
   const reloadSnapshot = snapshot.refresh
   const [recalculating, setRecalculating] = useState(false)
   const [recalculateError, setRecalculateError] = useState<Error | null>(null)

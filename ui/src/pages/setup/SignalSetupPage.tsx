@@ -1,4 +1,4 @@
-import { Check, CircleHelp } from 'lucide-react'
+import { CircleHelp } from 'lucide-react'
 import { useLayoutEffect, useMemo, useState } from 'react'
 import { useLocation } from 'react-router'
 import { ConnectionField } from '@/components/ui/ConnectionField'
@@ -9,7 +9,7 @@ import { Tooltip } from '@/components/ui/Tooltip'
 import { describeLeverage } from '@/features/account/configSummary'
 import { extractFeishuKey } from '@/features/account/feishuUpdate'
 import { leverageError } from '@/features/account/leverage'
-import { PortfolioChoiceList } from '@/features/portfolio/PortfolioChoiceList'
+import { NoPortfolioButton, PortfolioChoiceList } from '@/features/portfolio/PortfolioChoiceList'
 import { portfolioMarketDescriptor, portfolioMarketOptions } from '@/features/portfolio/portfolioMarkets'
 import { defaultTimerEditorState, describeCron, timerEditorError, timerStateToCronExpr } from '@/features/setup/cron'
 import { flowOf } from '@/features/setup/steps'
@@ -206,14 +206,7 @@ export function SignalSetupPage() {
             <section aria-labelledby="signal-portfolio-heading" className="grid min-w-0 gap-2 border-t border-line pt-4 xl:border-t-0 xl:pt-0">
               <div className="flex min-h-7 items-center justify-between gap-2">
                 <h2 id="signal-portfolio-heading" className="text-[14px] font-medium text-ink-2">选择组合 <span className="text-ink-3">（选填）</span></h2>
-                {descriptor && <button
-                  type="button"
-                  aria-pressed={portfolioId === null}
-                  onClick={() => setPortfolioId(null)}
-                  className="inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[13px] text-ink-2 hover:bg-fill focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                >
-                  {portfolioId === null && <Check size={14} aria-hidden />}不绑定组合
-                </button>}
+                {descriptor && <NoPortfolioButton selected={portfolioId == null} onSelect={() => setPortfolioId(null)} />}
               </div>
               {descriptor ? <div className={revealPortfolios ? 'motion-safe:animate-[panel-fade-in_150ms_ease-out]' : undefined}>
                 <PortfolioChoiceList key={market} market={market} selectedId={portfolioId}

@@ -24,7 +24,7 @@ export function SignalNotificationSetup({ mode, webhook, code, name, market, hea
   name: string
   market: string
   heading: ReactNode
-  footer: ReactNode
+  footer: ReactNode | ((testRunning: boolean) => ReactNode)
   allowOff?: boolean
   savedWebhook?: boolean
   saving?: boolean
@@ -105,7 +105,7 @@ export function SignalNotificationSetup({ mode, webhook, code, name, market, hea
         ...(allowOff ? [{ value: 'off' as const, label: '关闭' }] : []),
       ]} />
     </div>
-    <SignalSetupColumns sidebar={sidebar} footer={footer}>
+    <SignalSetupColumns sidebar={sidebar} footer={typeof footer === 'function' ? footer(test.running) : footer}>
       {off && <p className="text-[14px] text-ink-2">关闭推送后仍可执行调仓信号。</p>}
       {mode === 'feishu' && <Row label="飞书 Webhook">
         <FeishuWebhookInput value={webhook} configured={savedWebhook} required={!savedWebhook} onChange={(next) => {

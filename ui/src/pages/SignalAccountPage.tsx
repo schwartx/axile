@@ -18,6 +18,7 @@ import { SignalRecordList } from '@/features/signal/SignalRecordList'
 import { deleteAccount, getAccount, getAccountAssetSnapshots, getAccountTargetSnapshot, getNextRun, refreshAccountAssets, refreshAccountTargetSnapshot, runAccountSignal, updateAccount } from '@/lib/api/accounts'
 import { currentEquity } from '@/features/dashboard/performance'
 import { usePolling } from '@/lib/hooks/usePolling'
+import { useTargetSnapshot } from '@/lib/hooks/useTargetSnapshot'
 import { shanghaiLabel } from '@/features/history/costs'
 import { useChannelCatalogStore, useChannelDescriptor } from '@/stores/channels'
 import { useDomainStore } from '@/stores/domain'
@@ -27,6 +28,8 @@ import { ArchiveAction } from '@/features/account/ArchiveAction'
 import { CopyAccountDialog } from '@/features/account/CopyAccountDialog'
 import { AccountBasicDialog } from '@/features/account/AccountBasicDialog'
 import { AccountLeverageDialog } from '@/features/account/AccountLeverageDialog'
+import { RuntimeSyncStatus } from '@/features/account/RuntimeSyncStatus'
+import { runtimeSyncMessage, useAccountRuntimeSync } from '@/features/account/useAccountRuntimeSync'
 import type { AccountDashboardItem } from '@/types/api'
 
 export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
@@ -37,8 +40,14 @@ export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
   const enteringOverview = useViewTransitionState(`/accounts/${id}`)
   const account = usePolling(useCallback((signal: AbortSignal) => getAccount(id, signal), [id]),
     { queryKey: `signal-account:${id}`, intervalMs: 15000 })
-  const targets = usePolling(useCallback((signal: AbortSignal) => getAccountTargetSnapshot(id, signal), [id]),
-    { queryKey: `signal-targets:${id}:${item.portfolio_id}`, intervalMs: 15000, enabled: item.portfolio_id != null })
+  const runtime = useAccountRuntimeSync(id)
+  const targets = useTargetSnapshot(
+    useCallback((signal: AbortSignal) => getAccountTargetSnapshot(id, signal), [id]),
+    useCallback(() => refreshAccountTargetSnapshot(id), [id]),
+    `signal-targets:${id}:${item.portfolio_id}`,
+    item.portfolio_id != null,
+    15000,
+  )
   const assets = usePolling(useCallback((signal: AbortSignal) => getAccountAssetSnapshots(id, { limit: 1 }, signal), [id]),
     { queryKey: `signal-assets:${id}`, intervalMs: 15000 })
   const records = usePolling(useCallback((signal: AbortSignal) => getSignalRecords(id, { limit: 6 }, signal), [id]),
@@ -57,30 +66,30 @@ export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
   const portfolioName = useDomainStore((state) => state.portfolios?.find((p) => p.id === item.portfolio_id)?.name)
   const channels = useChannelCatalogStore((state) => state.channels)
   const isStarted = account.data?.is_started ?? item.is_started
-  type Action = 'assets' | 'target' | 'signal' | 'toggle' | 'delete'
+  type Action = 'assets' | 'signal' | 'toggle' | 'delete'
   const [busy, setBusy] = useState<Action | null>(null)
+  const actionBusy = busy !== null || targets.recalculating
   const [error, setError] = useState<{ action: Action; cause: Error } | null>(null)
   const act = async (action: Action) => {
-    if (busy !== null) return
+    if (actionBusy) return
     setBusy(action)
     setError(null)
     try {
       if (action === 'assets') {
         await refreshAccountAssets(id)
         await Promise.all([assets.refresh(), refreshAccounts()])
-      } else if (action === 'target') {
-        await refreshAccountTargetSnapshot(id)
-        await targets.refresh()
       } else if (action === 'signal') {
         await runAccountSignal(id)
-        await Promise.all([targets.refresh(), assets.refresh(), records.refresh(), account.refresh(), refreshAccounts()])
+        await Promise.all([targets.reloadSnapshot(), assets.refresh(), records.refresh(), account.refresh(), refreshAccounts()])
         toast('执行完成')
       } else if (action === 'toggle') {
+        runtime.invalidate()
         const updated = await updateAccount(id, { is_started: !isStarted })
+        runtime.acceptSaved(updated.runtime_sync)
         await Promise.all([account.refresh(), nextRun.refresh(), refreshAccounts()])
         toast(updated.runtime_sync?.status === 'synchronized'
           ? updated.is_started ? '已启动' : '已暂停'
-          : '设置已保存，运行态待同步')
+          : runtimeSyncMessage(updated.runtime_sync))
       } else {
         await deleteAccount(id)
         await refreshAccounts()
@@ -89,6 +98,7 @@ export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
       }
     } catch (cause) {
       setError({ action, cause: cause instanceof Error ? cause : new Error(String(cause)) })
+      if (action === 'toggle') void runtime.refresh()
     } finally {
       setBusy(null)
     }
@@ -119,14 +129,15 @@ export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
   const shortLeverage = account.data?.short_leverage ?? item.short_leverage
 
   return <>
+    <RuntimeSyncStatus runtime={runtime} disabled={actionBusy} accountId={id} />
     <Card className="p-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <AccountOverviewIdentity item={item} nameTransition={enteringOverview} />
         {!isStarted && <Chip>已暂停</Chip>}
         <AccountActions signal name={item.name} isStarted={isStarted} running={busy === 'signal'}
           runDisabledReason={item.portfolio_id == null ? '绑定组合后可执行'
-            : busy && busy !== 'signal' ? '当前操作结束后可执行' : undefined}
-          toggling={busy !== null}
+            : actionBusy && busy !== 'signal' ? '当前操作结束后可执行' : undefined}
+          toggling={actionBusy}
           archiveAction={(className) => <ArchiveAction kind="account" id={id} name={item.name} className={className}
             onChanged={async () => { await refreshAccounts(); await account.refresh() }} />}
           onExec={() => void act('signal')} onToggleStarted={() => void act('toggle')}
@@ -139,7 +150,7 @@ export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
         <AccountOverviewEquity accountId={id} equity={equity} currency={currency}
           observedAt={latest?.created_at ?? item.asset_observed_at}
           refreshing={busy === 'assets'}
-          refreshDisabledReason={busy && busy !== 'assets' ? '当前操作结束后可刷新资产' : undefined}
+          refreshDisabledReason={actionBusy && busy !== 'assets' ? '当前操作结束后可刷新资产' : undefined}
           onRefresh={() => void act('assets')}
           feedback={<AssetRefreshFeedback accountId={id} manualError={error?.action === 'assets' ? error.cause : null} automaticError={null} />}
           summary={typeof availableCash === 'number' && <span className="num text-[14.5px] text-ink-2">
@@ -171,7 +182,7 @@ export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
       <ErrorNotice title="账户操作失败" intent="mutation" error={error?.action !== 'assets' ? error?.cause : null} />
     </Card>
 
-    <CopyAccountDialog accountId={id} name={item.name} isStarted={isStarted} isBusy={busy !== null}
+    <CopyAccountDialog accountId={id} name={item.name} isStarted={isStarted} isBusy={actionBusy}
       open={editing === 'copy'} onClose={closeSettings} />
     {editing === 'basic' && <AccountBasicDialog accountId={id} name={item.name} remark={item.remark}
       onClose={closeSettings} onSaved={refreshSettings} />}
@@ -188,10 +199,10 @@ export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
             title={formatBeijingTimestamp(snapshot.calculated_at)} className="text-[13px] text-ink-3">
             目标计算于 {formatObservedAt(snapshot.calculated_at)}
           </time>}
-          {item.portfolio_id != null && <button type="button" disabled={busy !== null}
+          {item.portfolio_id != null && <button type="button" disabled={actionBusy}
             className="ml-auto cursor-pointer text-[13.5px] font-semibold text-accent enabled:hover:underline disabled:cursor-default disabled:opacity-50"
-            onClick={() => void act('target')}>
-            {busy === 'target' ? '计算中…' : '计算目标'}
+            onClick={() => void targets.recalculate()}>
+            {targets.recalculating ? '计算中…' : '计算目标'}
           </button>}
         </div>
         <div className={`min-w-0 md:min-h-48 ${holdings.length ? 'grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.618fr)]' : ''}`}>
@@ -209,7 +220,8 @@ export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
               positionValueLabel={holdings.some((row) => row.value != null) ? '市值' : undefined} compact />
           </div>}
         </div>
-        <ErrorNotice intent="read" title="目标快照读取失败" error={targets.error} hasData={snapshot != null} onRetry={targets.refresh} />
+        <ErrorNotice intent="mutation" title="目标计算失败" error={targets.recalculateError} />
+        <ErrorNotice intent="read" title="目标快照读取失败" error={targets.error} hasData={snapshot != null} onRetry={targets.reloadSnapshot} />
         <ErrorNotice intent="read" title="资产快照读取失败" error={assets.error} hasData={latest != null} onRetry={assets.refresh} />
       </Card>
 
@@ -259,6 +271,6 @@ export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
     {market && account.data && <TimerQuickModal open={editing === 'timer'} accountId={id} accountName={item.name}
       tradeChannel={item.trade_channel} scheduleChannel={market.channel} isStarted={isStarted}
       cronExpr={cron ?? ''} channelOptions={account.data.channel_options} onClose={closeSettings}
-      onSaved={() => { void account.refresh(); void nextRun.refresh(); void refreshAccounts() }} />}
+      onSaved={() => { void account.refresh(); void nextRun.refresh(); void refreshAccounts(); void runtime.refresh() }} />}
   </>
 }

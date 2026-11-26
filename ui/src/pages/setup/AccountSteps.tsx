@@ -1,7 +1,7 @@
 import { FuturesClosePolicyEditor } from '@/features/account/FuturesClosePolicyEditor'
 import { defaultClosePolicy } from '@/features/account/futuresClosePolicy'
 import { useEffect, useRef, useState } from 'react'
-import { Bitcoin, ChartCandlestick, Check, CircleHelp, createLucideIcon, Landmark, Monitor, RadioTower, SquareTerminal, Target, type LucideIcon } from 'lucide-react'
+import { Bitcoin, ChartCandlestick, CircleHelp, createLucideIcon, Landmark, Monitor, RadioTower, SquareTerminal, Target, type LucideIcon } from 'lucide-react'
 import { useNavigate } from '@/components/ui/nav'
 import { ConnectionValidationAside } from '@/features/account/connectionValidation/ConnectionValidationAside'
 import { ExecutionTimeoutInput } from '@/features/account/ExecutionTimeoutInput'
@@ -15,7 +15,7 @@ import { ChannelConditionalReveal } from '@/features/setup/ChannelConditionalRev
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { ConnectionField } from '@/components/ui/ConnectionField'
 import { CreatePortfolioModal } from '@/features/portfolio/CreatePortfolioModal'
-import { PortfolioChoiceList } from '@/features/portfolio/PortfolioChoiceList'
+import { NoPortfolioButton, PortfolioChoiceList } from '@/features/portfolio/PortfolioChoiceList'
 import { DirectoryPicker } from '@/components/ui/DirectoryPicker'
 import type { ClipboardCandidate } from '@/components/ui/connectionFieldClipboard'
 import {
@@ -485,11 +485,7 @@ export function AcctPortfolio() {
       <div className="flex-1 overflow-y-auto">
         <WizardPage kicker="账户设置 · 3 / 6" title="用哪个组合？" lead="选择账户跟随的组合，也可以先跳过，创建账户后再绑定。">
           <div className="mb-3 flex justify-end">
-            <button type="button" aria-pressed={acct.portfolioId == null}
-              onClick={() => setAcct({ portfolioId: null })}
-              className="inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[13px] text-ink-2 hover:bg-fill focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
-              {acct.portfolioId == null && <Check size={14} aria-hidden />}不绑定组合
-            </button>
+            <NoPortfolioButton selected={acct.portfolioId == null} onSelect={() => setAcct({ portfolioId: null })} />
           </div>
           <div className="grid grid-cols-1 gap-3">
             <PortfolioChoiceList selectedId={acct.portfolioId} onSelect={(portfolioId) => setAcct({ portfolioId })} />

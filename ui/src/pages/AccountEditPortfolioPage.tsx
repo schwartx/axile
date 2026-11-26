@@ -1,10 +1,9 @@
 import { useState } from 'react'
-import { Check } from 'lucide-react'
 import { useOutletContext, useParams } from 'react-router'
 import type { AccountEditContext } from '@/features/account/AccountEditGuard'
 import { EditLoading, EditSaveBar, Row, Section, Toggle } from '@/features/account/editUi'
 import { AccountPageTitle } from '@/features/account/pageHead'
-import { PortfolioChoiceList } from '@/features/portfolio/PortfolioChoiceList'
+import { NoPortfolioButton, PortfolioChoiceList } from '@/features/portfolio/PortfolioChoiceList'
 import { SIGNAL_CHANNEL } from '@/features/signal/signalData'
 import { updateAccount, type AccountUpdatePayload } from '@/lib/api/accounts'
 import { useChannelCatalogStore, useChannelDescriptor } from '@/stores/channels'
@@ -77,11 +76,8 @@ function PortfolioSettings({ accountId }: { accountId: number }) {
         <div className="mt-3 min-w-0 md:col-span-2">
           <div className="mb-3 flex items-center justify-between gap-3">
             <h2 className="text-[14px] text-ink-2">跟随组合</h2>
-            <button type="button" aria-pressed={portfolioId == null}
-              disabled={portfolios == null || Boolean(portfoliosError)} onClick={() => choosePortfolio(null)}
-              className="inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[13px] text-ink-2 hover:bg-fill focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-45">
-              {portfolioId == null && <Check size={14} aria-hidden />}不绑定组合
-            </button>
+            <NoPortfolioButton selected={portfolioId == null}
+              disabled={portfolios == null || Boolean(portfoliosError)} onSelect={() => choosePortfolio(null)} />
           </div>
           <PortfolioChoiceList market={account.market} selectedId={portfolioId} onSelect={choosePortfolio} />
         </div>
