@@ -1,9 +1,8 @@
-import { useState, type ReactNode } from 'react'
-import { Eye, EyeOff } from 'lucide-react'
+import type { ReactNode } from 'react'
 import { Segmented } from '@/components/ui/Segmented'
 import { InkRewrite } from '@/components/ui/InkRewrite'
-import { Row, TEXT } from '@/features/account/editUi'
-import { extractFeishuKey } from '@/features/account/feishuUpdate'
+import { Row } from '@/features/account/editUi'
+import { FeishuWebhookInput } from '@/features/account/FeishuWebhookInput'
 import { systemAlertKey, type SystemAlertDraft } from './systemAlertDraft'
 
 function AlertRow({ compact, label, hint, children }: { compact: boolean; label: string; hint?: string; children: ReactNode }) {
@@ -22,7 +21,6 @@ export function SystemAlertFields({ draft, configured, onChange, disabled, custo
   compact?: boolean
   showModeSelector?: boolean
 }) {
-  const [revealed, setRevealed] = useState(false)
   const key = systemAlertKey(draft)
   return (
     <div className="space-y-4">
@@ -31,10 +29,8 @@ export function SystemAlertFields({ draft, configured, onChange, disabled, custo
       </AlertRow>}
       <AlertRow compact={compact} label="Webhook" hint={draft.clearKey ? '保存后清除' : (key || configured ? '已配置' : '未配置')}>
         <div className="flex flex-wrap items-center gap-2">
-          <div className={`relative min-w-0 flex-1 ${compact ? 'basis-full' : ''}`}>
-            <input aria-label="系统飞书 Webhook" type={revealed ? 'text' : 'password'} className={`${TEXT} pr-10`} value={draft.keyInput} disabled={disabled} placeholder={configured ? '已配置 · 留空保持不变' : '可粘贴整条 webhook 链接'} spellCheck={false} autoComplete="off" onChange={(e) => onChange({ keyInput: e.target.value, clearKey: false })} onBlur={() => onChange({ keyInput: extractFeishuKey(draft.keyInput) })} />
-            <button type="button" aria-label={revealed ? '隐藏机器人 Key' : '显示机器人 Key'} className="absolute right-1 top-1/2 flex h-8 w-8 -translate-y-1/2 cursor-pointer items-center justify-center rounded-md text-ink-3 hover:bg-fill" onClick={() => setRevealed((value) => !value)}>{revealed ? <EyeOff size={16} /> : <Eye size={16} />}</button>
-          </div>
+          <FeishuWebhookInput label="系统飞书 Webhook" value={draft.keyInput} configured={configured} disabled={disabled}
+            className={compact ? 'basis-full' : undefined} onChange={(keyInput) => onChange({ keyInput, clearKey: false })} />
           <button type="button" className="cursor-pointer text-[13px] text-ink-2 disabled:opacity-45" disabled={disabled || (!configured && !draft.clearKey && !draft.keyInput)} onClick={() => onChange({ clearKey: !draft.clearKey, keyInput: '' })}><InkRewrite text={draft.clearKey ? '撤销清除' : '清除 Webhook'} tone="label" /></button>
           {keyActions}
         </div>

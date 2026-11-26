@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import cast
 
+from axile.channels.rebalance_signal import SIGNAL_CHANNEL
 from axile.executor.models.portfolio_target import PortfolioTarget
 from axile.server.portfolio_function import (
     PortfolioFunctionError,
@@ -27,6 +28,14 @@ async def calculate_portfolio_for_account(
 
     resolved_account = cast("Account", account)
     try:
+        if resolved_account.trade_channel == SIGNAL_CHANNEL:
+            from axile.server.signal_service import calculate_signal
+
+            target = (
+                await calculate_signal(resolved_account, code, leverage_overrides=leverage_overrides, trial=trial)
+            ).target
+            assert target is not None
+            return target
         return await get_worker_backend_manager().calculate_portfolio(
             resolved_account,
             code,

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { LoaderCircle, Plus, Trash2 } from 'lucide-react'
 import { ConfirmModal, type ConfirmSpec } from '@/components/ui/ConfirmModal'
+import { InputHint } from '@/components/ui/InputHint'
 import { Segmented } from '@/components/ui/Segmented'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { ApiError } from '@/lib/api/client'
@@ -110,23 +111,27 @@ export function AlgorithmScopePicker({ channel, capability, products, value, onC
           </button>
           <div id="algorithm-product-form" role="group" aria-label="添加品种" aria-hidden={!adding} inert={!adding}
             className={`absolute inset-0 flex items-center gap-1 rounded-md bg-surface px-1 ${adding ? 'visible' : 'invisible'}`}>
-            <Tooltip open={adding && (Boolean(error) || focused)} arrow interactive={Boolean(current?.retryable)} content={
-              error ? <div role="alert" className="select-pop-in space-y-2">
-                <p className="text-warn">{error}</p>
-                {current?.retryable && <button type="button" onClick={() => setAttempt(previous => previous + 1)}
-                  className="cursor-pointer rounded-chip px-2 py-1 text-xs text-accent focus-visible:outline-2 focus-visible:outline-accent">重试</button>}
-              </div> : <p id="algorithm-code-help">{capability.description}</p>
-            }>
-              <input ref={inputRef} id="algorithm-product-code" aria-label="新增算法品种代码" aria-describedby="algorithm-code-status" aria-invalid={!!error} maxLength={80}
-                placeholder={`例如 ${capability.example}`} value={code}
-                onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
-                onChange={event => { setCode(event.target.value); setValidation(null) }}
-                onKeyDown={event => {
-                  if (event.key === 'Enter') { event.preventDefault(); add() }
-                  if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close() }
-                }}
-                className="h-6 min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1.5 text-xs text-ink-1 caret-accent placeholder:text-ink-2 transition-colors duration-150 aria-invalid:border-warn focus-visible:outline-1 focus-visible:outline-accent motion-reduce:transition-none" />
-            </Tooltip>
+            <div className="relative min-w-0 flex-1">
+              <Tooltip open={adding && (Boolean(error) || focused)} arrow interactive={Boolean(current?.retryable)} content={
+                error ? <div role="alert" className="select-pop-in space-y-2">
+                  <p className="text-warn">{error}</p>
+                  {current?.retryable && <button type="button" onClick={() => setAttempt(previous => previous + 1)}
+                    className="cursor-pointer rounded-chip px-2 py-1 text-xs text-accent focus-visible:outline-2 focus-visible:outline-accent">重试</button>}
+                </div> : <p id="algorithm-code-help">{capability.description}</p>
+              }>
+                <input ref={inputRef} id="algorithm-product-code" aria-label="新增算法品种代码" aria-describedby="algorithm-code-status" aria-invalid={!!error} maxLength={80}
+                  value={code}
+                  onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
+                  onChange={event => { setCode(event.target.value); setValidation(null) }}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter') { event.preventDefault(); add() }
+                    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close() }
+                  }}
+                  className="h-6 w-full rounded-md border border-transparent bg-transparent px-1.5 text-xs text-ink-1 caret-accent transition-colors duration-150 aria-invalid:border-warn focus-visible:outline-1 focus-visible:outline-accent motion-reduce:transition-none" />
+              </Tooltip>
+              <InputHint inputId="algorithm-product-code" value={code} suggestion={capability.example} className="left-[7px] text-xs"
+                onFill={(value) => { setCode(value); setValidation(null) }} />
+            </div>
             <button type="button" aria-label="确认添加品种" aria-busy={pending} onClick={add} disabled={!input || pending || !!error || !current?.code}
               className="inline-flex h-6 w-10 shrink-0 cursor-pointer items-center justify-center rounded-md text-xs text-ink-1 transition-colors duration-150 hover:bg-fill active:bg-line focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:text-ink-3 motion-reduce:transition-none">
               {pending ? <LoaderCircle size={12} aria-hidden className="animate-spin motion-reduce:animate-none" /> : '添加'}

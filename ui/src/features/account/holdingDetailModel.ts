@@ -35,6 +35,7 @@ function nonnegative(value: unknown): number | null {
 export interface HoldingPreviewRow extends CurrentHoldingPreview {
   targetOnly?: boolean
   quantityTarget?: AccountRebalancePlanRow
+  snapshotQuantity?: number | null
 }
 
 /** 已有持仓保留多空分行，追加尚未持有的非零目标，排序沿用持仓货值。 */
@@ -61,14 +62,31 @@ export function holdingPreviewRows(
     }
     return rows
   }
-  const weights = target?.target_mode === 'quantity' ? target.raw_targets ?? {} : target?.account_weights ?? target?.weights ?? {}
-  for (const [symbol, weight] of Object.entries(weights)) {
-    if (!Number.isFinite(weight) || Math.abs(weight) <= (target?.target_mode === 'quantity' ? 0 : EPS) || rows.some(row => sameHoldingSymbol(row.symbol, symbol))) continue
-    rows.push({ key: `${symbol}:target`, symbol, direction: weight < 0 ? 'short' : 'long',
+  const quantityMode = target?.target_mode === 'quantity'
+  const values = quantityMode ? target.raw_targets ?? {} : target?.account_weights ?? target?.weights ?? {}
+  appendTargetOnlyRows(rows, values, observed, quantityMode ? 0 : EPS)
+  return rows
+}
+
+function appendTargetOnlyRows(
+  rows: HoldingPreviewRow[], targets: Record<string, number>, observed: boolean, minimum: number,
+) {
+  for (const [symbol, value] of Object.entries(targets)) {
+    if (!Number.isFinite(value) || Math.abs(value) <= minimum || rows.some(row => sameHoldingSymbol(row.symbol, symbol))) continue
+    rows.push({ key: `${symbol}:target`, symbol, direction: value < 0 ? 'short' : 'long',
       weight: observed ? 0 : null, volume: observed ? 0 : null, availableVolume: observed ? 0 : null,
       value: null, targetOnly: true })
   }
-  return rows
+}
+
+/** 调仓信号展示保存的数量快照，当前持仓与目标按各自的观测时间展示。 */
+export function signalHoldingPreviewRows(
+  positions: Position[] | undefined, equity: number, quantities: Record<string, number> | null,
+): HoldingPreviewRow[] {
+  const rows: HoldingPreviewRow[] = currentHoldingPreview(positions ?? [], equity)
+  if (!quantities) return rows
+  appendTargetOnlyRows(rows, quantities, positions !== undefined, 0)
+  return rows.map(row => ({ ...row, snapshotQuantity: symbolEntry(quantities, row.symbol) ?? 0 }))
 }
 
 export interface SideHolding {

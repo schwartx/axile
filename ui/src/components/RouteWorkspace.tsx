@@ -9,23 +9,23 @@ export function RouteWorkspace({ fullBleed, children }: { fullBleed: boolean; ch
   const ref = useRef<HTMLElement>(null)
   const location = useLocation()
   const navigation = useNavigationType()
+  const previousPath = useRef(location.pathname)
   useLayoutEffect(() => {
     const main = ref.current
     if (!main) return
-    // PUSH 的新页面由新 DOM 保证 scrollTop=0；只有 POP 才应用历史位置。
+    const changedPage = previousPath.current !== location.pathname
+    previousPath.current = location.pathname
     const previous = navigation === 'POP' ? positions.get(location.key) : undefined
-    if (previous) main.scrollTo({ ...previous, behavior: 'instant' })
+    if (previous || changedPage) main.scrollTo({ ...(previous ?? { top: 0, left: 0 }), behavior: 'instant' })
     const save = () => {
       positions.delete(location.key)
       positions.set(location.key, { top: main.scrollTop, left: main.scrollLeft })
       while (positions.size > 100) positions.delete(positions.keys().next().value!)
     }
+    save()
     main.addEventListener('scroll', save, { passive: true })
-    return () => {
-      save()
-      main.removeEventListener('scroll', save)
-    }
-  }, [location.key, navigation])
+    return () => main.removeEventListener('scroll', save)
+  }, [location.key, location.pathname, navigation])
 
   return <main ref={ref}
     className={`app-workspace h-full min-w-0 flex-1 overflow-y-auto [scrollbar-gutter:stable] ${fullBleed ? '' : 'px-4 md:px-5'}`}>

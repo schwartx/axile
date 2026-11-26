@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test'
 
 import {
   connectionValueError,
+  isDecimalDraft,
   isWindowsAbsoluteDirectory,
   normalizeConnectionValue,
   normalizeMoneyValue,
@@ -86,6 +87,13 @@ describe('connectionValueError', () => {
     expect(isWindowsAbsoluteDirectory('.\\GoldMiner3')).toBe(false)
     expect(isWindowsAbsoluteDirectory('C:\\bad|name')).toBe(false)
     expect(connectionValueError(context({ kind: 'directory', value: '"C:\\GoldMiner3"' }))).toBeNull()
+  })
+
+  it('保留数字编辑的中间状态，拒绝混入字母或额外小数点', () => {
+    expect(['', '.', '123.', '1,234.50'].every((value) => isDecimalDraft(value))).toBe(true)
+    expect(['-', '-123.45', '+.5'].every((value) => isDecimalDraft(value, true))).toBe(true)
+    expect(['asdasd', '1e3', '1.2.3', '12-3'].some((value) => isDecimalDraft(value, true))).toBe(false)
+    expect(isDecimalDraft('-12')).toBe(false)
   })
 
   it('规范化合法金额并执行数值边界', () => {

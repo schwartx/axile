@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 
 import type { ChannelCapability } from '@/types/api'
-import { portfolioMarketOptions, portfolioQuantityUnit, portfolioTemplate } from './portfolioMarkets'
+import { portfolioMarketId, portfolioMarketOptions, portfolioQuantityUnit, portfolioTemplate } from './portfolioMarkets'
 
 function channel(
   market: string,
@@ -55,6 +55,14 @@ describe('portfolio market presets', () => {
   const stocksChannel = channel('ashare', 'A股', ['600000.SH', '000001.SZ'])
   const options = portfolioMarketOptions([futuresChannel, stocksChannel])
   const futures = options[0]!
+
+  it('把已存市场标识和市场名称匹配到同一市场', () => {
+    const cryptoChannel = channel('crypto', '加密货币', ['BTCUSDT'])
+    const catalog = [futuresChannel, stocksChannel, cryptoChannel]
+    expect(['crypto', '加密货币', '期货', 'A股'].map(market => portfolioMarketId(catalog, market)))
+      .toEqual(['crypto', 'crypto', 'ctp', 'ashare'])
+    expect(portfolioMarketId(catalog, '外部市场')).toBe('外部市场')
+  })
 
   it('按账户渠道或组合市场解析单位，保留渠道声明的空单位', () => {
     const contracts = { ...futuresChannel, units: { ...futuresChannel.units, quantity_label: '手' } }

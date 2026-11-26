@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 
+import { InputHint } from '@/components/ui/InputHint'
 import { apiGet } from '@/lib/api/client'
 import type { AccountToolProps } from '@/features/tools/ToolsButton'
 
@@ -57,6 +58,13 @@ export function ContractRateQuery<T extends { instrument_id: string }>({
     setHighlight(-1)
   }
 
+  function changeSymbol(value: string) {
+    dismissCandidates()
+    setSymbol(value)
+    setPrefix(value.trim())
+    setError('')
+  }
+
   async function submit(code: string) {
     if (request.current) return
     setError('')
@@ -109,19 +117,17 @@ export function ContractRateQuery<T extends { instrument_id: string }>({
     <form onSubmit={event => { event.preventDefault(); void submit(symbol.trim()) }} className="space-y-2">
       <div className="flex items-center gap-2 text-sm">
         <label htmlFor={id} className="shrink-0 text-ink-2">合约</label>
-        <input id={id} data-tool-autofocus role="combobox" aria-autocomplete="list" aria-expanded={expanded}
-          aria-controls={expanded ? listId : undefined} aria-activedescendant={expanded && highlight >= 0 ? `${listId}-${highlight}` : undefined}
-          value={symbol} maxLength={32} readOnly={!!pendingCode} autoComplete="off" spellCheck={false} placeholder="如 rb2701"
-          onKeyDown={onSearchKey} onBlur={event => {
-            if (!event.currentTarget.form?.contains(event.relatedTarget)) dismissCandidates()
-          }}
-          onChange={event => {
-            dismissCandidates()
-            setSymbol(event.target.value)
-            setPrefix(event.target.value.trim())
-            setError('')
-          }}
-          className="w-full min-w-0 rounded-lg border border-ink-3/30 contrast:border-border-strong bg-surface px-2.5 py-1.5 outline-none focus:border-accent" />
+        <div className="relative min-w-0 flex-1">
+          <input id={id} data-tool-autofocus role="combobox" aria-autocomplete="list" aria-expanded={expanded}
+            aria-controls={expanded ? listId : undefined} aria-activedescendant={expanded && highlight >= 0 ? `${listId}-${highlight}` : undefined}
+            value={symbol} maxLength={32} readOnly={!!pendingCode} autoComplete="off" spellCheck={false}
+            onKeyDown={onSearchKey} onBlur={event => {
+              if (!event.currentTarget.form?.contains(event.relatedTarget)) dismissCandidates()
+            }}
+            onChange={event => changeSymbol(event.target.value)}
+            className="w-full min-w-0 rounded-lg border border-ink-3/30 contrast:border-border-strong bg-surface px-2.5 py-1.5 outline-none focus:border-accent" />
+          <InputHint inputId={id} value={symbol} suggestion="rb2701" onFill={changeSymbol} disabled={!!pendingCode} className="left-[11px]" />
+        </div>
         <button type="submit" disabled={!!pendingCode || !symbol.trim()}
           className="shrink-0 cursor-pointer rounded-lg border border-line px-2.5 py-1.5 text-ink-1 hover:bg-fill disabled:cursor-not-allowed disabled:opacity-45">
           {pendingCode ? '查询中…' : '查询'}

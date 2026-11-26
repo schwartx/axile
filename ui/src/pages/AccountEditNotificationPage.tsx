@@ -1,7 +1,10 @@
 /** 账户自定义执行通知工作台：左侧试跑，右侧编辑代码。 */
 
 import { useCallback, useEffect, useState } from 'react'
-import { useParams } from 'react-router'
+import { useOutletContext, useParams } from 'react-router'
+import { SignalAccountNotificationPage } from '@/pages/SignalAccountNotificationPage'
+import type { AccountEditContext } from '@/features/account/AccountEditGuard'
+import { SIGNAL_CHANNEL } from '@/features/signal/signalData'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { assertPythonBaseline, usePythonDraft, usePythonRun, usePythonSave } from '@/components/ui/pythonWorkbenchState'
 import { NotificationWorkbench } from '@/features/notification/NotificationWorkbench'
@@ -18,13 +21,16 @@ const STORAGE_KEY = 'axon.notificationWorkbench'
 
 export function AccountEditNotificationPage() {
   const { id } = useParams()
-  const accountId = Number(id)
+  const { data: account, refresh } = useOutletContext<AccountEditContext>()
+  return account.trade_channel === SIGNAL_CHANNEL
+    ? <SignalAccountNotificationPage key={id} id={Number(id)} account={account} onSaved={refresh} />
+    : <AccountNotificationEditor accountId={Number(id)} />
+}
+
+function AccountNotificationEditor({ accountId }: { accountId: number }) {
   const toast = useToastStore((state) => state.toast)
   const refreshAccounts = useDomainStore((state) => state.refreshAccounts)
-  const account = usePolling(useCallback((signal: AbortSignal) => getAccount(accountId, signal), [accountId]), {
-    queryKey: `account:${accountId}`,
-    intervalMs: 0,
-  })
+  const account = useOutletContext<AccountEditContext>()
   const draftState = usePythonDraft<string | null>(null)
   const { draft: code, setDraft: setCode, setBaseline: setSavedCode } = draftState
   const saveState = usePythonSave()

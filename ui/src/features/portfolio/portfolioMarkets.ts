@@ -6,12 +6,17 @@ export interface PortfolioMarketOption {
   exampleSymbols: string[]
 }
 
+/** 渠道市场标识和组合市场名称可以指向同一个市场。 */
+export function portfolioMarketId(channels: ChannelCapability[], market: string): string {
+  return channels.find(channel => channel.market === market || channel.portfolio?.market_label === market)?.market ?? market
+}
+
 /** 优先使用上下文账户的渠道单位；样例或缺少账户信息时按组合市场解析。 */
 export function portfolioQuantityUnit(
   channels: ChannelCapability[], market: string | null | undefined, channel?: TradeChannel,
 ): string {
-  const descriptor = channels.find((item) => item.channel === channel)
-    ?? channels.find((item) => item.market === market || item.portfolio.market_label === market)
+  const descriptor = channels.find((item) => item.channel === channel && item.supports_trading !== false)
+    ?? channels.find((item) => item.market === market || item.portfolio?.market_label === market)
   return descriptor?.units.quantity_label ?? ''
 }
 
@@ -20,7 +25,7 @@ export function portfolioMarketOptions(channels: ChannelCapability[]): Portfolio
   const seen = new Set<string>()
   const options: PortfolioMarketOption[] = []
   for (const channel of channels) {
-    if (seen.has(channel.market)) continue
+    if (!channel.market || !channel.portfolio || seen.has(channel.market)) continue
     seen.add(channel.market)
     options.push({
       value: channel.market,
@@ -29,6 +34,11 @@ export function portfolioMarketOptions(channels: ChannelCapability[]): Portfolio
     })
   }
   return options
+}
+
+/** 找到与组合创建时使用的市场名称对应的渠道描述。 */
+export function portfolioMarketDescriptor(channels: ChannelCapability[], market: string) {
+  return channels.find((channel) => channel.market && channel.portfolio?.market_label === market)
 }
 
 /** 根据渠道提供的标的生成最小可运行组合函数。 */

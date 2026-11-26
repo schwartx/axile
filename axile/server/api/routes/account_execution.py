@@ -12,7 +12,7 @@ from axile.channels import get_channel
 from axile.common.serialization import from_payload
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionTaskStatus
-from axile.executor.models.portfolio_target import PortfolioTarget, TargetMode
+from axile.executor.models.portfolio_target import TargetMode
 from axile.server._native import _core
 from axile.server.api.deps import HistoryPaginationDep, SchedDep
 from axile.server.api.inputs import json_body
@@ -20,14 +20,14 @@ from axile.server.api.routes.account_support import (
     _build_empty_positions_algorithm,
     _get_account_or_404,
     ensure_account_current,
+    ensure_trading_account,
 )
-from axile.server.api.routes.portfolio import resolve_portfolio_target
+from axile.server.api.routes.portfolio import resolve_target_snapshot_fields
 from axile.server.business_facts.assets import latest_asset_snapshot
 from axile.server.db.models import ExecutionTerminateRequest, Portfolio
 from axile.server.error_details import exception_details
 from axile.server.execution.ctp_channels import reconcile_china_channel_account
 from axile.server.execution.lifecycle import enqueue_empty_positions, enqueue_execute_trade
-from axile.server.execution.rebalance import _normalize_rebalance_target
 from axile.server.execution.registry import (
     AccountExecutionAlreadyRunningError,
     clear_target_refresh,
@@ -137,7 +137,9 @@ async def account_rebalance_plan(account_id: int) -> dict[str, Any]:
 @router.post("/execute/{account_id}", response_model=None)
 async def execute(account_id: int) -> dict[str, Any]:
     """异步触发立即执行，并返回可用于轮询的执行标识."""
-    ensure_account_current(await _get_account_or_404(account_id))
+    account = await _get_account_or_404(account_id)
+    ensure_account_current(account)
+    ensure_trading_account(account)
 
     try:
         submitted = await enqueue_execute_trade(account_id)
@@ -202,16 +204,9 @@ async def refresh_account_target_snapshot(account_id: int) -> dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="账户正在执行或刷新，请稍后再试")
 
     try:
-        raw_target = await resolve_portfolio_target(from_payload(Portfolio, portfolio), account)
-        raw_target = PortfolioTarget.from_result(raw_target)
-        normalized_target = _normalize_rebalance_target(account, raw_target.targets, target_mode=raw_target.mode)
+        fields = await resolve_target_snapshot_fields(from_payload(Portfolio, portfolio), account)
         snapshot = await append_target_weight_snapshot(
-            portfolio_id=portfolio_id,
-            account_id=account_id,
-            raw_weights=raw_target.targets,
-            target_mode=raw_target.mode,
-            normalized_weights=normalized_target,
-            source="manual",
+            portfolio_id=portfolio_id, account_id=account_id, source="manual", **fields
         )
         return await _account_target_public(account, snapshot)
     finally:
@@ -351,6 +346,7 @@ async def empty_all_positions(
     """异步触发一键平仓，并返回可用于轮询的执行标识."""
     db_account = await _get_account_or_404(account_id)
     ensure_account_current(db_account)
+    ensure_trading_account(db_account)
 
     try:
         algorithm = _build_empty_positions_algorithm(

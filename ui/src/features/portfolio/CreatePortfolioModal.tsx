@@ -1,54 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
-import { OverflowText } from '@/components/ui/OverflowText'
+import { InputHint } from '@/components/ui/InputHint'
+import { MarketChoiceGroup } from '@/features/portfolio/MarketChoiceGroup'
 import {
   portfolioMarketOptions,
   portfolioTemplate,
-  type PortfolioMarketOption,
 } from '@/features/portfolio/portfolioMarkets'
 import { createPortfolio, createPortfolioCopy } from '@/lib/api/portfolios'
 import { useChannelCatalogStore } from '@/stores/channels'
 import { useDomainStore } from '@/stores/domain'
 import { useToastStore } from '@/stores/ui'
 import type { Portfolio, PortfolioLite } from '@/types/api'
-
-/** 市场选择卡片：创建时一次定死，此后在编辑器里只读展示。 */
-function MarketChoiceGroup({
-  value,
-  options,
-  onChange,
-}: {
-  value: string
-  options: PortfolioMarketOption[]
-  onChange: (value: string) => void
-}) {
-  return (
-    <div role="radiogroup" aria-label="市场" className="grid gap-px overflow-hidden rounded-[8px] border border-line bg-line sm:grid-cols-3">
-      {options.map((option) => {
-        const selected = option.value === value
-        const examples = option.exampleSymbols.slice(0, 2).join(' · ')
-        return (
-          <button
-            key={option.value}
-            type="button"
-            role="radio"
-            aria-checked={selected}
-            className={`relative flex min-h-[76px] min-w-0 items-center bg-surface px-4 py-3 text-left transition-colors ${
-              selected ? 'bg-accent-soft' : 'hover:bg-bg-subtle'
-            }`}
-            onClick={() => onChange(option.value)}
-          >
-            <span className="min-w-0 flex-1">
-              <span className={`block text-[15px] font-[620] ${selected ? 'text-ink-1' : 'text-ink-2'}`}>{option.label}</span>
-              <OverflowText className="mt-1 text-[13px] text-ink-3" text={examples} />
-            </span>
-            {selected && <span aria-hidden className="absolute inset-y-0 left-0 w-0.5 bg-accent sm:inset-x-0 sm:top-auto sm:bottom-0 sm:h-0.5 sm:w-auto" />}
-          </button>
-        )
-      })}
-    </div>
-  )
-}
 
 /**
  * 新建组合弹层：只定「组合是什么」（名称 + 市场），确认即以市场模板落库；
@@ -185,18 +147,21 @@ export function CreatePortfolioModal({
               <label className="mb-1.5 block text-[14px] text-ink-2" htmlFor="create-portfolio-name">
                 组合名称
               </label>
-              <input
-                id="create-portfolio-name"
-                ref={nameRef}
-                className="w-full rounded-[11px] border border-ink-3/30 bg-surface px-3.5 py-3 text-[16px] outline-none focus:border-accent disabled:opacity-45"
-                value={name}
-                onChange={(event) => {
-                  setName(event.target.value)
-                  setCreateError(null)
-                }}
-                placeholder="例如：我的趋势组合"
-                disabled={submitting}
-              />
+              <div className="relative">
+                <input
+                  id="create-portfolio-name"
+                  ref={nameRef}
+                  className="w-full rounded-[11px] border border-ink-3/30 bg-surface px-3.5 py-3 text-[16px] outline-none focus:border-accent disabled:opacity-45"
+                  value={name}
+                  onChange={(event) => {
+                    setName(event.target.value)
+                    setCreateError(null)
+                  }}
+                  disabled={submitting}
+                />
+                <InputHint inputId="create-portfolio-name" value={name} suggestion="我的趋势组合" disabled={submitting}
+                  className="left-[15px] text-[16px]" onFill={(value) => { setName(value); setCreateError(null) }} />
+              </div>
               <div className="mb-1.5 mt-5 flex items-baseline justify-between">
                 <span className="block text-[14px] text-ink-2">市场</span>
                 <span className="text-[12.5px] text-ink-3">创建后固定，不可更改</span>

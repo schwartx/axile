@@ -11,8 +11,9 @@ const PHASES = [
 ] as const
 
 /** 阶段触发独立于盘中节奏；盘后能力尚未验证。 */
-export function GMSessionControls({ channel, value, onChange }: {
+export function GMSessionControls({ channel, signalOnly, value, onChange }: {
   channel?: string | null
+  signalOnly?: boolean
   value?: GMSessions | null
   onChange: (value: GMSessions) => void
 }) {
@@ -20,7 +21,7 @@ export function GMSessionControls({ channel, value, onChange }: {
   if (channel !== 'gm') return null
   const sessions = value ?? defaultGMSessions()
   return <div className="@container my-4 space-y-3">
-    <p className="text-sm font-[640]">特殊交易阶段 · 仅股票（GM）</p>
+    <p className="text-sm font-[640]">{signalOnly ? '特殊交易阶段 · A 股' : '特殊交易阶段 · 仅股票（GM）'}</p>
     <div className="grid grid-cols-1 gap-x-6 gap-y-4 @min-[640px]:grid-cols-2">
       {PHASES.map(([key, label, time]) => {
         const unavailable = key === 'after_hours'
@@ -31,7 +32,9 @@ export function GMSessionControls({ channel, value, onChange }: {
           <div className="min-w-0 flex-1">
             <div id={`${id}-${key}`} className="text-sm font-[640]">{label}</div>
             <div id={`${id}-${key}-range`} className="text-xs text-ink-3">
-              {unavailable ? '当前渠道尚未验证盘后交易能力' : key === 'opening_locked' ? '09:20–09:24 可选 · 北京时间' : `固定 ${time} 触发 · 北京时间`}
+              {unavailable
+                ? (signalOnly ? '暂不支持盘后生成信号' : '当前渠道尚未验证盘后交易能力')
+                : key === 'opening_locked' ? '09:20–09:24 可选 · 北京时间' : `固定 ${time} 触发 · 北京时间`}
             </div>
           </div>
           {key === 'opening_locked' && <MacTimePicker ariaLabel="早盘不可撤单阶段触发时间" value={selected.time}
@@ -40,6 +43,8 @@ export function GMSessionControls({ channel, value, onChange }: {
         </div>
       })}
     </div>
-    <p className="text-xs text-ink-3">每个已开启阶段独立触发一次；09:25–09:30 仅等待已有订单。补发不跨阶段，账户忙时跳过。撤单受限时保留原委托，确认结束后才可换单。</p>
+    <p className="text-xs text-ink-3">{signalOnly
+      ? '每个已开启阶段在交易日独立执行一次。'
+      : '每个已开启阶段独立触发一次；09:25–09:30 仅等待已有订单。补发不跨阶段，账户忙时跳过。撤单受限时保留原委托，确认结束后才可换单。'}</p>
   </div>
 }

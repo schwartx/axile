@@ -43,6 +43,7 @@ export interface ChannelAccountField {
   width: 'half' | 'full'
   required: boolean
   placeholder?: string
+  fillable_placeholder?: boolean
   help?: string
   default?: unknown
   options?: Array<{ value: string; label: string; description?: string }>
@@ -127,6 +128,7 @@ export interface SimulationAccount {
 }
 
 export interface ChannelCapability {
+  supports_trading?: boolean
   independent_market_data?: boolean
   simulation_account?: SimulationAccount | null
   algorithm_scope?: { pattern: string; example: string; description: string } | null
@@ -150,8 +152,8 @@ export interface ChannelCapability {
   portfolio: {
     market_label: string
     example_symbols: string[]
-  }
-  market: string
+  } | null
+  market: string | null
   schedule: {
     kind: 'continuous' | 'cn_stock' | 'cn_futures'
     windows?: { start: string; end: string }[]
@@ -185,7 +187,7 @@ export interface ChannelCapability {
     long_leverage: number
     short_leverage: number
     execution_timeout: number
-    trade_algorithm: AlgorithmRef
+    trade_algorithm: AlgorithmRef | null
     empty_positions_algorithm: AlgorithmRef | null
   }
   leverage: {
@@ -658,7 +660,7 @@ export interface TargetWeightSnapshot {
   /** 当次 execution 持久化的数量换算依据；旧记录不做现价反推。 */
   sizing?: TargetSizing | null
   calculated_at: string | null
-  source: 'manual' | 'execution' | null
+  source: 'manual' | 'execution' | 'signal' | null
   execution_id: string | null
   context_account_id: number | null
 }

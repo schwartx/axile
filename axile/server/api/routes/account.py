@@ -17,6 +17,7 @@ from axile.server.api.routes.account_feishu import router as account_feishu_rout
 from axile.server.api.routes.account_orders import router as account_orders_router
 from axile.server.api.routes.account_performance import router as account_performance_router
 from axile.server.api.routes.account_schedule import router as account_schedule_router
+from axile.server.api.routes.account_signal import router as account_signal_router
 from axile.server.api.routes.execution_replay import router as execution_replay_router
 
 router = APIRouter(prefix="/account", tags=["account"])
@@ -25,6 +26,7 @@ router.include_router(account_evidence_router)
 router.include_router(account_crud_router)
 router.include_router(account_connection_router)
 router.include_router(account_assets_router)
+router.include_router(account_signal_router)
 router.include_router(account_ctp_tools_router)
 router.include_router(account_cash_flows_router)
 router.include_router(account_orders_router)

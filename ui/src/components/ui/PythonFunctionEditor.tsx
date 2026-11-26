@@ -120,6 +120,7 @@ export function PythonFunctionEditor({
   savedCode,
   draftKey,
   localOnly = false,
+  skipEmptyChecks = false,
   onChange,
   running,
   runDisabled = false,
@@ -144,12 +145,14 @@ export function PythonFunctionEditor({
   onChecks,
   headerTarget,
   statusTarget,
+  compactStatus = true,
 }: {
   kind: PythonEditorKind
   code: string
   savedCode?: string
   draftKey?: string
   localOnly?: boolean
+  skipEmptyChecks?: boolean
   onChange: (code: string) => void
   running: boolean
   /** 保存等外部操作期间阻止试跑；按钮和 Ctrl/Cmd+Enter 使用同一条件。 */
@@ -179,6 +182,7 @@ export function PythonFunctionEditor({
   onChecks?: (checks: PythonChecks) => void
   headerTarget?: HTMLElement | null
   statusTarget?: HTMLElement | null
+  compactStatus?: boolean
 }) {
   const cmRef = useRef<ReactCodeMirrorRef>(null)
   const initialCode = useRef(code)
@@ -253,8 +257,8 @@ export function PythonFunctionEditor({
       if (existing) { resolve(existing); return }
       pendingSourceViews.current.set(uri, [...(pendingSourceViews.current.get(uri) ?? []), resolve])
       setSourceTabs((tabs) => tabs.some((tab) => tab.uri === uri) ? tabs : [...tabs, { uri, code }])
-    }), (next) => setSymbols(next), setLanguageClient, (next) => { setChecks(next); checksCallback.current?.(next) })
-  }, [view, languageSlot, kind, localOnly])
+    }), (next) => setSymbols(next), setLanguageClient, (next) => { setChecks(next); checksCallback.current?.(next) }, skipEmptyChecks)
+  }, [view, languageSlot, kind, localOnly, skipEmptyChecks])
 
   useEffect(() => {
     if (!localOnly) return
@@ -578,7 +582,7 @@ export function PythonFunctionEditor({
       />
       {!hasCode && (
         <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2">
-          <button className="pointer-events-auto inline-flex cursor-pointer items-center gap-2 rounded-[8px] border border-line bg-surface px-5 py-3 text-[15px] font-[550] text-ink-1 shadow-sm hover:border-ink-3" onClick={() => void paste()}>
+          <button type="button" className="pointer-events-auto inline-flex cursor-pointer items-center gap-2 rounded-[8px] border border-line bg-surface px-5 py-3 text-[15px] font-[550] text-ink-1 shadow-sm hover:border-ink-3" onClick={() => void paste()}>
             <Clipboard size={16} /> 从剪贴板粘贴代码
           </button>
           <span className="text-[13.5px] text-ink-3">或点此直接输入</span>
@@ -600,6 +604,12 @@ export function PythonFunctionEditor({
 
   if (layout === 'workbench') {
     // 工作台：纯代码区，吃满父容器；结果呈现由外部 PythonRunPanel 承担。
+    const workbenchStatus = statusTarget && compactStatus ? (
+      <div data-testid="editor-status-bar" className="flex items-center gap-2 whitespace-nowrap text-[11px] text-ink-3">
+        {sourceTab ? <><button type="button" title="跳转到行" onClick={() => editor && gotoLine(editor)}>{(sourcePosition?.line ?? 0) + 1}:{(sourcePosition?.character ?? 0) + 1}</button><span>只读 · Python</span></> : <>{draftIndicator}<button type="button" title="跳转到行" onClick={() => view && gotoLine(view)}><span className="max-[480px]:hidden">行 {position.line}，列 {position.column}</span><span className="hidden max-[480px]:inline">{position.line}:{position.column}</span></button></>}
+        {analyzerStatus}
+      </div>
+    ) : statusBar
     return (
       <div className="flex h-full min-h-0 w-full flex-col">
         {headerTarget ? createPortal(workbenchHeader, headerTarget) : null}
@@ -609,10 +619,7 @@ export function PythonFunctionEditor({
         {fileTabs}
         {draftNotice}
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{codeBlock}{sourceDocuments}</div>
-        {statusTarget ? createPortal(<div data-testid="editor-status-bar" className="flex items-center gap-2 whitespace-nowrap text-[11px] text-ink-3">
-          {sourceTab ? <><button type="button" title="跳转到行" onClick={() => editor && gotoLine(editor)}>{(sourcePosition?.line ?? 0) + 1}:{(sourcePosition?.character ?? 0) + 1}</button><span>只读 · Python</span></> : <>{draftIndicator}<button type="button" title="跳转到行" onClick={() => view && gotoLine(view)}><span className="max-[480px]:hidden">行 {position.line}，列 {position.column}</span><span className="hidden max-[480px]:inline">{position.line}:{position.column}</span></button></>}
-          {analyzerStatus}
-        </div>, statusTarget) : statusBar}
+        {statusTarget ? createPortal(workbenchStatus, statusTarget) : workbenchStatus}
         {saveBar}
       </div>
     )

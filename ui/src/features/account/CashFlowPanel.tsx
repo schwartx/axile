@@ -101,7 +101,7 @@ export function CashFlowPanel({ accountId }: { accountId: number }) {
         </div>
         <label className="grid gap-y-1.5 text-xs text-ink-2 sm:col-span-2 sm:grid-cols-subgrid sm:items-start sm:gap-x-5">
           <span className="sm:pt-2.5">金额<span className="sr-only">（{currencyUnit}）</span></span>
-          <AmountInput value={value} onChange={setValue} unit={currencyUnit} ariaLabel={`金额（${currencyUnit}）`} autoFocus required />
+          <AmountInput inlineHint value={value} onChange={setValue} unit={currencyUnit} ariaLabel={`金额（${currencyUnit}）`} autoFocus required />
         </label>
         <CashFlowDateTime date={date} time={time} onDateChange={setDate} onTimeChange={setTime} now={now} />
         <label className="grid gap-y-1.5 text-xs text-ink-2 sm:col-span-2 sm:grid-cols-subgrid sm:items-center sm:gap-x-5">

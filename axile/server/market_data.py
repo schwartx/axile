@@ -29,7 +29,13 @@ def read_market_data(
     channel: str, values: Mapping[str, object], symbols: Sequence[str], *, timeout: float
 ) -> dict[str, UnifiedPriceData]:
     """仅使用行情配置获取快照。"""
-    key = _source_key(channel, values)
+    return read_configured_market_data(_source_key(channel, values), symbols, timeout=timeout)
+
+
+def read_configured_market_data(
+    key: tuple[str, MarketDataConfiguration], symbols: Sequence[str], *, timeout: float
+) -> dict[str, UnifiedPriceData]:
+    """使用调用方已构建的配置，从共用行情会话读取快照。"""
     with _lock:
         source = _sources.get(key)
         if source is None:

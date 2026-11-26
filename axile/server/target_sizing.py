@@ -196,7 +196,18 @@ async def read_account_target(account: object, snapshot: dict[str, Any] | None) 
     if snapshot is None:
         return target_snapshot_public(None, weight_kind="normalized")
     from axile.channels import get_channel
+    from axile.channels.rebalance_signal import SIGNAL_CHANNEL
 
+    channel = getattr(account, "trade_channel")
+    if channel == SIGNAL_CHANNEL:
+        quantity_mode = snapshot.get("target_mode") == "quantity"
+        return target_snapshot_public(
+            snapshot,
+            weight_kind="normalized",
+            quantities=snapshot["normalized_weights"] if quantity_mode else snapshot.get("signal_quantities"),
+            strategy_weights=snapshot["raw_weights"],
+            account_weights=snapshot["normalized_weights"],
+        )
     bundles = await native_operation(
         "target_operation",
         {
@@ -210,6 +221,4 @@ async def read_account_target(account: object, snapshot: dict[str, Any] | None) 
             ],
         },
     )
-    return resolve_account_target(
-        bundles[str(snapshot["account_id"])], get_channel(getattr(account, "trade_channel")).canonicalize_symbol
-    )
+    return resolve_account_target(bundles[str(snapshot["account_id"])], get_channel(channel).canonicalize_symbol)

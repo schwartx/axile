@@ -1,7 +1,7 @@
 /**
  * 账户配置人话摘要（杠杆 / 品种控制 / 下单算法 / 清仓算法）与其共享元素 FLIP 协议。
  *
- * 杠杆 / 品种值 ↔ 编辑页「当前配置」摘要；算法名 ↔ 对应算法选择器中的名称。
+ * 算法名 ↔ 对应算法选择器中的名称。
  * 同一文字的两个落点挂同一个 ``viewTransitionName`` 做平移 + 微缩。
  *
  * 落点缺失即假连续，而 ``usePolling`` 是组件本地状态、编辑页首帧必冷——故本模块
@@ -12,8 +12,8 @@ import type { Account } from '@/types/api'
 import { algorithmRefOf, describeAlgorithmRef } from '@/features/setup/algorithms'
 import { algorithmScheduleSummary } from '@/features/account/algorithmSchedule'
 
-/** 参与 FLIP 的配置项种类；与 hero 配置带四件套一一对应。 */
-export type AccountConfigKind = 'leverage' | 'symbols' | 'algorithm' | 'empty'
+/** 参与 FLIP 的配置项种类。 */
+export type AccountConfigKind = 'algorithm' | 'empty'
 
 /**
  * Hero 配置带值 ↔ 编辑分区页对应落点的共享元素名。

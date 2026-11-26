@@ -18,17 +18,12 @@ Examples
 >>> executor.stop()
 """
 
-import json
 import math
-import subprocess
-import sys
 import threading
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast, override
 
-import psutil
 from gm.api import (  # type: ignore
     OrderSide_Buy,
     OrderSide_Sell,
@@ -59,6 +54,7 @@ from axile.executor.gm.connection import report_gm_failure
 from axile.executor.gm.core.api_bridge import GM_MARKET_OPERATIONS, GMSdkOperation
 from axile.executor.gm.core.callback_dispatcher import GMCallbackDispatcher
 from axile.executor.gm.core.strategy_bridge import GMStrategyBridge, replay_bridge_call
+from axile.executor.gm_terminal import gm_rpc_port, launch_gm_terminal, wait_for_gm_port
 from axile.executor.models.execution_result import TargetSizingDecision, TargetSizingStatus
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_callback import (
@@ -1066,28 +1062,18 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         gm_port = None
         try:
             base_path = Path(base_dir)
-            gm_port = self._get_rpc_port_from_dir(base_path)
+            gm_port = gm_rpc_port(base_path)
 
-            if self._wait_for_port_listen(gm_port, 0.1):
+            if wait_for_gm_port(gm_port, 0.1):
                 logger.success("掘金桌面端已经启动!")
                 return False
 
             logger.info("启动掘金桌面端..")
             phase = "启动终端进程"
-            startupinfo = None
-            creationflags = 0
-            if sys.platform == "win32":
-                creationflags = subprocess.CREATE_NO_WINDOW
-            _ = subprocess.Popen(
-                [base_path / "goldminer3.exe"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=creationflags,
-                startupinfo=startupinfo,
-            )
+            launch_gm_terminal(base_path)
 
             phase = "等待终端端口监听"
-            if self._wait_for_port_listen(gm_port, 120):
+            if wait_for_gm_port(gm_port, 120):
                 logger.success("掘金桌面端成功启动!")
                 return True
             else:
@@ -1117,56 +1103,6 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             )
             logger.exception(f"启动掘金终端失败: {e}")
             raise
-
-    def _get_rpc_port_from_dir(self, base_path: Path) -> int:
-        """从指定目录下的 gmserv.json 文件中提取 rpcPort 端口号."""
-        json_path = base_path / "resources" / "app" / "gmserv.json"
-
-        logger.info(f"开始查找 gmserv.json 文件：{json_path}")
-
-        if not json_path.is_file():
-            logger.error(f"未找到 gmserv.json 文件，路径无效：{json_path}")
-            raise FileNotFoundError(f"gmserv.json 文件不存在: {json_path}")
-
-        try:
-            with json_path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-            logger.debug(f"成功加载 JSON 数据: {data}")
-            port_str = data["default"]["rpcPort"]
-            port = int(port_str)
-            logger.success(f"成功解析 掘金桌面端端口: {port}")
-            return port
-        except json.JSONDecodeError as e:
-            logger.exception(f"JSON 文件格式错误，无法解析: {e}")
-            raise
-        except KeyError as e:
-            logger.exception(f"JSON 中缺少必要的字段: {e}")
-            raise
-        except ValueError as e:
-            logger.exception(f"rpcPort 不是有效的整数: {e}")
-            raise
-
-    def _wait_for_port_listen(self, port: int, timeout: int | float, log_interval: int = 5) -> bool:
-        """在 Windows 上等待某端口进入监听状态."""
-        logger.info(f"正在等待端口 {port} 进入监听状态（最长等待 {timeout} 秒）...")
-        deadline = time.time() + timeout
-        last_log_time = 0
-
-        while time.time() < deadline:
-            for conn in psutil.net_connections(kind="inet"):
-                if conn.status == psutil.CONN_LISTEN and conn.laddr and conn.laddr.port == port:  # type: ignore
-                    logger.success(f"端口 {port} 已进入监听状态。")
-                    return True
-
-            now = time.time()
-            if now - last_log_time >= log_interval:
-                logger.info(f"仍在等待端口 {port} 进入监听状态...")
-                last_log_time = now
-
-            time.sleep(0.2)
-
-        logger.error(f"超时未检测到端口 {port} 监听。")
-        return False
 
     def _build_provisional_order_from_submit_result(
         self,

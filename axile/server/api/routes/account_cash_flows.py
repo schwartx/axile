@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from msgspec import Meta
 
 from axile.channels import get_channel
+from axile.channels.rebalance_signal import SIGNAL_CHANNEL
 from axile.common.serialization import to_payload
 from axile.executor.algorithms.utils.clock import clock_now_iso
 from axile.executor.models.cash_flow import CashFlowInput
@@ -14,6 +15,7 @@ from axile.server._native import _core
 from axile.server.account_cash_flows import sync_cash_flows
 from axile.server.api.inputs import json_body
 from axile.server.api.routes.account_support import _get_account_or_404, ensure_account_current
+from axile.server.business_facts.assets import latest_asset_snapshot
 from axile.server.execution.registry import clear_account_asset_refresh, try_register_account_asset_refresh
 from axile.server.execution.resident_connection import AccountConnectionUnavailable
 from axile.server.native_store import native_operation
@@ -67,7 +69,13 @@ async def list_cash_flows(
     account = await _get_account_or_404(account_id)
     descriptor = get_channel(str(account.trade_channel)).descriptor
     result = await operation(account_id, "list", limit=limit, offset=offset)
-    return {**result, "currency": descriptor.currency, "sync_supported": descriptor.cash_flow_sync}
+    currency = descriptor.currency
+    if account.trade_channel == SIGNAL_CHANNEL:
+        snapshot = await latest_asset_snapshot(account_id)
+        currency = (snapshot or {}).get("assets", {}).get("currency") or (
+            account.account_config.get("manual_assets") or {}
+        ).get("currency", "")
+    return {**result, "currency": currency, "sync_supported": descriptor.cash_flow_sync}
 
 
 @router.post("/{account_id}/cash-flows", status_code=201, response_model=None)

@@ -73,7 +73,9 @@ class AccountNotificationContext(TypedDict):
     is_test: NotRequired[bool]
     event_id: str | None
     account: dict[str, object]
-    event_type: NotRequired[Literal["execution.finished", "supplement.cancelled"]]
+    event_type: NotRequired[Literal["execution.finished", "supplement.cancelled", "signal.calculated"]]
+    quantity_unit: NotRequired[str]
+    scheduled_at: NotRequired[str]
     supplement: NotRequired[dict[str, object]]
     last_execution: NotRequired[dict[str, object] | None]
     last_execution_at: NotRequired[str | None]

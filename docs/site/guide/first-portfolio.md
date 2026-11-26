@@ -74,9 +74,7 @@ def calculate_portfolio(context: Context) -> dict[str, float]:
 
 ## 7. 先关闭自动执行，再创建账户
 
-在定时步骤先关闭“自动调仓”，然后进入确认页。点击“计算目标”查看返回值，核对账户、组合和算法，再创建账户。
-
-![创建账户前确认目标和运行状态](../assets/screenshots/03-first-portfolio/07-confirm-account.png)
+在定时步骤先关闭“自动调仓”，然后进入确认页。核对账户、组合和算法后，点击“创建账户”。
 
 <p class="caption">本例在向导中将多空杠杆均设为 1，后文的数量计算也按一倍杠杆说明。</p>
 
@@ -90,7 +88,7 @@ def calculate_portfolio(context: Context) -> dict[str, float]:
 
 ## 9. 核对目标后手动执行
 
-进入账户“杠杆设置”，把多空杠杆都设为 1 并保存。回到账户概览，刷新账户资产，重新计算目标，然后检查“持仓 vs 目标”。
+在账户概览点击“杠杆”，把多空杠杆都设为 1 并保存。弹窗关闭后，刷新账户资产，重新计算目标，然后检查“持仓 vs 目标”。
 
 ![执行前的持仓与目标对照](../assets/screenshots/04-targets/02-before-rebalance.png)
 

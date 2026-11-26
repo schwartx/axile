@@ -15,6 +15,7 @@ from axile.domain.execution import ExecutionArtifactType
 from axile.server import target_sizing
 from axile.server.api.routes import account as account_routes
 from axile.server.api.routes import account_execution as account_execution_routes
+from axile.server.api.routes import portfolio as portfolio_routes
 from axile.server.db.models import Account, ExecutionArtifact, ExecutionEvent, Portfolio
 from axile.server.db.models.account import AccountSnapshot
 from axile.server.execution.intents import SubmitResult
@@ -174,7 +175,7 @@ def _patch_resolution(
     async def fake_get_latest_portfolio_id_by_account_id(_account_id: int) -> int | None:
         return portfolio_id
 
-    async def fake_resolve_portfolio_target(_portfolio: Portfolio, _account: object) -> dict[str, float]:
+    async def fake_calculate_portfolio_for_account(_account: object, _code: str) -> dict[str, float]:
         return dict(raw_target)
 
     saved: list[dict[str, object]] = []
@@ -189,7 +190,7 @@ def _patch_resolution(
         "get_latest_portfolio_id_by_account_id",
         fake_get_latest_portfolio_id_by_account_id,
     )
-    monkeypatch.setattr(account_execution_routes, "resolve_portfolio_target", fake_resolve_portfolio_target)
+    monkeypatch.setattr(portfolio_routes, "calculate_portfolio_for_account", fake_calculate_portfolio_for_account)
     monkeypatch.setattr(
         account_execution_routes,
         "append_target_weight_snapshot",

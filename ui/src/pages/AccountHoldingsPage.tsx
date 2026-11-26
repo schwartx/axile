@@ -67,7 +67,8 @@ export function AccountHoldingsPage() {
   const refreshSnapshots = snapshots.refresh
   const reloadTargetSnapshot = weights.reloadSnapshot
   const refreshComparison = comparison.refresh
-  const connectedAssets = useConnectedAssets(accountId, () => {
+  const tradeChannel = item?.trade_channel ?? account.data?.trade_channel
+  const connectedAssets = useConnectedAssets(accountId, tradeChannel, () => {
     void refreshSnapshots()
     void refreshComparison()
     void account.refresh()
@@ -81,7 +82,6 @@ export function AccountHoldingsPage() {
     }
     previousLiveRef.current = running
   }, [running, refreshSnapshots, reloadTargetSnapshot, refreshComparison, refreshAccounts])
-  const tradeChannel = item?.trade_channel ?? account.data?.trade_channel
   const portfolioId = item?.portfolio_id ?? account.data?.portfolio_id ?? null
   // 快照缺失但实时口径（dashboard.holdings_count）显示有持仓：资产观测未返回有效持仓明细，
   // 逐只对照会把「实际持有」误判为空仓并给出「买入建仓」的危险建议。此时降级为「待刷新」，

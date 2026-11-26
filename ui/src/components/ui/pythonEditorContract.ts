@@ -1,7 +1,8 @@
 import type { TextEdit } from 'vscode-languageserver-protocol'
 import { ApiError, apiSend } from '@/lib/api/client'
 
-export type PythonEditorKind = 'portfolio' | 'account_notification' | 'system_notification'
+export const PYTHON_EDITOR_KINDS = ['portfolio', 'account_notification', 'system_notification', 'signal_quotes', 'signal_account'] as const
+export type PythonEditorKind = typeof PYTHON_EDITOR_KINDS[number]
 
 export interface ContractDiagnostic {
   code?: string

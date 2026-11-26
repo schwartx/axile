@@ -1,4 +1,4 @@
-"""在一次性子进程中执行模拟账户或独立行情试跑。"""
+"""在一次性子进程中执行组合试跑与信号数据函数。"""
 
 from __future__ import annotations
 
@@ -178,14 +178,33 @@ def _run_portfolio(
     simulation_account: SimulationAccount | None = None,
     read_quotes: QuoteReader | None = None,
 ) -> PortfolioTarget:
+    try:
+        payload = run_portfolio_child(
+            _run_sample_portfolio_child,
+            (code, settings, copy_data(simulation_account, deep=True), read_quotes is not None),
+            timeout,
+            read_quotes,
+            name="axile-portfolio-trial",
+        )
+    except TimeoutError:
+        raise _error_from_exception(TimeoutError(f"自定义组合函数执行超时（{timeout:g}s）")) from None
+    except EOFError as exc:
+        raise _error_from_exception(RuntimeError(f"组合试跑子进程异常退出: {exc}")) from exc
+    return _normalize_target(payload)
+
+
+def run_portfolio_child(
+    target: Callable[..., None],
+    args: tuple[object, ...],
+    timeout: float,
+    read_quotes: QuoteReader | None = None,
+    *,
+    name: str | None = None,
+) -> object:
+    """执行子进程并按需转发取价请求，超时或失败时回收进程。"""
     context = get_context("spawn")
     parent, child = context.Pipe(duplex=read_quotes is not None)
-    process = context.Process(
-        target=_run_sample_portfolio_child,
-        args=(child, code, settings, copy_data(simulation_account, deep=True), read_quotes is not None),
-        name="axile-portfolio-trial",
-        daemon=True,
-    )
+    process = context.Process(target=target, args=(child, *args), name=name, daemon=True)
     try:
         process.start()
         child.close()
@@ -200,15 +219,14 @@ def _run_portfolio(
                 continue
             if isinstance(payload, PortfolioFunctionError):
                 raise payload
-            return _normalize_target(payload)
+            return payload
         _stop_process(process)
-        raise _error_from_exception(TimeoutError(f"自定义组合函数执行超时（{timeout:g}s）"))
+        raise TimeoutError
     except (EOFError, BrokenPipeError) as exc:
         if process.pid is None:
             raise
         process.join(timeout=0.1)
-        detail = f"组合试跑子进程异常退出: exitcode={process.exitcode}"
-        raise _error_from_exception(RuntimeError(detail)) from exc
+        raise EOFError(f"exitcode={process.exitcode}") from exc
     finally:
         child.close()
         parent.close()
@@ -223,4 +241,5 @@ __all__ = [
     "PORTFOLIO_FUNCTION_TIMEOUT_SECONDS",
     "calculate_market_portfolio",
     "calculate_sample_portfolio",
+    "run_portfolio_child",
 ]

@@ -1,4 +1,6 @@
 import { useCallback } from 'react'
+import { SignalAccountDetail } from '@/pages/SignalAccountPage'
+import { SIGNAL_CHANNEL } from '@/features/signal/signalData'
 import { getAccount } from '@/lib/api/accounts'
 import { usePolling } from '@/lib/hooks/usePolling'
 import { ArchivedAccountDetail } from '@/features/account/ArchivedAccountDetail'
@@ -28,7 +30,7 @@ export function AccountDetailPage() {
       <ErrorNotice intent="read" title="账户数据加载失败" error={accounts == null ? error : null} onRetry={refresh} />
       {!item && <ErrorNotice intent="read" title="账户详情加载失败" error={saved.error} onRetry={saved.refresh} />}
       {accounts != null && !error && !item && !saved.loading && !saved.data && !saved.error && <p className="text-[15px] text-ink-3">未找到账户 #{accountId}。</p>}
-      {item && (
+      {item && (item.trade_channel === SIGNAL_CHANNEL ? <SignalAccountDetail key={accountId} item={item} /> :
         <AccountDetail key={accountId}
           accountId={accountId}
           item={item}

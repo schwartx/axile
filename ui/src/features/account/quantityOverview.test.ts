@@ -3,7 +3,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { HoldingsPreviewTable } from '@/features/account/HoldingsPreviewTable'
 import { HoldingsView } from '@/features/account/HoldingsView'
-import { holdingPreviewRows } from '@/features/account/holdingDetailModel'
+import { holdingPreviewRows, signalHoldingPreviewRows } from '@/features/account/holdingDetailModel'
 import { rebalanceHeadline } from '@/features/account/holdingPreview'
 import { portfolioTargetSummary } from '@/features/portfolio/portfolioCardSummary'
 import { rebalancePlanOfServer } from '@/lib/derive'
@@ -162,4 +162,31 @@ test('权重模式的买卖统计与百分比行保留', () => {
   expect(html).toContain('多20.0%')
   expect(html).toContain('净敞口')
   expect(html).not.toContain('逐品种缩放')
+})
+
+test('信号账户复用数量表，未知持仓和实际空仓显示不同，快照数量无执行偏离', () => {
+  const render = (holdings: ReturnType<typeof signalHoldingPreviewRows>) => renderToStaticMarkup(createElement(HoldingsPreviewTable, {
+    holdings, quantityMode: true, quantityLabel: '股', compact: true,
+  }))
+  const unknown = signalHoldingPreviewRows(undefined, 0, targets)
+  const empty = signalHoldingPreviewRows([], 0, targets)
+  expect(unknown[0]).toMatchObject({ volume: null, snapshotQuantity: 34700 })
+  expect(empty[0]).toMatchObject({ volume: 0, snapshotQuantity: 34700 })
+
+  const positions = [{ symbol: '600000.SH', direction: '多头', volume: 500 }]
+  const compared = signalHoldingPreviewRows(positions, 0, targets)
+  expect(compared[0]).toMatchObject({ volume: 500, snapshotQuantity: 0 })
+  expect(signalHoldingPreviewRows(positions, 0, null)[0].snapshotQuantity).toBeUndefined()
+
+  const html = render(compared)
+  expect(html).toContain('目标数量')
+  expect(html).toContain('多34,700股')
+  expect(html).not.toContain('待调整')
+  expect(html.match(/<th /g)).toHaveLength(3)
+})
+
+test('信号持仓对照区分已换算的空仓和未换算', () => {
+  const positions = [{ symbol: '513050.SH', direction: '多头', volume: 500 }]
+  expect(signalHoldingPreviewRows(positions, 0, {})[0].snapshotQuantity).toBe(0)
+  expect(signalHoldingPreviewRows(positions, 0, null)[0].snapshotQuantity).toBeUndefined()
 })

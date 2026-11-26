@@ -1,3 +1,4 @@
+import { SIGNAL_CHANNEL } from '@/features/signal/signalData'
 import { Settings } from 'lucide-react'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { Chip } from '@/components/ui/Card'
@@ -141,6 +142,7 @@ export function PortfolioTrialAccounts({ accounts, accountId, portfolioId, onSel
   const [configOpen, setConfigOpen] = useState(false)
   const saveSimulation = useSimulationAccounts((state) => state.save)
   const selected = accounts.find((account) => account.account_id === accountId)
+  const usesTrading = selected?.trade_channel !== SIGNAL_CHANNEL
   const channels = useChannelCatalogStore((state) => state.channels)
   const frames = useLiveConnection((state) => state.frames)
   const synced = useLiveConnection((state) => state.connected)
@@ -151,7 +153,7 @@ export function PortfolioTrialAccounts({ accounts, accountId, portfolioId, onSel
   const options = [
     ...accounts.map((account) => ({
       value: account.account_id,
-      label: `${account.name} · ${describeLeverage(account.long_leverage ?? null, account.short_leverage ?? null,
+      label: account.trade_channel === SIGNAL_CHANNEL ? account.name : `${account.name} · ${describeLeverage(account.long_leverage ?? null, account.short_leverage ?? null,
         channels?.find((channel) => channel.channel === account.trade_channel)?.ui.show_short_leverage ?? true)}`,
       groupLabel: '账户',
       hint: `${synced && frames[account.account_id] ? connectionLabel(frames[account.account_id]) : '状态待确认'}${account.portfolio_id === portfolioId ? ' · 跟随本组合' : ''}`,
@@ -167,12 +169,12 @@ export function PortfolioTrialAccounts({ accounts, accountId, portfolioId, onSel
           selectedValue={<OverflowText text={selected?.name ?? (simulationChannel ? `模拟 · ${simulationChannel.label}` : '正在加载模拟账户…')} />} />
         {selected && <Chip className="max-w-48 shrink-0"><OverflowText text={channelLabel(selected.trade_channel, '')} /></Chip>}
       </div>
-      {selected && <fieldset disabled={disabled} className="ml-auto min-w-0 max-w-full">
+      {selected && usesTrading && <fieldset disabled={disabled} className="ml-auto min-w-0 max-w-full">
         <AccountConnectionStatus accountId={selected.account_id} />
       </fieldset>}
       {!selected && simulationChannel && simulationAccount && <button type="button" disabled={disabled} className={`${textAction} ml-auto inline-flex shrink-0 items-center gap-1.5`} onClick={() => setConfigOpen(true)}><Settings size={14} aria-hidden />配置</button>}
     </div>
-    {selected ? <div className="mt-1 flex min-h-8 min-w-0 items-start">
+    {selected ? usesTrading && <div className="mt-1 flex min-h-8 min-w-0 items-start">
       <AccountLeverageControl key={selected.account_id} account={selected} disabled={disabled} onLeverageChange={onLeverageChange} />
     </div> : simulationChannel && simulationAccount && <div className="mt-1 flex min-h-8 flex-wrap items-center gap-2 px-1.5 text-xs text-ink-3">
       <span className="tabular-nums">权益 {simulationAccount.account.total_asset.toLocaleString()} {simulationAccount.account.currency} · 持仓 {simulationAccount.account.positions.length} · 行情 {simulationAccount.quotes.length}</span>

@@ -2,6 +2,14 @@ import { useEffect, useRef, useState } from 'react'
 import type { PythonEditorKind } from '@/components/ui/pythonEditorContract'
 import { canRestoreDraft, draftKey, readDrafts, writeDraft, type EditorDraft } from './drafts'
 
+const DRAFT_TITLE: Record<PythonEditorKind, string> = {
+  portfolio: '组合函数',
+  account_notification: '账户通知函数',
+  system_notification: '系统通知函数',
+  signal_quotes: '行情函数',
+  signal_account: '账户函数',
+}
+
 export function useLocalDraft(kind: PythonEditorKind, code: string, baseline: string, onChange: (code: string) => void, keyOverride?: string) {
   const path = window.location.pathname
   const key = keyOverride ?? draftKey(kind, path)
@@ -23,8 +31,8 @@ export function useLocalDraft(kind: PythonEditorKind, code: string, baseline: st
     void readDrafts().then(drafts => {
       if (!alive) return
       const stored = drafts.find(draft => draft.key === key)
-      const metadata = stored ? { key, kind: stored.kind, path: stored.path, title: stored.title }
-        : { key, kind, path, title: kind === 'portfolio' ? '组合函数' : kind === 'account_notification' ? '账户通知函数' : '系统通知函数' }
+      const metadata = stored?.kind === kind ? { key, kind, path: stored.path, title: stored.title }
+        : { key, kind, path, title: DRAFT_TITLE[kind] }
       setSession({ metadata, revision: stored?.revision ?? null, queue: Promise.resolve(), failed: false, saved: stored })
       if (stored && stored.code !== initial.code && stored.code !== stored.baseline) {
         if (canRestoreDraft(stored, initial.baseline) && latest.current.code === initial.code) initial.onChange(stored.code)

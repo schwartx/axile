@@ -32,6 +32,11 @@ export function normalizeConnectionValue(kind: ConnectionFieldKind, raw: string)
   return value
 }
 
+/** 允许录入中的小数点和千分位，完整金额仍由 normalizeMoneyValue 校验。 */
+export function isDecimalDraft(value: string, signed = false): boolean {
+  return /^[\d,]*(?:\.\d*)?$/.test(signed ? value.replace(/^[+-]/, '') : value)
+}
+
 /** 返回无歧义金额的规范化表示；非法格式返回 null。 */
 export function normalizeMoneyValue(raw: string): string | null {
   const value = raw.trim()

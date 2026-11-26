@@ -1,3 +1,6 @@
+import { SignalSetupPage } from '@/pages/setup/SignalSetupPage'
+import { SignalAccountDataPage, SignalAccountDataLayout } from '@/pages/SignalAccountDataPage'
+import { SignalRecordsPage } from '@/pages/SignalRecordsPage'
 import { AccountEditGuard } from '@/features/account/AccountEditGuard'
 import { LocalEditorPage } from '@/features/editor/LocalEditorPage'
 import { useEffect, useState } from 'react'
@@ -13,7 +16,7 @@ import { useChannelCatalogSync } from '@/stores/channels'
 import { useBusinessSync } from '@/lib/api/businessStream'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { AccountDetailPage } from '@/pages/AccountDetailPage'
-import { AccountEditPage } from '@/pages/AccountEditPage'
+import { AccountEditPortfolioPage } from '@/pages/AccountEditPortfolioPage'
 import { AccountEditConnectionPage } from '@/pages/AccountEditConnectionPage'
 import { AccountEditTimerPage } from '@/pages/AccountEditTimerPage'
 import { AccountEditAlgorithmPage } from '@/pages/AccountEditAlgorithmPage'
@@ -34,6 +37,7 @@ import { WizardLayout } from '@/features/setup/WizardLayout'
 import { SetupHub } from '@/pages/setup/SetupHub'
 import { CustomCalcDocPage } from '@/pages/docs/CustomCalcDocPage'
 import { NotificationDocPage } from '@/pages/docs/NotificationDocPage'
+import { SignalQuotesDocPage } from '@/pages/docs/SignalQuotesDocPage'
 import {
   AcctChannel,
   AcctConnect,
@@ -111,12 +115,17 @@ const router = createBrowserRouter([
         children: [
           { index: true, element: <DashboardPage /> },
           { path: 'accounts/:id', element: <AccountDetailPage /> },
-          { path: 'accounts/:id/edit', element: <AccountEditGuard />, children: [
-          { index: true, element: <AccountEditPage /> },
+          { id: 'account-settings', path: 'accounts/:id/edit', element: <AccountEditGuard />, children: [
+          { index: true, element: <Navigate to=".." relative="path" replace /> },
           { path: 'connection', element: <AccountEditConnectionPage /> },
-          { path: 'leverage', element: <AccountEditPage section="leverage" /> },
-          { path: 'symbols', element: <AccountEditPage section="symbols" /> },
-          { path: 'portfolio', element: <AccountEditPage section="portfolio" /> },
+          { path: 'signal', element: <Navigate to=".." relative="path" replace /> },
+          { element: <SignalAccountDataLayout />, handle: { fullBleed: true }, children: [
+            { path: 'quotes', element: <SignalAccountDataPage section="quotes" /> },
+            { path: 'assets', element: <SignalAccountDataPage section="assets" /> },
+          ] },
+          { path: 'leverage', element: <Navigate to="../.." relative="path" replace /> },
+          { path: 'symbols', element: <Navigate to="../.." relative="path" replace /> },
+          { path: 'portfolio', element: <AccountEditPortfolioPage /> },
           { path: 'timer', element: <AccountEditTimerPage />, handle: { fullBleed: true } },
           { path: 'algorithm', element: <AccountEditAlgorithmPage />, handle: { fullBleed: true } },
           { path: 'notification', element: <AccountEditNotificationPage />, handle: { fullBleed: true } },
@@ -124,6 +133,7 @@ const router = createBrowserRouter([
           ] },
           { path: 'accounts/:id/holdings', element: <AccountHoldingsPage /> },
           { path: 'accounts/:id/history', element: <AccountHistoryPage /> },
+          { path: 'accounts/:id/signals', element: <SignalRecordsPage /> },
           { path: 'accounts/:id/executions', element: <AccountExecutionsPage /> },
           { path: 'accounts/:id/executions/:executionId', element: <ExecutionDetailPage /> },
           { path: 'accounts/:id/executions/:executionId/replay', element: <ExecutionReplayPage />, handle: { fullBleed: true } },
@@ -136,6 +146,7 @@ const router = createBrowserRouter([
         ],
       },
       { path: 'docs/custom-calc', element: <CustomCalcDocPage /> },
+      { path: 'docs/signal-quotes', element: <SignalQuotesDocPage /> },
       { path: 'docs/system-notification', element: <SystemNotificationDocPage /> },
       { path: 'docs/notification', element: <NotificationDocPage /> },
       {
@@ -145,6 +156,7 @@ const router = createBrowserRouter([
           { index: true, element: <SetupHub /> },
           { path: 'acct/channel', element: <AcctChannel /> },
           { path: 'acct/connect', element: <AcctConnect /> },
+          { path: 'acct/signal', element: <SignalSetupPage /> },
           { path: 'acct/portfolio', element: <AcctPortfolio /> },
           { path: 'acct/trade', element: <AcctTrade /> },
           { path: 'acct/timer', element: <AcctTimer /> },

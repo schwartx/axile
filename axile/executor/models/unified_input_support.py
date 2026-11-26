@@ -188,12 +188,14 @@ def _build_account_config(
 
 def _get_default_algorithm_method(channel: TradeChannel) -> str:
     """返回指定渠道的默认算法名称."""
-    return get_channel(channel).descriptor.defaults.trade_algorithm.method
+    return _get_channel_default_algorithm(channel)["method"]
 
 
 def _get_channel_default_algorithm(channel: TradeChannel) -> TradeAlgorithm:
     """返回指定渠道的默认调仓算法配置副本."""
     default = get_channel(channel).descriptor.defaults.trade_algorithm
+    if default is None:
+        raise ValueError("该渠道没有交易算法")
     return dict(to_payload(default, mode="python"))
 
 

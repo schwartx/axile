@@ -216,6 +216,19 @@ fn insert_in_connection(connection: &Connection, request: &Value) -> Result<Valu
     let execution_id = text(request, "execution_id")?;
     let account = account_id(request)?;
     crate::accounts::ensure_current_on(connection, account)?;
+    let is_signal: bool = connection
+        .query_row(
+            "SELECT trade_channel=?2 FROM account WHERE id=?1",
+            params![account, crate::accounts::SIGNAL_CHANNEL],
+            |row| row.get(0),
+        )
+        .map_err(database)?;
+    if is_signal {
+        return Err(AnalysisError::new(
+            "INVALID_REQUEST",
+            "调仓信号账户不支持交易执行",
+        ));
+    }
     let kind = text(request, "kind")?;
     if !["rebalance", "clear_positions"].contains(&kind) || !request["payload"].is_object() {
         return Err(AnalysisError::new(

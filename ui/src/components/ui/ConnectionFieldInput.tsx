@@ -10,7 +10,8 @@ import {
   type RefObject,
 } from 'react'
 
-import type { ConnectionFieldKind } from '@/components/ui/connectionFieldValue'
+import { isDecimalDraft, type ConnectionFieldKind } from '@/components/ui/connectionFieldValue'
+import { InputHint } from '@/components/ui/InputHint'
 
 interface Props {
   id: string
@@ -18,8 +19,10 @@ interface Props {
   value: string
   kind: ConnectionFieldKind
   placeholder?: string
+  suggestion?: string
   required: boolean
   help?: string
+  valueHint?: string
   message?: string | null
   pasteLabel: string
   popupOpen: boolean
@@ -42,8 +45,10 @@ export const ConnectionFieldInput = forwardRef<HTMLInputElement, Props>(function
     value,
     kind,
     placeholder,
+    suggestion,
     required,
     help,
+    valueHint,
     message,
     pasteLabel,
     popupOpen,
@@ -63,6 +68,7 @@ export const ConnectionFieldInput = forwardRef<HTMLInputElement, Props>(function
   const [revealed, setRevealed] = useState(false)
   const secret = kind === 'secret'
   const mono = kind === 'identifier' || secret || kind === 'endpoint' || kind === 'directory'
+  const inlineHint = message ? undefined : valueHint
   const maskStyle = secret && !revealed
     ? ({ WebkitTextSecurity: 'disc' } as CSSProperties)
     : undefined
@@ -98,13 +104,13 @@ export const ConnectionFieldInput = forwardRef<HTMLInputElement, Props>(function
         <label htmlFor={id} className="block text-[13px] leading-4 text-ink-2">
           {label}{required ? <span className="ml-0.5 text-ink-3">*</span> : null}
         </label>
-        <div className="mt-0.5 flex min-h-8 min-w-0 items-center gap-1">
+        <div className="relative mt-0.5 flex min-h-8 min-w-0 items-center gap-1">
           <input
             ref={setRef}
             id={id}
             type="text"
             value={value}
-            placeholder={placeholder}
+            placeholder={suggestion ? undefined : placeholder}
             inputMode={kind === 'money' ? 'decimal' : 'text'}
             autoComplete="off"
             autoCorrect="off"
@@ -114,11 +120,14 @@ export const ConnectionFieldInput = forwardRef<HTMLInputElement, Props>(function
             data-lpignore="true"
             data-bwignore="true"
             aria-invalid={message ? true : undefined}
-            aria-describedby={`${id}-keys${message || help ? ` ${id}-message` : ''}`}
+            aria-describedby={`${id}-keys${message || help ? ` ${id}-message` : ''}${inlineHint ? ` ${id}-value-hint` : ''}`}
             aria-keyshortcuts="Alt+ArrowDown"
-            className={`min-w-0 flex-1 bg-transparent text-[16px] leading-7 outline-none placeholder:text-ink-3 ${mono ? 'font-mono' : ''}`}
+            className={`min-w-0 flex-1 bg-transparent text-[16px] leading-7 outline-none placeholder:text-ink-3 ${mono ? 'font-mono' : ''} ${kind === 'money' ? 'num' : ''}`}
             style={maskStyle}
-            onChange={(event) => onChange(event.target.value)}
+            onChange={(event) => {
+              const next = event.target.value
+              if (kind !== 'money' || isDecimalDraft(next, true)) onChange(next)
+            }}
             onPaste={handlePaste}
             onKeyDown={(event) => {
               if (event.altKey && event.key === 'ArrowDown') {
@@ -133,6 +142,9 @@ export const ConnectionFieldInput = forwardRef<HTMLInputElement, Props>(function
               onBlur?.(event.currentTarget.value)
             }}
           />
+          {inlineHint && <span id={`${id}-value-hint`} title={inlineHint} className="min-w-0 max-w-[40%] truncate text-right text-xs text-ink-3">
+            {inlineHint}
+          </span>}
           <div className="flex h-8 flex-none items-center" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => {
             if (event.key === 'Escape') {
               event.preventDefault()
@@ -178,6 +190,7 @@ export const ConnectionFieldInput = forwardRef<HTMLInputElement, Props>(function
               </button>
             )}
           </div>
+          <InputHint inputId={id} value={value} suggestion={suggestion} onFill={onChange} className={`left-0 text-[16px] ${mono ? 'font-mono' : ''}`} />
         </div>
       </div>
       <span id={`${id}-keys`} className="sr-only">按 Alt 加向下箭头进入字段操作，左右箭头切换操作，Escape 返回输入框。</span>

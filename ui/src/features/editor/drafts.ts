@@ -1,4 +1,4 @@
-import type { PythonEditorKind } from '@/components/ui/pythonEditorContract'
+import { PYTHON_EDITOR_KINDS, type PythonEditorKind } from '@/components/ui/pythonEditorContract'
 
 export interface EditorDraft {
   key: string
@@ -29,7 +29,7 @@ function openDatabase() {
 function validDraft(value: unknown): value is EditorDraft {
   if (!value || typeof value !== 'object') return false
   const draft = value as EditorDraft
-  return ['portfolio', 'account_notification', 'system_notification'].includes(draft.kind)
+  return PYTHON_EDITOR_KINDS.includes(draft.kind)
     && ['key', 'path', 'title', 'code', 'baseline'].every(key => typeof draft[key as keyof EditorDraft] === 'string')
     && Number.isSafeInteger(draft.revision) && draft.revision > 0 && Number.isFinite(draft.updatedAt)
     && draft.path.startsWith('/') && !draft.path.startsWith('//')

@@ -1,11 +1,10 @@
-import { CashFlowPanel } from '@/features/account/CashFlowPanel'
+import { AccountOverviewConfigButton, AccountOverviewEquity, AccountOverviewIdentity, AccountOverviewPortfolio } from '@/features/account/AccountOverviewHero'
 import { ArchiveAction } from '@/features/account/ArchiveAction'
 import { algorithmScheduleSummary } from '@/features/account/algorithmSchedule'
 import { shanghaiLabel } from '@/features/history/costs'
 import { useAccountConnection } from '@/stores/liveConnection'
 import { useConnectedAssets } from '@/features/account/useConnectedAssets'
 import { RuntimeSyncStatus } from '@/features/account/RuntimeSyncStatus'
-import { AssetObservationTime } from '@/features/account/AssetObservationTime'
 import { AssetRefreshFeedback } from '@/features/account/AssetRefreshFeedback'
 import { AssetRefreshStatus } from '@/features/account/AssetRefreshStatus'
 import { AccountConnectionStatus } from '@/features/account/AccountConnectionStatus'
@@ -22,7 +21,7 @@ import { executionOutcome } from '@/features/account/executionOutcome'
 import { formatRecentExecution } from '@/lib/scheduleTime'
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
 import { useViewTransitionState } from 'react-router'
-import { ArrowLeftRight, RefreshCw, Video, VideoOff } from 'lucide-react'
+import { Video, VideoOff } from 'lucide-react'
 import { cardPerformance, currentEquity } from '@/features/dashboard/performance'
 import { PerformanceStatus } from '@/features/dashboard/PerformanceStatus'
 import { Link, useNavigate } from '@/components/ui/nav'
@@ -38,6 +37,9 @@ import { Tooltip } from '@/components/ui/Tooltip'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { Skeleton, SkeletonGroup, SkeletonText } from '@/components/ui/Skeleton'
 import { AccountActions } from '@/features/account/AccountActions'
+import { AccountLeverageDialog } from '@/features/account/AccountLeverageDialog'
+import { AccountBasicDialog } from '@/features/account/AccountBasicDialog'
+import { AccountSymbolsDialog } from '@/features/account/AccountSymbolsDialog'
 import { CopyAccountDialog } from '@/features/account/CopyAccountDialog'
 import { useExecutionRunner } from '@/features/account/useExecutionRunner'
 import { useTerminateAction } from '@/features/account/useTerminateAction'
@@ -50,7 +52,6 @@ import {
   INTEGRITY_TEXT_CLASS,
   positionValueLabelOf,
   STATUS_TEXT_CLASS,
-  channelLabel,
 } from '@/features/dashboard/display'
 import { isExecutingStatus, phaseLabel, runVerb } from '@/features/dashboard/execProgress'
 import { executionJustSettled, useRunning } from '@/stores/liveExec'
@@ -87,7 +88,7 @@ import { describeCron } from '@/features/setup/cron'
 import { TimerQuickModal } from '@/features/setup/TimerQuickModal'
 import { useToastStore } from '@/stores/ui'
 import { useChannelDescriptor } from '@/stores/channels'
-import type { AccountDashboardItem } from '@/types/api'
+import type { Account, AccountDashboardItem } from '@/types/api'
 import { TargetSnapshotControl } from '@/features/portfolio/TargetSnapshotControl'
 import { portfolioTargetSummary } from '@/features/portfolio/portfolioCardSummary'
 
@@ -128,14 +129,12 @@ export function AccountDetail({
   }, [accountId])
   const [timerOpen, setTimerOpen] = useState(false)
   const [refreshingAssets, setRefreshingAssets] = useState(false)
+  const [editingConfig, setEditingConfig] = useState<'basic' | 'leverage' | 'symbols' | null>(null)
+  const [savedConfig, setSavedConfig] = useState<{ account: Account; time: number } | null>(null)
   const [copyOpen, setCopyOpen] = useState(false)
   // 启停乐观态：确认后立刻翻转，驱动按钮/状态句日记式换字；与 item 对齐后清除。
   const [startedOverride, setStartedOverride] = useState<boolean | null>(null)
-  // 共享元素 FLIP 门控：
-  // - 账户名：进详情（舰队/组合）或去编辑页时挂名；持仓/回看不飞名。
-  const tDetail = useViewTransitionState(`/accounts/${accountId}`)
-  const tEdit = useViewTransitionState(`/accounts/${accountId}/edit`)
-  const nameVt = tDetail || tEdit
+  const nameVt = useViewTransitionState(`/accounts/${accountId}`)
   const channelDescriptor = useChannelDescriptor(item.trade_channel)
   const [holdingSelection, setHoldingSelection] = useState<{ accountId: number; symbol: string; keyboardOpened: boolean } | null>(null)
   const holdingsComparisonRef = useRef<HTMLDivElement>(null)
@@ -289,14 +288,12 @@ export function AccountDetail({
 
   // Hero 配置带（杠杆 / 品种控制 / 算法）：取自本组件已在轮询的账户详情，零新增请求。
   // 配置事实而非盈亏或偏离：中性色、零动效；每项兼作对应编辑分区的入口。
-  // 杠杆 / 品种值落在编辑页摘要；算法名落在对应选择器的选中名称。
+  // 杠杆和品种原位编辑，算法保留编辑页过渡。
   const acc = account.data ?? readAlgorithmAccountPreview(accountId)
   const catalog = useSyncExternalStore(algorithmCatalog.subscribe, algorithmCatalog.getSnapshot, algorithmCatalog.getSnapshot)
   useEffect(() => {
     if (!catalog.data && !catalog.error) void algorithmCatalog.load()
   }, [catalog.data, catalog.error])
-  const tEditLeverage = useViewTransitionState(`/accounts/${accountId}/edit/leverage`)
-  const tEditSymbols = useViewTransitionState(`/accounts/${accountId}/edit/symbols`)
   const tEditAlgorithm = useViewTransitionState(`/accounts/${accountId}/edit/algorithm`)
   const showShortLeverage = channelDescriptor?.ui.show_short_leverage ?? true
   const positionValueLabel = positionValueLabelOf(channelDescriptor?.ui)
@@ -312,12 +309,26 @@ export function AccountDetail({
   const configLoading = acc == null && account.loading && cachedConfig == null
   const portfolioName =
     portfolioId != null ? (portfolios?.find((p) => p.id === portfolioId)?.name ?? null) : null
-  const leverageText = acc
-    ? describeLeverage(acc.long_leverage, acc.short_leverage, showShortLeverage)
+  // 保存响应先更新摘要，下一次成功读回后恢复使用轮询数据。
+  const configAccount = savedConfig && (account.updatedAt ?? 0) <= savedConfig.time
+    ? savedConfig.account
+    : account.data
+  const displayConfig = configAccount ?? acc
+  const leverageText = displayConfig
+    ? describeLeverage(displayConfig.long_leverage, displayConfig.short_leverage, showShortLeverage)
     : (cachedConfig?.leverage ?? null)
-  const symbolsText = acc
-    ? describeSymbolControl(acc.forbidden_symbols, acc.risk_symbols)
+  const symbolsText = displayConfig
+    ? describeSymbolControl(displayConfig.forbidden_symbols, displayConfig.risk_symbols)
     : (cachedConfig?.symbols ?? null)
+  const closeConfig = () => setEditingConfig(null)
+  const saveConfig = (updated: Account) => {
+    setSavedConfig({ account: updated, time: Date.now() })
+    writeAccountConfigSummary(accountId, updated, { showShortLeverage })
+    closeConfig()
+    toast('设置已保存')
+    void account.refresh()
+    void useDomainStore.getState().refreshAccounts()
+  }
   // 算法摘要不收短：TARGET-POS-TASK 等直接给完整参数句，配置带里整项分组 + 截断兜底。
   const algorithmText = acc
     ? algorithmScheduleSummary(algorithmRefOf(acc.algorithm), acc.algorithm_schedule?.length ?? 0, Object.keys(acc.product_algorithms ?? {}).length)
@@ -401,7 +412,7 @@ export function AccountDetail({
 
   const remark = item.remark
   const connection = useAccountConnection(accountId)
-  const connectedAssets = useConnectedAssets(accountId, () => {
+  const connectedAssets = useConnectedAssets(accountId, item.trade_channel, () => {
     void refreshAssetSnapshots()
     void refreshComparison()
     void account.refresh()
@@ -432,20 +443,7 @@ export function AccountDetail({
       {/* Hero */}
       <Card className="p-3">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-          <div className="flex min-w-0 flex-wrap items-center gap-3">
-            <BackLink to="/" label="返回所有账户" />
-            {/* 与舰队卡 / 组合行 / 编辑页标题名配对做共享元素 FLIP（平移 + 微缩）。 */}
-            <span
-              className="text-[17px] font-[620]"
-              style={nameVt ? { viewTransitionName: `account-name-${accountId}` } : undefined}
-            >
-              {item.name}
-            </span>
-            {/* 渠道徽章与账户名同一逻辑单元：随名字同门控挂名、同轨飞行（nameVt）。 */}
-            <Chip style={nameVt ? { viewTransitionName: `account-channel-${accountId}` } : undefined}>
-              {channelLabel(item.trade_channel, item.market)}
-            </Chip>
-          </div>
+          <AccountOverviewIdentity item={item} nameTransition={nameVt} />
           {gate.gate === 'paused' && <Chip>{gate.label}</Chip>}
           <AccountConnectionStatus accountId={accountId} independentMarketData={channelDescriptor?.independent_market_data} />
           <AccountActions
@@ -462,7 +460,7 @@ export function AccountDetail({
             onTerminate={terminate}
             toggling={toggling}
             onToggleStarted={onToggleStarted}
-            onEdit={() => navigate(`/accounts/${accountId}/edit`)}
+            onEdit={() => setEditingConfig('basic')}
             onCopy={() => setCopyOpen(true)}
             onDelete={onDelete}
           />
@@ -484,72 +482,25 @@ export function AccountDetail({
           </div>
         )}
 
-        <div className="mt-1.5 text-[14.5px] text-ink-2">
-          {'组合 '}
-          {portfolioId != null ? (
-            <Link
-              to={`/portfolios/${portfolioId}/edit`}
-              className="inline-flex min-w-0 max-w-60 align-middle font-semibold text-accent hover:underline"
-            >
-              {/* 组合名是自由文本、长度无界：槽位截断 + hover 原地播全名。 */}
-              <OverflowText className="min-w-0" text={portfolioName ?? `#${portfolioId}`} />
-            </Link>
-          ) : (
-            <span className="align-middle text-ink-3">未绑定</span>
-          )}
-          <Tooltip content={portfolioId != null ? '更换组合' : '绑定组合'}>
-            <span className="ml-0.5 inline-flex align-middle">
-              <Link
-                to={`/accounts/${accountId}/edit/portfolio`}
-                aria-label={portfolioId != null ? '更换组合' : '绑定组合'}
-                className="grid h-5 w-5 place-items-center rounded-md text-ink-3 hover:bg-fill hover:text-ink-1"
-              >
-                <ArrowLeftRight size={13} aria-hidden />
-              </Link>
-            </span>
-          </Tooltip>
-        </div>
+        <AccountOverviewPortfolio portfolioId={portfolioId} portfolioName={portfolioName}
+          editTo={`/accounts/${accountId}/edit/portfolio`} />
         <div className="mt-2 flex flex-wrap items-end gap-x-6 gap-y-2">
-          <div className="min-w-0 max-w-full shrink-0 [--number-flow-mask-height:0.08em]">
-            {/* 当前权益独立于历史绩效金额。 */}
-            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-              <div className="num whitespace-nowrap text-[35px] leading-none font-[640] tracking-tight">
-                {equity == null ? '—' : <NumberTicker value={equity} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} />}
-                <span className="ml-1.5 text-[17px] font-medium text-ink-3">{displayCurrencyUnit(item.currency)}</span>
-              </div>
-              <span className="inline-flex items-baseline whitespace-nowrap text-[14.5px] text-ink-2">
-                {pct == null ? <span>{dayLabel} —</span> : (
-                  <span className={`num ${pct > 0 ? 'text-up' : pct < 0 ? 'text-down' : 'text-ink-2'}`}>
-                    {dayLabel} {pct >= 0 ? '+' : '−'}
-                    <NumberTicker value={Math.abs(pct)} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />
-                  </span>
-                )}
-                {item.performance?.status !== 'ready' && <PerformanceStatus status={item.performance?.status} />}
-              </span>
-              <CashFlowPanel key={accountId} accountId={accountId} />
-            </div>
-            <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-ink-3">
-              <span><AssetObservationTime observedAt={item.asset_observed_at} /></span>
-              <Tooltip content={connection.status !== 'ready' ? '连接账户后可刷新资产' : '刷新账户资产'}>
-                <span className="inline-flex">
-                  <button
-                    type="button"
-                    onClick={onRefreshAssets}
-                    disabled={refreshingAssets || connectedAssets.refreshing || connection.status !== 'ready'}
-                    aria-label={refreshingAssets || connectedAssets.refreshing ? '正在查询账户资产' : '刷新账户资产'}
-                    title={connection.status !== 'ready' ? '连接账户后可刷新资产' : '刷新账户资产'}
-                    className="grid h-6 w-6 cursor-pointer place-items-center rounded-md text-ink-3 hover:bg-fill hover:text-ink-1 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
-                  >
-                    <RefreshCw
-                      size={14}
-                      className={refreshingAssets || connectedAssets.refreshing ? 'animate-spin motion-reduce:animate-none' : undefined}
-                    />
-                  </button>
+          <AccountOverviewEquity accountId={accountId} equity={equity} currency={item.currency}
+            observedAt={item.asset_observed_at}
+            refreshing={refreshingAssets || connectedAssets.refreshing}
+            refreshDisabledReason={connection.status !== 'ready' ? '连接账户后可刷新资产' : undefined}
+            onRefresh={onRefreshAssets}
+            feedback={<AssetRefreshFeedback accountId={accountId} manualError={assetRefreshError} automaticError={connectedAssets.error} />}
+            summary={<span className="inline-flex items-baseline whitespace-nowrap text-[14.5px] text-ink-2">
+              {pct == null ? <span>{dayLabel} —</span> : (
+                <span className={`num ${pct > 0 ? 'text-up' : pct < 0 ? 'text-down' : 'text-ink-2'}`}>
+                  {dayLabel} {pct >= 0 ? '+' : '−'}
+                  <NumberTicker value={Math.abs(pct)} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />
                 </span>
-              </Tooltip>
-              <AssetRefreshFeedback accountId={accountId} manualError={assetRefreshError} automaticError={connectedAssets.error} />
-            </div>
-          </div>
+              )}
+              {item.performance?.status !== 'ready' && <PerformanceStatus status={item.performance?.status} />}
+            </span>}
+          />
           <div className="ml-auto flex min-w-0 justify-end">
             <PerformanceCurveLink accountId={accountId} summary={item.performance} source="detail" width={200} height={48} />
           </div>
@@ -660,24 +611,14 @@ export function AccountDetail({
          * 配置带：hero 最后一层（名称 → 状态 → 资产 → 配置），label 领值的「· 外分组」
          * 形态——每项是独立 inline 单元，折行只发生在项间，算法参数句内部的「·」不再
          * 与分段符糊成一片。带常挂（缓存/骨架占位），卡高不随账户详情到位而长个。
-         * 五项等距左对齐；算法名过长时 OverflowText 截断。整项可点跳编辑分区。
-         * 杠杆 / 品种值去摘要；算法名去对应选择器。算法入口只飞本次点击的名称。
+         * 五项等距左对齐；算法名过长时 OverflowText 截断。整项可点打开对应设置。
+         * 算法名去对应选择器，过渡只使用本次点击的名称。
          */}
         <div className="mt-2 flex flex-wrap items-center gap-x-6 gap-y-1.5 border-t border-line pt-2 text-[14px]">
-          <HeroConfigItem
-            label="杠杆"
-            to={`/accounts/${accountId}/edit/leverage`}
-            title="杠杆设置"
-            value={configLoading ? null : (leverageText ?? '—')}
-            vtName={tEditLeverage ? accountConfigVtName(accountId, 'leverage') : undefined}
-          />
-          <HeroConfigItem
-            label="品种"
-            to={`/accounts/${accountId}/edit/symbols`}
-            title="品种控制"
-            value={configLoading ? null : (symbolsText ?? '—')}
-            vtName={tEditSymbols ? accountConfigVtName(accountId, 'symbols') : undefined}
-          />
+          <AccountOverviewConfigButton label="杠杆" title="杠杆设置" value={configLoading ? null : (leverageText ?? '—')}
+            disabled={!configAccount || !channelDescriptor} onClick={() => setEditingConfig('leverage')} />
+          <AccountOverviewConfigButton label="品种" title="品种控制" value={configLoading ? null : (symbolsText ?? '—')}
+            disabled={!configAccount} onClick={() => setEditingConfig('symbols')} />
           <div className="flex min-w-0 items-center gap-1.5">
             <HeroConfigItem
               label="算法"
@@ -713,6 +654,18 @@ export function AccountDetail({
           </div>}
         </div>
       </Card>
+      {editingConfig === 'basic' && configAccount && (
+        <AccountBasicDialog accountId={accountId} name={configAccount.name} remark={configAccount.remark}
+          notification={configAccount} onClose={closeConfig} onSaved={saveConfig} />
+      )}
+      {editingConfig === 'leverage' && configAccount && channelDescriptor && (
+        <AccountLeverageDialog accountId={accountId} account={configAccount} channel={channelDescriptor}
+          onClose={closeConfig} onSaved={saveConfig} />
+      )}
+      {editingConfig === 'symbols' && configAccount && (
+        <AccountSymbolsDialog accountId={accountId} account={configAccount}
+          onClose={closeConfig} onSaved={saveConfig} />
+      )}
       <CopyAccountDialog accountId={accountId} name={item.name} isStarted={isStarted} isBusy={isBusy} open={copyOpen} onClose={() => setCopyOpen(false)} />
 
       <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
@@ -909,7 +862,8 @@ export function AccountDetail({
         supplement={account.data?.supplement}
         channelOptions={account.data?.channel_options}
         onClose={() => setTimerOpen(false)}
-        onSaved={() => {
+        onSaved={(updated) => {
+          runtime.acceptSaved(updated.runtime_sync)
           account.refresh()
           nextRun.refresh()
           onDashboardRefresh?.()

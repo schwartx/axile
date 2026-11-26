@@ -228,3 +228,12 @@ def test_capabilities_expose_descriptor_and_runtime_availability() -> None:
     assert capability["portfolio"]["example_symbols"] == ["DEMO"]
     assert capability["available"] is False
     assert capability["missing_packages"] == ["module_that_does_not_exist_for_axile_test"]
+
+
+def test_ctp_broker_example_is_opt_in() -> None:
+    capability = next(item for item in list_channel_capabilities() if item["channel"] == "ctp")
+    fields = {item["name"]: item for item in capability["account_form"]["fields"]}
+
+    assert fields["broker_id"]["placeholder"] == "9999"
+    assert fields["broker_id"]["fillable_placeholder"] is True
+    assert not fields["td_front"].get("fillable_placeholder")

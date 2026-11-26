@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { LoaderCircle, RadioTower } from 'lucide-react'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
-import { ApiError } from '@/lib/api/client'
 import { InkRewrite } from '@/components/ui/InkRewrite'
+import { ApiError } from '@/lib/api/client'
+import { ValidationCardHeader } from '@/features/account/connectionValidation/ValidationCardHeader'
 import { ConnectionValidationSession } from '@/features/account/connectionValidation/connectionValidationSession'
 import { connectionValidationApi, connectionValidationApiForAccount, validationRunning, type ConnectionValidationJob } from '@/lib/api/connectionValidation'
 import { ConnectionProgressView, ConnectionMessage } from '@/features/account/connectionProgress/ConnectionProgressView'
@@ -99,20 +99,10 @@ export function ConnectionValidation({ descriptor, config, accountId }: {
 
   return (
     <section aria-label="账户连接验证" className="rounded-[14px] border border-line bg-surface p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="flex items-center gap-2 text-[15px] font-[620] text-ink-1">
-            <RadioTower size={16} className="shrink-0" aria-hidden="true" />连接验证
-          </h2>
-          <div aria-live="polite" className="mt-1 min-h-[18px] text-[12px]">
-            <InkRewrite tone="prose" text={shownError ? '验证未完成' : summary(shownJob, current && starting)} textClassName={(shownError && requestFailure.local) || shownJob?.status === 'failed' ? 'text-warn' : 'text-ink-3'} />
-          </div>
-        </div>
-        <button type="button" onClick={start} disabled={!enabled || busy} className="relative flex h-[34px] w-[100px] shrink-0 cursor-pointer items-center justify-center rounded-lg bg-ink-1 px-2 text-[13px] font-[550] text-surface transition-opacity duration-200 motion-reduce:transition-none disabled:cursor-not-allowed disabled:opacity-45">
-          {current && starting && <LoaderCircle size={12} className="absolute left-1 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
-          <InkRewrite text={busy ? '验证中…' : shownJob || shownError ? '重新验证' : '验证连接'} />
-        </button>
-      </div>
+      <ValidationCardHeader title="连接验证" status={shownError ? '验证未完成' : summary(shownJob, current && starting)}
+        statusClassName={(shownError && requestFailure.local) || shownJob?.status === 'failed' ? 'text-warn' : 'text-ink-3'}
+        action={busy ? '验证中…' : shownJob || shownError ? '重新验证' : '验证连接'}
+        disabled={!enabled || busy} loading={current && starting} onAction={start} />
       <ConnectionProgressView key={shownJob?.run_id ?? 'pending'} progress={shownJob ?? { status: 'queued', steps }}
         source={shownJob ? { kind: 'validation', validationId: shownJob.validation_id } : undefined} />
       <ErrorNotice intent={shownJob ? "uncertain" : "mutation"} title="连接验证请求失败" error={shownError} contextKey={`${accountId}:${configVersion}`}

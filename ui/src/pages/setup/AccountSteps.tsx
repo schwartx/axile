@@ -1,7 +1,7 @@
 import { FuturesClosePolicyEditor } from '@/features/account/FuturesClosePolicyEditor'
 import { defaultClosePolicy } from '@/features/account/futuresClosePolicy'
 import { useEffect, useRef, useState } from 'react'
-import { Bitcoin, ChartCandlestick, Check, CircleHelp, Landmark, Monitor, RadioTower, type LucideIcon } from 'lucide-react'
+import { Bitcoin, ChartCandlestick, CircleHelp, createLucideIcon, Landmark, Monitor, RadioTower, SquareTerminal, Target, type LucideIcon } from 'lucide-react'
 import { useNavigate } from '@/components/ui/nav'
 import { ConnectionValidationAside } from '@/features/account/connectionValidation/ConnectionValidationAside'
 import { ExecutionTimeoutInput } from '@/features/account/ExecutionTimeoutInput'
@@ -9,15 +9,13 @@ import { executionTimeoutError } from '@/features/account/executionTimeout'
 import { formatDuration } from '@/components/ui/duration'
 import { LeverageInput } from '@/features/account/LeverageInput'
 import { leverageError } from '@/features/account/leverage'
-import { WizardHeading, WizardPage, WizardNav } from '@/features/setup/WizardNav'
+import { WizardHeading, WizardPage, WizardNav, WizardTimerPage } from '@/features/setup/WizardNav'
 import { Segmented } from '@/components/ui/Segmented'
-import { ConditionalReveal } from '@/components/ui/ConditionalReveal'
-import { Skeleton } from '@/components/ui/Skeleton'
-import { WeightBars } from '@/components/viz/WeightBars'
+import { ChannelConditionalReveal } from '@/features/setup/ChannelConditionalReveal'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { ConnectionField } from '@/components/ui/ConnectionField'
 import { CreatePortfolioModal } from '@/features/portfolio/CreatePortfolioModal'
-import { PortfolioChoiceList } from '@/features/portfolio/PortfolioChoiceList'
+import { NoPortfolioButton, PortfolioChoiceList } from '@/features/portfolio/PortfolioChoiceList'
 import { DirectoryPicker } from '@/components/ui/DirectoryPicker'
 import type { ClipboardCandidate } from '@/components/ui/connectionFieldClipboard'
 import {
@@ -25,7 +23,6 @@ import {
   normalizeMoneyValue,
   type ConnectionValidationContext,
 } from '@/components/ui/connectionFieldValue'
-import { refreshPortfolioTargetSnapshot } from '@/lib/api/portfolios'
 import { createAccount } from '@/lib/api/accounts'
 import { useDomainStore } from '@/stores/domain'
 import { useChannelCatalogStore, useChannelDescriptor } from '@/stores/channels'
@@ -33,11 +30,11 @@ import { initialTimerForSchedule, useWizardStore } from '@/stores/wizard'
 import { useToastStore } from '@/stores/ui'
 import { resolveCronList, cronToExpr, describeCron, fmtFire, nextFires } from '@/features/setup/cron'
 import { TimerEditor, type TimerEditorState } from '@/features/setup/TimerEditor'
+import { ACCT_STEPS, SIGNAL_STEPS } from '@/features/setup/steps'
 import { algoLabel, validateAlgorithmRef } from '@/features/setup/algorithms'
 import { AlgorithmEditor } from '@/features/setup/AlgorithmEditor'
 import {
   channelAccountFieldVisible,
-  conditionalRevealFields,
   isConditionalRevealField,
   updateChannelAccountConfig,
   visibleChannelAccountConfig,
@@ -57,10 +54,21 @@ const CHANNEL_ICONS: Record<string, LucideIcon> = {
   landmark: Landmark,
   monitor: Monitor,
   'radio-tower': RadioTower,
+  signal: Target,
 }
 
-function ChannelIcon({ name }: { name: string }) {
-  const Icon = CHANNEL_ICONS[name] ?? CircleHelp
+const CHANNEL_ICON_OVERRIDES: Record<string, LucideIcon> = {
+  gm: SquareTerminal,
+  binance: createLucideIcon('Binance', [['path', {
+    key: 'mark',
+    d: 'M12 2l6.14 6.14-2.27 2.27L12 6.51l-3.87 3.9-2.27-2.27L12 2Zm0 20-6.14-6.14 2.27-2.27 3.87 3.9 3.87-3.9 2.27 2.27L12 22ZM2 12l2.27-2.27L6.54 12l-2.27 2.27L2 12Zm7.73 0L12 9.73 14.27 12 12 14.27 9.73 12Zm7.73 0 2.27-2.27L22 12l-2.27 2.27L17.46 12Z',
+    fill: 'currentColor',
+    stroke: 'none',
+  }]]),
+}
+
+function ChannelIcon({ channel }: { channel: ChannelCapability }) {
+  const Icon = CHANNEL_ICON_OVERRIDES[channel.channel] ?? CHANNEL_ICONS[channel.icon] ?? CircleHelp
   return <Icon aria-hidden="true" className="h-6 w-6" strokeWidth={1.8} />
 }
 
@@ -76,7 +84,7 @@ function channelDraft(channel: ChannelCapability) {
   return {
     channel: channel.channel,
     config: accountConfigDefaults(accountFields(channel)),
-    algorithm: channel.defaults.trade_algorithm,
+    algorithm: channel.defaults.trade_algorithm ?? { method: '', params: {} },
     futuresClosePolicy: defaultClosePolicy(),
     longLeverage: String(channel.defaults.long_leverage),
     shortLeverage: String(channel.defaults.short_leverage),
@@ -107,14 +115,15 @@ export function AcctChannel() {
 
   const selected = channels?.find((channel) => channel.channel === acct.channel)
   const nextDisabled = !selected?.available
+  const steps = selected?.supports_trading === false ? SIGNAL_STEPS : ACCT_STEPS
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex-1 overflow-y-auto">
-        <WizardPage kicker="账户设置 · 1 / 6" title="连接哪个交易所 / 券商？" lead="不同渠道连接方式完全不同——选定后进入对应的连接页。">
-          <div className="grid grid-cols-1 gap-3">
-            {loading && channels === null && <p className="text-[15px] text-ink-2">加载渠道…</p>}
-            <ErrorNotice intent="read" title="渠道目录加载失败" error={channels === null ? error : null} onRetry={refresh} />
+        <WizardPage kicker={`账户设置 · 1 / ${steps.length}`} title="选择账户渠道">
+          {loading && channels === null && <p className="text-[15px] text-ink-2">加载渠道…</p>}
+          <ErrorNotice intent="read" title="渠道目录加载失败" error={channels === null ? error : null} onRetry={refresh} />
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             {channels?.map((ch) => {
               const available = ch.available
               const isSelected = acct.channel === ch.channel
@@ -132,7 +141,7 @@ export function AcctChannel() {
                   onClick={() => available && selectChannel(ch)}
                 >
                   <span className="grid h-11 w-11 flex-none place-items-center rounded-xl bg-fill">
-                    <ChannelIcon name={ch.icon} />
+                    <ChannelIcon channel={ch} />
                   </span>
                   <span>
                     <span className={`block text-[17px] font-[620] ${available ? '' : 'text-ink-3'}`}>{ch.label}</span>
@@ -146,7 +155,7 @@ export function AcctChannel() {
           </div>
         </WizardPage>
       </div>
-      <WizardNav nextTo="/setup/acct/connect" nextDisabled={nextDisabled} />
+      <WizardNav nextTo={steps[1].path} nextDisabled={nextDisabled} />
     </div>
   )
 }
@@ -354,6 +363,7 @@ export function AcctConnect() {
         value={String(value)}
         required={field.required}
         placeholder={field.placeholder}
+        fillablePlaceholder={field.fillable_placeholder}
         help={field.help}
         error={errors[field.name]}
         onChange={(next) => setField(field.name, next === '' ? undefined : next)}
@@ -423,16 +433,13 @@ export function AcctConnect() {
                 >
                   <div className="min-h-0 overflow-hidden">
                     {field.kind === 'select' && field.presentation === 'conditional_reveal' ? (
-                      <ConditionalReveal
-                        label={field.label}
-                        help={field.help}
+                      <ChannelConditionalReveal
+                        field={field}
+                        fields={fields}
                         value={String(value)}
-                        options={field.options ?? []}
                         error={errors[field.name]}
                         onChange={(next) => setField(field.name, next)}
-                        renderPanel={(optionValue) => conditionalRevealFields(fields, field.name, optionValue).map(
-                          (dependentField) => <div key={dependentField.name}>{renderFieldControl(dependentField)}</div>,
-                        )}
+                        renderField={renderFieldControl}
                       />
                     ) : renderFieldControl(field)}
                   </div>
@@ -478,11 +485,7 @@ export function AcctPortfolio() {
       <div className="flex-1 overflow-y-auto">
         <WizardPage kicker="账户设置 · 3 / 6" title="用哪个组合？" lead="选择账户跟随的组合，也可以先跳过，创建账户后再绑定。">
           <div className="mb-3 flex justify-end">
-            <button type="button" aria-pressed={acct.portfolioId == null}
-              onClick={() => setAcct({ portfolioId: null })}
-              className="inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[13px] text-ink-2 hover:bg-fill focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
-              {acct.portfolioId == null && <Check size={14} aria-hidden />}不绑定组合
-            </button>
+            <NoPortfolioButton selected={acct.portfolioId == null} onSelect={() => setAcct({ portfolioId: null })} />
           </div>
           <div className="grid grid-cols-1 gap-3">
             <PortfolioChoiceList selectedId={acct.portfolioId} onSelect={(portfolioId) => setAcct({ portfolioId })} />
@@ -650,48 +653,25 @@ export function AcctTimer() {
     />
   )
 
-  // 与账户编辑定时页同一套 page 布局：标题进左列，预览从标题通高到导航条。
-  // 宽视口撑高度链、两列各自滚；窄视口退回单列，本层滚动、底栏钉住。
   return (
-    <div className="flex h-full min-h-0 flex-col min-[1120px]:overflow-hidden">
-      <div className="min-h-0 flex-1 overflow-y-auto min-[1120px]:overflow-hidden">
-        <div className="mx-auto h-full max-w-[1728px] px-5 pt-8 pb-6 sm:px-12 min-[1120px]:flex min-[1120px]:min-h-0 min-[1120px]:flex-col min-[1120px]:pb-4">
-          {scheduleKind ? (
-            <div className="min-[1120px]:min-h-0 min-[1120px]:flex-1">
-              <TimerEditor
-                tradeChannel={acct.channel}
-                scheduleKind={scheduleKind}
-                nightSchedule={descriptor?.schedule.night}
-                value={timerValue}
-                layout="page"
-                leading={heading}
-                onChange={(next) => {
-                  const v = typeof next === 'function' ? next(timerValue) : next
-                  setAcct({
-                    autoOn: v.autoOn,
-                    presetIds: v.presetIds,
-                    nightOn: v.nightOn,
-                    gm_sessions: v.gm_sessions,
-                    supN: v.supN,
-                    supM: v.supM,
-                    rawCron: v.rawCron,
-                    timerTab: v.timerTab,
-                    scheduleRules: v.scheduleRules,
-                    selectedRuleId: v.selectedRuleId,
-                  })
-                }}
-              />
-            </div>
-          ) : (
-            <>
-              {heading}
-              <p className="mt-[18px] text-[15px] text-ink-2">渠道能力加载中…</p>
-            </>
-          )}
-        </div>
-      </div>
-      <WizardNav prevTo="/setup/acct/trade" nextTo="/setup/acct/confirm" nextDisabled={!scheduleKind} />
-    </div>
+    <WizardTimerPage footer={<WizardNav prevTo="/setup/acct/trade" nextTo="/setup/acct/confirm" nextDisabled={!scheduleKind} />}>
+      {scheduleKind ? (
+        <TimerEditor
+          tradeChannel={acct.channel}
+          scheduleKind={scheduleKind}
+          nightSchedule={descriptor?.schedule.night}
+          value={timerValue}
+          layout="page"
+          leading={heading}
+          onChange={(next) => setAcct(typeof next === 'function' ? next(timerValue) : next)}
+        />
+      ) : (
+        <>
+          {heading}
+          <p className="mt-[18px] text-[15px] text-ink-2">渠道能力加载中…</p>
+        </>
+      )}
+    </WizardTimerPage>
   )
 }
 
@@ -703,9 +683,6 @@ export function AcctConfirm() {
   const descriptor = useChannelDescriptor(acct.channel)
   const scheduleKind = descriptor?.schedule.kind
   const showShortLeverage = descriptor?.ui.show_short_leverage ?? true
-  const [previewState, setPreviewState] = useState<
-    { status: 'idle' | 'loading' } | { status: 'success'; rows: [string, number][] } | { status: 'error'; message: string }
-  >({ status: 'idle' })
   const [createError, setCreateError] = useState<Error | null>(null)
 
   const cronList = scheduleKind ? resolveCronList(scheduleKind, { ...acct, supN: 0 }, descriptor?.schedule.night) : []
@@ -722,21 +699,6 @@ export function AcctConfirm() {
   const levText = showShortLeverage
     ? `做多 ${acct.longLeverage}x / 做空 ${acct.shortLeverage}x`
     : `${descriptor?.ui.long_leverage_label ?? '做多杠杆'} ${acct.longLeverage}`
-
-  const preview = async () => {
-    if (acct.portfolioId == null) {
-      toast('请先绑定组合再试跑')
-      return
-    }
-    try {
-      setPreviewState({ status: 'loading' })
-      const w = (await refreshPortfolioTargetSnapshot(acct.portfolioId)).weights
-      setPreviewState({ status: 'success', rows: Object.entries(w).filter(([, v]) => Math.abs(v) > 1e-9).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])) })
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e)
-      setPreviewState({ status: 'error', message })
-    }
-  }
 
   const submit = async () => {
     setCreateError(null)
@@ -768,7 +730,7 @@ export function AcctConfirm() {
       }
       const account = await createAccount({
         name: acct.name,
-        market: descriptor.portfolio.market_label,
+        market: descriptor.portfolio?.market_label ?? '',
         trade_channel: acct.channel,
         account_control_preset: descriptor.defaults.account_control_preset,
         account_control_override: null,
@@ -805,7 +767,7 @@ export function AcctConfirm() {
   return (
     <div className="flex h-full flex-col">
       <div className="flex-1 overflow-y-auto">
-        <WizardPage kicker="账户设置 · 6 / 6" title={acct.portfolioId == null ? '确认并创建账户' : '确认无误就开跑'}>
+        <WizardPage kicker="账户设置 · 6 / 6" title="确认并创建账户">
           <div className="rounded-2xl bg-ok-soft px-7 py-6 text-[20px] leading-loose">
             这个账户 <b className="font-[680]">{acct.name || '（未命名）'}</b> 在 <b className="font-[680]">{descriptor?.label ?? acct.channel}</b> 上，
             {acct.portfolioId == null ? '暂不绑定组合' : <>绑定组合 <b className="font-[680]">#{acct.portfolioId}</b></>}，用 <b className="font-[680]">{intentText}</b> 的方式，
@@ -819,23 +781,10 @@ export function AcctConfirm() {
               接下来：{scheduleFires.map(fmtFire).join(' · ')}
             </div>
           )}
-
-          <div className="mt-5">
-            <button disabled={acct.portfolioId == null || previewState.status === 'loading'} className="cursor-pointer rounded-[11px] border-0 bg-ink-1 px-[22px] py-2.5 text-[15px] font-[550] text-surface disabled:cursor-not-allowed disabled:opacity-45" onClick={preview}>
-              {previewState.status === 'loading' ? '计算中…' : '▶ 计算目标'}
-            </button>
-            <div className="mt-[18px] max-w-[460px] rounded-[14px] border border-dashed border-line bg-surface p-5">
-              {previewState.status === 'idle' && <div className="py-5 text-center text-[15px] text-ink-3">{acct.portfolioId == null ? '绑定组合后可计算目标持仓' : '试跑看这套组合此刻会调成什么样'}</div>}
-              {previewState.status === 'loading' && <div aria-busy="true"><Skeleton className="h-4 w-full" /><Skeleton className="mt-3 h-4 w-4/5" /><Skeleton className="mt-3 h-4 w-3/5" /></div>}
-              <ErrorNotice intent="mutation" title="试跑失败" error={previewState.status === 'error' ? previewState.message : null} onRetry={preview} />
-              {previewState.status === 'success' && previewState.rows.length === 0 && <div className="py-5 text-center text-[15px] text-ink-3">无目标持仓。</div>}
-              {previewState.status === 'success' && <WeightBars weights={previewState.rows} />}
-            </div>
-          </div>
           <ErrorNotice intent="mutation" title="创建账户失败" error={createError} variant="mutation" onRetry={submit} />
         </WizardPage>
       </div>
-      <WizardNav prevTo="/setup/acct/timer" nextLabel={acct.portfolioId == null ? '创建账户' : '创建并开跑'} onNext={submit} nextDisabled={!acct.name.trim()} />
+      <WizardNav prevTo="/setup/acct/timer" nextLabel="创建账户" onNext={submit} nextDisabled={!acct.name.trim()} />
     </div>
   )
 }

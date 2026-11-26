@@ -24,6 +24,7 @@ export function connectPython(
   onSymbols?: (symbols: DocumentSymbols | null, doc: Text) => void,
   onClient?: (client: LSPClient | null) => void,
   onChecks?: (checks: PythonChecks) => void,
+  skipEmptyChecks = false,
 ) {
   let disposed = false
   let socket: WebSocket | null = null
@@ -46,8 +47,10 @@ export function connectPython(
     const doc = editor.state.doc
     const generation = ++analysisGeneration
     const quickFixCurrent = beginPythonQuickFixRequest(editor)
+    const document = doc.toString()
+    if (skipEmptyChecks && !document.trim()) return []
     const version = documentVersion
-    const initial: PythonChecks = { document: doc.toString(), version, generation, lsp: checkingSource(), contract: checkingSource(), quickFixError: null }
+    const initial: PythonChecks = { document, version, generation, lsp: checkingSource(), contract: checkingSource(), quickFixError: null }
     publishChecks(initial)
     const current = () => !disposed && editor.state.doc === doc && generation === analysisGeneration
     const updateChecks = (patch: Partial<PythonChecks>) => {
@@ -68,7 +71,7 @@ export function connectPython(
       })
       const [tyResult, contractResult] = await Promise.allSettled([
         observe('lsp', tyRead, value => value.items ?? []),
-        observe('contract', checkPythonContract(doc.toString(), kind), value => value.diagnostics),
+        observe('contract', checkPythonContract(document, kind), value => value.diagnostics),
       ])
       if (disposed || editor.state.doc !== doc || generation !== analysisGeneration) return []
       const tyItems = tyResult.status === 'fulfilled' ? tyResult.value.items ?? [] : []

@@ -41,7 +41,7 @@ pub fn asset_snapshot_write(path: &str, request: &Value) -> Result<Value, Analys
     })
 }
 
-fn write_manual_snapshot(
+pub(crate) fn write_manual_snapshot(
     connection: &Connection,
     account_id: i64,
     created_at: &str,

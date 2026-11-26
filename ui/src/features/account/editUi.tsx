@@ -299,6 +299,7 @@ export function EditWorktopBar({
 export function EditSaveBar({
   changes,
   blocked,
+  saveDisabled,
   onCancel,
   onSave,
   saving,
@@ -308,6 +309,7 @@ export function EditSaveBar({
 }: {
   changes: string[]
   blocked?: boolean
+  saveDisabled?: boolean
   onCancel: () => void
   onSave: () => void
   saving?: boolean
@@ -362,7 +364,7 @@ export function EditSaveBar({
               type="button"
               className="w-24 flex-none cursor-pointer rounded-[9px] border-0 bg-ink-1 px-4 py-2 text-[14.5px] font-semibold text-surface disabled:opacity-45"
               onClick={onSave}
-              disabled={blocked || saving || !open}
+              disabled={blocked || saveDisabled || saving || !open}
               tabIndex={open || layout === 'inline' ? 0 : -1}
             >
               <InkRewrite text={saving ? '保存中…' : saveLabel} />

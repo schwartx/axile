@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { CircleHelp, Settings } from 'lucide-react'
 import { CenteredModal } from '@/components/ui/CenteredModal'
 import { Segmented } from '@/components/ui/Segmented'
 import { InkRewrite } from '@/components/ui/InkRewrite'
+import { InputHint } from '@/components/ui/InputHint'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { Toggle } from '@/features/account/editUi'
 import { closePolicySummary, closePriorityLabel } from '@/features/account/futuresClosePolicy'
@@ -31,6 +32,7 @@ export function FuturesClosePolicyEditor({ value, capability, onChange, compact 
   onChange: (value: FuturesClosePolicy) => void
   compact?: boolean
 }) {
+  const searchId = useId()
   const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState(value)
   const [search, setSearch] = useState('')
@@ -91,7 +93,10 @@ export function FuturesClosePolicyEditor({ value, capability, onChange, compact 
           </div>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2">
-          <input aria-label="搜索或添加品种" placeholder="搜索品种或交易所，例如 AG" value={search} onChange={(e) => { setSearch(e.target.value); setError('') }} className="min-w-0 flex-1 basis-[180px] rounded-lg border border-line bg-transparent px-3 py-1.5 text-sm" />
+          <div className="relative min-w-0 flex-1 basis-[180px]">
+            <input id={searchId} aria-label="搜索或添加品种" value={search} onChange={(e) => { setSearch(e.target.value); setError('') }} className="w-full rounded-lg border border-line bg-transparent px-3 py-1.5 text-sm" />
+            <InputHint inputId={searchId} value={search} suggestion="AG" onFill={(value) => { setSearch(value); setError('') }} className="left-[13px] text-sm" />
+          </div>
           <button type="button" className="shrink-0 cursor-pointer text-[13px] text-accent" onClick={add}>添加品种</button>
           <button type="button" className="shrink-0 cursor-pointer text-[13px] text-accent disabled:cursor-default disabled:text-ink-3" disabled={!Object.keys(draft.overrides).length && lockable.every((p) => (draft.avoid_close_today ?? lockable).includes(p))} onClick={() => setDraft((d) => ({ ...d, overrides: {}, avoid_close_today: [...lockable].sort() }))}>恢复全部预设</button>
         </div>

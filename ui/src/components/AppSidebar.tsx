@@ -1,15 +1,21 @@
+import { SIGNAL_CHANNEL } from '@/features/signal/signalData'
 import { useEffect, useLayoutEffect, useRef, useState, type ComponentType, type CSSProperties, type ReactNode, type RefObject } from 'react'
-import { useLocation } from 'react-router'
+import { matchPath, useLocation } from 'react-router'
 import {
   BellRing,
-  Boxes,
-  CircleGauge,
+  CircleUserRound,
+  FolderPlus,
+  Layers,
   Settings2,
+  UserRoundPlus,
+  Wallet,
   X,
 } from 'lucide-react'
 import { Link } from '@/components/ui/nav'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { EdgeScrollHint } from '@/components/ui/EdgeScrollHint'
+import { ResizeHandle } from '@/components/ui/ResizeHandle'
+import { Tooltip } from '@/components/ui/Tooltip'
 import { useScrollEdges } from '@/hooks/useScrollEdges'
 import { channelLabel } from '@/features/dashboard/display'
 import { useDomainStore } from '@/stores/domain'
@@ -23,6 +29,38 @@ interface NavItemSpec {
 }
 
 const activeMarkerStyle: CSSProperties = { viewTransitionName: 'app-nav-selection' }
+const SIDEBAR_WIDTH_KEY = 'axon.sidebarWidth'
+const DEFAULT_WIDTH = 184
+const MIN_WIDTH = 160
+const MAX_WIDTH = 320
+const RAIL_WIDTH = 56
+const RAIL_LINK = 'relative grid size-9 shrink-0 cursor-pointer place-items-center rounded-full hover:bg-fill hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-accent'
+const RAIL_ACTIVE = 'bg-fill text-ink-1'
+const ACCOUNT_POPOVER_ID = 'sidebar-account-navigation'
+
+type RailItem = NavItemSpec & { icon: NonNullable<NavItemSpec['icon']>; to: string }
+const MAIN_NAV: RailItem[] = [
+  { label: '所有账户', icon: Wallet, to: '/', active: pathname => pathname === '/' },
+  { label: '所有组合', icon: Layers, to: '/portfolios', active: pathname => pathname.startsWith('/portfolios') },
+]
+const SETTINGS_NAV: RailItem[] = [
+  { label: '系统告警', icon: BellRing, to: '/settings', active: pathname => pathname === '/settings' || pathname === '/settings/notification' },
+  { label: '高级设置', icon: Settings2, to: '/settings/advanced', active: pathname => pathname === '/settings/advanced' },
+]
+const CREATE_NAV: RailItem[] = [
+  { label: '新建账户', icon: UserRoundPlus, to: '/setup/acct/channel', active: () => false },
+  { label: '新建组合', icon: FolderPlus, to: '/portfolios?new=1', active: () => false },
+]
+
+function clampSidebarWidth(width: number): number {
+  return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Math.round(width)))
+}
+
+function initialSidebarWidth(): number {
+  if (typeof window === 'undefined') return DEFAULT_WIDTH
+  const width = Number.parseInt(window.localStorage.getItem(SIDEBAR_WIDTH_KEY) ?? '', 10)
+  return Number.isFinite(width) ? clampSidebarWidth(width) : DEFAULT_WIDTH
+}
 
 function accountIdFromPath(pathname: string): number | null {
   const matched = pathname.match(/^\/accounts\/(\d+)(?:\/|$)/)
@@ -60,16 +98,11 @@ function NavSection({
 type SettingsMovePhase = 'idle' | 'leaving' | 'placed' | 'entering'
 
 function GlobalSettingsNav({ phase, dense }: { phase: SettingsMovePhase; dense: boolean }) {
-  const exact = (to: string) => (pathname: string) => pathname === to
   const hidden = phase === 'leaving' || phase === 'placed'
-  const items: NavItemSpec[] = [
-    { label: '系统告警', icon: BellRing, to: '/settings', active: (pathname) => pathname === '/settings' || pathname === '/settings/notification' },
-    { label: '高级设置', icon: Settings2, to: '/settings/advanced', active: exact('/settings/advanced') },
-  ]
 
   return (
     <div aria-hidden={hidden ? true : undefined}>
-      {items.map((item, index) => (
+      {SETTINGS_NAV.map((item, index) => (
         <div
           key={item.label}
           className={`sidebar-setting-row ${dense ? 'sidebar-setting-row-dense' : ''} ${hidden ? 'sidebar-setting-row-hidden' : ''}`}
@@ -85,9 +118,69 @@ function GlobalSettingsNav({ phase, dense }: { phase: SettingsMovePhase; dense: 
   )
 }
 
+function RailLink({ item }: { item: RailItem }) {
+  const { pathname, hash } = useLocation()
+  const active = item.active(pathname, hash)
+  const Icon = item.icon
+  return <Tooltip content={item.label}>
+    <Link to={item.to} aria-label={item.label} aria-current={active ? 'page' : undefined}
+      className={`${RAIL_LINK} ${active ? RAIL_ACTIVE : 'text-ink-2'}`}>
+      <Icon size={18} aria-hidden />
+    </Link>
+  </Tooltip>
+}
+
+function SidebarRail({ accountName, accountLinks }: { accountName: string | null; accountLinks: ReactNode }) {
+  const location = useLocation()
+  const trigger = useRef<HTMLButtonElement>(null)
+  const panel = useRef<HTMLDivElement>(null)
+  const placeAccountPanel = () => {
+    const button = trigger.current
+    const menu = panel.current
+    if (!button || !menu || !menu.matches(':popover-open')) return
+    if (!button.getClientRects().length) {
+      menu.hidePopover()
+      return
+    }
+    const anchor = button.getBoundingClientRect()
+    menu.style.top = `${Math.max(8, Math.min(anchor.top, window.innerHeight - menu.offsetHeight - 8))}px`
+  }
+  useEffect(() => { panel.current?.hidePopover() }, [location.key, accountName])
+  useEffect(() => {
+    window.addEventListener('resize', placeAccountPanel)
+    return () => window.removeEventListener('resize', placeAccountPanel)
+  }, [])
+  const accountActive = accountIdFromPath(location.pathname) != null
+
+  return <nav aria-label="功能导航" className="hidden min-h-0 flex-1 flex-col items-center gap-2 overflow-y-auto py-0.5 md:flex">
+    {MAIN_NAV.map(item => <RailLink key={item.label} item={item} />)}
+    {SETTINGS_NAV.map(item => <RailLink key={item.label} item={item} />)}
+    {accountName !== null && <>
+      <div className="my-1 w-6 shrink-0 border-t border-line" aria-hidden />
+      <Tooltip content={`当前账户 · ${accountName}`}>
+        <button ref={trigger} type="button" popoverTarget={ACCOUNT_POPOVER_ID} aria-label={`当前账户 · ${accountName}`}
+          aria-current={accountActive ? 'location' : undefined}
+          className={`${RAIL_LINK} ${accountActive ? RAIL_ACTIVE : 'text-ink-2'}`}>
+          <CircleUserRound size={18} aria-hidden />
+        </button>
+      </Tooltip>
+      <div id={ACCOUNT_POPOVER_ID} ref={panel} popover="auto" onToggle={placeAccountPanel}
+        className="fixed inset-auto left-16 m-0 max-h-[calc(100dvh-1rem)] w-60 overflow-y-auto rounded-xl border border-line bg-surface p-2 text-ink-1 shadow-[0_12px_32px_rgba(0,0,0,0.16)]">
+        <div className="mb-1 border-b border-line px-2.5 pt-1 pb-2 text-sm font-semibold break-words">{accountName}</div>
+        {accountLinks}
+      </div>
+    </>}
+    <div className="mt-auto flex flex-col items-center gap-2 pt-2">
+      {CREATE_NAV.map(item => <RailLink key={item.label} item={item} />)}
+    </div>
+  </nav>
+}
+
 function NavItem({ item, dense = false }: { item: NavItemSpec; dense?: boolean }) {
   const location = useLocation()
   const active = item.active(location.pathname, location.hash)
+  const editRoot = matchPath('/accounts/:id/edit/*', location.pathname)?.pathnameBase
+  const sameAccountSettings = !!editRoot && (item.to === editRoot || item.to?.startsWith(`${editRoot}/`))
   const Icon = item.icon
   const content = (
     <>
@@ -113,6 +206,7 @@ function NavItem({ item, dense = false }: { item: NavItemSpec; dense?: boolean }
   return (
     <Link
       to={item.to}
+      viewTransition={!sameAccountSettings}
       aria-current={active ? 'page' : undefined}
       className={`relative flex items-center gap-2 px-2.5 text-[14px] transition-[height,color] duration-200 motion-reduce:transition-none ${dense ? 'h-[30px]' : 'h-8.5'} ${
         active ? 'font-[550] text-ink-1' : 'text-ink-2 hover:text-ink-1'
@@ -125,10 +219,12 @@ function NavItem({ item, dense = false }: { item: NavItemSpec; dense?: boolean }
 
 /** 悬浮式常驻导航：层级只表达归属，每个二级入口均直接抵达最终页面。 */
 export function AppSidebar({
+  desktopCollapsed = false,
   mobileOpen = false,
   navigationTriggerRef,
   onClose,
 }: {
+  desktopCollapsed?: boolean
   mobileOpen?: boolean
   navigationTriggerRef?: RefObject<HTMLButtonElement | null>
   onClose?: () => void
@@ -139,6 +235,13 @@ export function AppSidebar({
   const setActiveAccountId = useNavigationStore((state) => state.setActiveAccountId)
   const setSidebarCompact = useNavigationStore((state) => state.setSidebarCompact)
   const routeAccountId = accountIdFromPath(location.pathname)
+  const sidebarRef = useRef<HTMLElement>(null)
+  const [width, setWidth] = useState(initialSidebarWidth)
+  const [dragWidth, setDragWidth] = useState<number | null>(null)
+  const saveWidth = (next: number) => {
+    setWidth(next)
+    window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(next))
+  }
 
   useEffect(() => {
     if (!accounts) return
@@ -193,7 +296,7 @@ export function AppSidebar({
   }, [mobileOpen, onClose])
 
   useLayoutEffect(() => {
-    if (!scrollEdges.measured || movingSettings.current) return
+    if (!scrollEdges.measured || scrollEdges.clientHeight === 0 || movingSettings.current) return
     const shouldCompact = denseNavRef.current
       ? scrollEdges.clientHeight < naturalNavHeight.current - 1
       : scrollEdges.overflowing
@@ -243,21 +346,23 @@ export function AppSidebar({
   }, [setSidebarCompact])
 
   // 账户段条目不带图标：归属已由「身份块头 + 左缘线 + 缩进」表达，段内保持素净。
+  const signalAccount = activeAccount?.trade_channel === SIGNAL_CHANNEL
   const accountOverview: NavItemSpec[] = [
     { label: '账户概览', to: accountPath(), active: exact(accountPath()) },
-    { label: '持仓明细', to: accountPath('/holdings'), active: exact(accountPath('/holdings')) },
-    {
-      label: '执行记录',
-      to: accountPath('/executions'),
-      active: (pathname) => pathname === accountPath('/executions') || pathname.startsWith(`${accountPath('/executions')}/`),
-    },
-    { label: '实盘绩效', to: accountPath('/history'), active: exact(accountPath('/history')) },
+    ...(signalAccount ? [
+      { label: '信号记录', to: accountPath('/signals'), active: exact(accountPath('/signals')) },
+    ] : [
+      { label: '持仓明细', to: accountPath('/holdings'), active: exact(accountPath('/holdings')) },
+      {
+        label: '执行记录',
+        to: accountPath('/executions'),
+        active: (pathname: string) => pathname === accountPath('/executions') || pathname.startsWith(`${accountPath('/executions')}/`),
+      },
+      { label: '实盘绩效', to: accountPath('/history'), active: exact(accountPath('/history')) },
+    ]),
   ]
   const accountParameters: NavItemSpec[] = [
-    { label: '基本信息', to: accountPath('/edit'), active: exact(accountPath('/edit')) },
     { label: '连接设置', to: accountPath('/edit/connection'), active: exact(accountPath('/edit/connection')) },
-    { label: '杠杆设置', to: accountPath('/edit/leverage'), active: exact(accountPath('/edit/leverage')) },
-    { label: '品种控制', to: accountPath('/edit/symbols'), active: exact(accountPath('/edit/symbols')) },
   ]
   const accountExecution: NavItemSpec[] = [
     { label: '定时任务', to: accountPath('/edit/timer'), active: exact(accountPath('/edit/timer')) },
@@ -265,6 +370,22 @@ export function AppSidebar({
     { label: '执行流控', to: accountPath('/edit/control'), active: exact(accountPath('/edit/control')) },
     { label: '绑定组合', to: accountPath('/edit/portfolio'), active: exact(accountPath('/edit/portfolio')) },
   ]
+  const accountLinks = <>
+    <div>{accountOverview.map(item => <NavItem key={item.label} item={item} dense={denseNav} />)}</div>
+    {signalAccount ? <NavSection compact dense={denseNav} label="设置">
+      <NavItem item={{ label: '行情设置', to: accountPath('/edit/quotes'), active: exact(accountPath('/edit/quotes')) }} dense={denseNav} />
+      <NavItem item={{ label: '资金与持仓', to: accountPath('/edit/assets'), active: exact(accountPath('/edit/assets')) }} dense={denseNav} />
+      <NavItem item={accountExecution[0]} dense={denseNav} />
+      <NavItem item={accountExecution[3]} dense={denseNav} />
+    </NavSection> : <>
+      <NavSection compact dense={denseNav} label="参数">
+        {accountParameters.map(item => <NavItem key={item.label} item={item} dense={denseNav} />)}
+      </NavSection>
+      <NavSection compact dense={denseNav} label="执行">
+        {accountExecution.map(item => <NavItem key={item.label} item={item} dense={denseNav} />)}
+      </NavSection>
+    </>}
+  </>
 
   return (
     <>
@@ -278,7 +399,14 @@ export function AppSidebar({
         }`}
       />
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-[184px] flex-none flex-col border-r border-line bg-surface py-3.5 pr-2.5 pl-3 transition-transform duration-200 motion-reduce:transition-none md:static md:z-auto md:translate-x-0 ${
+        ref={sidebarRef}
+        style={{
+          '--sidebar-width': `${desktopCollapsed ? RAIL_WIDTH : (dragWidth ?? width)}px`,
+          '--sidebar-expanded-width': `${dragWidth ?? width}px`,
+        } as CSSProperties}
+        className={`fixed inset-y-0 left-0 z-40 flex w-[184px] flex-none flex-col border-r border-line bg-surface py-3.5 pr-2.5 pl-3 duration-200 motion-reduce:transition-none md:relative md:z-10 md:w-[var(--sidebar-width)] md:translate-x-0 ${
+          dragWidth == null ? 'transition-[width,transform]' : 'transition-transform'
+        } ${desktopCollapsed ? 'md:px-1' : 'md:border-r-0'} ${
           mobileOpen ? 'visible translate-x-0' : 'invisible -translate-x-full md:visible'
         }`}
         aria-label="主导航"
@@ -289,12 +417,14 @@ export function AppSidebar({
           <X size={18} aria-hidden />
         </button>
       </div>
+      {desktopCollapsed && <SidebarRail accountName={accountId == null ? null : activeAccount?.name ?? '当前账户'} accountLinks={accountLinks} />}
+      <div id="desktop-account-navigation" className={`flex min-h-0 flex-1 overflow-clip ${desktopCollapsed ? 'md:hidden' : ''}`}>
+      <div className="flex min-h-0 w-full flex-none flex-col md:w-[calc(var(--sidebar-expanded-width)-1.375rem)]">
       <div className="relative flex min-h-0 flex-1 flex-col">
-        <nav ref={navRef} className="quiet-scrollbar min-h-0 flex-1 overflow-y-auto pb-2" aria-label="功能导航">
+        <nav ref={navRef} className="quiet-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-2" aria-label="功能导航">
           <div className="flex min-h-full flex-col justify-between">
             <div>
-              <NavItem dense={denseNav} item={{ label: '所有账户', icon: CircleGauge, to: '/', active: (pathname) => pathname === '/' }} />
-              <NavItem dense={denseNav} item={{ label: '所有组合', icon: Boxes, to: '/portfolios', active: (pathname) => pathname.startsWith('/portfolios') }} />
+              {MAIN_NAV.map(item => <NavItem key={item.label} item={item} dense={denseNav} />)}
               {!settingsAtBottom && <GlobalSettingsNav phase={settingsMovePhase} dense={denseNav} />}
 
               {/* 横线分割：顶层（全局与系统设置）与账户段各自成块。 */}
@@ -315,20 +445,12 @@ export function AppSidebar({
                       text={activeAccount?.name ?? '当前账户'}
                     />
                     {activeAccount && (
-                      <span className="flex-none rounded-chip bg-fill px-1.5 py-px text-[11.5px] text-ink-2">
+                      <span className="max-w-[65%] shrink-0 truncate rounded-chip bg-fill px-1.5 py-px text-[11.5px] text-ink-2">
                         {channelLabel(activeAccount.trade_channel, activeAccount.market)}
                       </span>
                     )}
                   </div>
-                  <div>
-                    {accountOverview.map((item) => <NavItem key={item.label} item={item} dense={denseNav} />)}
-                  </div>
-                  <NavSection compact dense={denseNav} label="参数">
-                    {accountParameters.map((item) => <NavItem key={item.label} item={item} dense={denseNav} />)}
-                  </NavSection>
-                  <NavSection compact dense={denseNav} label="执行">
-                    {accountExecution.map((item) => <NavItem key={item.label} item={item} dense={denseNav} />)}
-                  </NavSection>
+                  {accountLinks}
                 </div>
               )}
               {settingsAtBottom && (
@@ -346,14 +468,21 @@ export function AppSidebar({
 
       <div className="mt-3 border-t border-line pt-3">
         <div className="grid grid-cols-2 gap-1.5">
-          <Link to="/setup/acct/channel" className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-chip border border-line px-2 py-1.5 text-[13px] text-ink-2 hover:border-border-strong hover:text-ink-1">
-            新建账户
-          </Link>
-          <Link to="/portfolios?new=1" className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-chip border border-line px-2 py-1.5 text-[13px] text-ink-2 hover:border-border-strong hover:text-ink-1">
-            新建组合
-          </Link>
+          {CREATE_NAV.map(item => <Link key={item.label} to={item.to}
+            className="flex items-center justify-center whitespace-nowrap rounded-chip border border-line px-1.5 py-1.5 text-[13px] text-ink-2 hover:border-border-strong hover:text-ink-1">
+            {item.label}
+          </Link>)}
         </div>
       </div>
+      </div>
+      </div>
+      {!desktopCollapsed && <ResizeHandle orientation="vertical" aria-label="调整侧栏宽度"
+        aria-valuetext={`${dragWidth ?? width} 像素`} value={dragWidth ?? width} min={MIN_WIDTH} max={MAX_WIDTH} step={8}
+        title="左右拖动调整宽度 · 双击恢复默认" showGrip={false}
+        className="absolute inset-y-0 -right-1 z-10 hidden w-2 md:block"
+        valueAt={position => clampSidebarWidth(position - (sidebarRef.current?.getBoundingClientRect().left ?? 0))}
+        onChange={setDragWidth} onCommit={saveWidth} onReset={() => saveWidth(DEFAULT_WIDTH)}
+        onResizeChange={resizing => { if (!resizing) setDragWidth(null) }} />}
       </aside>
     </>
   )

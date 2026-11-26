@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AccountAssetSnapshot } from '@/types/api'
+import type { AccountAssetSnapshot, TradeChannel } from '@/types/api'
 import { refreshAccountAssets } from '@/lib/api/accounts'
 import { useAccountConnection } from '@/stores/liveConnection'
 
 const requests = new Map<number, Promise<AccountAssetSnapshot>>()
 
-/** 会话就绪后刷新一次资产；断开时只保留已存快照，不发起连接或查询。 */
-export function useConnectedAssets(accountId: number, onSaved: () => void) {
-  const ready = useAccountConnection(accountId).status === 'ready'
+/** 页面会话就绪后，自动刷新 CTP 以外的账户资产。 */
+export function useConnectedAssets(accountId: number, tradeChannel: TradeChannel | undefined, onSaved: () => void) {
+  const connection = useAccountConnection(accountId)
+  const ready = connection.status === 'ready' && tradeChannel !== undefined && tradeChannel !== 'ctp'
   const saved = useRef(onSaved)
   saved.current = onSaved
   const [state, setState] = useState<{ accountId: number; refreshing: boolean; error: unknown }>({ accountId, refreshing: false, error: null })

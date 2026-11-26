@@ -8,6 +8,7 @@ from apscheduler.job import Job  # type: ignore[import-not-found]
 from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-not-found]
 
 from axile.channels.gm_sessions import GMSessionSettings, gm_phase, gm_session_context
+from axile.channels.rebalance_signal import SIGNAL_CHANNEL, signal_market_descriptor
 from axile.common.serialization import copy_data, to_payload
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.server.core.log_config import execution_log_context
@@ -52,10 +53,12 @@ async def execute_scheduled_rebalance(account_id: int, scheduled_at: str | None 
     if account is None or not account["is_started"] or is_blank_cron_expr(account["cron_expr"]):
         return
     channel = account["trade_channel"]
-
     try:
+        calendar_channel = signal_market_descriptor(account["market"]).channel if channel == SIGNAL_CHANNEL else channel
         sessions = GMSessionSettings.from_channel_options(account["channel_options"])
-        decision = evaluate_channel_calendar_moment(channel, triggered_at, windows=schedule_windows(channel, sessions))
+        decision = evaluate_channel_calendar_moment(
+            calendar_channel, triggered_at, windows=schedule_windows(calendar_channel, sessions)
+        )
     except Exception:  # noqa: BLE001 - 调度层日历故障必须 fail-closed
         loguru.logger.bind(account_id=account_id, channel=str(channel)).exception("交易日历判断失败，跳过排程")
         decision = None
@@ -94,6 +97,12 @@ async def execute_scheduled_rebalance(account_id: int, scheduled_at: str | None 
         except Exception:  # noqa: BLE001 - 审计写入失败不能改变休市决策
             account_logger.exception("休市跳过记录写入失败")
         account_logger.info("排程跳过", reason_code=reason_code)
+        return
+
+    if channel == SIGNAL_CHANNEL:
+        from axile.server.signal_service import run_scheduled_signal
+
+        await run_scheduled_signal(account_id, triggered_at)
         return
 
     if account["supplement"] is not None:
@@ -178,13 +187,13 @@ async def create_job(
             return
 
     try:
-        if getattr(account, "supplement", None) or str(account.trade_channel) == "gm":
+        if getattr(account, "supplement", None) or account.trade_channel in {"gm", SIGNAL_CHANNEL}:
             _install_supplement_listener(sched)
         trigger = combine_cron_triggers(triggers)
         next_run_time = trigger.get_next_fire_time(None, clock_now(tz=SCHEDULER_TIMEZONE))  # type: ignore[no-untyped-call]
         sched.add_job(  # type: ignore[no-untyped-call]
             func=_scheduled_signal
-            if (getattr(account, "supplement", None) or str(account.trade_channel) == "gm")
+            if (getattr(account, "supplement", None) or account.trade_channel in {"gm", SIGNAL_CHANNEL})
             else execute_scheduled_rebalance,
             args=[account.id],
             trigger=trigger,

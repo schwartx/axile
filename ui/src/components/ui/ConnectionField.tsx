@@ -3,7 +3,7 @@ import { forwardRef, useCallback, useId, useRef, type KeyboardEvent } from 'reac
 import { ConnectionFieldCandidates } from '@/components/ui/ConnectionFieldCandidates'
 import { ConnectionFieldInput } from '@/components/ui/ConnectionFieldInput'
 import type { ClipboardCandidate, ClipboardParseContext } from '@/components/ui/connectionFieldClipboard'
-import type { ConnectionFieldKind } from '@/components/ui/connectionFieldValue'
+import { connectionValueError, type ConnectionFieldKind } from '@/components/ui/connectionFieldValue'
 import { useConnectionFieldClipboard } from '@/components/ui/useConnectionFieldClipboard'
 import type { ChannelAccountFieldClipboard, ChannelAccountFieldConstraints } from '@/types/api'
 
@@ -12,8 +12,10 @@ export interface ConnectionFieldProps {
   value: string
   kind: ConnectionFieldKind
   placeholder?: string
+  fillablePlaceholder?: boolean
   required?: boolean
   help?: string
+  valueHint?: string
   error?: string | null
   clipboard?: ChannelAccountFieldClipboard | null
   constraints?: ChannelAccountFieldConstraints | null
@@ -39,8 +41,10 @@ export const ConnectionField = forwardRef<HTMLInputElement, ConnectionFieldProps
     value,
     kind,
     placeholder,
+    fillablePlaceholder,
     required = false,
     help,
+    valueHint,
     error,
     clipboard,
     constraints,
@@ -57,6 +61,10 @@ export const ConnectionField = forwardRef<HTMLInputElement, ConnectionFieldProps
   const inputRef = useRef<HTMLInputElement | null>(null)
   const anchorRef = useRef<HTMLButtonElement | null>(null)
   const context: ClipboardParseContext = { kind, fieldLabel: label, placeholder, clipboard, constraints }
+  const suggestion = placeholder && (fillablePlaceholder || (
+    (kind === 'endpoint' || kind === 'directory')
+    && !connectionValueError({ kind, value: placeholder, label, constraints, required: true })
+  )) ? placeholder : undefined
   const {
     activeCandidate,
     candidates,
@@ -133,8 +141,10 @@ export const ConnectionField = forwardRef<HTMLInputElement, ConnectionFieldProps
         value={value}
         kind={kind}
         placeholder={placeholder}
+        suggestion={suggestion}
         required={required}
         help={help}
+        valueHint={valueHint}
         message={message}
         pasteLabel={clipboardAction(kind, label)}
         popupOpen={popupOpen}

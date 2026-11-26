@@ -586,6 +586,13 @@ fn supplement_history(
 pub fn preview(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let account_id = id(request, "account_id")?;
     crate::with_read_snapshot(Path::new(path), |connection| {
+        if let Some(signal) = connection.query_row(
+            "SELECT context FROM notification_event WHERE account_id=?1 AND event_type='signal.calculated' ORDER BY sequence DESC LIMIT 1",
+            [account_id], |row| row.get::<_, String>(0),
+        ).optional().map_err(database)? {
+            let context: Value = crate::json_codec::parse(&signal).map_err(invalid)?;
+            return Ok(json!({"record":null,"context":context}));
+        }
         let record = connection.query_row("SELECT id,execution_id,created_at_us FROM executerecord WHERE account_id=?1 AND result_staged=0 ORDER BY id DESC LIMIT 1",[account_id],|row| Ok(json!({"id":row.get::<_,i64>(0)?,"execution_id":row.get::<_,Option<String>>(1)?,"created_at":crate::time_us::read(row, 2)?}))).optional().map_err(database)?;
         let Some(record) = record else {
             return Ok(Value::Null);
@@ -641,6 +648,64 @@ pub fn preview(path: &str, request: &Value) -> Result<Value, AnalysisError> {
         let mut preview = json!({"record":record,"context":null});
         preview["context"] = context;
         Ok(preview)
+    })
+}
+
+pub fn signal_records(path: &str, request: &Value) -> Result<Value, AnalysisError> {
+    let account_id = id(request, "account_id")?;
+    let limit = id(request, "limit")?.min(100) as usize;
+    let before = request["before"].as_i64();
+    let since = optional_text(request, "since")?
+        .map(crate::time_us::parse)
+        .transpose()
+        .map_err(invalid)?;
+    let status = optional_text(request, "status")?;
+    let symbol = optional_text(request, "symbol")?;
+    crate::with_read_snapshot(Path::new(path), |connection| {
+        let mut statement = connection
+            .prepare(&format!(
+                "SELECT {EVENT_COLUMNS} FROM notification_event
+                WHERE account_id=?1 AND event_type='signal.calculated'
+                AND (?2 IS NULL OR sequence<?2) AND (?3 IS NULL OR created_at_us>=?3)
+                AND (?4 IS NULL OR json_extract(context,'$.execution.status')=?4)
+                AND (?5 IS NULL OR EXISTS (
+                    SELECT 1 FROM json_each(context,'$.targets.target_volume')
+                    WHERE instr(lower(key),lower(?5))>0
+                ))
+                ORDER BY sequence DESC LIMIT ?6"
+            ))
+            .map_err(database)?;
+        let mut rows = statement
+            .query(params![
+                account_id,
+                before,
+                since,
+                status,
+                symbol,
+                limit + 1
+            ])
+            .map_err(database)?;
+        let mut records = Vec::new();
+        let mut cursor = Value::Null;
+        let mut has_more = false;
+        while let Some(row) = rows.next().map_err(database)? {
+            if records.len() == limit {
+                has_more = true;
+                break;
+            }
+            let event = event_row(row).map_err(database)?;
+            let context = &event["context"];
+            cursor = event["sequence"].clone();
+            records.push(json!({
+                "id": event["id"], "created_at": event["created_at"],
+                "trigger_source": context["execution"]["trigger_source"],
+                "status": context["execution"]["status"], "error": context["execution"]["error"],
+                "scheduled_at": context["scheduled_at"], "quantity_unit": context["quantity_unit"],
+                "targets": context["targets"]["target_volume"],
+                "notification_status": event["status"], "notification_error": event["error"],
+            }));
+        }
+        Ok(json!({"items": records, "next_cursor": if has_more { cursor } else { Value::Null }}))
     })
 }
 

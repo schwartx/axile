@@ -54,7 +54,7 @@ export function getChannelForMarket(market: string | null | undefined): TradeCha
     .channels?.find(
       (channel) =>
         channel.available &&
-        (channel.market === market || channel.portfolio.market_label === market),
+        (channel.market === market || channel.portfolio?.market_label === market),
     )?.channel
 }
 
