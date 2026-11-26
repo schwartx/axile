@@ -1366,12 +1366,12 @@ class OrderTracker:
                 price = _chase_price(latest_price, direction)
                 if price <= 0 or not isfinite(order.price):
                     continue
-                # 与重挂使用同侧盘口，精确区分刚好到达阈值与超过阈值。
+                # 用十进制比较，避免浮点误差漏掉恰好达到阈值的报价。
                 best_price = Decimal(str(price))
                 order_price = Decimal(str(order.price))
                 tick_size = self._get_tick_size(symbol, order.price)
                 price_diff = best_price - order_price if direction == OrderDirection.BUY else order_price - best_price
-                if price_diff > self.chase_config.ticks * Decimal(str(tick_size)):
+                if price_diff >= self.chase_config.ticks * Decimal(str(tick_size)):
                     result.append((order_id, order, info))
 
         return result

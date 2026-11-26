@@ -317,8 +317,19 @@ def test_passive_order_at_best_bid_does_not_chase_on_wide_spread() -> None:
     assert tracker._get_orders_needing_chase() == []
 
 
-@pytest.mark.parametrize(("price", "should_chase"), [(1.724, False), (1.723, True), (float("nan"), False)])
-def test_gm_chase_requires_more_than_one_price_tick(monkeypatch, price, should_chase):
+@pytest.mark.parametrize(
+    ("direction", "price", "should_chase"),
+    [
+        (OrderDirection.BUY, 1.725, False),
+        (OrderDirection.BUY, 1.724, True),
+        (OrderDirection.BUY, 1.723, True),
+        (OrderDirection.BUY, float("nan"), False),
+        (OrderDirection.SELL, 1.726, False),
+        (OrderDirection.SELL, 1.727, True),
+        (OrderDirection.SELL, 1.728, True),
+    ],
+)
+def test_chase_triggers_at_one_price_tick(monkeypatch, direction, price, should_chase):
     executor = _ChaseExecutor()
     monkeypatch.setattr(executor, "get_tick_size", lambda: 0.001)
     clock = ClockStub()
@@ -328,8 +339,8 @@ def test_gm_chase_requires_more_than_one_price_tick(monkeypatch, price, should_c
         clock=clock,
         chase_config=ChaseConfig(enabled=True, ticks=1, interval=0),
     )
-    order = _build_pending_order("etf-bid", "159981.SZ")
-    tracker.add_order(order, direction=OrderDirection.BUY)
+    order = copy_data(_build_pending_order("etf-order", "159981.SZ"), update={"direction": direction})
+    tracker.add_order(order, direction=direction)
     tracker.on_order_update(copy_data(order, update={"price": price}))
     tracker.latest_prices[order.symbol] = UnifiedPriceData(
         symbol=order.symbol,
