@@ -20,7 +20,6 @@ import { schedulePreviewItemPresentation } from '@/features/setup/previewTimelin
 import {
   DEFAULT_PRESET,
   PRESETS,
-  cronExprEqual,
   gmTimerSessions,
   type GMSessions,
   defaultTimerEditorState,
@@ -34,8 +33,9 @@ import {
   type ScheduleKind,
   type TimerEditorState,
 } from '@/features/setup/cron'
-import { previewSchedule, updateAccount, type SchedulePreview } from '@/lib/api/accounts'
+import { previewSchedule, type SchedulePreview } from '@/lib/api/accounts'
 import { useToastStore } from '@/stores/ui'
+import { timerSettingsChange, useTimerSave } from '@/features/setup/timerSettings'
 import { SIGNAL_CHANNEL } from '@/features/signal/signalData'
 import { useChannelDescriptor } from '@/stores/channels'
 
@@ -117,7 +117,7 @@ export interface TimerQuickModalProps {
   channelOptions: Account['channel_options'] | undefined
   onClose: () => void
   /** 保存成功后刷新详情 / next_run / 仪表盘。 */
-  onSaved: () => void
+  onSaved: (updated: Account) => void
 }
 
 /**
@@ -148,8 +148,7 @@ function TimerQuickModalReady({
   // 开关切到「开」的那一帧才播入场；初次以开挂载不播（首帧就位）。
   const autoOnFade = useRemountFade(state.autoOn)
   const [fromComplex, setFromComplex] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const [saveError, setSaveError] = useState<Error | null>(null)
+  const { saving, error: saveError, setError: setSaveError, save: saveSettings } = useTimerSave(accountId)
   const [preview, setPreview] = useState<SchedulePreview | null>(null)
   const [previewError, setPreviewError] = useState<Error | null>(null)
 
@@ -158,9 +157,8 @@ function TimerQuickModalReady({
     const d = draftFromCron(market, cronExpr, nightSchedule, supplement, gmSessions, enabled)
     setState(d.state)
     setFromComplex(d.fromComplex)
-    setSaving(false)
     setSaveError(null)
-  }, [open, market, cronExpr, nightSchedule, supplement, gmSessions, enabled])
+  }, [open, market, cronExpr, nightSchedule, supplement, gmSessions, enabled, setSaveError])
   const patch = (p: Partial<TimerEditorState>) => {
     setSaveError(null)
     setState((prev) => ({ ...prev, ...p }))
@@ -182,11 +180,8 @@ function TimerQuickModalReady({
   const cronNext = fromComplex && state.autoOn ? cronExpr : timerStateToCronExpr(market, intent, nightSchedule)
   const nextSupplement = useMemo(() => signal ? null : timerSupplement({ autoOn: state.autoOn, supN: state.supN, supM: state.supM }), [signal, state.autoOn, state.supN, state.supM])
   const nextSessions = useMemo(() => gmTimerSessions(scheduleChannel, { gm_sessions: state.gm_sessions }), [scheduleChannel, state.gm_sessions])
-  const sessionsChanged = JSON.stringify(nextSessions) !== JSON.stringify(gmTimerSessions(scheduleChannel, { gm_sessions: gmSessions }))
-  const enabledChanged = signal && state.autoOn !== (enabled && Boolean(cronExpr.trim()))
-  const cronChanged = (!signal || state.autoOn) && !cronExprEqual(cronNext, cronExpr)
-  const supplementChanged = !signal && JSON.stringify(nextSupplement) !== JSON.stringify(supplement ?? null)
-  const dirty = enabledChanged || cronChanged || supplementChanged || sessionsChanged
+  const change = timerSettingsChange(signal, scheduleChannel, { cronExpr, isStarted, supplement, channelOptions },
+    { cronExpr: cronNext, autoOn: state.autoOn, supplement: nextSupplement, gmSessions: nextSessions })
   const validationError = timerEditorError(state)
   useEffect(() => {
     setPreview(null)
@@ -205,32 +200,16 @@ function TimerQuickModalReady({
     return () => { window.clearTimeout(timer); controller.abort() }
   }, [open, scheduleChannel, cronNext, nextSessions, nextSupplement, validationError])
 
-  const save = async () => {
-    if (validationError) return
-    if (!dirty) {
-      onClose()
-      return
-    }
+  const save = () => {
+    if (validationError || !change) return
     if (fromComplex && state.supN > 0) {
       toast('请先选择并确认基础节奏，再启用独立补发')
       return
     }
-    setSaving(true)
-    setSaveError(null)
-    try {
-      await updateAccount(accountId, {
-        cron_expr: cronNext,
-        ...(signal ? { is_started: state.autoOn } : { supplement: nextSupplement }),
-        ...(sessionsChanged ? { channel_options: { ...channelOptions, ...(nextSessions ? { gm: nextSessions } : {}) } } : {}),
-      })
-      toast(enabledChanged ? state.autoOn ? '已启动' : '已暂停' : cronNext ? '节奏已更新' : '已关闭自动调仓节奏')
-      onSaved()
+    void saveSettings(change, (updated) => {
+      onSaved(updated)
       onClose()
-    } catch (e) {
-      setSaveError(e instanceof Error ? e : new Error(String(e)))
-    } finally {
-      setSaving(false)
-    }
+    })
   }
 
   const presetCardT =
@@ -266,8 +245,8 @@ function TimerQuickModalReady({
             <button
               type="button"
               className="cursor-pointer rounded-[9px] border border-ink-1 bg-ink-1 px-[18px] py-2 text-sm font-[550] text-surface disabled:opacity-45"
-              onClick={() => void save()}
-              disabled={saving || !dirty || Boolean(validationError)}
+              onClick={save}
+              disabled={saving || !change || Boolean(validationError)}
             >
               {saving ? '保存中…' : '保存'}
             </button>

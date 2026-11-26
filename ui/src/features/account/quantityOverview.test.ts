@@ -3,7 +3,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { HoldingsPreviewTable } from '@/features/account/HoldingsPreviewTable'
 import { HoldingsView } from '@/features/account/HoldingsView'
-import { holdingPreviewRows, signalHoldingPreviewRows } from '@/features/account/holdingDetailModel'
+import { holdingPreviewRows, signalHoldingPreviewRows, signalTargetQuantities } from '@/features/account/holdingDetailModel'
 import { rebalanceHeadline } from '@/features/account/holdingPreview'
 import { portfolioTargetSummary } from '@/features/portfolio/portfolioCardSummary'
 import { rebalancePlanOfServer } from '@/lib/derive'
@@ -168,13 +168,14 @@ test('信号账户复用数量表，未知持仓和实际空仓显示不同，�
   const render = (holdings: ReturnType<typeof signalHoldingPreviewRows>) => renderToStaticMarkup(createElement(HoldingsPreviewTable, {
     holdings, quantityMode: true, quantityLabel: '股', compact: true,
   }))
-  const unknown = signalHoldingPreviewRows(undefined, 0, snapshot)
-  const empty = signalHoldingPreviewRows([], 0, snapshot)
+  const quantities = signalTargetQuantities(snapshot)
+  const unknown = signalHoldingPreviewRows(undefined, 0, quantities)
+  const empty = signalHoldingPreviewRows([], 0, quantities)
   expect(unknown[0]).toMatchObject({ volume: null, snapshotQuantity: 34700 })
   expect(empty[0]).toMatchObject({ volume: 0, snapshotQuantity: 34700 })
 
   const positions = [{ symbol: '600000.SH', direction: '多头', volume: 500 }]
-  const compared = signalHoldingPreviewRows(positions, 0, snapshot)
+  const compared = signalHoldingPreviewRows(positions, 0, quantities)
   expect(compared[0]).toMatchObject({ volume: 500, snapshotQuantity: 0 })
   expect(signalHoldingPreviewRows(positions, 0, null)[0].snapshotQuantity).toBeUndefined()
 
@@ -187,7 +188,12 @@ test('信号账户复用数量表，未知持仓和实际空仓显示不同，�
 
 test('信号权重快照按冻结数量展示，未换算的权重不会被当成股数', () => {
   const target = { ...snapshot, target_mode: 'weight' as const, raw_targets: { '513050.SH': 0.4 } }
-  expect(signalHoldingPreviewRows(undefined, 0, target)).toEqual([])
-  const rows = signalHoldingPreviewRows(undefined, 0, { ...target, quantities: { '513050.SH': 300 } })
+  expect(signalTargetQuantities(target)).toBeNull()
+  const rows = signalHoldingPreviewRows(undefined, 0, signalTargetQuantities({ ...target, quantities: { '513050.SH': 300 } }))
   expect(rows[0]).toMatchObject({ symbol: '513050.SH', snapshotQuantity: 300 })
+})
+
+test('信号目标优先读取冻结数量，并区分空仓和未换算', () => {
+  expect(signalTargetQuantities({ ...snapshot, quantities: {} })).toEqual({})
+  expect(signalTargetQuantities({ ...snapshot, calculated_at: null })).toBeNull()
 })

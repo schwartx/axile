@@ -862,7 +862,8 @@ export function AccountDetail({
         supplement={account.data?.supplement}
         channelOptions={account.data?.channel_options}
         onClose={() => setTimerOpen(false)}
-        onSaved={() => {
+        onSaved={(updated) => {
+          runtime.acceptSaved(updated.runtime_sync)
           account.refresh()
           nextRun.refresh()
           onDashboardRefresh?.()
