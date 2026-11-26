@@ -6,9 +6,9 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
-import { useParams } from 'react-router'
-import { getAccount, updateAccount } from '@/lib/api/accounts'
-import { usePolling } from '@/lib/hooks/usePolling'
+import { useOutletContext, useParams } from 'react-router'
+import { updateAccount } from '@/lib/api/accounts'
+import type { AccountEditContext } from '@/features/account/AccountEditGuard'
 import { useDomainStore } from '@/stores/domain'
 import { useToastStore } from '@/stores/ui'
 import { AccountPageTitle } from '@/features/account/pageHead'
@@ -23,7 +23,9 @@ import {
 } from '@/features/setup/cron'
 import { TimerEditor } from '@/features/setup/TimerEditor'
 import { timerEditorError } from '@/features/setup/cron'
-import { useChannelDescriptor } from '@/stores/channels'
+import { useChannelCatalogStore, useChannelDescriptor } from '@/stores/channels'
+import { SIGNAL_CHANNEL } from '@/features/signal/signalData'
+import { portfolioMarketDescriptor } from '@/features/portfolio/portfolioMarkets'
 import {
   EditError,
   EditLoading,
@@ -37,13 +39,15 @@ export function AccountEditTimerPage() {
   const toast = useToastStore((s) => s.toast)
   const accounts = useDomainStore((s) => s.accounts)
   const refreshAccounts = useDomainStore((s) => s.refreshAccounts)
-  const account = usePolling(useCallback((s: AbortSignal) => getAccount(accountId, s), [accountId]), {
-    queryKey: `account:${accountId}`,
-    intervalMs: 0,
-  })
+  const account = useOutletContext<AccountEditContext>()
   const acc = account.data
   const cachedAccount = accounts?.find((item) => item.account_id === accountId) ?? null
-  const descriptor = useChannelDescriptor(acc?.trade_channel)
+  const channel = useChannelDescriptor(acc?.trade_channel)
+  const channels = useChannelCatalogStore((state) => state.channels)
+  const catalogError = useChannelCatalogStore((state) => state.error)
+  const refreshCatalog = useChannelCatalogStore((state) => state.refresh)
+  const signal = acc?.trade_channel === SIGNAL_CHANNEL
+  const descriptor = signal ? portfolioMarketDescriptor(channels ?? [], acc.market) : channel
   const title = (
     <div className="flex flex-wrap items-center gap-3">
       <AccountPageTitle
@@ -56,27 +60,28 @@ export function AccountEditTimerPage() {
     </div>
   )
 
-  const [ready, setReady] = useState(false)
-  const [timer, setTimer] = useState<TimerEditorState | null>(null)
+  const readTimer = useCallback(() => {
+    if (!descriptor) return null
+    const saved = parseSavedTimer(descriptor.schedule.kind, acc.cron_expr ?? '', descriptor.schedule.night,
+      signal ? null : acc.supplement, acc.channel_options.gm)
+    return signal ? { ...saved, autoOn: acc.is_started && saved.autoOn } : saved
+  }, [acc, descriptor, signal])
+  const [timer, setTimer] = useState(readTimer)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<Error | null>(null)
-
-  /** 草稿重置为服务端当前节奏；数据未就绪时返回 false（供首帧初始化门控）。 */
   const resetTimer = useCallback(() => {
-    if (!acc || !descriptor) return false
-    setTimer(parseSavedTimer(descriptor.schedule.kind, acc.cron_expr ?? '', descriptor.schedule.night, acc.supplement, acc.channel_options.gm))
+    setTimer(readTimer())
     setSaveError(null)
-    return true
-  }, [acc, descriptor])
+  }, [readTimer])
 
   useEffect(() => {
-    if (!ready && resetTimer()) setReady(true)
-  }, [ready, resetTimer])
+    if (!timer && descriptor) resetTimer()
+  }, [timer, descriptor, resetTimer])
 
-  if (account.error && !acc)
-    return <div className="px-4 pt-5 md:px-5"><EditError error={account.error} onRetry={account.refresh} /></div>
+  if (signal && !descriptor && (catalogError || channels))
+    return <div className="px-4 pt-5 md:px-5"><EditError error={catalogError ?? new Error('所选市场未注册')} onRetry={refreshCatalog} /></div>
 
-  if (account.loading || !ready || !acc || !timer || !descriptor)
+  if (!timer || !descriptor)
     return (
       <section className="px-4 pt-5 md:px-5">
         {title}
@@ -87,12 +92,15 @@ export function AccountEditTimerPage() {
   const scheduleKind = descriptor.schedule.kind
   const cronNext = timerStateToCronExpr(scheduleKind, timer, descriptor.schedule.night)
   const cronPrev = acc.cron_expr ?? ''
-  const supplement = timerSupplement(timer)
-  const gmSessions = gmTimerSessions(acc.trade_channel, timer)
-  const sessionsChanged = JSON.stringify(gmSessions) !== JSON.stringify(gmTimerSessions(acc.trade_channel, { gm_sessions: acc.channel_options.gm }))
-  const dirty = !cronExprEqual(cronNext, cronPrev) || JSON.stringify(supplement) !== JSON.stringify(acc.supplement ?? null) || sessionsChanged
-  const err = timerEditorError(timer)
-  const changes = dirty ? [cronNext ? '定时任务已改' : '关闭自动调仓节奏'] : []
+  const supplement = signal ? null : timerSupplement(timer)
+  const gmSessions = gmTimerSessions(descriptor.channel, timer)
+  const sessionsChanged = JSON.stringify(gmSessions) !== JSON.stringify(gmTimerSessions(descriptor.channel, { gm_sessions: acc.channel_options.gm }))
+  const enabledChanged = signal && timer.autoOn !== (acc.is_started && Boolean(cronPrev))
+  const cronChanged = (!signal || timer.autoOn) && !cronExprEqual(cronNext, cronPrev)
+  const supplementChanged = !signal && JSON.stringify(supplement) !== JSON.stringify(acc.supplement ?? null)
+  const dirty = enabledChanged || cronChanged || supplementChanged || sessionsChanged
+  const err = timerEditorError(timer) || (signal && timer.autoOn && !cronNext ? '请至少设置一个计算时点' : null)
+  const changes = dirty ? [cronNext ? '定时任务已改' : signal ? '关闭自动执行' : '关闭自动调仓节奏'] : []
 
   // 与总览入口同构摘要（随草稿变）。
   const timerSummary = !cronNext.trim()
@@ -107,10 +115,10 @@ export function AccountEditTimerPage() {
     try {
       await updateAccount(accountId, {
         cron_expr: cronNext,
-        supplement,
+        ...(signal ? { is_started: timer.autoOn } : { supplement }),
         ...(sessionsChanged ? { channel_options: { ...acc.channel_options, ...(gmSessions ? { gm: gmSessions } : {}) } } : {}),
       })
-      toast(cronNext ? '节奏已更新' : '已关闭自动调仓节奏')
+      toast(enabledChanged ? timer.autoOn ? '已启动' : '已暂停' : cronNext ? '节奏已更新' : '已关闭自动调仓节奏')
       void refreshAccounts()
       account.refresh()
     } catch (e) {
@@ -128,6 +136,7 @@ export function AccountEditTimerPage() {
       <div className="min-[1120px]:min-h-0 min-[1120px]:flex-1">
         <TimerEditor
           tradeChannel={acc.trade_channel}
+          scheduleChannel={descriptor.channel}
           scheduleKind={scheduleKind}
           nightSchedule={descriptor.schedule.night}
           value={timer}
@@ -135,7 +144,8 @@ export function AccountEditTimerPage() {
           leading={(
             <>
               {title}
-              <EditSynopsis note="时间均为北京时间；保存只更新自动执行计划，不改启停状态。">
+              <EditSynopsis note={signal ? '时间均为北京时间。绑定组合后按计划执行，按通知设置推送信号。'
+                : '时间均为北京时间；保存只更新自动执行计划，不改启停状态。'}>
                 {timerSummary}
               </EditSynopsis>
             </>

@@ -1,10 +1,14 @@
 import { useCallback } from 'react'
 import { Outlet, useParams } from 'react-router'
 import { ArchivedAccountDetail } from '@/features/account/ArchivedAccountDetail'
+import { EditLoading } from '@/features/account/editUi'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { getAccount } from '@/lib/api/accounts'
 import { usePolling } from '@/lib/hooks/usePolling'
 import { useDomainStore } from '@/stores/domain'
+import type { Account } from '@/types/api'
+
+export type AccountEditContext = ReturnType<typeof usePolling<Account>> & { data: Account }
 
 /** 旧编辑链接也遵守归档只读，不挂载连接和配置编辑器。 */
 export function AccountEditGuard() {
@@ -17,6 +21,6 @@ export function AccountEditGuard() {
   if (account.data?.archived_at) return <ArchivedAccountDetail account={account.data} onChanged={async () => { await refresh(); await account.refresh() }} />
   if (!account.data) return account.error
     ? <ErrorNotice intent="read" title="账户加载失败" error={account.error} onRetry={account.refresh} />
-    : <p className="text-sm text-ink-2">加载账户…</p>
-  return <Outlet />
+    : <div className="px-4 pt-5 md:px-5"><EditLoading /></div>
+  return <Outlet context={{ ...account, data: account.data } satisfies AccountEditContext} />
 }

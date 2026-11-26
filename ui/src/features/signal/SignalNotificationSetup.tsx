@@ -14,9 +14,10 @@ import { shortErrorReason } from '@/lib/errorInfo'
 import { testSignalNotification } from './signalApi'
 import { SignalSetupColumns } from './SignalSetupColumns'
 
-export type SignalNotificationMode = 'feishu' | 'function'
+export type SignalNotificationMode = 'feishu' | 'function' | 'off'
 
-export function SignalNotificationSetup({ mode, webhook, code, name, market, heading, footer, onModeChange, onWebhookChange, onCodeChange }: {
+export function SignalNotificationSetup({ mode, webhook, code, name, market, heading, footer, onModeChange, allowOff = false, savedWebhook = false,
+  saving = false, draftKey = 'signal:setup:notify', savedCode = '', testDraft, onWebhookChange, onCodeChange }: {
   mode: SignalNotificationMode
   webhook: string
   code: string
@@ -24,6 +25,12 @@ export function SignalNotificationSetup({ mode, webhook, code, name, market, hea
   market: string
   heading: ReactNode
   footer: ReactNode
+  allowOff?: boolean
+  savedWebhook?: boolean
+  saving?: boolean
+  draftKey?: string
+  savedCode?: string
+  testDraft?: (mode: 'feishu' | 'function', draft: string) => Promise<AccountFeishuTestResult>
   onModeChange: (mode: SignalNotificationMode) => void
   onWebhookChange: (webhook: string) => void
   onCodeChange: (code: string) => void
@@ -32,11 +39,16 @@ export function SignalNotificationSetup({ mode, webhook, code, name, market, hea
   const [checks, setChecks] = useState<PythonChecks | null>(null)
   const [revision, setRevision] = useState(0)
   const custom = mode === 'function'
+  const off = mode === 'off'
   const test = usePythonRun<AccountFeishuTestResult>({
     code: custom ? code : extractFeishuKey(webhook),
     contextKey: JSON.stringify([mode, name, market, revision]),
-    enabled: Boolean(market),
-    execute: (draft) => testSignalNotification(mode, draft, name, market),
+    enabled: Boolean(market) && !off && !saving,
+    allowEmpty: mode === 'feishu' && savedWebhook,
+    execute: (draft) => {
+      const method = custom ? 'function' : 'feishu'
+      return testDraft ? testDraft(method, draft) : testSignalNotification(method, draft, name, market)
+    },
     failed: (cause) => ({ ok: false, message: shortErrorReason(cause) }),
     toEditorResult: (result) => ({
       valid: result.ok, errorMessage: result.ok ? null : result.message, errorLine: result.error_line, traceback: result.traceback,
@@ -50,7 +62,7 @@ export function SignalNotificationSetup({ mode, webhook, code, name, market, hea
     : diagnosticCount ? `${diagnosticCount} 条诊断`
     : checksUnavailable ? '检查暂不可用'
     : checksAreEmpty(currentChecks) ? '代码检查通过' : '检查中…'
-  const sidebar = <aside aria-label="通知测试">
+  const sidebar = !off && <aside aria-label="通知测试">
     <Card className="p-3.5">
       <ValidationCardHeader title="通知测试" status={custom ? codeStatus : ''}
         statusClassName={diagnosticCount > 0 || checksUnavailable ? 'text-warn' : undefined}
@@ -90,18 +102,20 @@ export function SignalNotificationSetup({ mode, webhook, code, name, market, hea
       }} options={[
         { value: 'feishu', label: '飞书' },
         { value: 'function', label: '自定义函数' },
+        ...(allowOff ? [{ value: 'off' as const, label: '关闭' }] : []),
       ]} />
     </div>
     <SignalSetupColumns sidebar={sidebar} footer={footer}>
+      {off && <p className="text-[14px] text-ink-2">关闭推送后仍可执行调仓信号。</p>}
       {mode === 'feishu' && <Row label="飞书 Webhook">
-        <FeishuWebhookInput value={webhook} required onChange={(next) => {
+        <FeishuWebhookInput value={webhook} configured={savedWebhook} required={!savedWebhook} onChange={(next) => {
           setRevision((value) => value + 1)
           onWebhookChange(next)
         }} />
       </Row>}
-      {custom && <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden rounded-[8px] border border-line">
-        <PythonWorkbenchPane kind="account_notification" title="通知函数" code={code} savedCode=""
-          draftKey="signal:setup:notify" storageKey="axile.signalNotification.editorSplit" docHref="/docs/notification"
+      {custom && <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden rounded-[8px] border border-line max-lg:min-h-72">
+        <PythonWorkbenchPane kind="account_notification" title="通知函数" code={code} savedCode={savedCode}
+          draftKey={draftKey} storageKey="axile.signalNotification.editorSplit" docHref="/docs/notification"
           onChange={(next) => {
             if (next === code) return
             setRevision((value) => value + 1)

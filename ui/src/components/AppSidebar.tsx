@@ -1,6 +1,6 @@
 import { SIGNAL_CHANNEL } from '@/features/signal/signalData'
 import { useEffect, useLayoutEffect, useRef, useState, type ComponentType, type CSSProperties, type ReactNode, type RefObject } from 'react'
-import { useLocation } from 'react-router'
+import { matchPath, useLocation } from 'react-router'
 import {
   BellRing,
   Boxes,
@@ -89,6 +89,8 @@ function GlobalSettingsNav({ phase, dense }: { phase: SettingsMovePhase; dense: 
 function NavItem({ item, dense = false }: { item: NavItemSpec; dense?: boolean }) {
   const location = useLocation()
   const active = item.active(location.pathname, location.hash)
+  const editRoot = matchPath('/accounts/:id/edit/*', location.pathname)?.pathnameBase
+  const sameAccountSettings = !!editRoot && (item.to === editRoot || item.to?.startsWith(`${editRoot}/`))
   const Icon = item.icon
   const content = (
     <>
@@ -114,6 +116,7 @@ function NavItem({ item, dense = false }: { item: NavItemSpec; dense?: boolean }
   return (
     <Link
       to={item.to}
+      viewTransition={!sameAccountSettings}
       aria-current={active ? 'page' : undefined}
       className={`relative flex items-center gap-2 px-2.5 text-[14px] transition-[height,color] duration-200 motion-reduce:transition-none ${dense ? 'h-[30px]' : 'h-8.5'} ${
         active ? 'font-[550] text-ink-1' : 'text-ink-2 hover:text-ink-1'
@@ -247,13 +250,17 @@ export function AppSidebar({
   const signalAccount = activeAccount?.trade_channel === SIGNAL_CHANNEL
   const accountOverview: NavItemSpec[] = [
     { label: '账户概览', to: accountPath(), active: exact(accountPath()) },
-    { label: '持仓明细', to: accountPath('/holdings'), active: exact(accountPath('/holdings')) },
-    {
-      label: '执行记录',
-      to: accountPath('/executions'),
-      active: (pathname) => pathname === accountPath('/executions') || pathname.startsWith(`${accountPath('/executions')}/`),
-    },
-    { label: '实盘绩效', to: accountPath('/history'), active: exact(accountPath('/history')) },
+    ...(signalAccount ? [
+      { label: '信号记录', to: accountPath('/signals'), active: exact(accountPath('/signals')) },
+    ] : [
+      { label: '持仓明细', to: accountPath('/holdings'), active: exact(accountPath('/holdings')) },
+      {
+        label: '执行记录',
+        to: accountPath('/executions'),
+        active: (pathname: string) => pathname === accountPath('/executions') || pathname.startsWith(`${accountPath('/executions')}/`),
+      },
+      { label: '实盘绩效', to: accountPath('/history'), active: exact(accountPath('/history')) },
+    ]),
   ]
   const accountParameters: NavItemSpec[] = [
     { label: '基本信息', to: accountPath('/edit'), active: exact(accountPath('/edit')) },
@@ -321,12 +328,13 @@ export function AppSidebar({
                     )}
                   </div>
                   <div>
-                    {(signalAccount ? accountOverview.slice(0, 1) : accountOverview).map((item) => <NavItem key={item.label} item={item} dense={denseNav} />)}
+                    {accountOverview.map((item) => <NavItem key={item.label} item={item} dense={denseNav} />)}
                   </div>
                   {signalAccount ? <NavSection compact dense={denseNav} label="设置">
-                    <NavItem item={accountParameters[0]} dense={denseNav} />
-                    <NavItem item={{ label: '信号设置', to: accountPath('/edit/signal'), active: exact(accountPath('/edit/signal')) }} dense={denseNav} />
-                    <NavItem item={{ label: '通知函数', to: accountPath('/edit/notification'), active: exact(accountPath('/edit/notification')) }} dense={denseNav} />
+                    <NavItem item={{ label: '行情设置', to: accountPath('/edit/quotes'), active: exact(accountPath('/edit/quotes')) }} dense={denseNav} />
+                    <NavItem item={{ label: '资金与持仓', to: accountPath('/edit/assets'), active: exact(accountPath('/edit/assets')) }} dense={denseNav} />
+                    <NavItem item={accountExecution[0]} dense={denseNav} />
+                    <NavItem item={accountExecution[3]} dense={denseNav} />
                   </NavSection> : <>
                   <NavSection compact dense={denseNav} label="参数">
                     {accountParameters.map((item) => <NavItem key={item.label} item={item} dense={denseNav} />)}

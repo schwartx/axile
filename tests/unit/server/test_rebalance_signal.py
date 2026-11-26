@@ -393,6 +393,151 @@ def test_signal_schedule_persists_complete_targets_once_and_rejects_trade(client
     assert all(symbol in sender.call_args.args[0]["elements"][0]["content"] for symbol in TARGET)
 
 
+def test_manual_signal_publishes_for_paused_account_without_trade_intent(client, native_database, monkeypatch):
+    import json
+
+    wake = Mock()
+    monkeypatch.setattr("axile.server.signal_service.wake_notifications", wake)
+    portfolio = create_portfolio(client, "A股")
+    account_id = create_signal_account(client, portfolio)["id"]
+    url = f"/account/{account_id}"
+    paused = client.patch(url, json={"is_started": False})
+    assert paused.status_code == 200, paused.text
+    assert not paused.json()["is_started"]
+
+    asyncio.run(run_scheduled_signal(account_id, datetime.fromisoformat("2026-11-23T10:30:00+08:00")))
+    wake.assert_not_called()
+
+    response = client.post(f"{url}/signal/run")
+    assert response.status_code == 200, response.text
+    wake.assert_called_once_with(account_id)
+    assert client.get(f"{url}/target_snapshot").json()["quantities"] == TARGET
+    assert client.get(f"{url}/asset_snapshots").json()["data"][0]["assets"]["total_asset"] == MANUAL["total_asset"]
+    with closing(connect(native_database)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM execution_intent").fetchone() == (0,)
+        (context,) = connection.execute(
+            "SELECT context FROM notification_event WHERE id=?", (response.json()["event_id"],)
+        ).fetchone()
+    context = json.loads(context)
+    assert context["execution"]["trigger_source"] == "manual"
+    assert context["scheduled_at"] is None
+    assert context["targets"]["target_volume"] == TARGET
+
+    copy = client.post(f"{url}/copy", json={"name": "备份信号账户"})
+    assert copy.status_code == 201, copy.text
+    assert not copy.json()["is_started"]
+    assert client.post(f"{url}/archive").status_code == 200
+    assert client.post(f"{url}/signal/run").status_code == 409
+    assert client.delete(f"/account/{copy.json()['id']}").status_code == 200
+
+
+def test_signal_records_page_filters_saved_signals(client, monkeypatch):
+    monkeypatch.setattr("axile.server.signal_service.wake_notifications", Mock())
+    portfolio = create_portfolio(client, "A股")
+    account_id = create_signal_account(client, portfolio)["id"]
+    url = f"/account/{account_id}"
+    history = f"{url}/signal/records"
+    assert client.get(history).json() == {"items": [], "next_cursor": None}
+
+    refreshed = client.post(f"{url}/target_snapshot/refresh")
+    assert refreshed.status_code == 200, refreshed.text
+    assert client.get(history).json()["items"] == []
+    manual = client.post(f"{url}/signal/run")
+    assert manual.status_code == 200, manual.text
+    monkeypatch.setattr("axile.server.signal_service.calculate_signal", AsyncMock(side_effect=ValueError("计算失败")))
+    asyncio.run(run_scheduled_signal(account_id, datetime.fromisoformat("2026-11-23T10:30:00+08:00")))
+
+    latest = client.get(history, params={"limit": 1}).json()
+    (failed,) = latest["items"]
+    assert failed["trigger_source"] == "scheduler"
+    assert failed["status"] == "FAILED" and failed["error"] and failed["targets"] == {}
+    assert failed["scheduled_at"] == "2026-11-23T02:30:00+00:00"
+    older = client.get(history, params={"before": latest["next_cursor"], "limit": 1}).json()
+    (succeeded,) = older["items"]
+    assert succeeded["id"] == manual.json()["event_id"]
+    assert succeeded["trigger_source"] == "manual" and succeeded["status"] == "SUCCEEDED"
+    assert succeeded["targets"] == TARGET and succeeded["notification_status"] == "pending"
+    assert older["next_cursor"] is None
+    assert client.get(history, params={"status": "SUCCEEDED", "days": 7, "symbol": "300.sh"}).json() == older
+    assert client.get(history, params={"symbol": "%"}).json()["items"] == []
+    assert client.get(history, params={"limit": 101}).status_code == 422
+    other = client.post("/account/", json=signal_account_payload(portfolio) | {"name": "另一信号账户"})
+    assert other.status_code == 201, other.text
+    other_id = other.json()["id"]
+    assert client.get(f"/account/{other_id}/signal/records").json()["items"] == []
+    assert client.get(f"/account/{other_id + 999}/signal/records").status_code == 404
+
+
+def test_weight_signal_trial_and_snapshots_keep_weights_and_publish_quantities(client, native_database):
+    weights = {"600000.SH": 0.48, "510300.SH": -0.23}
+    code = f"""
+def calculate_portfolio(context):
+    assert context.get_price("600000.SH") == 10
+    assert context.settings.weight_precision == 0.1
+    return {weights!r}
+"""
+    quotes = QUOTES.replace(
+        "def fetch_quotes(symbols):",
+        "seen = set()\n\ndef fetch_quotes(symbols):\n    assert not seen.intersection(symbols)\n    seen.update(symbols)",
+    )
+    portfolio = create_portfolio(client, "A股", code)
+    account_id = create_signal_account(client, portfolio, {"kind": "custom", "code": quotes})["id"]
+    account_url = f"/account/{account_id}"
+    updated = client.patch(account_url, json={"long_leverage": 1.2, "short_leverage": 2, "weight_precision": 0.1})
+    assert updated.status_code == 200, updated.text
+    trial = client.post("/portfolio/validate_custom_calc", json={"account_id": account_id, "custom_calc_py_code": code})
+    assert trial.status_code == 200, trial.text
+    assert trial.json()["valid"] and trial.json()["target_mode"] == "weight"
+    assert trial.json()["target"] == weights
+
+    refreshed = client.post(f"{account_url}/target_snapshot/refresh")
+    assert refreshed.status_code == 200, refreshed.text
+    quantities = {"600000.SH": 600, "510300.SH": -500}
+    expected = {
+        "target_mode": "weight",
+        "raw_targets": weights,
+        "account_weights": {"600000.SH": 0.6, "510300.SH": -0.5},
+        "quantities": quantities,
+    }
+    assert refreshed.json() | expected == refreshed.json()
+
+    portfolio_refresh = client.post(f"/portfolio/{portfolio}/target_snapshot/refresh")
+    assert portfolio_refresh.status_code == 200, portfolio_refresh.text
+    assert portfolio_refresh.json()["target_mode"] == "weight"
+    assert portfolio_refresh.json()["weights"] == weights
+    assert client.get(f"{account_url}/target_snapshot").json()["quantities"] == quantities
+
+    asyncio.run(run_scheduled_signal(account_id, datetime.fromisoformat("2026-11-23T10:30:00+08:00")))
+    target = client.get(f"{account_url}/target_snapshot").json()
+    assert target | expected == target
+    assert target["source"] == "signal"
+    with closing(connect(native_database)) as connection:
+        (notified,) = connection.execute(
+            "SELECT json_extract(context,'$.targets') FROM notification_event WHERE event_type='signal.calculated'"
+        ).fetchone()
+
+    import json
+
+    assert json.loads(notified) == {"mode": "quantity", "current": quantities, "target_volume": quantities}
+
+
+@pytest.mark.parametrize("has_multiplier", [True, False])
+def test_futures_weight_signal_requires_contract_multiplier_on_publication(client, has_multiplier):
+    code = 'def calculate_portfolio(context): return {"mode": "weight", "targets": {"rb2610": -0.28}}'
+    quote_code = (
+        QUOTES.replace("last_price=10,", 'last_price=10, extra={"volume_multiple": 10},') if has_multiplier else QUOTES
+    )
+    portfolio = create_portfolio(client, "期货", code)
+    account = create_signal_account(client, portfolio, {"kind": "custom", "code": quote_code}, market="期货")
+    response = client.post(f"/account/{account['id']}/target_snapshot/refresh")
+    if has_multiplier:
+        assert response.status_code == 200, response.text
+        assert response.json()["quantities"] == {"rb2610": -28.0}
+    else:
+        assert response.status_code == 400
+        assert "缺少有效合约乘数" in response.text
+
+
 def test_stock_signal_auction_options_preview_persist_and_schedule(client, monkeypatch):
     now = datetime.fromisoformat("2026-11-23T09:00:00+08:00")
     monkeypatch.setattr(scheduler, "clock_now", lambda **_kwargs: now)

@@ -1,17 +1,25 @@
-"""用独立进程执行调仓信号的只读数据函数与数量组合。"""
+"""用独立进程执行调仓信号的只读数据函数与组合。"""
 
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
+from math import isfinite, trunc
 from multiprocessing import get_context
 from multiprocessing.connection import Connection
 from typing import cast
 
-from axile.channels.rebalance_signal import SignalAccountConfig, SignalAccountContext, SignalAssets, SignalQuoteSource
+from axile.channels import get_channel
+from axile.channels.rebalance_signal import (
+    SignalAccountConfig,
+    SignalAccountContext,
+    SignalAssets,
+    SignalQuoteSource,
+    signal_market_descriptor,
+)
 from axile.common.function_contract import accepts_context
 from axile.common.serialization import parse_input
 from axile.executor.algorithms.utils.clock import clock_monotonic, clock_now_iso
-from axile.executor.models.portfolio_target import PortfolioTarget
+from axile.executor.models.portfolio_target import PortfolioTarget, normalize_target_weights
 from axile.executor.models.unified_account_assets import Position, UnifiedAccountAssets
 from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
@@ -34,6 +42,24 @@ class SignalCalculation:
 
     assets: UnifiedAccountAssets
     target: PortfolioTarget | None
+    normalized_weights: dict[str, float] | None = None
+    quantities: dict[str, float] | None = None
+
+    def snapshot_fields(self) -> dict[str, object]:
+        """为信号快照保留原始口径和同轮换算的数量。"""
+        assert self.target is not None
+        return {
+            "target_mode": self.target.mode,
+            "raw_weights": self.target.targets,
+            "normalized_weights": self.target.targets if self.target.mode == "quantity" else self.normalized_weights,
+            **({"signal_quantities": self.quantities} if self.target.mode == "weight" else {}),
+        }
+
+    def target_quantities(self) -> dict[str, float]:
+        """返回信号推送使用的目标数量。"""
+        return (
+            self.target.targets if self.target is not None and self.target.mode == "quantity" else self.quantities or {}
+        )
 
 
 def source_function(code: str, name: str) -> Callable[[object], object]:
@@ -94,16 +120,20 @@ class _SignalQueries:
         self.code = code
         self.market = _MarketPortfolioExecutor(pipe)
         self._fetch: Callable[[object], object] | None = None
+        self.quotes: dict[str, UnifiedPriceData] = {}
 
     def get_account_assets(self) -> UnifiedAccountAssets:
         return self.assets
 
     def get_market_data(self, symbols: list[str]) -> dict[str, UnifiedPriceData]:
         if self.code is None:
-            return self.market.get_market_data(symbols)
-        if self._fetch is None:
-            self._fetch = source_function(self.code, "fetch_quotes")
-        return _custom_quotes(self._fetch, symbols)
+            rows = self.market.get_market_data(symbols)
+        else:
+            if self._fetch is None:
+                self._fetch = source_function(self.code, "fetch_quotes")
+            rows = _custom_quotes(self._fetch, symbols)
+        self.quotes.update(rows)
+        return rows
 
     def get_pending_orders(self, symbol: str | None = None) -> list[UnifiedOrder]:
         return []
@@ -120,6 +150,49 @@ class _SignalContext(Context):
         return self.account.positions
 
 
+def _size_weight_target(
+    market: str, targets: dict[str, float], settings: ContextSettings, queries: _SignalQueries
+) -> tuple[dict[str, float], dict[str, float]]:
+    weights = normalize_target_weights(
+        targets, settings.long_leverage, settings.short_leverage, settings.weight_precision
+    )
+    active = [symbol for symbol, weight in weights.items() if weight]
+    quantities = dict.fromkeys(weights, 0.0)
+    if not active:
+        return weights, quantities
+    descriptor = signal_market_descriptor(market)
+    assets = queries.assets
+    if assets.total_asset < 0:
+        raise ValueError("账户总权益为负，无法按权重换算目标数量")
+    if descriptor.currency and assets.currency.strip().upper() != descriptor.currency.upper():
+        raise ValueError(f"{market} 的目标换算需要以 {descriptor.currency} 计价的账户权益")
+    missing = [symbol for symbol in active if symbol not in queries.quotes]
+    if missing:
+        queries.get_market_data(missing)
+    channel = get_channel(descriptor.channel)
+    for symbol in active:
+        quote = queries.quotes.get(symbol)
+        if quote is None or not isfinite(quote.last_price) or quote.last_price <= 0:
+            raise ValueError(f"{symbol} 缺少有效价格，无法换算目标数量")
+        unit_value = quote.last_price
+        if descriptor.units.quantity_kind == "contract":
+            multiplier = quote.extra.get("volume_multiple")
+            if (
+                isinstance(multiplier, bool)
+                or not isinstance(multiplier, int | float)
+                or not 0 < multiplier < float("inf")
+            ):
+                raise ValueError(f"{symbol} 缺少有效合约乘数，无法换算目标手数")
+            unit_value *= multiplier
+        if channel.quantize_target_quantity is not None:
+            quantity = channel.quantize_target_quantity(weights[symbol], assets.total_asset, unit_value)
+        else:
+            raw_quantity = assets.total_asset * weights[symbol] / unit_value
+            quantity = trunc(raw_quantity / 100) * 100.0 if descriptor.units.quantity_kind == "share" else raw_quantity
+        quantities[symbol] = quantity
+    return weights, PortfolioTarget.validate_targets(quantities)
+
+
 def _run_child(
     pipe: Connection,
     manual_assets: SignalAssets | None,
@@ -128,16 +201,20 @@ def _run_child(
     metadata: SignalAccountContext,
     code: str | None,
     settings: ContextSettings | None = None,
+    size_weights: bool = False,
 ) -> None:
     try:
         assets = _account_assets(manual_assets, account_code, metadata)
-        target = None
+        result = SignalCalculation(assets, None)
         if code is not None:
-            context = _SignalContext(_SignalQueries(assets, quote_code, pipe), settings=settings)
-            target = calculate_portfolio_target(code, context)
-            if target.mode != "quantity":
-                raise ValueError("调仓信号的组合函数必须返回数量模式")
-        pipe.send(SignalCalculation(assets, target))
+            queries = _SignalQueries(assets, quote_code, pipe)
+            context = _SignalContext(queries, settings=settings)
+            result.target = calculate_portfolio_target(code, context)
+            if size_weights and result.target.mode == "weight":
+                result.normalized_weights, result.quantities = _size_weight_target(
+                    metadata["market"], result.target.targets, context.settings, queries
+                )
+        pipe.send(result)
     except BaseException as error:  # noqa: BLE001 - 子进程负责回传用户函数错误
         pipe.send(error if isinstance(error, PortfolioFunctionError) else _error_from_exception(error))
     finally:
@@ -150,7 +227,19 @@ def _read_channel_quotes(source: SignalQuoteSource, symbols: list[str], timeout:
             return read_configured_market_data(("gm", source.gm_config()), symbols, timeout=timeout)
         return read_market_data("gm", source.gm_values(), symbols, timeout=timeout)
     if source.kind in ("ctp", "tq"):
-        return read_configured_market_data((source.kind, source.futures_config()), symbols, timeout=timeout)
+        rows = read_configured_market_data((source.kind, source.futures_config()), symbols, timeout=timeout)
+        if source.kind == "ctp":
+            from axile.server.execution.worker_backend.manager import get_worker_backend_manager
+
+            catalog = get_worker_backend_manager().instrument_catalog
+            for quote in rows.values():
+                if (
+                    (exchange := quote.extra.get("exchange_id"))
+                    and (instrument := catalog.cached(f"{exchange}.{quote.symbol}"))
+                    and instrument.has_specs
+                ):
+                    quote.extra["volume_multiple"] = instrument.multiplier
+        return rows
     return read_tushare_quotes(source.url, source.token, symbols, timeout)
 
 
@@ -186,12 +275,14 @@ def run_signal(
     code: str | None,
     timeout: float,
     settings: ContextSettings | None = None,
+    *,
+    size_weights: bool = False,
 ) -> SignalCalculation:
     """用与组合试跑相同的进程隔离策略，超时后终止计算。"""
     source = config.quote_source
     quote_code = source.code if source.kind == "custom" else None
     read_quotes = partial(_read_channel_quotes, source) if quote_code is None and code is not None else None
-    args = (config.manual_assets, config.account_code, quote_code, metadata, code, settings)
+    args = (config.manual_assets, config.account_code, quote_code, metadata, code, settings, size_weights)
     return cast(SignalCalculation, _run_isolated_signal(_run_child, args, timeout, read_quotes))
 
 

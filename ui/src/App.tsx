@@ -1,5 +1,6 @@
 import { SignalSetupPage } from '@/pages/setup/SignalSetupPage'
-import { SignalAccountSettingsPage } from '@/pages/SignalAccountPage'
+import { SignalAccountDataPage, SignalAccountDataLayout } from '@/pages/SignalAccountDataPage'
+import { SignalRecordsPage } from '@/pages/SignalRecordsPage'
 import { AccountEditGuard } from '@/features/account/AccountEditGuard'
 import { LocalEditorPage } from '@/features/editor/LocalEditorPage'
 import { useEffect, useState } from 'react'
@@ -114,13 +115,17 @@ const router = createBrowserRouter([
         children: [
           { index: true, element: <DashboardPage /> },
           { path: 'accounts/:id', element: <AccountDetailPage /> },
-          { path: 'accounts/:id/edit', element: <AccountEditGuard />, children: [
-          { index: true, element: <AccountEditPage /> },
+          { id: 'account-settings', path: 'accounts/:id/edit', element: <AccountEditGuard />, children: [
+          { index: true, element: <AccountEditPage key="basic" /> },
           { path: 'connection', element: <AccountEditConnectionPage /> },
-          { path: 'signal', element: <SignalAccountSettingsPage /> },
+          { path: 'signal', element: <Navigate to=".." relative="path" replace /> },
+          { element: <SignalAccountDataLayout />, handle: { fullBleed: true }, children: [
+            { path: 'quotes', element: <SignalAccountDataPage section="quotes" /> },
+            { path: 'assets', element: <SignalAccountDataPage section="assets" /> },
+          ] },
           { path: 'leverage', element: <Navigate to="../.." relative="path" replace /> },
           { path: 'symbols', element: <Navigate to="../.." relative="path" replace /> },
-          { path: 'portfolio', element: <AccountEditPage section="portfolio" /> },
+          { path: 'portfolio', element: <AccountEditPage key="portfolio" section="portfolio" /> },
           { path: 'timer', element: <AccountEditTimerPage />, handle: { fullBleed: true } },
           { path: 'algorithm', element: <AccountEditAlgorithmPage />, handle: { fullBleed: true } },
           { path: 'notification', element: <AccountEditNotificationPage />, handle: { fullBleed: true } },
@@ -128,6 +133,7 @@ const router = createBrowserRouter([
           ] },
           { path: 'accounts/:id/holdings', element: <AccountHoldingsPage /> },
           { path: 'accounts/:id/history', element: <AccountHistoryPage /> },
+          { path: 'accounts/:id/signals', element: <SignalRecordsPage /> },
           { path: 'accounts/:id/executions', element: <AccountExecutionsPage /> },
           { path: 'accounts/:id/executions/:executionId', element: <ExecutionDetailPage /> },
           { path: 'accounts/:id/executions/:executionId/replay', element: <ExecutionReplayPage />, handle: { fullBleed: true } },

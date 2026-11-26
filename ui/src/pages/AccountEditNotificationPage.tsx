@@ -1,7 +1,9 @@
 /** 账户自定义执行通知工作台：左侧试跑，右侧编辑代码。 */
 
 import { useCallback, useEffect, useState } from 'react'
-import { useParams } from 'react-router'
+import { useOutletContext, useParams } from 'react-router'
+import { SignalAccountNotificationPage } from '@/pages/SignalAccountNotificationPage'
+import type { AccountEditContext } from '@/features/account/AccountEditGuard'
 import { SIGNAL_CHANNEL } from '@/features/signal/signalData'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { assertPythonBaseline, usePythonDraft, usePythonRun, usePythonSave } from '@/components/ui/pythonWorkbenchState'
@@ -19,13 +21,16 @@ const STORAGE_KEY = 'axon.notificationWorkbench'
 
 export function AccountEditNotificationPage() {
   const { id } = useParams()
-  const accountId = Number(id)
+  const { data: account, refresh } = useOutletContext<AccountEditContext>()
+  return account.trade_channel === SIGNAL_CHANNEL
+    ? <SignalAccountNotificationPage key={id} id={Number(id)} account={account} onSaved={refresh} />
+    : <AccountNotificationEditor accountId={Number(id)} />
+}
+
+function AccountNotificationEditor({ accountId }: { accountId: number }) {
   const toast = useToastStore((state) => state.toast)
   const refreshAccounts = useDomainStore((state) => state.refreshAccounts)
-  const account = usePolling(useCallback((signal: AbortSignal) => getAccount(accountId, signal), [accountId]), {
-    queryKey: `account:${accountId}`,
-    intervalMs: 0,
-  })
+  const account = useOutletContext<AccountEditContext>()
   const draftState = usePythonDraft<string | null>(null)
   const { draft: code, setDraft: setCode, setBaseline: setSavedCode } = draftState
   const saveState = usePythonSave()
@@ -52,10 +57,9 @@ export function AccountEditNotificationPage() {
   }, [account.data, code, defaultCode, setCode, setSavedCode])
 
   const [eventType, setEventType] = useState<'execution.finished' | 'supplement.cancelled'>('execution.finished')
-  const signalAccount = account.data?.trade_channel === SIGNAL_CHANNEL
   const trial = usePythonRun<AccountFeishuTestResult>({
     code: code ?? '', enabled: !saveState.saving,
-    execute: (draft) => testAccountNotificationFunction(accountId, draft, undefined, signalAccount ? 'execution.finished' : eventType),
+    execute: (draft) => testAccountNotificationFunction(accountId, draft, undefined, eventType),
     failed: (cause) => ({ ok: false, message: cause instanceof Error ? cause.message : String(cause) }),
     toEditorResult: (test) => ({ valid: test.ok, errorMessage: test.ok ? null : test.message, errorLine: test.error_line, traceback: test.traceback }),
   })
@@ -94,7 +98,7 @@ export function AccountEditNotificationPage() {
       storageKey={STORAGE_KEY}
       header={<>
         <div className="flex flex-wrap items-center gap-3"><AccountPageTitle accountId={accountId} page="执行通知函数" name={acc.name} channel={acc.trade_channel} market={acc.market} /></div>
-        {signalAccount ? <p className="mt-2 text-[13px] text-ink-3">试跑事件 · 调仓信号</p> : <label className="mt-2 block text-[13px] text-ink-3">试跑事件 <select value={eventType} onChange={(event) => setEventType(event.target.value as typeof eventType)} disabled={trial.running}><option value="execution.finished">执行完成</option><option value="supplement.cancelled">补发取消</option></select></label>}
+        <label className="mt-2 block text-[13px] text-ink-3">试跑事件 <select value={eventType} onChange={(event) => setEventType(event.target.value as typeof eventType)} disabled={trial.running}><option value="execution.finished">执行完成</option><option value="supplement.cancelled">补发取消</option></select></label>
         <p className="mt-2 text-[13px] text-ink-3">{savedNotificationStatus}</p>
         {code.trim() && code.trim() !== defaultCode?.trim() && <p className="mt-2 text-[13px] text-ink-3">保存自定义通知会清除账户的飞书 Webhook。试跑与保存后 AXILE_ACCOUNT_FEISHU_KEY 均为空，通知渠道和凭据需由函数自行配置。</p>}
       </>}

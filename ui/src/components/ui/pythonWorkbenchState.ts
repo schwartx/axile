@@ -53,10 +53,11 @@ export function pythonRunIsStale(result: unknown, ranInput: string | null, input
 }
 
 /** 页面提供请求和结果转换；运行、失败及旧结果的生命周期统一管理。 */
-export function usePythonRun<T>({ code, contextKey = '', enabled = true, execute, failed, toEditorResult }: {
+export function usePythonRun<T>({ code, contextKey = '', enabled = true, allowEmpty = false, execute, failed, toEditorResult }: {
   code: string
   contextKey?: string
   enabled?: boolean
+  allowEmpty?: boolean
   execute: (code: string) => Promise<T>
   failed: (cause: unknown) => T
   toEditorResult: (result: T) => PythonValidationState
@@ -67,7 +68,7 @@ export function usePythonRun<T>({ code, contextKey = '', enabled = true, execute
   const [ranInput, setRanInput] = useState<string | null>(null)
   const gate = useRef(createPythonOperationGate()).current
   const input = JSON.stringify([code, contextKey])
-  const canRun = enabled && Boolean(code.trim()) && !running
+  const canRun = enabled && (allowEmpty || Boolean(code.trim())) && !running
   const run = (executeOverride?: (code: string) => Promise<T>) => gate(canRun, async () => {
     setRunning(true)
     try {

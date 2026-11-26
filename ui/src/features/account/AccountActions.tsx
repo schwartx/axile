@@ -9,17 +9,19 @@ import { Tooltip } from '@/components/ui/Tooltip'
 
 interface AccountActionsProps {
   name: string
+  signal?: boolean
+  runDisabledReason?: string
   archiveAction?: (className: string) => ReactNode
   isStarted: boolean
   running: boolean
   hasPendingSupplement?: boolean
   /** 真正在下单：禁用清仓。queued 时仍可清仓。 */
-  executing: boolean
+  executing?: boolean
   /** 终止请求在途：按钮切「终止中…」并禁用，防连点；由 useTerminateAction 驱动。 */
-  terminating: boolean
+  terminating?: boolean
   onExec: () => void
-  onClear: () => void
-  onTerminate: (mode: ExecutionTerminateMode) => void
+  onClear?: () => void
+  onTerminate?: (mode: ExecutionTerminateMode) => void
   toggling?: boolean
   onToggleStarted: () => void
   onEdit: () => void
@@ -49,10 +51,16 @@ export function AccountActions(props: AccountActionsProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [menuMounted, setMenuMounted] = useState(false)
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null)
+  const { onClear, onTerminate } = props
   const [terminateOpen, setTerminateOpen] = useState(false)
-  const active = props.running || !!props.hasPendingSupplement
+  const active = !props.signal && (props.running || !!props.hasPendingSupplement)
+  const execLabel = props.signal ? props.running ? '执行中' : '立即执行'
+    : props.terminating ? '终止中' : active ? '终止执行' : '立即执行'
+  const execText = props.signal && props.running ? '执行中…'
+    : props.terminating ? '■ 终止中…' : active ? '■ 终止执行' : `▶ ${execLabel}`
   useEffect(() => { if (!active) setTerminateOpen(false) }, [active])
   const ref = useRef<HTMLDivElement>(null)
+  const menuTrigger = useRef<HTMLButtonElement>(null)
 
   const openMenu = () => {
     setMenuMounted(true)
@@ -74,17 +82,9 @@ export function AccountActions(props: AccountActionsProps) {
     return () => document.removeEventListener('click', onDoc)
   }, [menuOpen])
 
-  const askClear = () =>
-    setConfirm({
-      title: '一键清仓',
-      body: `把 ${props.name} 的所有持仓平掉、回到空仓。此操作不可撤销。`,
-      okText: '确认清仓',
-      danger: true,
-      primary: true,
-      onConfirm: props.onClear,
-    })
-
-  const execTip = (
+  const execTip = props.signal ? (
+    props.runDisabledReason ?? '按当前账户数据计算目标，并按通知设置推送调仓信号。'
+  ) : (
     <div className="flex flex-col gap-0.5">
       <span>现在按最新目标调一次仓。</span>
       <span className="text-ink-2">目标没变时多数空跑、几乎无成本。</span>
@@ -105,7 +105,9 @@ export function AccountActions(props: AccountActionsProps) {
     </div>
   )
 
-  const toggleTip = props.isStarted ? (
+  const toggleTip = props.signal ? (
+    props.isStarted ? '暂停自动执行，仍可手动执行。' : '启动后按设置的时间执行。'
+  ) : props.isStarted ? (
     <div className="flex flex-col gap-0.5">
       <span>暂停后不再按计划自动调仓。</span>
       <span className="text-ink-2">手动执行不受影响。</span>
@@ -124,25 +126,25 @@ export function AccountActions(props: AccountActionsProps) {
   const menuItemDanger = `${menuItemBase} text-bad hover:bg-bad/10`
 
   return (
-    <div className="ml-auto flex flex-none items-center gap-2">
+    <div className={`ml-auto flex items-center gap-2 ${props.signal ? 'flex-wrap justify-end' : 'flex-none'}`}>
       {/* 主操作槽：同一按钮跨 running 存活，壳/提示/动作随态切，标签走日记式换字。
           两态若拆成两个分支会各自挂载，InkRewrite 当首帧不播——必须合一。 */}
-      <Tooltip content={(props.running || props.hasPendingSupplement) ? terminateTip : execTip} delay={ACTION_TIP_MS} arrow>
+      <Tooltip content={active ? terminateTip : execTip} delay={ACTION_TIP_MS} arrow>
         <button
           className={
-            (props.running || props.hasPendingSupplement)
+            active
               ? `${BTN} border-warn/40 font-[550] text-warn hover:bg-warn/10 disabled:opacity-45 disabled:cursor-default disabled:hover:bg-transparent`
-              : `${BTN} border-ink-1 bg-ink-1 font-[550] text-surface`
+              : `${BTN} border-ink-1 bg-ink-1 font-[550] text-surface disabled:cursor-default disabled:opacity-45`
           }
           onClick={active ? () => setTerminateOpen(true) : props.onExec}
           // 终止在途禁用防连点；disabled 吞指针事件、气泡不触发，故补原生 title 兜「为何不可点」。
-          disabled={props.terminating}
+          disabled={props.terminating || !!props.runDisabledReason || (props.signal && props.running)}
           title={props.terminating ? '终止请求已发出，正在停止…' : undefined}
-          aria-label={props.terminating ? '终止中' : (props.running || props.hasPendingSupplement) ? '终止执行' : '立即执行'}
+          aria-label={execLabel}
         >
           {/* 同槽日记式换字：立即执行↔终止↔终止中，纯 opacity crossfade，无 FLIP。 */}
           <InkRewrite
-            text={props.terminating ? '■ 终止中…' : (props.running || props.hasPendingSupplement) ? '■ 终止执行' : '▶ 立即执行'}
+            text={execText}
             tone="label"
           />
         </button>
@@ -153,7 +155,7 @@ export function AccountActions(props: AccountActionsProps) {
           className={`${BTN} border-line text-ink-2 hover:border-ink-3/40 hover:text-ink-1`}
           disabled={props.toggling}
           onClick={props.onToggleStarted}
-          aria-label={props.isStarted ? '暂停自动执行' : '启动自动执行'}
+          aria-label={`${props.isStarted ? '暂停' : '启动'}自动执行`}
         >
           {/* 同槽日记式换字：启动↔暂停，纯 opacity crossfade，无 FLIP。 */}
           <InkRewrite text={props.isStarted ? '⏸ 暂停' : '▶ 启动'} tone="label" />
@@ -161,16 +163,23 @@ export function AccountActions(props: AccountActionsProps) {
       </Tooltip>
 
       {/* 执行中禁用：disabled 会吞掉指针事件、气泡不触发，故保留原生 title 兜「为何不可点」。 */}
-      <Tooltip content={clearTip} delay={ACTION_TIP_MS} arrow>
+      {onClear && <Tooltip content={clearTip} delay={ACTION_TIP_MS} arrow>
         <button
           className={`${BTN} border-line text-ink-2 hover:border-ink-3/40 hover:bg-fill hover:text-ink-1 disabled:opacity-40`}
-          onClick={askClear}
+          onClick={() => setConfirm({
+            title: '一键清仓',
+            body: `把 ${props.name} 的所有持仓平掉、回到空仓。此操作不可撤销。`,
+            okText: '确认清仓',
+            danger: true,
+            primary: true,
+            onConfirm: onClear,
+          })}
           disabled={props.executing}
           title={props.executing ? '执行中，无法清仓' : undefined}
         >
           一键清仓
         </button>
-      </Tooltip>
+      </Tooltip>}
 
       {/* ⋯ 仅留罕见/不可逆的配置类动作 */}
       <div className="relative" ref={ref}>
@@ -181,7 +190,9 @@ export function AccountActions(props: AccountActionsProps) {
             if (menuOpen) closeMenu()
             else openMenu()
           }}
+          ref={menuTrigger}
           aria-label="更多操作"
+          aria-expanded={menuOpen}
         >
           ⋯
         </button>
@@ -192,7 +203,7 @@ export function AccountActions(props: AccountActionsProps) {
               if (!menuOpen) setMenuMounted(false)
             }}
           >
-            <button className={menuItem} onClick={() => { closeMenu(); props.onEdit() }}>
+            <button className={menuItem} onClick={() => { closeMenu(); menuTrigger.current?.focus({ preventScroll: true }); props.onEdit() }}>
               <Pencil size={16} className="shrink-0" aria-hidden />
               <span>编辑账户</span>
             </button>
@@ -208,7 +219,9 @@ export function AccountActions(props: AccountActionsProps) {
                 closeMenu()
                 setConfirm({
                   title: '删除账户',
-                  body: `删除 ${props.name} 及其全部执行/绑定记录。此操作不可撤销。`,
+                  body: props.signal
+                    ? `删除 ${props.name} 及其相关记录。此操作不可撤销。`
+                    : `删除 ${props.name} 及其全部执行/绑定记录。此操作不可撤销。`,
                   okText: '删除',
                   danger: true,
                   onConfirm: props.onDelete,
@@ -222,7 +235,8 @@ export function AccountActions(props: AccountActionsProps) {
         )}
       </div>
 
-      <TerminateDialog open={terminateOpen && active} running={props.running} name={props.name} disabled={props.terminating} onClose={() => setTerminateOpen(false)} onConfirm={(mode) => { setTerminateOpen(false); props.onTerminate(mode) }} />
+      {onTerminate && <TerminateDialog open={terminateOpen && active} running={props.running} name={props.name} disabled={!!props.terminating}
+        onClose={() => setTerminateOpen(false)} onConfirm={(mode) => { setTerminateOpen(false); onTerminate(mode) }} />}
       <ConfirmModal spec={confirm} onClose={() => setConfirm(null)} />
     </div>
   )

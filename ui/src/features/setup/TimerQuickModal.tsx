@@ -36,6 +36,7 @@ import {
 } from '@/features/setup/cron'
 import { previewSchedule, updateAccount, type SchedulePreview } from '@/lib/api/accounts'
 import { useToastStore } from '@/stores/ui'
+import { SIGNAL_CHANNEL } from '@/features/signal/signalData'
 import { useChannelDescriptor } from '@/stores/channels'
 
 function Switch({ on, ariaLabel, onClick }: { on: boolean; ariaLabel: string; onClick: () => void }) {
@@ -68,17 +69,19 @@ function draftFromCron(
   night?: NightSchedule | null,
   supplement?: Supplement | null,
   gmSessions?: GMSessions | null,
+  enabled = true,
 ): { state: TimerEditorState; fromComplex: boolean } {
   const parsed = parseSavedTimer(market, cronExpr, night, supplement, gmSessions)
+  const autoOn = parsed.autoOn && enabled
   const quick = parsed.timerTab === 'quick'
-  if (quick) return { state: { ...parsed, timerTab: 'quick', rawCron: '' }, fromComplex: false }
+  if (quick) return { state: { ...parsed, autoOn, timerTab: 'quick', rawCron: '' }, fromComplex: false }
 
   // 有表达式但非快捷：保留开关，预设回到市场默认，避免误把高级时刻当已选中。
   const base = defaultTimerEditorState(market)
   return {
     state: {
       ...base,
-      autoOn: parsed.autoOn,
+      autoOn,
       gm_sessions: parsed.gm_sessions,
       timerTab: 'quick',
       rawCron: '',
@@ -106,6 +109,8 @@ export interface TimerQuickModalProps {
   accountId: number
   accountName: string
   tradeChannel: string
+  scheduleChannel?: string
+  isStarted?: boolean
   /** 当前存储的 cron_expr。 */
   cronExpr: string
   supplement?: Supplement | null
@@ -128,13 +133,18 @@ function TimerQuickModalReady({
   supplement,
   channelOptions,
   tradeChannel,
+  scheduleChannel = tradeChannel,
+  isStarted,
   onClose,
   onSaved,
 }: TimerQuickModalProps & { scheduleKind: ScheduleKind; nightSchedule?: NightSchedule | null }) {
+  const signal = tradeChannel === SIGNAL_CHANNEL
+  const autoLabel = signal ? '自动执行' : '自动调仓'
+  const enabled = !signal || Boolean(isStarted)
   const gmSessions = channelOptions?.gm
   const toast = useToastStore((s) => s.toast)
   const market = scheduleKind
-  const [state, setState] = useState<TimerEditorState>(() => draftFromCron(market, cronExpr, nightSchedule, supplement, gmSessions).state)
+  const [state, setState] = useState<TimerEditorState>(() => draftFromCron(market, cronExpr, nightSchedule, supplement, gmSessions, enabled).state)
   // 开关切到「开」的那一帧才播入场；初次以开挂载不播（首帧就位）。
   const autoOnFade = useRemountFade(state.autoOn)
   const [fromComplex, setFromComplex] = useState(false)
@@ -145,12 +155,12 @@ function TimerQuickModalReady({
 
   useEffect(() => {
     if (!open) return
-    const d = draftFromCron(market, cronExpr, nightSchedule, supplement, gmSessions)
+    const d = draftFromCron(market, cronExpr, nightSchedule, supplement, gmSessions, enabled)
     setState(d.state)
     setFromComplex(d.fromComplex)
     setSaving(false)
     setSaveError(null)
-  }, [open, market, cronExpr, nightSchedule, supplement, gmSessions])
+  }, [open, market, cronExpr, nightSchedule, supplement, gmSessions, enabled])
   const patch = (p: Partial<TimerEditorState>) => {
     setSaveError(null)
     setState((prev) => ({ ...prev, ...p }))
@@ -170,10 +180,13 @@ function TimerQuickModalReady({
 
   const intent = asQuickIntent(market, state)
   const cronNext = fromComplex && state.autoOn ? cronExpr : timerStateToCronExpr(market, intent, nightSchedule)
-  const nextSupplement = useMemo(() => timerSupplement({ autoOn: state.autoOn, supN: state.supN, supM: state.supM }), [state.autoOn, state.supN, state.supM])
-  const nextSessions = useMemo(() => gmTimerSessions(tradeChannel, { gm_sessions: state.gm_sessions }), [tradeChannel, state.gm_sessions])
-  const sessionsChanged = JSON.stringify(nextSessions) !== JSON.stringify(gmTimerSessions(tradeChannel, { gm_sessions: gmSessions }))
-  const dirty = !cronExprEqual(cronNext, cronExpr) || JSON.stringify(nextSupplement) !== JSON.stringify(supplement ?? null) || sessionsChanged
+  const nextSupplement = useMemo(() => signal ? null : timerSupplement({ autoOn: state.autoOn, supN: state.supN, supM: state.supM }), [signal, state.autoOn, state.supN, state.supM])
+  const nextSessions = useMemo(() => gmTimerSessions(scheduleChannel, { gm_sessions: state.gm_sessions }), [scheduleChannel, state.gm_sessions])
+  const sessionsChanged = JSON.stringify(nextSessions) !== JSON.stringify(gmTimerSessions(scheduleChannel, { gm_sessions: gmSessions }))
+  const enabledChanged = signal && state.autoOn !== (enabled && Boolean(cronExpr.trim()))
+  const cronChanged = (!signal || state.autoOn) && !cronExprEqual(cronNext, cronExpr)
+  const supplementChanged = !signal && JSON.stringify(nextSupplement) !== JSON.stringify(supplement ?? null)
+  const dirty = enabledChanged || cronChanged || supplementChanged || sessionsChanged
   const validationError = timerEditorError(state)
   useEffect(() => {
     setPreview(null)
@@ -181,7 +194,7 @@ function TimerQuickModalReady({
     if (!open || !cronNext || validationError) return
     const controller = new AbortController()
     const timer = window.setTimeout(() => {
-      void previewSchedule(tradeChannel, cronNext, {
+      void previewSchedule(scheduleChannel, cronNext, {
         limit: 4, gm_sessions: nextSessions, supplement: nextSupplement,
       }, controller.signal).then((result) => {
         if (!controller.signal.aborted) setPreview(result)
@@ -190,7 +203,7 @@ function TimerQuickModalReady({
       })
     }, 250)
     return () => { window.clearTimeout(timer); controller.abort() }
-  }, [open, tradeChannel, cronNext, nextSessions, nextSupplement, validationError])
+  }, [open, scheduleChannel, cronNext, nextSessions, nextSupplement, validationError])
 
   const save = async () => {
     if (validationError) return
@@ -207,10 +220,10 @@ function TimerQuickModalReady({
     try {
       await updateAccount(accountId, {
         cron_expr: cronNext,
-        supplement: nextSupplement,
+        ...(signal ? { is_started: state.autoOn } : { supplement: nextSupplement }),
         ...(sessionsChanged ? { channel_options: { ...channelOptions, ...(nextSessions ? { gm: nextSessions } : {}) } } : {}),
       })
-      toast(cronNext ? '节奏已更新' : '已关闭自动调仓节奏')
+      toast(enabledChanged ? state.autoOn ? '已启动' : '已暂停' : cronNext ? '节奏已更新' : '已关闭自动调仓节奏')
       onSaved()
       onClose()
     } catch (e) {
@@ -264,9 +277,9 @@ function TimerQuickModalReady({
     >
       <div className="space-y-5">
         <div className="flex items-center gap-3">
-          <Switch ariaLabel="自动调仓" on={state.autoOn} onClick={() => patch({ autoOn: !state.autoOn })} />
+          <Switch ariaLabel={autoLabel} on={state.autoOn} onClick={() => patch({ autoOn: !state.autoOn })} />
           <div>
-            <div className="text-sm font-[640]">{state.autoOn ? '自动调仓已开' : '自动调仓已关'}</div>
+            <div className="text-sm font-[640]">{autoLabel}{state.autoOn ? '已开' : '已关'}</div>
             <div className="text-xs text-ink-3">
               {state.autoOn ? '按下方节奏自动执行' : '仅手动 / 外接触发'}
             </div>
@@ -274,6 +287,7 @@ function TimerQuickModalReady({
         </div>
 
         <div
+          inert={!state.autoOn}
           className={`grid transition-[grid-template-rows,opacity] ${MOTION_LAYOUT} ${
             state.autoOn ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
           }`}
@@ -323,14 +337,14 @@ function TimerQuickModalReady({
                   </div>
                 )}
 
-                <GMSessionControls channel={tradeChannel} value={state.gm_sessions} onChange={(gm_sessions) => patch({ gm_sessions })} />
+                <GMSessionControls channel={scheduleChannel} signalOnly={signal} value={state.gm_sessions} onChange={(gm_sessions) => patch({ gm_sessions })} />
 
-                <SupplementControls
+                {!signal && <SupplementControls
                   supN={state.supN}
                   supM={state.supM}
                   onN={(supN) => patch({ supN })}
                   onM={(supM) => patch({ supM })}
-                />
+                />}
               </div>
 
               <div className="min-w-0 border-t border-line pt-4 md:border-t-0 md:border-l md:pt-0 md:pl-6">
@@ -360,7 +374,7 @@ function TimerQuickModalReady({
 
 /** 渠道能力未加载时不猜测调度类型，也不挂载可编辑弹层。 */
 export function TimerQuickModal(props: TimerQuickModalProps) {
-  const schedule = useChannelDescriptor(props.tradeChannel)?.schedule
+  const schedule = useChannelDescriptor(props.scheduleChannel ?? props.tradeChannel)?.schedule
   return schedule
     ? <TimerQuickModalReady {...props} scheduleKind={schedule.kind} nightSchedule={schedule.night} />
     : null

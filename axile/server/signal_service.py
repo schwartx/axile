@@ -2,7 +2,8 @@
 
 import asyncio
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
+from uuid import uuid4
 
 from loguru import logger
 
@@ -31,6 +32,7 @@ async def calculate_signal(
     portfolio_code: str | None,
     *,
     leverage_overrides: dict[str, float] | None = None,
+    size_weights: bool = False,
 ) -> SignalCalculation:
     """手动刷新、试跑与定时计算共用账户与行情函数。"""
     config = parse_input(SignalAccountConfig, account.account_config)
@@ -48,6 +50,7 @@ async def calculate_signal(
         portfolio_code,
         account.execution_timeout,
         settings,
+        size_weights=size_weights,
     )
 
 
@@ -60,13 +63,14 @@ def _signal_notification(
     account: SignalAccountContext,
     event_id: str,
     at: str,
-    scheduled_at: str,
+    scheduled_at: str | None,
     result: SignalCalculation | None,
     *,
     is_test: bool = False,
+    trigger_source: Literal["manual", "scheduler"] = "scheduler",
 ) -> dict[str, object]:
     failed = result is None
-    targets = result.target.targets if result is not None and result.target is not None else {}
+    targets = result.target_quantities() if result is not None else {}
     assets = result.assets if result is not None else None
     positions = (
         [to_payload(position, mode="json", exclude={"extra"}) for position in assets.positions]
@@ -80,7 +84,7 @@ def _signal_notification(
         "execution": {
             "id": None,
             "kind": "signal",
-            "trigger_source": "notification_test" if is_test else "scheduler",
+            "trigger_source": "notification_test" if is_test else trigger_source,
             "status": "FAILED" if failed else "SUCCEEDED",
             "success": not failed,
             "error": "账户数据、行情或组合计算失败，请查看服务日志" if failed else None,
@@ -132,25 +136,39 @@ def signal_notification_sample(name: str, market: str) -> tuple[dict[str, object
 
 
 async def run_scheduled_signal(account_id: int, scheduled_at: datetime) -> None:
-    """加载已绑定组合，原子保存同一次触发的结果与待发通知。"""
+    """按定时触发生成信号，忽略已经暂停或归档的账户。"""
+    account = await get_account(account_id)
+    if (
+        account is not None
+        and not account.archived_at
+        and account.is_started
+        and account.trade_channel == SIGNAL_CHANNEL
+    ):
+        await publish_account_signal(account, scheduled_at)
+
+
+async def publish_account_signal(account: Account, scheduled_at: datetime | None = None) -> str | None:
+    """计算并原子保存目标快照、资产快照和待发通知。"""
     from axile.server.execution.registry import clear_account_asset_refresh, try_register_account_asset_refresh
 
-    account = await get_account(account_id)
-    if account is None or account.archived_at or not account.is_started or account.trade_channel != SIGNAL_CHANNEL:
-        return
+    account_id = account.id
+    assert account_id is not None
     portfolio_id = account.portfolio_id
     if portfolio_id is None or not try_register_account_asset_refresh(account_id):
-        return
+        return None
     try:
         bound = await native_operation("portfolio_operation", {"op": "bound_context", "account_id": account_id})
         portfolio = bound["portfolio"]
         if portfolio is None or portfolio["id"] != portfolio_id:
-            return
-        result = await _scheduled_calculation(account, portfolio)
-        planned = scheduled_at.astimezone(UTC).isoformat()
-        event_id = f"signal:{account_id}:{planned}"
+            return None
+        if scheduled_at is None:
+            result = await calculate_signal(account, portfolio["custom_calc_py_code"], size_weights=True)
+            planned = None
+        else:
+            result = await _scheduled_calculation(account, portfolio)
+            planned = scheduled_at.astimezone(UTC).isoformat()
+        event_id = f"signal:{account_id}:{planned or uuid4()}"
         at = clock_now_iso()
-        targets = result.target.targets if result is not None and result.target is not None else None
         await native_operation(
             "target_operation",
             {
@@ -158,10 +176,8 @@ async def run_scheduled_signal(account_id: int, scheduled_at: datetime) -> None:
                 "account_id": account_id,
                 "portfolio_id": portfolio_id,
                 "revision": account.runtime_sync.revision if account.runtime_sync is not None else None,
-                "target_mode": "quantity",
                 "source": "signal",
-                "raw_weights": targets,
-                "normalized_weights": targets,
+                **(result.snapshot_fields() if result is not None else {"raw_weights": None}),
                 "calculated_at": at,
                 "account_assets": to_payload(result.assets, mode="json") if result is not None else None,
                 "notification": {
@@ -175,18 +191,20 @@ async def run_scheduled_signal(account_id: int, scheduled_at: datetime) -> None:
                         at,
                         planned,
                         result,
+                        trigger_source="manual" if scheduled_at is None else "scheduler",
                     ),
                 },
             },
         )
         wake_notifications(account_id)
+        return event_id
     finally:
         clear_account_asset_refresh(account_id)
 
 
 async def _scheduled_calculation(account: Account, portfolio: dict[str, Any]) -> SignalCalculation | None:
     try:
-        return await calculate_signal(account, portfolio["custom_calc_py_code"])
+        return await calculate_signal(account, portfolio["custom_calc_py_code"], size_weights=True)
     except (ValueError, TimeoutError):
         logger.bind(account_id=account.id).exception("调仓信号计算失败")
         return None

@@ -45,6 +45,7 @@ export function HoldingsPreviewTable({
   positionValueLabel,
   quantityMode = false,
   quantityLabel = '',
+  compact = false,
   onSelect,
   columnWidths = null,
   onColumnWidthsChange,
@@ -53,9 +54,10 @@ export function HoldingsPreviewTable({
   /** `null` = 对照仍在加载，表结构在、单元格骨架占位。 */
   holdings: HoldingPreviewRow[] | null
   currency?: string
-  positionValueLabel: string
+  positionValueLabel?: string
   quantityMode?: boolean
   quantityLabel?: string
+  compact?: boolean
   onSelect?: (symbol: string, keyboardOpened: boolean) => void
   columnWidths?: number[] | null
   onColumnWidthsChange?: (widths: number[]) => void
@@ -68,7 +70,8 @@ export function HoldingsPreviewTable({
   const [columns, setColumns] = useState<(typeof INITIAL_COLUMN)[]>([])
   const canResize = !!holdings?.length && !!onColumnWidthsChange
   const widths = canResize ? columnWidths : null
-  const headers = ['品种', quantityMode ? '持仓/可用' : '仓位', quantityMode ? '目标数量' : '持仓/可用', positionValueLabel]
+  const headers = ['品种', quantityMode ? '持仓/可用' : '仓位', quantityMode ? '目标数量' : '持仓/可用']
+  if (positionValueLabel) headers.push(positionValueLabel)
   const numberClass = `${PREVIEW_NUMBER} ${widths ? 'pl-2' : 'pl-4'}`
   const numberTextClass = widths ? 'block truncate' : undefined
 
@@ -112,7 +115,7 @@ export function HoldingsPreviewTable({
     <div
       ref={viewport}
       tabIndex={0}
-      className="quiet-scrollbar relative h-48 min-w-0 overflow-y-auto overscroll-contain pr-2 [scrollbar-gutter:stable] focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-line"
+      className={`quiet-scrollbar relative ${compact ? 'max-h-48' : 'h-48'} min-w-0 overflow-y-auto overscroll-contain pr-2 [scrollbar-gutter:stable] focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-line`}
     >
       <table ref={table} aria-label={quantityMode ? '目标数量与持仓' : '当前持仓'}
         className={`${widths ? 'table-fixed' : 'w-full table-auto'} border-separate border-spacing-0`}
@@ -167,14 +170,14 @@ export function HoldingsPreviewTable({
                 <td className={`h-8 ${numberClass}`}>
                   <Skeleton className="ml-auto h-3 w-12" />
                 </td>
-                <td className={`h-8 ${numberClass}`}>
+                {positionValueLabel && <td className={`h-8 ${numberClass}`}>
                   <Skeleton className="ml-auto h-3 w-14" />
-                </td>
+                </td>}
               </tr>
             ))
           ) : holdings.length === 0 ? (
             <tr>
-              <td colSpan={4} className="h-40 text-[14px] text-ink-3">
+              <td colSpan={headers.length} className="h-40 text-[14px] text-ink-3">
                 {observed ? '当前空仓' : '持仓尚未查询'}
               </td>
             </tr>
@@ -192,7 +195,7 @@ export function HoldingsPreviewTable({
                 <span className={numberTextClass} title={widths ? quantities : undefined}>{quantities}</span>
               </td>
               const value = holding.value == null ? '—' : withCurrency(fmtMoney(holding.value), currency)
-              const targetValue = quantityMode ? quantityText(holding.quantityTarget?.target_quantity, quantityLabel) : weight
+              const targetValue = quantityMode ? quantityText(holding.quantityTarget?.target_quantity ?? holding.snapshotQuantity, quantityLabel) : weight
               return (
                 <tr key={holding.key} onClick={onSelect ? () => onSelect(holding.symbol, false) : undefined}
                   className={`border-t border-line text-[13.5px] first:border-t-0 ${onSelect ? 'cursor-pointer hover:bg-fill has-[:focus-visible]:bg-fill' : ''}`}>
@@ -207,9 +210,9 @@ export function HoldingsPreviewTable({
                     {needsAdjustment && <span className="sr-only"> · 待调整</span>}
                   </td>
                   {!quantityMode && quantitiesCell}
-                  <td className={`num h-8 ${numberClass} font-medium text-ink-1`}>
+                  {positionValueLabel && <td className={`num h-8 ${numberClass} font-medium text-ink-1`}>
                     <span className={numberTextClass} title={widths ? value : undefined}>{value}</span>
-                  </td>
+                  </td>}
                 </tr>
               )
             })

@@ -3,9 +3,10 @@
 import asyncio
 from contextlib import closing
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from msgspec import Meta
 
 from axile.channels.market_data import MarketDataUnavailable
@@ -21,14 +22,15 @@ from axile.common.feishu import push_feishu_card
 from axile.common.gm_symbols import GM_SYMBOL_RESOLVER
 from axile.common.notification_function import run_notification_function
 from axile.common.serialization import to_payload
+from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.models.unified_price import UnifiedPriceData
 from axile.server._native import _core
 from axile.server.api.inputs import json_body
-from axile.server.api.routes.account_support import _get_account_or_404
+from axile.server.api.routes.account_support import _get_account_or_404, ensure_account_current
 from axile.server.error_details import exception_details
 from axile.server.native_store import native_operation
 from axile.server.signal_runner import run_signal, run_signal_account_test, run_signal_quote_test
-from axile.server.signal_service import signal_notification_sample, signal_quantity_unit
+from axile.server.signal_service import publish_account_signal, signal_notification_sample, signal_quantity_unit
 from axile.server.tushare_quotes import read_tushare_quotes
 
 router = APIRouter()
@@ -204,11 +206,60 @@ async def signal_config(account_id: int) -> dict[str, Any]:
     return {"account_config": account.account_config, "quantity_unit": signal_quantity_unit(account.market)}
 
 
+@router.post("/{account_id}/signal/run", response_model=None)
+async def run_signal_now(account_id: int) -> dict[str, str]:
+    """手动生成并提交调仓信号，包括暂停定时计算的账户。"""
+    account = await _get_account_or_404(account_id)
+    ensure_account_current(account)
+    if account.trade_channel != SIGNAL_CHANNEL:
+        raise HTTPException(409, detail="该账户不支持调仓信号")
+    if account.portfolio_id is None:
+        raise HTTPException(409, detail="请先绑定组合")
+    try:
+        event_id = await publish_account_signal(account)
+    except _core.NativeError as exc:
+        if exc.args[0] in {"TARGET_INVALID", "ACCOUNT_CONFLICT", "ARCHIVED"}:
+            raise HTTPException(409, detail=exc.args[1]) from exc
+        raise
+    except (ValueError, TimeoutError) as exc:
+        raise HTTPException(422, detail=exception_details(exc, "调仓信号执行失败")) from exc
+    if event_id is None:
+        raise HTTPException(409, detail="账户正在计算或刷新，或者组合绑定已变更")
+    return {"event_id": event_id, "message": "执行完成"}
+
+
+@router.get("/{account_id}/signal/records", response_model=None)
+async def list_signal_records(
+    account_id: int,
+    limit: Annotated[int, Query(ge=1, le=100)] = 30,
+    before: Annotated[int | None, Query(ge=1, le=2**63 - 1)] = None,
+    days: Annotated[int | None, Query(ge=1, le=365)] = None,
+    status: Literal["SUCCEEDED", "FAILED"] | None = None,
+    symbol: Annotated[str | None, Query(max_length=80)] = None,
+) -> dict[str, Any]:
+    """分页读取账户已保存的调仓信号。"""
+    account = await _get_account_or_404(account_id)
+    if account.trade_channel != SIGNAL_CHANNEL:
+        raise HTTPException(404, detail="该账户不是调仓信号账户")
+    since = (clock_now() - timedelta(days=days)).isoformat() if days is not None else None
+    return await native_operation(
+        "signal_records",
+        {
+            "account_id": account_id,
+            "limit": limit,
+            "before": before,
+            "since": since,
+            "status": status,
+            "symbol": (symbol or "").strip() or None,
+        },
+    )
+
+
 @router.post("/signal/preview", response_model=None)
 async def preview_signal(
     payload: Annotated[SignalPreviewRequest, Depends(json_body(SignalPreviewRequest))],
 ) -> dict[str, Any]:
-    """运行真实的自定义函数和组合代码，返回目标数量。"""
+    """运行真实的自定义函数和组合代码，返回原始组合目标。"""
     try:
         context = await native_operation(
             "portfolio_operation", {"op": "context", "portfolio_id": payload.portfolio_id, "account_id": None}

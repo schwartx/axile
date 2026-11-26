@@ -11,6 +11,17 @@ from axile.common.serialization import parse_input, provided_fields, to_payload
 TargetMode = Literal["weight", "quantity"]
 
 
+def normalize_target_weights(
+    targets: dict[str, float], long_leverage: float, short_leverage: float, precision: float
+) -> dict[str, float]:
+    """先应用方向杠杆，再按账户权重精度规整。"""
+    result = {}
+    for symbol, weight in targets.items():
+        scaled = weight * (long_leverage if weight > 0 else short_leverage)
+        result[symbol] = round(round(scaled / precision) * precision, 6)
+    return result
+
+
 @dataclass(kw_only=True)
 class PortfolioTarget:
     """一份完整的带符号目标持仓；数量使用渠道原生交易单位。"""

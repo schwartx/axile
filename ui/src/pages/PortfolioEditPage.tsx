@@ -28,7 +28,7 @@ import { BatchExecutionResults } from '@/features/portfolio/BatchExecutionResult
 import type { BatchResult } from '@/features/portfolio/batchExecutionSnapshot'
 import { targetSnapshotText } from '@/features/portfolio/targetSnapshotDisplay'
 import { portfolioTargetSummary } from '@/features/portfolio/portfolioCardSummary'
-import { portfolioQuantityUnit } from '@/features/portfolio/portfolioMarkets'
+import { portfolioMarketDescriptor, portfolioQuantityUnit } from '@/features/portfolio/portfolioMarkets'
 import { useCustomCalcValidation } from '@/features/portfolio/useCustomCalcValidation'
 import { PortfolioTrialAccounts } from '@/features/portfolio/PortfolioTrialAccounts'
 import { portfolioNameVtName } from '@/features/portfolio/viewTransition'
@@ -521,7 +521,9 @@ export function PortfolioEditPage() {
                           text={`${account.name} · ${describeLeverage(
                             account.long_leverage ?? null,
                             account.short_leverage ?? null,
-                            channels?.find((channel) => channel.channel === account.trade_channel)?.ui.show_short_leverage ?? true,
+                            account.trade_channel === SIGNAL_CHANNEL
+                              ? portfolioMarketDescriptor(channels ?? [], account.market)?.ui.show_short_leverage ?? false
+                              : channels?.find((channel) => channel.channel === account.trade_channel)?.ui.show_short_leverage ?? true,
                           )}`}
                         />
                         <span className="flex-none rounded-chip bg-fill px-1.5 py-px text-[11.5px] text-ink-2">

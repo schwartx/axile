@@ -44,7 +44,7 @@ export function GMSessionControls({ channel, signalOnly, value, onChange }: {
       })}
     </div>
     <p className="text-xs text-ink-3">{signalOnly
-      ? '每个已开启阶段在交易日独立生成一次调仓信号。'
+      ? '每个已开启阶段在交易日独立执行一次。'
       : '每个已开启阶段独立触发一次；09:25–09:30 仅等待已有订单。补发不跨阶段，账户忙时跳过。撤单受限时保留原委托，确认结束后才可换单。'}</p>
   </div>
 }

@@ -1,11 +1,10 @@
-import { CashFlowPanel } from '@/features/account/CashFlowPanel'
+import { AccountOverviewConfigButton, AccountOverviewEquity, AccountOverviewIdentity, AccountOverviewPortfolio } from '@/features/account/AccountOverviewHero'
 import { ArchiveAction } from '@/features/account/ArchiveAction'
 import { algorithmScheduleSummary } from '@/features/account/algorithmSchedule'
 import { shanghaiLabel } from '@/features/history/costs'
 import { useAccountConnection } from '@/stores/liveConnection'
 import { useConnectedAssets } from '@/features/account/useConnectedAssets'
 import { RuntimeSyncStatus } from '@/features/account/RuntimeSyncStatus'
-import { AssetObservationTime } from '@/features/account/AssetObservationTime'
 import { AssetRefreshFeedback } from '@/features/account/AssetRefreshFeedback'
 import { AssetRefreshStatus } from '@/features/account/AssetRefreshStatus'
 import { AccountConnectionStatus } from '@/features/account/AccountConnectionStatus'
@@ -22,7 +21,7 @@ import { executionOutcome } from '@/features/account/executionOutcome'
 import { formatRecentExecution } from '@/lib/scheduleTime'
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
 import { useViewTransitionState } from 'react-router'
-import { ArrowLeftRight, RefreshCw, Video, VideoOff } from 'lucide-react'
+import { Video, VideoOff } from 'lucide-react'
 import { cardPerformance, currentEquity } from '@/features/dashboard/performance'
 import { PerformanceStatus } from '@/features/dashboard/PerformanceStatus'
 import { Link, useNavigate } from '@/components/ui/nav'
@@ -52,7 +51,6 @@ import {
   INTEGRITY_TEXT_CLASS,
   positionValueLabelOf,
   STATUS_TEXT_CLASS,
-  channelLabel,
 } from '@/features/dashboard/display'
 import { isExecutingStatus, phaseLabel, runVerb } from '@/features/dashboard/execProgress'
 import { executionJustSettled, useRunning } from '@/stores/liveExec'
@@ -448,20 +446,7 @@ export function AccountDetail({
       {/* Hero */}
       <Card className="p-3">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-          <div className="flex min-w-0 flex-wrap items-center gap-3">
-            <BackLink to="/" label="返回所有账户" />
-            {/* 与舰队卡 / 组合行 / 编辑页标题名配对做共享元素 FLIP（平移 + 微缩）。 */}
-            <span
-              className="text-[17px] font-[620]"
-              style={nameVt ? { viewTransitionName: `account-name-${accountId}` } : undefined}
-            >
-              {item.name}
-            </span>
-            {/* 渠道徽章与账户名同一逻辑单元：随名字同门控挂名、同轨飞行（nameVt）。 */}
-            <Chip style={nameVt ? { viewTransitionName: `account-channel-${accountId}` } : undefined}>
-              {channelLabel(item.trade_channel, item.market)}
-            </Chip>
-          </div>
+          <AccountOverviewIdentity item={item} nameTransition={nameVt} />
           {gate.gate === 'paused' && <Chip>{gate.label}</Chip>}
           <AccountConnectionStatus accountId={accountId} independentMarketData={channelDescriptor?.independent_market_data} />
           <AccountActions
@@ -500,72 +485,25 @@ export function AccountDetail({
           </div>
         )}
 
-        <div className="mt-1.5 text-[14.5px] text-ink-2">
-          {'组合 '}
-          {portfolioId != null ? (
-            <Link
-              to={`/portfolios/${portfolioId}/edit`}
-              className="inline-flex min-w-0 max-w-60 align-middle font-semibold text-accent hover:underline"
-            >
-              {/* 组合名是自由文本、长度无界：槽位截断 + hover 原地播全名。 */}
-              <OverflowText className="min-w-0" text={portfolioName ?? `#${portfolioId}`} />
-            </Link>
-          ) : (
-            <span className="align-middle text-ink-3">未绑定</span>
-          )}
-          <Tooltip content={portfolioId != null ? '更换组合' : '绑定组合'}>
-            <span className="ml-0.5 inline-flex align-middle">
-              <Link
-                to={`/accounts/${accountId}/edit/portfolio`}
-                aria-label={portfolioId != null ? '更换组合' : '绑定组合'}
-                className="grid h-5 w-5 place-items-center rounded-md text-ink-3 hover:bg-fill hover:text-ink-1"
-              >
-                <ArrowLeftRight size={13} aria-hidden />
-              </Link>
-            </span>
-          </Tooltip>
-        </div>
+        <AccountOverviewPortfolio portfolioId={portfolioId} portfolioName={portfolioName}
+          editTo={`/accounts/${accountId}/edit/portfolio`} />
         <div className="mt-2 flex flex-wrap items-end gap-x-6 gap-y-2">
-          <div className="min-w-0 max-w-full shrink-0 [--number-flow-mask-height:0.08em]">
-            {/* 当前权益独立于历史绩效金额。 */}
-            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-              <div className="num whitespace-nowrap text-[35px] leading-none font-[640] tracking-tight">
-                {equity == null ? '—' : <NumberTicker value={equity} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} />}
-                <span className="ml-1.5 text-[17px] font-medium text-ink-3">{displayCurrencyUnit(item.currency)}</span>
-              </div>
-              <span className="inline-flex items-baseline whitespace-nowrap text-[14.5px] text-ink-2">
-                {pct == null ? <span>{dayLabel} —</span> : (
-                  <span className={`num ${pct > 0 ? 'text-up' : pct < 0 ? 'text-down' : 'text-ink-2'}`}>
-                    {dayLabel} {pct >= 0 ? '+' : '−'}
-                    <NumberTicker value={Math.abs(pct)} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />
-                  </span>
-                )}
-                {item.performance?.status !== 'ready' && <PerformanceStatus status={item.performance?.status} />}
-              </span>
-              <CashFlowPanel key={accountId} accountId={accountId} />
-            </div>
-            <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-ink-3">
-              <span><AssetObservationTime observedAt={item.asset_observed_at} /></span>
-              <Tooltip content={connection.status !== 'ready' ? '连接账户后可刷新资产' : '刷新账户资产'}>
-                <span className="inline-flex">
-                  <button
-                    type="button"
-                    onClick={onRefreshAssets}
-                    disabled={refreshingAssets || connectedAssets.refreshing || connection.status !== 'ready'}
-                    aria-label={refreshingAssets || connectedAssets.refreshing ? '正在查询账户资产' : '刷新账户资产'}
-                    title={connection.status !== 'ready' ? '连接账户后可刷新资产' : '刷新账户资产'}
-                    className="grid h-6 w-6 cursor-pointer place-items-center rounded-md text-ink-3 hover:bg-fill hover:text-ink-1 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
-                  >
-                    <RefreshCw
-                      size={14}
-                      className={refreshingAssets || connectedAssets.refreshing ? 'animate-spin motion-reduce:animate-none' : undefined}
-                    />
-                  </button>
+          <AccountOverviewEquity accountId={accountId} equity={equity} currency={item.currency}
+            observedAt={item.asset_observed_at}
+            refreshing={refreshingAssets || connectedAssets.refreshing}
+            refreshDisabledReason={connection.status !== 'ready' ? '连接账户后可刷新资产' : undefined}
+            onRefresh={onRefreshAssets}
+            feedback={<AssetRefreshFeedback accountId={accountId} manualError={assetRefreshError} automaticError={connectedAssets.error} />}
+            summary={<span className="inline-flex items-baseline whitespace-nowrap text-[14.5px] text-ink-2">
+              {pct == null ? <span>{dayLabel} —</span> : (
+                <span className={`num ${pct > 0 ? 'text-up' : pct < 0 ? 'text-down' : 'text-ink-2'}`}>
+                  {dayLabel} {pct >= 0 ? '+' : '−'}
+                  <NumberTicker value={Math.abs(pct)} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />
                 </span>
-              </Tooltip>
-              <AssetRefreshFeedback accountId={accountId} manualError={assetRefreshError} automaticError={connectedAssets.error} />
-            </div>
-          </div>
+              )}
+              {item.performance?.status !== 'ready' && <PerformanceStatus status={item.performance?.status} />}
+            </span>}
+          />
           <div className="ml-auto flex min-w-0 justify-end">
             <PerformanceCurveLink accountId={accountId} summary={item.performance} source="detail" width={200} height={48} />
           </div>
@@ -680,9 +618,9 @@ export function AccountDetail({
          * 算法名去对应选择器，过渡只使用本次点击的名称。
          */}
         <div className="mt-2 flex flex-wrap items-center gap-x-6 gap-y-1.5 border-t border-line pt-2 text-[14px]">
-          <HeroConfigButton label="杠杆" title="杠杆设置" value={configLoading ? null : (leverageText ?? '—')}
+          <AccountOverviewConfigButton label="杠杆" title="杠杆设置" value={configLoading ? null : (leverageText ?? '—')}
             disabled={!configAccount || !channelDescriptor} onClick={() => setEditingConfig('leverage')} />
-          <HeroConfigButton label="品种" title="品种控制" value={configLoading ? null : (symbolsText ?? '—')}
+          <AccountOverviewConfigButton label="品种" title="品种控制" value={configLoading ? null : (symbolsText ?? '—')}
             disabled={!configAccount} onClick={() => setEditingConfig('symbols')} />
           <div className="flex min-w-0 items-center gap-1.5">
             <HeroConfigItem
@@ -1057,24 +995,6 @@ function RecentAmount({ amount, currency }: { amount: string; currency: string }
       {amount}
       {unit ? <span className="ml-1 font-medium text-ink-3">{unit}</span> : null}
     </span>
-  )
-}
-
-function HeroConfigButton({ label, title, value, disabled, onClick }: {
-  label: string
-  title: string
-  value: string | null
-  disabled: boolean
-  onClick: () => void
-}) {
-  return (
-    <button type="button" title={title} aria-haspopup="dialog" disabled={disabled} onClick={onClick}
-      className="group flex flex-none items-center gap-1.5 rounded-sm enabled:cursor-pointer focus-visible:outline-2 focus-visible:outline-accent">
-      <span className="text-ink-3">{label}</span>
-      {value === null ? <SkeletonText className="w-14" /> : (
-        <span className="num whitespace-nowrap font-medium text-ink-1 group-enabled:group-hover:underline">{value}</span>
-      )}
-    </button>
   )
 }
 

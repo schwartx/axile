@@ -5,6 +5,7 @@ import { Chip } from '@/components/ui/Card'
 import { Link } from '@/components/ui/nav'
 import { NumberTicker } from '@/components/ui/NumberTicker'
 import { OverflowText } from '@/components/ui/OverflowText'
+import { SkeletonText } from '@/components/ui/Skeleton'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { AssetObservationTime } from '@/features/account/AssetObservationTime'
 import { CashFlowPanel } from '@/features/account/CashFlowPanel'
@@ -93,7 +94,7 @@ export function AccountOverviewEquity({
         <Tooltip content={refreshLabel}>
           <span className="inline-flex">
             <button type="button" onClick={onRefresh} disabled={refreshing || !!refreshDisabledReason}
-              aria-label={refreshing ? '正在查询账户资产' : '刷新账户资产'} title={refreshLabel}
+              aria-label={refreshing ? '正在查询账户资产' : '刷新账户资产'}
               className="grid h-6 w-6 cursor-pointer place-items-center rounded-md text-ink-3 hover:bg-fill hover:text-ink-1 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent">
               <RefreshCw size={14} className={refreshing ? 'animate-spin motion-reduce:animate-none' : undefined} />
             </button>
@@ -102,5 +103,23 @@ export function AccountOverviewEquity({
         {feedback}
       </div>
     </div>
+  )
+}
+
+export function AccountOverviewConfigButton({ label, title, value, disabled, onClick }: {
+  label: string
+  title: string
+  value: string | null
+  disabled: boolean
+  onClick: () => void
+}) {
+  return (
+    <button type="button" title={title} aria-haspopup="dialog" disabled={disabled} onClick={onClick}
+      className="group flex flex-none items-center gap-1.5 rounded-sm enabled:cursor-pointer focus-visible:outline-2 focus-visible:outline-accent">
+      <span className="text-ink-3">{label}</span>
+      {value === null ? <SkeletonText className="w-14" /> : (
+        <span className="num whitespace-nowrap font-medium text-ink-1 group-enabled:group-hover:underline">{value}</span>
+      )}
+    </button>
   )
 }

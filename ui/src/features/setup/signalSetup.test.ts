@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { MemoryRouter } from 'react-router'
 
 import { flowOf } from '@/features/setup/steps'
+import { SignalLeverageFields } from '@/features/signal/SignalLeverageFields'
 import { SignalNotificationSetup } from '@/features/signal/SignalNotificationSetup'
 import { configToSignalDraft, initialSignalDraft, positionVolumePatch, signalAccountConfig, signalAccountErrors, signalConfig, signalEquityPatch, signalQuoteConfig, signalQuoteErrors, signalQuoteOptions, TUSHARE_API_URL } from '@/features/signal/signalData'
 import { AcctConfirm } from '@/pages/setup/AccountSteps'
@@ -42,8 +43,8 @@ test('信号向导先选择市场，并在单独的一步配置通知', () => {
     expect(market).toContain('aria-label="市场"')
     expect(market).toContain('role="radio" aria-checked="false" tabindex="0"')
     expect(market).toContain('>期货</button>')
-    expect(market).toContain('>做多杠杆</label>')
-    expect(market).toContain('>做空杠杆</label>')
+    expect(market).not.toContain('>做多杠杆</label>')
+    expect(market).not.toContain('>做空杠杆</label>')
     expect(market).toContain('先选择市场，再查看同市场的组合。')
     expect(render(5)).toContain('请先在「账户与组合」选择市场。')
 
@@ -65,6 +66,19 @@ test('信号向导先选择市场，并在单独的一步配置通知', () => {
   } finally {
     catalog.channels = previousChannels
   }
+})
+
+test('调仓信号开户杠杆沿用市场的做多和做空设置', () => {
+  const render = (showShort: boolean, longLabel: string) => renderToStaticMarkup(createElement(SignalLeverageFields, {
+    limits: { min: 0, max: 125, step: 0.1 }, value: { long: '1', short: '1' }, onChange: () => {},
+    ui: { show_short_leverage: showShort, long_leverage_label: longLabel, short_leverage_label: '做空杠杆' },
+  }))
+  const stock = render(false, '仓位系数（做多）')
+  expect(stock).toContain('>仓位系数（做多）</label>')
+  expect(stock).not.toContain('>做空杠杆</label>')
+  const futures = render(true, '做多杠杆')
+  expect(futures).toContain('>做多杠杆</label>')
+  expect(futures).toContain('>做空杠杆</label>')
 })
 
 test('交易账户确认页已绑定组合也直接创建账户', () => {

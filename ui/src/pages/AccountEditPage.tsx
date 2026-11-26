@@ -5,26 +5,26 @@
  * 仍由各自的完整编辑器承载。保存保持最小 PATCH + 底栏变更摘要；保存与取消都不离开本页。
  */
 
+import { SIGNAL_CHANNEL } from '@/features/signal/signalData'
 import { extractFeishuKey } from '@/features/account/feishuUpdate'
 import { FeishuWebhookInput } from '@/features/account/FeishuWebhookInput'
 import { basicNotificationPatch, basicNotificationStatus } from '@/features/account/basicNotification'
 import { NOTIFICATION_STATUS_LABEL } from '@/features/account/notificationStatus'
 import { InkRewrite } from '@/components/ui/InkRewrite'
 import { Link } from '@/components/ui/nav'
-import { useCallback, useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Check, ExternalLink } from 'lucide-react'
-import { useParams } from 'react-router'
+import { Navigate, useOutletContext, useParams } from 'react-router'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { PortfolioChoiceList } from '@/features/portfolio/PortfolioChoiceList'
 import { AccountPageTitle } from '@/features/account/pageHead'
-import { getAccount, getDefaultAccountNotification, testAccountFeishu, updateAccount, type AccountFeishuTestResult, type AccountUpdatePayload } from '@/lib/api/accounts'
-import { usePolling } from '@/lib/hooks/usePolling'
+import { getDefaultAccountNotification, testAccountFeishu, updateAccount, type AccountFeishuTestResult, type AccountUpdatePayload } from '@/lib/api/accounts'
+import type { AccountEditContext } from '@/features/account/AccountEditGuard'
 import { useDomainStore } from '@/stores/domain'
 import { useChannelCatalogStore, useChannelDescriptor } from '@/stores/channels'
 import { useToastStore } from '@/stores/ui'
 import {
   TEXT,
-  EditError,
   EditLoading,
   EditSaveBar,
   Row,
@@ -111,10 +111,7 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
   const channelCatalogError = useChannelCatalogStore((s) => s.error)
   const refreshAccounts = useDomainStore((s) => s.refreshAccounts)
 
-  const account = usePolling(useCallback((s: AbortSignal) => getAccount(accountId, s), [accountId]), {
-    queryKey: `account:${accountId}`,
-    intervalMs: 0,
-  })
+  const account = useOutletContext<AccountEditContext>()
   const acc = account.data
   const channelDescriptor = useChannelDescriptor(acc?.trade_channel)
   const item = accounts?.find((a) => a.account_id === accountId) ?? null
@@ -126,42 +123,34 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
   const [resetting, setResetting] = useState(false)
   const [saving, setSaving] = useState(false)
   const [templateError, setTemplateError] = useState<Error | null>(null)
-  const [ready, setReady] = useState(false)
-  const [draft, setDraft] = useState<Draft | null>(null)
+  const [draft, setDraft] = useState(() => draftOf(acc))
   const [feishuTest, setFeishuTest] = useState<AccountFeishuTestResult | 'busy' | null>(null)
   const [saveError, setSaveError] = useState<Error | null>(null)
 
-  /** 草稿重置为服务端当前值；数据未就绪时返回 false（供首帧初始化门控）。 */
-  const resetDraft = useCallback(() => {
-    if (!acc) return false
+  const resetDraft = () => {
     setDraft(draftOf(acc))
     setSaveError(null)
     setTemplateError(null)
     setFeishuTest(null)
-    return true
-  }, [acc])
-
-  useEffect(() => {
-    if (!ready && resetDraft()) setReady(true)
-  }, [ready, resetDraft])
+  }
 
   /** 统一页头标题行（页名 · 账户名 + 渠道 chip）；账户名 FLIP 门控在原子内部。 */
   const titleName = (
     <AccountPageTitle
       accountId={accountId}
-      page={SECTION_TITLE[section]}
+      page={(acc?.trade_channel ?? item?.trade_channel) === SIGNAL_CHANNEL && section === 'portfolio' ? '绑定组合' : SECTION_TITLE[section]}
       name={displayName}
       channel={acc?.trade_channel ?? item?.trade_channel}
       market={acc?.market ?? item?.market}
     />
   )
 
-  if (account.error && !acc)
-    return <EditError error={account.error} onRetry={account.refresh} />
+  const signalAccount = acc.trade_channel === SIGNAL_CHANNEL
+  if (signalAccount && section === 'basic') return <Navigate to={`/accounts/${accountId}`} replace />
 
   const pageChrome = <div className="flex flex-wrap items-center gap-3">{titleName}</div>
 
-  if (account.loading || !ready || !acc || !draft || (channelDescriptor == null && channelCatalogLoading)) {
+  if (channelDescriptor == null && channelCatalogLoading) {
     return (
       <section className="pb-24">
         {pageChrome}
@@ -173,7 +162,7 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
   const d = draft
   const set = (patch: Partial<Draft>) => {
     setSaveError(null)
-    setDraft((prev) => (prev ? { ...prev, ...patch } : prev))
+    setDraft((prev) => ({ ...prev, ...patch }))
   }
   // 飞书 key 容忍粘贴整条 webhook 链接：账户专用测试接口与保存都使用规整后的裸 key，
   // 测试使用当前输入的机器人 key，无需先保存。
@@ -314,10 +303,10 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
       )}
 
       {section === 'portfolio' && (
-        <Section label="组合执行">
-        <Row label="空仓写记录" hint="审计留痕">
+        <Section label={signalAccount ? '绑定组合' : '组合执行'}>
+        {!signalAccount && <Row label="空仓写记录" hint="审计留痕">
           <Toggle ariaLabel="空仓写记录" on={d.writeEmpty} onClick={() => set({ writeEmpty: !d.writeEmpty })} />
-        </Row>
+        </Row>}
           <div className="mt-3 min-w-0 md:col-span-2">
             <div className="mb-3 flex items-center justify-between gap-3">
               <h2 className="text-[14px] text-ink-2">跟随组合</h2>
@@ -328,7 +317,7 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
                 {d.portfolioId == null && <Check size={14} aria-hidden />}不绑定组合
               </button>
             </div>
-            <PortfolioChoiceList selectedId={d.portfolioId} onSelect={(portfolioId) => set({ portfolioId })} />
+            <PortfolioChoiceList market={signalAccount ? acc.market : undefined} selectedId={d.portfolioId} onSelect={(portfolioId) => set({ portfolioId })} />
           </div>
         </Section>
       )}

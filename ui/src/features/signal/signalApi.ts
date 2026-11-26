@@ -25,3 +25,37 @@ export function testSignalNotification(mode: 'feishu' | 'function', draft: strin
 export function getSignalConfig(accountId: number, signal?: AbortSignal) {
   return apiGet<{ account_config: SignalConfig; quantity_unit: string }>(`/account/${accountId}/signal-config`, signal)
 }
+
+export type SignalRecordStatus = 'SUCCEEDED' | 'FAILED'
+
+export interface SignalRecord {
+  id: string
+  created_at: string
+  scheduled_at: string | null
+  trigger_source: 'manual' | 'scheduler'
+  status: SignalRecordStatus
+  error: string | null
+  quantity_unit: string
+  targets: Record<string, number>
+  notification_status: 'pending' | 'calling' | 'succeeded' | 'failed' | 'unknown'
+  notification_error: string | null
+}
+
+export interface SignalRecords {
+  items: SignalRecord[]
+  next_cursor: number | null
+}
+
+export function getSignalRecords(accountId: number, options: {
+  limit: number
+  before?: number | null
+  days?: number | null
+  status?: SignalRecordStatus | null
+  symbol?: string
+}, signal: AbortSignal) {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(options)) {
+    if (value != null && value !== '') query.set(key, String(value))
+  }
+  return apiGet<SignalRecords>(`/account/${accountId}/signal/records?${query}`, signal)
+}

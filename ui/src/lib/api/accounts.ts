@@ -177,6 +177,11 @@ export function getAccountRebalancePlan(id: number, signal?: AbortSignal): Promi
   return apiGet<AccountRebalancePlan>(`/account/${id}/rebalance_plan`, signal)
 }
 
+/** 立即生成调仓信号，保存目标与资产快照并登记待发通知。 */
+export function runAccountSignal(id: number): Promise<Message & { event_id: string }> {
+  return apiSend('POST', `/account/${id}/signal/run`)
+}
+
 /** 从交易渠道主动查询并保存最新账户资产。 */
 export function refreshAccountAssets(id: number): Promise<AccountAssetSnapshot> {
   return apiSend<AccountAssetSnapshot>('POST', `/account/${id}/assets/refresh`)

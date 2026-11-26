@@ -35,6 +35,7 @@ function nonnegative(value: unknown): number | null {
 export interface HoldingPreviewRow extends CurrentHoldingPreview {
   targetOnly?: boolean
   quantityTarget?: AccountRebalancePlanRow
+  snapshotQuantity?: number | null
 }
 
 /** 已有持仓保留多空分行，追加尚未持有的非零目标，排序沿用持仓货值。 */
@@ -69,6 +70,19 @@ export function holdingPreviewRows(
       value: null, targetOnly: true })
   }
   return rows
+}
+
+/** 调仓信号展示保存的数量快照，当前持仓与目标按各自的观测时间展示。 */
+export function signalHoldingPreviewRows(
+  positions: Position[] | undefined, equity: number, target: TargetWeightSnapshot | null,
+): HoldingPreviewRow[] {
+  const quantities = target?.calculated_at
+    ? target.target_mode === 'quantity' ? target.raw_targets ?? {} : target.quantities ?? null
+    : null
+  const quantitySnapshot = target && quantities ? { ...target, target_mode: 'quantity' as const, raw_targets: quantities } : null
+  const rows = holdingPreviewRows(positions ?? [], equity, quantitySnapshot, positions !== undefined)
+  if (!quantities) return rows
+  return rows.map(row => ({ ...row, snapshotQuantity: symbolEntry(quantities, row.symbol) ?? 0 }))
 }
 
 export interface SideHolding {

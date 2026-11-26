@@ -126,7 +126,7 @@ function calendarSummary(preview: SchedulePreview | null): { text: string; warni
 export function TimerEditor({ tradeChannel, scheduleChannel = tradeChannel, scheduleKind, nightSchedule, value, onChange, layout = 'step', leading }: TimerEditorProps) {
   const v = value
   const signalChannel = tradeChannel === SIGNAL_CHANNEL
-  const autoLabel = signalChannel ? '自动生成信号' : '自动调仓'
+  const autoLabel = signalChannel ? '自动执行' : '自动调仓'
   const tabFade = useRemountFade(v.timerTab)
   const [schedulePreview, setSchedulePreview] = useState<SchedulePreview | null>(null)
   const [previewLoadingMore, setPreviewLoadingMore] = useState(false)
@@ -498,7 +498,7 @@ export function TimerEditor({ tradeChannel, scheduleChannel = tradeChannel, sche
         const supplement = supplementSummaries.get(Date.parse(item.scheduled_at))
         const executionLabel = <span className="inline-flex flex-wrap items-baseline gap-x-1">
           <span>{signalChannel
-            ? `生成调仓信号${item.phase_label ? ` · ${item.phase_label}` : ''}`
+            ? `执行调仓信号${item.phase_label ? ` · ${item.phase_label}` : ''}`
             : item.phase_label || '常规调仓'}</span>
           {supplement && supplement.configuredCount > 0 && <>
             <span aria-hidden="true">·</span>

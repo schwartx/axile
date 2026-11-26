@@ -43,6 +43,7 @@ export function SignalSetupPage() {
   const markets = portfolioMarketOptions(catalog ?? [])
   const descriptor = portfolioMarketDescriptor(catalog ?? [], market)
   const signalDescriptor = catalog?.find((channel) => channel.channel === SIGNAL_CHANNEL)
+  const showShort = descriptor?.ui.show_short_leverage ?? false
   const [leverage, setLeverage] = useState({ long: '1', short: '1' })
   const [portfolioId, setPortfolioId] = useState<number | null>(null)
   const [data, setData] = useState(initialSignalDraft)
@@ -69,13 +70,14 @@ export function SignalSetupPage() {
   const [error, setError] = useState<Error | null>(null)
   const portfolio = portfolios?.find((item) => item.id === portfolioId && item.market === market)
   const accountBlocked = !name.trim() || !descriptor || !signalDescriptor
-    || Object.values(leverage).some((value) => leverageError(value, signalDescriptor.leverage))
+    || leverageError(leverage.long, signalDescriptor.leverage) !== null
+    || (showShort && leverageError(leverage.short, signalDescriptor.leverage) !== null)
     || (portfolioId !== null && !portfolio)
   const cron = scheduleKind && timer ? timerStateToCronExpr(scheduleKind, timer, schedule.night) : ''
   const gmSessions = descriptor?.channel === 'gm' ? timer?.gm_sessions : null
   const timerBlocked = !scheduleKind || !timer || Boolean(timerEditorError(timer)) || (timer.autoOn && !cron)
   const feishuKey = extractFeishuKey(webhook)
-  const missingNotification = { feishu: !feishuKey, function: !notification.trim() }
+  const missingNotification = { feishu: !feishuKey, function: !notification.trim(), off: false }
   const notificationBlocked = missingNotification[notificationMode]
   const confirmedNotificationBlocked = confirmedNotification !== null && missingNotification[confirmedNotification]
 
@@ -139,7 +141,7 @@ export function SignalSetupPage() {
         ...(gmSessions ? { channel_options: { gm: gmSessions } } : {}),
         algorithm: {},
         long_leverage: Number(leverage.long),
-        short_leverage: Number(leverage.short),
+        short_leverage: showShort ? Number(leverage.short) : 0,
         weight_precision: 0.01,
         remark: null,
         trade_rules: null,
@@ -197,8 +199,8 @@ export function SignalSetupPage() {
                 <ErrorNotice intent="read" title="市场目录加载失败" error={catalogError} onRetry={refreshCatalog} />
                 {!catalog && !catalogError && <p className="text-[13px] text-ink-3">加载市场…</p>}
               </section>
-              {signalDescriptor && <SignalLeverageFields
-                limits={signalDescriptor.leverage} value={leverage} onChange={setLeverage} />}
+              {signalDescriptor && descriptor && <SignalLeverageFields
+                limits={signalDescriptor.leverage} ui={descriptor.ui} value={leverage} onChange={setLeverage} />}
               {error && errorNotice}
             </div>
             <section aria-labelledby="signal-portfolio-heading" className="grid min-w-0 gap-2 border-t border-line pt-4 xl:border-t-0 xl:pt-0">
@@ -239,7 +241,7 @@ export function SignalSetupPage() {
           </div>
           <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs text-ink-3">
             <dt>杠杆</dt>
-            <dd>{describeLeverage(Number(leverage.long), Number(leverage.short), true)}</dd>
+            <dd>{describeLeverage(Number(leverage.long), Number(leverage.short), showShort)}</dd>
             <dt>定时任务</dt>
             <dd>{timer?.autoOn && scheduleKind ? describeCron(scheduleKind, cron, schedule.night, gmSessions) ?? cron : '已暂停'}</dd>
             <dt>通知</dt>
@@ -256,7 +258,7 @@ export function SignalSetupPage() {
     const heading = <WizardHeading
       kicker={kicker}
       title="什么时候自动执行？"
-      lead={portfolio ? '按下面的节奏自动计算并生成调仓信号。时间均为北京时间。' : '绑定组合后，才能按设定的节奏自动生成调仓信号。时间均为北京时间。'}
+      lead={portfolio ? '按下面的节奏自动执行。时间均为北京时间。' : '绑定组合后，才能按设定的节奏自动执行。时间均为北京时间。'}
     />
     return <WizardTimerPage footer={<>
       {errorNotice}
@@ -283,7 +285,7 @@ export function SignalSetupPage() {
   const workspaceStep = (quoteStep && Boolean(descriptor)) || assetStep || notificationStep
   const lead = quoteStep ? '选择组合计算使用的行情来源，可在右侧用指定标的测试。'
     : assetStep ? '提供组合计算使用的账户权益、可用资金和币种。实际持仓可选填。'
-    : notificationStep ? '选择调仓信号生成后的通知方式。' : null
+    : notificationStep ? '选择调仓信号的通知方式。' : null
   const heading = <div className="min-w-0">
     <h1 id="signal-step-title" className="text-[23px] font-[680] tracking-tight">{steps[step].label}</h1>
     {lead && <p className="mt-1.5 max-w-[560px] text-[15px] text-ink-2">{lead}</p>}
@@ -303,7 +305,6 @@ export function SignalSetupPage() {
     <div className={`min-w-0 gap-4 ${workspaceStep ? 'flex min-h-0 flex-col' : 'grid'}`}>
       {quoteStep && !descriptor && <p className="text-[15px] text-ink-2">请先在「账户与组合」选择市场。</p>}
       {quoteStep && descriptor && <SignalSources
-        only="quote"
         market={descriptor.market ?? ''}
         exampleSymbols={descriptor.portfolio?.example_symbols}
         quoteHeading={heading}

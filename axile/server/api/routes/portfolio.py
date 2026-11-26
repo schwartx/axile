@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from loguru import logger
 
 from axile.channels import get_channel
+from axile.channels.rebalance_signal import SIGNAL_CHANNEL
 from axile.channels.simulation import SimulationAccount, validate_leverage
 from axile.common.serialization import copy_data, from_payload, to_payload
 from axile.executor.models.portfolio_target import PortfolioTarget
@@ -164,6 +165,19 @@ async def resolve_portfolio_target(portfolio: Portfolio, account: AccountContext
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, exception_details(exc, "目标计算失败")) from exc
 
 
+async def resolve_signal_target_snapshot(portfolio: Portfolio, account: AccountContext) -> dict[str, Any]:
+    """在发布时冻结信号权重及同一轮换算出的数量。"""
+    from axile.server.signal_service import calculate_signal
+
+    try:
+        return (await calculate_signal(account, portfolio.custom_calc_py_code, size_weights=True)).snapshot_fields()
+    except (ValueError, TimeoutError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=exception_details(exc, "调仓信号目标计算失败"),
+        ) from exc
+
+
 @router.get("/{portfolio_id:int}/target_snapshot", response_model=None)
 async def portfolio_target_snapshot(portfolio_id: int) -> Response:
     """只读组合最近成功计算的原始目标快照。"""
@@ -187,20 +201,21 @@ async def refresh_portfolio_target_snapshot(portfolio_id: int) -> dict[str, Any]
         context = await _portfolio_native("portfolio_operation", {"op": "context", "portfolio_id": portfolio_id})
         portfolio = from_payload(Portfolio, context["portfolio"])
         account = from_payload(AccountSnapshot, context["account"]) if context["account"] is not None else None
-        raw_target = await resolve_portfolio_target(portfolio, account)
-        raw_target = PortfolioTarget.from_result(raw_target)
-        normalized_target = (
-            _normalize_rebalance_target(account, raw_target.targets, target_mode=raw_target.mode)
-            if account is not None
-            else None
-        )
+        if account is not None and account.trade_channel == SIGNAL_CHANNEL:
+            fields = await resolve_signal_target_snapshot(portfolio, account)
+        else:
+            raw_target = PortfolioTarget.from_result(await resolve_portfolio_target(portfolio, account))
+            fields = {
+                "target_mode": raw_target.mode,
+                "raw_weights": raw_target.targets,
+                "normalized_weights": _normalize_rebalance_target(
+                    account, raw_target.targets, target_mode=raw_target.mode
+                )
+                if account is not None
+                else None,
+            }
         snapshot = await append_target_weight_snapshot(
-            portfolio_id=portfolio_id,
-            account_id=account_id,
-            raw_weights=raw_target.targets,
-            target_mode=raw_target.mode,
-            normalized_weights=normalized_target,
-            source="manual",
+            portfolio_id=portfolio_id, account_id=account_id, source="manual", **fields
         )
         return target_snapshot_public(snapshot, weight_kind="raw")
     finally:

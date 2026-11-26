@@ -83,6 +83,12 @@ pub(crate) fn encode_snapshot_weights(
         };
         head.insert(format!("{role}_kind"), json!(kind));
     }
+    if let Some(quantities) = payload
+        .get("signal_quantities")
+        .filter(|value| value.is_object())
+    {
+        metadata.insert("signal_quantities".into(), quantities.clone());
+    }
     head.insert("weights_metadata".into(), Value::Object(metadata));
     Ok((Value::Object(head), rows))
 }
@@ -122,6 +128,9 @@ pub(crate) fn decode_snapshot_weights(
             _ => return Err(invalid("Unknown target weight snapshot container state")),
         };
         result.insert(role.into(), value);
+    }
+    if let Some(quantities) = head["weights_metadata"].get("signal_quantities") {
+        result.insert("signal_quantities".into(), quantities.clone());
     }
     if !invalid_values.is_empty() {
         result.insert(
@@ -513,7 +522,8 @@ fn commit_signal(connection: &Connection, request: &Value) -> Result<Value, Anal
     let account =
         crate::accounts::load_on(connection, account_id)?.ok_or_else(|| invalid("账户不存在"))?;
     if account["trade_channel"] != crate::accounts::SIGNAL_CHANNEL
-        || account["is_started"] != true
+        || (request["notification"]["context"]["execution"]["trigger_source"] != "manual"
+            && account["is_started"] != true)
         || account["portfolio_id"] != portfolio_id
         || account["runtime_sync"]["revision"] != request["revision"]
     {

@@ -23,6 +23,7 @@ async def append_target_weight_snapshot(
     normalized_weights: dict[str, float] | None,
     source: Literal["manual", "execution"],
     execution_id: str | None = None,
+    signal_quantities: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """由 Rust 一次提交快照头和权重明细。"""
     return await native_operation(
@@ -37,6 +38,7 @@ async def append_target_weight_snapshot(
             "source": source,
             "execution_id": execution_id,
             "calculated_at": now_str(),
+            **({"signal_quantities": signal_quantities} if signal_quantities is not None else {}),
         },
     )
 

@@ -7,10 +7,13 @@ import { SignalManualAssets } from './SignalManualAssets'
 import { SignalSetupColumns } from './SignalSetupColumns'
 import { initialSignalDraft, type SignalAccountErrors, type SignalDraft } from './signalData'
 
-export function SignalAssetsSetup({ value, errors, showErrors, name, market, heading, footer, onChange, onMissingCode }: {
+export function SignalAssetsSetup({ value, errors, showErrors, name, market, heading, footer, onChange, onMissingCode,
+  identity = 'signal:setup:account', savedCode = initialSignalDraft.accountCode }: {
   value: SignalDraft
   errors: SignalAccountErrors
   showErrors: boolean
+  identity?: string
+  savedCode?: string
   name: string
   market: string
   heading: ReactNode
@@ -39,7 +42,7 @@ export function SignalAssetsSetup({ value, errors, showErrors, name, market, hea
   </aside> : <SignalAccountTestCard code={value.accountCode} name={name} market={market} onMissingCode={onMissingCode} />
 
   return <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
-    <div className="flex shrink-0 items-start justify-between gap-4">
+    <div className="flex shrink-0 flex-wrap items-start justify-between gap-4">
       {heading}
       <ChoiceGroup variant="compact" ariaLabel="账户数据来源" value={value.mode} onChange={(mode) => onChange({ mode })}
         options={[{ value: 'manual', label: '手动设置' }, { value: 'function', label: '自定义函数' }]} />
@@ -47,9 +50,9 @@ export function SignalAssetsSetup({ value, errors, showErrors, name, market, hea
     <SignalSetupColumns sidebar={sidebar} footer={footer}>
       {manual ? <div className="min-h-0 flex-1 overflow-y-auto">
         <SignalManualAssets value={value} errors={showErrors ? errors : undefined} onChange={onChange} />
-      </div> : <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden rounded-[8px] border border-line">
-        <PythonWorkbenchPane kind="signal_account" title="账户函数" code={value.accountCode} savedCode={initialSignalDraft.accountCode}
-          draftKey="signal:setup:account" storageKey="axile.signalAccount.editorSplit"
+      </div> : <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden rounded-[8px] border border-line max-lg:min-h-72">
+        <PythonWorkbenchPane kind="signal_account" title="账户函数" code={value.accountCode} savedCode={savedCode}
+          draftKey={identity} storageKey="axile.signalAccount.editorSplit"
           onChange={(accountCode) => onChange({ accountCode })} editorRef={null} statusTarget={status} compactStatus={false}
           running={false} stale={false} result={null} inputError={showErrors ? errors.accountCode : undefined} />
         <div ref={setStatus} />

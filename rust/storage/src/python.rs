@@ -303,6 +303,7 @@ business_operations! { register_business_operations, business_operation, PyAny;
     notifications_record_system => crate::notifications::record_system,
     notifications_context_data => crate::notifications::context_data,
     notifications_preview => crate::notifications::preview,
+    signal_records => crate::notifications::signal_records,
     intent_get => crate::intents::intent_get,
     intent_active => crate::intents::intent_active,
     intent_list => crate::intents::intent_list,

@@ -16,7 +16,7 @@ from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind
 from axile.executor.algorithms.exceptions import execution_error_message
 from axile.executor.algorithms.utils.clock import clock_now
-from axile.executor.models.portfolio_target import PortfolioTarget, TargetMode
+from axile.executor.models.portfolio_target import PortfolioTarget, TargetMode, normalize_target_weights
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.termination import ExecutionTerminated
 from axile.server.core.log_config import execution_log_context
@@ -208,14 +208,8 @@ def _normalize_rebalance_target(
     """
     if target_mode == "quantity":
         return dict(curr_target)
-    weight_precision = account.weight_precision
     long_leverage, short_leverage = resolve_account_leverages(account)
-
-    def _normalize_weight(weight: float) -> float:
-        scaled = weight * long_leverage if weight > 0 else weight * short_leverage
-        return round(round(scaled / weight_precision) * weight_precision, 6)
-
-    return {symbol: _normalize_weight(weight) for symbol, weight in curr_target.items()}
+    return normalize_target_weights(curr_target, long_leverage, short_leverage, account.weight_precision)
 
 
 async def _load_last_target_snapshot(account: AccountContext) -> dict[str, object]:

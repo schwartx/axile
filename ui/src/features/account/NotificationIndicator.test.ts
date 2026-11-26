@@ -64,3 +64,29 @@ test('indicator links to notification editor with accessible icon and no underli
   expect(failed).toContain('飞书通知发送失败')
   expect(failed).toContain('text-warn')
 })
+
+test('调仓信号铃铛无配置也可进入独立页面，只显示信号推送结果', async () => {
+  const { createElement } = await import('react')
+  const { renderToStaticMarkup } = await import('react-dom/server')
+  const { MemoryRouter } = await import('react-router')
+  const { NotificationIndicator } = await import('./NotificationIndicator')
+  const account = {
+    id: 7, trade_channel: 'rebalance_signal', execution_notification_status: 'default' as const,
+    notification_state: {
+      execution_id: null, last_success_at: null, last_attempt_event_type: 'signal.calculated',
+      last_attempt_ok: false, last_attempt_at: 'now', last_attempt_error: 'timeout',
+    },
+  }
+  const render = (mode: Account['execution_notification_status']) => renderToStaticMarkup(
+    createElement(MemoryRouter, {}, createElement(NotificationIndicator, { account: { ...account, execution_notification_status: mode } })),
+  )
+  expect(notificationIndicator({ account })).toMatchObject({ result: false })
+  expect(notificationIndicator({ account: { ...account, notification_state: {
+    ...account.notification_state, last_attempt_event_type: 'execution.finished',
+  } } })).toMatchObject({ result: null })
+  expect(render('default')).toContain('lucide-x')
+  const unset = render('none')
+  expect(unset).toContain('lucide-bell')
+  expect(unset).toContain('/accounts/7/edit/notification')
+  expect(unset).not.toContain('>通知未设置<')
+})
