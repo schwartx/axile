@@ -5,11 +5,12 @@ import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { updateAccount, type AccountUpdatePayload } from '@/lib/api/accounts'
 import type { Account } from '@/types/api'
 
-export function AccountConfigDialog({ accountId, accountName, title, patch, onClose, onSaved, children }: {
+export function AccountConfigDialog({ accountId, accountName, title, patch, preparePatch, onClose, onSaved, children }: {
   accountId: number
   accountName: string
   title: string
   patch: AccountUpdatePayload | null
+  preparePatch?: (patch: AccountUpdatePayload) => Promise<AccountUpdatePayload>
   onClose: () => void
   onSaved: (updated: Account) => void
   children: ReactNode
@@ -23,7 +24,7 @@ export function AccountConfigDialog({ accountId, accountName, title, patch, onCl
     setError(null)
     setSaving(true)
     try {
-      const updated = await updateAccount(accountId, patch)
+      const updated = await updateAccount(accountId, preparePatch ? await preparePatch(patch) : patch)
       onSaved(updated)
     } catch (cause) {
       setError(cause)

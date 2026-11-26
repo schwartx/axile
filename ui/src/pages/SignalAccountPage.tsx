@@ -25,8 +25,7 @@ import { useToastStore } from '@/stores/ui'
 import { AccountActions } from '@/features/account/AccountActions'
 import { ArchiveAction } from '@/features/account/ArchiveAction'
 import { CopyAccountDialog } from '@/features/account/CopyAccountDialog'
-import { AccountConfigDialog } from '@/features/account/AccountConfigDialog'
-import { TEXT } from '@/features/account/editUi'
+import { AccountBasicDialog } from '@/features/account/AccountBasicDialog'
 import { AccountLeverageDialog } from '@/features/account/AccountLeverageDialog'
 import type { AccountDashboardItem } from '@/types/api'
 
@@ -176,7 +175,8 @@ export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
 
     <CopyAccountDialog accountId={id} name={item.name} isStarted={isStarted} isBusy={busy !== null}
       open={editing === 'copy'} onClose={closeSettings} />
-    {editing === 'basic' && <SignalAccountBasicDialog item={item} onClose={closeSettings} onSaved={refreshSettings} />}
+    {editing === 'basic' && <AccountBasicDialog accountId={id} name={item.name} remark={item.remark}
+      onClose={closeSettings} onSaved={refreshSettings} />}
     {editing === 'leverage' && account.data && signalChannel && market && <AccountLeverageDialog
       accountId={id} account={account.data} channel={{ ...signalChannel, ui: market.ui }}
       onClose={closeSettings} onSaved={refreshSettings}
@@ -264,35 +264,4 @@ export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
       cronExpr={cron ?? ''} channelOptions={account.data.channel_options} onClose={closeSettings}
       onSaved={() => { void account.refresh(); void nextRun.refresh(); void refreshAccounts() }} />}
   </>
-}
-
-function SignalAccountBasicDialog({ item, onClose, onSaved }: {
-  item: AccountDashboardItem
-  onClose: () => void
-  onSaved: () => void
-}) {
-  const [baseline] = useState(() => ({ name: item.name, remark: item.remark ?? '' }))
-  const [name, setName] = useState(baseline.name)
-  const [remark, setRemark] = useState(baseline.remark)
-  const accountName = name.trim()
-  const patch = accountName ? {
-    ...(accountName !== baseline.name ? { name: accountName } : {}),
-    ...(remark !== baseline.remark ? { remark: remark || null } : {}),
-  } : null
-
-  return (
-    <AccountConfigDialog accountId={item.account_id} accountName={baseline.name} title="基本信息"
-      patch={patch} onClose={onClose} onSaved={onSaved}>
-      <label className="grid gap-1 text-sm text-ink-2">
-        名称
-        <input className={TEXT} value={name} required aria-invalid={!accountName}
-          aria-describedby={accountName ? undefined : 'signal-account-name-error'} onChange={(event) => setName(event.target.value)} />
-      </label>
-      {!accountName && <p id="signal-account-name-error" className="text-xs text-warn">名称不能为空</p>}
-      <label className="grid gap-1 text-sm text-ink-2">
-        备注
-        <input className={TEXT} value={remark} placeholder="可选" onChange={(event) => setRemark(event.target.value)} />
-      </label>
-    </AccountConfigDialog>
-  )
 }

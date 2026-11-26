@@ -263,7 +263,6 @@ export function AppSidebar({
     ]),
   ]
   const accountParameters: NavItemSpec[] = [
-    { label: '基本信息', to: accountPath('/edit'), active: exact(accountPath('/edit')) },
     { label: '连接设置', to: accountPath('/edit/connection'), active: exact(accountPath('/edit/connection')) },
   ]
   const accountExecution: NavItemSpec[] = [

@@ -16,7 +16,7 @@ import { useChannelCatalogSync } from '@/stores/channels'
 import { useBusinessSync } from '@/lib/api/businessStream'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { AccountDetailPage } from '@/pages/AccountDetailPage'
-import { AccountEditPage } from '@/pages/AccountEditPage'
+import { AccountEditPortfolioPage } from '@/pages/AccountEditPortfolioPage'
 import { AccountEditConnectionPage } from '@/pages/AccountEditConnectionPage'
 import { AccountEditTimerPage } from '@/pages/AccountEditTimerPage'
 import { AccountEditAlgorithmPage } from '@/pages/AccountEditAlgorithmPage'
@@ -116,7 +116,7 @@ const router = createBrowserRouter([
           { index: true, element: <DashboardPage /> },
           { path: 'accounts/:id', element: <AccountDetailPage /> },
           { id: 'account-settings', path: 'accounts/:id/edit', element: <AccountEditGuard />, children: [
-          { index: true, element: <AccountEditPage key="basic" /> },
+          { index: true, element: <Navigate to=".." relative="path" replace /> },
           { path: 'connection', element: <AccountEditConnectionPage /> },
           { path: 'signal', element: <Navigate to=".." relative="path" replace /> },
           { element: <SignalAccountDataLayout />, handle: { fullBleed: true }, children: [
@@ -125,7 +125,7 @@ const router = createBrowserRouter([
           ] },
           { path: 'leverage', element: <Navigate to="../.." relative="path" replace /> },
           { path: 'symbols', element: <Navigate to="../.." relative="path" replace /> },
-          { path: 'portfolio', element: <AccountEditPage key="portfolio" section="portfolio" /> },
+          { path: 'portfolio', element: <AccountEditPortfolioPage /> },
           { path: 'timer', element: <AccountEditTimerPage />, handle: { fullBleed: true } },
           { path: 'algorithm', element: <AccountEditAlgorithmPage />, handle: { fullBleed: true } },
           { path: 'notification', element: <AccountEditNotificationPage />, handle: { fullBleed: true } },

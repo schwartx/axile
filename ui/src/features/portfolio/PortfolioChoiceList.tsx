@@ -2,8 +2,10 @@ import { useState } from 'react'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { PortfolioCodePreview } from '@/features/portfolio/PortfolioCodePreview'
 import { PortfolioChoiceCard } from '@/features/setup/PortfolioChoiceCard'
+import { useChannelCatalogStore } from '@/stores/channels'
 import { useDomainStore } from '@/stores/domain'
 import type { PortfolioLite } from '@/types/api'
+import { portfolioMarketId } from './portfolioMarkets'
 
 /** 开户与改绑共用组合列表；选择只更新调用方草稿，预览只读。 */
 export function PortfolioChoiceList({ selectedId, onSelect, market, emptyMessage }: {
@@ -13,7 +15,9 @@ export function PortfolioChoiceList({ selectedId, onSelect, market, emptyMessage
   emptyMessage?: string
 }) {
   const allPortfolios = useDomainStore((s) => s.portfolios)
-  const portfolios = market === undefined ? allPortfolios : allPortfolios?.filter((item) => item.market === market)
+  const channels = useChannelCatalogStore((s) => s.channels) ?? []
+  const marketId = market === undefined ? undefined : portfolioMarketId(channels, market)
+  const portfolios = marketId === undefined ? allPortfolios : allPortfolios?.filter(item => portfolioMarketId(channels, item.market) === marketId)
   const error = useDomainStore((s) => s.portfoliosError)
   const refresh = useDomainStore((s) => s.refreshPortfolios)
   const [preview, setPreview] = useState<PortfolioLite | null>(null)

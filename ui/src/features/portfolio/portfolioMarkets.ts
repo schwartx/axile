@@ -6,6 +6,11 @@ export interface PortfolioMarketOption {
   exampleSymbols: string[]
 }
 
+/** 渠道市场标识和组合市场名称可以指向同一个市场。 */
+export function portfolioMarketId(channels: ChannelCapability[], market: string): string {
+  return channels.find(channel => channel.market === market || channel.portfolio?.market_label === market)?.market ?? market
+}
+
 /** 优先使用上下文账户的渠道单位；样例或缺少账户信息时按组合市场解析。 */
 export function portfolioQuantityUnit(
   channels: ChannelCapability[], market: string | null | undefined, channel?: TradeChannel,

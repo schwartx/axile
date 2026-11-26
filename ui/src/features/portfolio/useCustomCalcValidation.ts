@@ -8,6 +8,7 @@ import { useSimulationAccounts } from '@/stores/simulationAccounts'
 import { useAccountConnection } from '@/stores/liveConnection'
 import { useConnectionOperation } from '@/stores/connectionOperations'
 import type { AccountDashboardItem, ChannelCapability, SimulationAccount, TrialLeverageOverrides, ValidateCustomCalcResult } from '@/types/api'
+import { portfolioMarketId } from './portfolioMarkets'
 
 export interface CustomCalcValidation {
   validating: boolean
@@ -44,9 +45,7 @@ export function useCustomCalcValidation(code: string, market: string | null | un
   }, [])
   const accounts = useDomainStore((state) => state.accounts)
   const channels = useChannelCatalogStore((state) => state.channels)
-  const marketId = (value: string) => channels?.find(
-    (channel) => channel.market === value || channel.portfolio?.market_label === value,
-  )?.market ?? value
+  const marketId = (value: string) => portfolioMarketId(channels ?? [], value)
   const matchingAccounts = (accounts ?? []).filter(
     (account) => !account.archived_at && market != null && marketId(account.market) === marketId(market),
   )

@@ -38,6 +38,7 @@ import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { Skeleton, SkeletonGroup, SkeletonText } from '@/components/ui/Skeleton'
 import { AccountActions } from '@/features/account/AccountActions'
 import { AccountLeverageDialog } from '@/features/account/AccountLeverageDialog'
+import { AccountBasicDialog } from '@/features/account/AccountBasicDialog'
 import { AccountSymbolsDialog } from '@/features/account/AccountSymbolsDialog'
 import { CopyAccountDialog } from '@/features/account/CopyAccountDialog'
 import { useExecutionRunner } from '@/features/account/useExecutionRunner'
@@ -128,16 +129,12 @@ export function AccountDetail({
   }, [accountId])
   const [timerOpen, setTimerOpen] = useState(false)
   const [refreshingAssets, setRefreshingAssets] = useState(false)
-  const [editingConfig, setEditingConfig] = useState<'leverage' | 'symbols' | null>(null)
+  const [editingConfig, setEditingConfig] = useState<'basic' | 'leverage' | 'symbols' | null>(null)
   const [savedConfig, setSavedConfig] = useState<{ account: Account; time: number } | null>(null)
   const [copyOpen, setCopyOpen] = useState(false)
   // 启停乐观态：确认后立刻翻转，驱动按钮/状态句日记式换字；与 item 对齐后清除。
   const [startedOverride, setStartedOverride] = useState<boolean | null>(null)
-  // 共享元素 FLIP 门控：
-  // - 账户名：进详情（舰队/组合）或去编辑页时挂名；持仓/回看不飞名。
-  const tDetail = useViewTransitionState(`/accounts/${accountId}`)
-  const tEdit = useViewTransitionState(`/accounts/${accountId}/edit`)
-  const nameVt = tDetail || tEdit
+  const nameVt = useViewTransitionState(`/accounts/${accountId}`)
   const channelDescriptor = useChannelDescriptor(item.trade_channel)
   const [holdingSelection, setHoldingSelection] = useState<{ accountId: number; symbol: string; keyboardOpened: boolean } | null>(null)
   const holdingsComparisonRef = useRef<HTMLDivElement>(null)
@@ -463,7 +460,7 @@ export function AccountDetail({
             onTerminate={terminate}
             toggling={toggling}
             onToggleStarted={onToggleStarted}
-            onEdit={() => navigate(`/accounts/${accountId}/edit`)}
+            onEdit={() => setEditingConfig('basic')}
             onCopy={() => setCopyOpen(true)}
             onDelete={onDelete}
           />
@@ -657,6 +654,10 @@ export function AccountDetail({
           </div>}
         </div>
       </Card>
+      {editingConfig === 'basic' && configAccount && (
+        <AccountBasicDialog accountId={accountId} name={configAccount.name} remark={configAccount.remark}
+          notification={configAccount} onClose={closeConfig} onSaved={saveConfig} />
+      )}
       {editingConfig === 'leverage' && configAccount && channelDescriptor && (
         <AccountLeverageDialog accountId={accountId} account={configAccount} channel={channelDescriptor}
           onClose={closeConfig} onSaved={saveConfig} />
