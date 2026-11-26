@@ -18,7 +18,6 @@ import { MOTION_LAYOUT, useRemountFade } from '@/lib/viewTransition'
 import { executionReasonText } from '@/features/account/executionReason'
 import { schedulePreviewItemPresentation } from '@/features/setup/previewTimeline'
 import {
-  DEFAULT_PRESET,
   PRESETS,
   gmTimerSessions,
   type GMSessions,
@@ -27,7 +26,6 @@ import {
   timerEditorError,
   timerSupplement,
   type Supplement,
-  ruleFromPreset,
   timerStateToCronExpr,
   type NightSchedule,
   type ScheduleKind,
@@ -87,20 +85,6 @@ function draftFromCron(
       rawCron: '',
     },
     fromComplex: parsed.autoOn,
-  }
-}
-
-/** 编译时强制快捷意图（弹层不允许自定义 / 高级编译路径）。 */
-function asQuickIntent(market: ScheduleKind, s: TimerEditorState): TimerEditorState {
-  const id = s.presetIds[0] ?? DEFAULT_PRESET[market]
-  const rule = ruleFromPreset(market, id)
-  return {
-    ...s,
-    timerTab: 'quick',
-    rawCron: '',
-    presetIds: [id],
-    scheduleRules: [rule],
-    selectedRuleId: rule.id,
   }
 }
 
@@ -165,19 +149,11 @@ function TimerQuickModalReady({
   }
 
   const pickPreset = (id: string) => {
-    const rule = ruleFromPreset(market, id)
-    patch({
-      presetIds: [id],
-      scheduleRules: [rule],
-      selectedRuleId: rule.id,
-      timerTab: 'quick',
-      rawCron: '',
-    })
+    patch({ presetIds: [id] })
     setFromComplex(false)
   }
 
-  const intent = asQuickIntent(market, state)
-  const cronNext = fromComplex && state.autoOn ? cronExpr : timerStateToCronExpr(market, intent, nightSchedule)
+  const cronNext = fromComplex && state.autoOn ? cronExpr : timerStateToCronExpr(market, state, nightSchedule)
   const nextSupplement = useMemo(() => signal ? null : timerSupplement({ autoOn: state.autoOn, supN: state.supN, supM: state.supM }), [signal, state.autoOn, state.supN, state.supM])
   const nextSessions = useMemo(() => gmTimerSessions(scheduleChannel, { gm_sessions: state.gm_sessions }), [scheduleChannel, state.gm_sessions])
   const change = timerSettingsChange(signal, scheduleChannel, { cronExpr, isStarted, supplement, channelOptions },
@@ -231,7 +207,7 @@ function TimerQuickModalReady({
             className="text-[13.5px] font-semibold text-accent hover:underline"
             onClick={onClose}
           >
-            更多节奏 · 多时刻与自定义 →
+            {fromComplex && nightSchedule ? '完整定时设置 →' : '更多节奏 · 多时刻与自定义 →'}
           </Link>
           <div className="ml-auto flex gap-2.5">
             <button
@@ -278,7 +254,7 @@ function TimerQuickModalReady({
                   <div className="mb-2 text-sm font-[640]">节奏</div>
                   <div className="flex flex-wrap gap-2">
                     {PRESETS[market].map((p) => {
-                      const on = state.presetIds.includes(p.id)
+                      const on = !fromComplex && state.presetIds.includes(p.id)
                       return (
                         <button
                           key={p.id}
@@ -302,7 +278,9 @@ function TimerQuickModalReady({
                   </div>
                 </div>
 
-                {nightSchedule && (
+                {nightSchedule && (fromComplex ? (
+                  <p className="text-xs text-ink-3">当前使用高级节奏。请在完整定时设置中调整夜盘时段。</p>
+                ) : (
                   <div className="flex items-center gap-3">
                     <Switch
                       ariaLabel={nightSchedule.label}
@@ -314,7 +292,7 @@ function TimerQuickModalReady({
                       <div className="text-xs text-ink-3">{nightSchedule.range_label}</div>
                     </div>
                   </div>
-                )}
+                ))}
 
                 <GMSessionControls channel={scheduleChannel} signalOnly={signal} value={state.gm_sessions} onChange={(gm_sessions) => patch({ gm_sessions })} />
 

@@ -79,11 +79,6 @@ function appendTargetOnlyRows(
   }
 }
 
-export function signalTargetQuantities(target: TargetWeightSnapshot | null): Record<string, number> | null {
-  if (!target?.calculated_at) return null
-  return target.quantities ?? (target.target_mode === 'quantity' ? target.raw_targets ?? {} : null)
-}
-
 /** 调仓信号展示保存的数量快照，当前持仓与目标按各自的观测时间展示。 */
 export function signalHoldingPreviewRows(
   positions: Position[] | undefined, equity: number, quantities: Record<string, number> | null,

@@ -8,7 +8,7 @@ import { AccountOverviewConfigButton, AccountOverviewEquity, AccountOverviewIden
 import { AssetRefreshFeedback } from '@/features/account/AssetRefreshFeedback'
 import { describeLeverage } from '@/features/account/configSummary'
 import { HoldingsPreviewTable } from '@/features/account/HoldingsPreviewTable'
-import { signalHoldingPreviewRows, signalTargetQuantities } from '@/features/account/holdingDetailModel'
+import { signalHoldingPreviewRows } from '@/features/account/holdingDetailModel'
 import { formatBeijingTimestamp, formatObservedAt, formatPlannedAt, formatRecentExecution } from '@/lib/scheduleTime'
 import { portfolioMarketDescriptor } from '@/features/portfolio/portfolioMarkets'
 import { describeCron } from '@/features/setup/cron'
@@ -113,7 +113,7 @@ export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
   const currency = latest?.assets.currency ?? item.currency
   const availableCash = latest?.assets.available_cash
   const snapshot = targets.data?.calculated_at ? targets.data : null
-  const quantities = signalTargetQuantities(snapshot)
+  const quantities = snapshot?.quantities ?? null
   const holdings = signalHoldingPreviewRows(positions, equity ?? 0, quantities)
   const holdingsCount = new Set(holdings.filter((row) => !row.targetOnly).map((row) => row.symbol)).size
   const targetCount = quantities ? Object.values(quantities).filter((quantity) => quantity !== 0).length : null

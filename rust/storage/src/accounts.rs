@@ -328,40 +328,53 @@ pub(crate) fn latest_account_on(
         WHERE b.portfolio_id=?1 ORDER BY b.id DESC LIMIT 1", [portfolio_id], |row| row.get(0)).optional().map_err(sql)
 }
 
-fn ensure_portfolio_on(
+fn validate_portfolio_on(
     connection: &Connection,
     portfolio_id: Option<i64>,
+    signal_market: Option<&Value>,
 ) -> Result<(), AnalysisError> {
+    let market = signal_market
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|market| !market.trim().is_empty())
+                .ok_or_else(|| invalid("请选择调仓信号账户市场"))
+        })
+        .transpose()?;
     if let Some(portfolio_id) = portfolio_id {
-        let archived = connection
+        let portfolio = connection
             .query_row(
-                "SELECT archived_at_us IS NOT NULL FROM portfolio WHERE id=?1",
+                "SELECT archived_at_us IS NOT NULL,market FROM portfolio WHERE id=?1",
                 [portfolio_id],
-                |row| row.get::<_, bool>(0),
+                |row| Ok((row.get::<_, bool>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()
             .map_err(sql)?;
-        match archived {
+        match portfolio {
             None => return Err(AnalysisError::new("PORTFOLIO_NOT_FOUND", "组合不存在")),
-            Some(true) => {
+            Some((true, _)) => {
                 return Err(AnalysisError::new(
                     "ACCOUNT_CONFLICT",
                     "组合已归档，请先恢复或改绑",
                 ))
             }
-            Some(false) => (),
+            Some((false, portfolio_market))
+                if market.is_some_and(|market| market != portfolio_market) =>
+            {
+                return Err(invalid("调仓信号账户只能绑定同市场的组合"));
+            }
+            Some(_) => (),
         }
     }
     Ok(())
 }
 
-pub(crate) fn bind_on(
+fn append_binding_on(
     connection: &Connection,
     account_id: i64,
     portfolio_id: Option<i64>,
     now: &str,
 ) -> Result<(), AnalysisError> {
-    ensure_portfolio_on(connection, portfolio_id)?;
     connection
         .execute(
             "INSERT INTO portfolioaccount(account_id,portfolio_id,created_at_us) VALUES(?1,?2,?3)",
@@ -410,40 +423,13 @@ fn settings(data: &Value, fields: &[&str]) -> Value {
 
 pub(crate) const SIGNAL_CHANNEL: &str = "rebalance_signal";
 
-fn validate_signal_market(
-    connection: &Connection,
-    market: &Value,
-    portfolio_id: Option<i64>,
-) -> Result<(), AnalysisError> {
-    let market = market
-        .as_str()
-        .filter(|market| !market.trim().is_empty())
-        .ok_or_else(|| invalid("请选择调仓信号账户市场"))?;
-    let Some(portfolio_id) = portfolio_id else {
-        return Ok(());
-    };
-    ensure_portfolio_on(connection, Some(portfolio_id))?;
-    let portfolio_market = connection
-        .query_row(
-            "SELECT market FROM portfolio WHERE id=?1",
-            [portfolio_id],
-            |row| row.get::<_, String>(0),
-        )
-        .map_err(sql)?;
-    if market != portfolio_market {
-        return Err(invalid("调仓信号账户只能绑定同市场的组合"));
-    }
-    Ok(())
-}
-
 fn insert_on(connection: &Connection, data: &Value, now: &str) -> Result<i64, AnalysisError> {
     validate_replay_recording(data.get("replay_recording_enabled"), "ACCOUNT_INPUT")?;
     crate::control_policy::parse_override(data["account_control_override"].clone())
         .map_err(|error| AnalysisError::caused_by("ACCOUNT_INPUT", error))?;
-    ensure_portfolio_on(connection, data["portfolio_id"].as_i64())?;
-    if data["trade_channel"] == SIGNAL_CHANNEL {
-        validate_signal_market(connection, &data["market"], data["portfolio_id"].as_i64())?;
-    }
+    let portfolio_id = data["portfolio_id"].as_i64();
+    let signal_market = (data["trade_channel"] == SIGNAL_CHANNEL).then_some(&data["market"]);
+    validate_portfolio_on(connection, portfolio_id, signal_market)?;
     let identity = [
         "name",
         "market",
@@ -477,7 +463,7 @@ fn insert_on(connection: &Connection, data: &Value, now: &str) -> Result<i64, An
         arguments.push(argument(&values));
     }
     connection.execute("INSERT INTO account_settings(account_id,connection,execution,schedule,notification,backtest) VALUES(?1,?2,?3,?4,?5,?6)", params_from_iter(arguments)).map_err(sql)?;
-    bind_on(connection, account_id, data["portfolio_id"].as_i64(), now)?;
+    append_binding_on(connection, account_id, portfolio_id, now)?;
     Ok(account_id)
 }
 
@@ -805,14 +791,6 @@ pub fn account_update(path: &str, request: &Value) -> Result<Value, AnalysisErro
     writer_scope::immediate(&connection, || {
         let previous = require_on(&connection, account_id)?;
         ensure_current_on(&connection, account_id)?;
-        if data.get("is_started") == Some(&json!(true)) {
-            ensure_portfolio_on(
-                &connection,
-                data.get("portfolio_id")
-                    .unwrap_or(&previous["portfolio_id"])
-                    .as_i64(),
-            )?;
-        }
         check_revision(&previous, request)?;
         let (override_, code) = match data.get("account_control_override") {
             Some(value) => (value, "ACCOUNT_INPUT"),
@@ -860,25 +838,27 @@ pub fn account_update(path: &str, request: &Value) -> Result<Value, AnalysisErro
         if is_signal != becomes_signal {
             return Err(invalid("调仓信号账户与交易账户不能互换渠道"));
         }
-        if is_signal {
-            if data
+        if is_signal
+            && data
                 .get("market")
                 .is_some_and(|market| market != &previous["market"])
-            {
-                return Err(invalid("调仓信号账户创建后不可更改市场"));
-            }
-            validate_signal_market(
+        {
+            return Err(invalid("调仓信号账户创建后不可更改市场"));
+        }
+        let changed_binding = data
+            .get("portfolio_id")
+            .filter(|id| *id != &previous["portfolio_id"]);
+        if is_signal || data.get("is_started") == Some(&json!(true)) || changed_binding.is_some() {
+            validate_portfolio_on(
                 &connection,
-                &previous["market"],
-                data.get("portfolio_id")
+                changed_binding
                     .unwrap_or(&previous["portfolio_id"])
                     .as_i64(),
+                is_signal.then_some(&previous["market"]),
             )?;
         }
-        if let Some(portfolio_id) = data.get("portfolio_id") {
-            if portfolio_id != &previous["portfolio_id"] {
-                bind_on(&connection, account_id, portfolio_id.as_i64(), now)?;
-            }
+        if let Some(portfolio_id) = changed_binding {
+            append_binding_on(&connection, account_id, portfolio_id.as_i64(), now)?;
         }
         patch_on(&connection, account_id, data, now)?;
         if runtime_changed {
@@ -1080,7 +1060,7 @@ mod tests {
     fn database() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch("PRAGMA foreign_keys=ON;
-            CREATE TABLE portfolio(id INTEGER PRIMARY KEY,archived_at_us INTEGER);
+            CREATE TABLE portfolio(id INTEGER PRIMARY KEY,market TEXT NOT NULL,archived_at_us INTEGER);
             CREATE TABLE account(id INTEGER PRIMARY KEY,name TEXT NOT NULL,market TEXT NOT NULL,
                 trade_channel TEXT NOT NULL,brokerage TEXT NOT NULL,remark TEXT,portfolio_id INTEGER REFERENCES portfolio(id),
                 copied_from_account_id INTEGER,copied_from_account_name TEXT,updated_at_us INTEGER NOT NULL,created_at_us INTEGER NOT NULL,archived_at_us INTEGER);
@@ -1096,7 +1076,7 @@ mod tests {
                 sequence INTEGER,status TEXT,observed_at_us INTEGER,message TEXT,error TEXT,label TEXT,presentation TEXT,
                 last_success_at_us INTEGER,last_failure TEXT,manually_disconnected INTEGER);
             CREATE TABLE supplement_group(id TEXT PRIMARY KEY,account_id INTEGER,status TEXT);
-            INSERT INTO portfolio(id) VALUES(1);").unwrap();
+            INSERT INTO portfolio(id,market) VALUES(1,'期货');").unwrap();
         connection
     }
 
@@ -1349,7 +1329,7 @@ mod tests {
             patch["account_control_override"]
         );
         assert_eq!(saved["risk_symbols"], patch["risk_symbols"]);
-        bind_on(&connection, id, None, "2026-10-23T09:02:00").unwrap();
+        append_binding_on(&connection, id, None, "2026-10-23T09:02:00").unwrap();
         assert_eq!(latest_portfolio_on(&connection, id).unwrap(), None);
         assert_eq!(latest_account_on(&connection, 1).unwrap(), None);
         let bad = json!({"portfolio_id":999,"name":"bad"});

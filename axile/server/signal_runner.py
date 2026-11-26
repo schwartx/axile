@@ -89,12 +89,15 @@ def _custom_quotes(
     return quotes
 
 
+def _read_account_function(code: str, context: SignalAccountContext) -> SignalAssets:
+    return parse_input(SignalAssets, source_function(code, "fetch_account")(context))
+
+
 def _account_assets(
     assets: SignalAssets | None, account_code: str | None, context: SignalAccountContext
 ) -> UnifiedAccountAssets:
     if account_code:
-        fetch = source_function(account_code, "fetch_account")
-        assets = parse_input(SignalAssets, fetch(context))
+        assets = _read_account_function(account_code, context)
     if assets is None:
         raise ValueError("缺少账户资产")
     return UnifiedAccountAssets(
@@ -241,30 +244,29 @@ def _read_channel_quotes(source: SignalQuoteSource, symbols: list[str], timeout:
     return read_tushare_quotes(source.url, source.token, symbols, timeout)
 
 
-def _run_quote_child(pipe: Connection, code: str, symbols: list[str]) -> None:
+def _read_quote_test(code: str, symbols: list[str]) -> dict[str, UnifiedPriceData]:
+    return _custom_quotes(source_function(code, "fetch_quotes"), symbols, allow_partial=True)
+
+
+def _run_test_child(pipe: Connection, read: Callable[[], object]) -> None:
     try:
-        pipe.send(_custom_quotes(source_function(code, "fetch_quotes"), symbols, allow_partial=True))
+        pipe.send(read())
     except BaseException as error:  # noqa: BLE001 - 子进程负责回传用户函数错误
-        pipe.send(_error_from_exception(error))
+        pipe.send(error if isinstance(error, PortfolioFunctionError) else _error_from_exception(error))
     finally:
         pipe.close()
 
 
 def run_signal_quote_test(code: str, symbols: list[str], timeout: float) -> dict[str, UnifiedPriceData]:
     """单独执行行情草稿，沿用信号计算的进程隔离和超时回收。"""
-    return cast(dict[str, UnifiedPriceData], _run_isolated_signal(_run_quote_child, (code, symbols), timeout))
+    read = partial(_read_quote_test, code, symbols)
+    return cast(dict[str, UnifiedPriceData], _run_isolated_signal(_run_test_child, (read,), timeout))
 
 
 def run_signal_account_test(code: str, context: SignalAccountContext, timeout: float) -> SignalAssets:
     """单独执行开户草稿里的账户函数，并保留未知持仓与空仓的区别。"""
-    result = cast(SignalCalculation, _run_isolated_signal(_run_child, (None, code, None, context, None), timeout))
-    snapshot = result.assets
-    return SignalAssets(
-        total_asset=snapshot.total_asset,
-        available_cash=snapshot.available_cash,
-        currency=snapshot.currency,
-        positions=snapshot.positions if snapshot.extra["positions_known"] else None,
-    )
+    read = partial(_read_account_function, code, context)
+    return cast(SignalAssets, _run_isolated_signal(_run_test_child, (read,), timeout))
 
 
 def run_signal(
