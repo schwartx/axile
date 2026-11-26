@@ -266,6 +266,46 @@ def test_does_not_misnormalize_unknown_or_non_czce_future(symbol: str, instrumen
     assert executor._normalize_ctp_symbol(symbol) == expected
 
 
+@pytest.mark.parametrize(
+    ("symbol", "native_symbol"),
+    [
+        ("sr2701", "SR701"),
+        ("SR2701", "SR701"),
+        ("sR701", "SR701"),
+        ("SR3701", "SR3701"),
+        ("RB2701", "rb2701"),
+        ("if2701", "IF2701"),
+    ],
+)
+def test_margin_rate_query_uses_native_symbol_without_catalog(
+    config: CTPAccountConfig, symbol: str, native_symbol: str
+) -> None:
+    executor = CTPExecutor(TradeChannel("ctp"))
+    executor.account_config = config
+    executor._trading_day = "20261126"
+    row = td.CThostFtdcInstrumentMarginRateField()
+    row.InstrumentID = native_symbol
+    row.HedgeFlag = td.THOST_FTDC_HF_Speculation
+    row.LongMarginRatioByMoney = row.ShortMarginRatioByMoney = 0.12
+    executor._query = Mock(return_value=[row])
+
+    assert executor.query_margin_rates(symbol)["instrument_id"] == native_symbol
+    request = executor._query.call_args.args[1]
+    assert request.InstrumentID == native_symbol
+
+
+def test_commission_rate_query_uses_native_symbol_without_catalog(config: CTPAccountConfig) -> None:
+    executor = CTPExecutor(TradeChannel("ctp"))
+    executor.account_config = config
+    executor._trading_day = "20261126"
+    row = td.CThostFtdcInstrumentCommissionRateField()
+    row.InstrumentID = "SR701"
+    executor._query = Mock(return_value=[row])
+
+    assert executor.query_commission_rates("sr2701")["instrument_id"] == "SR701"
+    assert executor._query.call_args.args[1].InstrumentID == "SR701"
+
+
 def test_rejects_conflicting_czce_alias_values(config: CTPAccountConfig) -> None:
     executor = CTPExecutor.__new__(CTPExecutor)
     executor._trading_day = "20260824"

@@ -90,6 +90,7 @@ from axile.executor.ctp_input_validation import (
     validate_instrument,
 )
 from axile.executor.ctp_product_sessions import (
+    CTP_PRODUCT_SESSIONS,
     decide_ctp_product_session,
     get_ctp_product_sessions,
 )
@@ -137,6 +138,7 @@ from axile.executor.trading_calendar import CHINA_CALENDAR_ID, ShinnyTradingCale
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _ValueT = TypeVar("_ValueT")
 _MISSING = object()
+_RATE_QUERY_PRODUCTS = {product.upper(): product for _, product in CTP_PRODUCT_SESSIONS}
 
 
 class CtpRequestError(RuntimeError):
@@ -1674,20 +1676,25 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
     def _normalize_symbol_list(self, values: list[str]) -> list[str]:
         return list(dict.fromkeys(self._normalize_ctp_symbol(symbol) for symbol in values))
 
-    def _normalize_ctp_symbol(self, symbol: str) -> str:
+    def _normalize_ctp_symbol(self, symbol: str, *, rate_query: bool = False) -> str:
+        """还原 CTP 合约代码，费率查询无需预先加载合约资料。"""
+        if rate_query:
+            product = symbol.rstrip("0123456789")
+            native_product = _RATE_QUERY_PRODUCTS.get(product.upper(), product)
+            symbol = native_product + symbol[len(product) :]
         if "." in symbol:
             record = self._catalog_record(symbol)
             if record is not None:
                 return record.symbol
-        if symbol in self._instruments:
+        if not rate_query and symbol in self._instruments:
             return symbol
         trading_day = str(getattr(self, "_trading_day", ""))
         reference_year = (
             int(trading_day[:4]) if len(trading_day) >= 4 and trading_day[:4].isdigit() else datetime.now().year
         )
         native_symbol = canonicalize_cn_futures_symbol(symbol, reference_year=reference_year)
-        if native_symbol == symbol:
-            return symbol
+        if rate_query or native_symbol == symbol:
+            return native_symbol
         instrument = self._instruments.get(native_symbol)
         if instrument is None or str(getattr(instrument, "ExchangeID", "")) != "CZCE":
             return symbol
@@ -1699,7 +1706,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
     def query_margin_rates(self, symbol: str) -> dict[str, object]:
         """查询当前账户单个期货合约的投机保证金参数。"""
         validate_instrument(symbol)
-        symbol = self._normalize_ctp_symbol(symbol)
+        symbol = self._normalize_ctp_symbol(symbol, rate_query=True)
         config = self._config()
         validate_config(config)
         request = td.CThostFtdcQryInstrumentMarginRateField()
@@ -1753,7 +1760,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
     def query_commission_rates(self, symbol: str) -> dict[str, object]:
         """读取当前账户的期货开仓、平仓和平今手续费率。"""
         validate_instrument(symbol)
-        symbol = self._normalize_ctp_symbol(symbol)
+        symbol = self._normalize_ctp_symbol(symbol, rate_query=True)
         row = self._query_commission_row(symbol)
         rates = {
             "open_ratio": row.OpenRatioByMoney,
