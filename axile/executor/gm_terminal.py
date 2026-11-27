@@ -6,8 +6,6 @@ import sys
 from pathlib import Path
 from threading import Lock
 
-import psutil
-
 from axile.executor.algorithms.utils.clock import get_default_clock
 
 _started: dict[Path, subprocess.Popen[bytes]] = {}
@@ -37,6 +35,8 @@ def launch_gm_terminal(directory: Path) -> None:
 
 def wait_for_gm_port(port: int, timeout: float) -> bool:
     """在限时内观察终端的 RPC 端口监听。"""
+    import psutil
+
     clock = get_default_clock()
     deadline = clock.monotonic() + timeout
     while (remaining := deadline - clock.monotonic()) > 0:
