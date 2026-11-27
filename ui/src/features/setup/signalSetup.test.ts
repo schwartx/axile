@@ -7,7 +7,7 @@ import { flowOf } from '@/features/setup/steps'
 import { SignalLeverageFields } from '@/features/signal/SignalLeverageFields'
 import { SignalNotificationSetup } from '@/features/signal/SignalNotificationSetup'
 import { configToSignalDraft, initialSignalDraft, positionVolumePatch, signalAccountConfig, signalAccountErrors, signalConfig, signalEquityPatch, signalQuoteConfig, signalQuoteErrors, signalQuoteOptions, TUSHARE_API_URL } from '@/features/signal/signalData'
-import { AcctConfirm } from '@/pages/setup/AccountSteps'
+import { AcctChannel, AcctConfirm } from '@/pages/setup/AccountSteps'
 import { SignalSetupPage } from '@/pages/setup/SignalSetupPage'
 import { useChannelCatalogStore } from '@/stores/channels'
 import { useWizardStore } from '@/stores/wizard'
@@ -22,6 +22,24 @@ test('信号向导依次进入行情、资金、定时、通知和确认', () =>
   for (const [index, step] of steps.entries()) {
     const search = new URL(step.path, 'http://localhost').search
     expect(flowOf(index === 0 ? step.path : path, search, true).index).toBe(index)
+  }
+})
+
+test('账户向导保留调仓信号并排除只提供行情的渠道', () => {
+  const catalog = useChannelCatalogStore.getInitialState()
+  const previousChannels = catalog.channels
+  catalog.channels = [
+    { channel: 'gm', label: '掘金', available: true, supports_trading: true },
+    { channel: 'rebalance_signal', label: '调仓信号', available: true, supports_trading: false },
+    { channel: 'ths', label: '同花顺', available: true, supports_trading: false, independent_market_data: true },
+  ] as ChannelCapability[]
+  try {
+    const html = renderToStaticMarkup(createElement(MemoryRouter, null, createElement(AcctChannel)))
+    expect(html).toContain('掘金')
+    expect(html).toContain('调仓信号')
+    expect(html).not.toContain('同花顺')
+  } finally {
+    catalog.channels = previousChannels
   }
 })
 
