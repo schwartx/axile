@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import is_dataclass
+from typing import cast
 
 from axile.channels import get_channel
 from axile.common.serialization import parse_input, to_payload
@@ -188,7 +189,7 @@ def _build_account_config(
 
 def _get_default_algorithm_method(channel: TradeChannel) -> str:
     """返回指定渠道的默认算法名称."""
-    return _get_channel_default_algorithm(channel)["method"]
+    return cast("str", _get_channel_default_algorithm(channel)["method"])
 
 
 def _get_channel_default_algorithm(channel: TradeChannel) -> TradeAlgorithm:

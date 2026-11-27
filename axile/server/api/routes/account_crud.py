@@ -691,7 +691,7 @@ async def account_next_run_time(
 
         preview = await schedule_preview(
             SchedulePreviewRequest(
-                trade_channel=account.trade_channel,
+                trade_channel=cast("TradeChannel", account.trade_channel),
                 cron_expr=account.cron_expr,
                 supplement=account.supplement,
                 channel_options=account.channel_options,
