@@ -1,6 +1,6 @@
 import { FuturesClosePolicyEditor } from '@/features/account/FuturesClosePolicyEditor'
 import { defaultClosePolicy } from '@/features/account/futuresClosePolicy'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Bitcoin, ChartCandlestick, CircleHelp, createLucideIcon, Landmark, Monitor, RadioTower, SquareTerminal, Target, type LucideIcon } from 'lucide-react'
 import { useNavigate } from '@/components/ui/nav'
 import { ConnectionValidationAside } from '@/features/account/connectionValidation/ConnectionValidationAside'
@@ -31,6 +31,7 @@ import { useToastStore } from '@/stores/ui'
 import { resolveCronList, cronToExpr, describeCron, fmtFire, nextFires } from '@/features/setup/cron'
 import { TimerEditor, type TimerEditorState } from '@/features/setup/TimerEditor'
 import { ACCT_STEPS, SIGNAL_STEPS } from '@/features/setup/steps'
+import { SIGNAL_CHANNEL } from '@/features/signal/signalData'
 import { algoLabel, validateAlgorithmRef } from '@/features/setup/algorithms'
 import { AlgorithmEditor } from '@/features/setup/AlgorithmEditor'
 import {
@@ -96,7 +97,10 @@ function channelDraft(channel: ChannelCapability) {
 /* -------- 1 选渠道 -------- */
 export function AcctChannel() {
   const { acct, setAcct } = useWizardStore()
-  const channels = useChannelCatalogStore((state) => state.channels)
+  const catalog = useChannelCatalogStore((state) => state.channels)
+  const channels = useMemo(() => catalog?.filter((channel) =>
+    channel.channel === SIGNAL_CHANNEL || channel.supports_trading !== false
+  ) ?? null, [catalog])
   const loading = useChannelCatalogStore((state) => state.loading)
   const error = useChannelCatalogStore((state) => state.error)
   const refresh = useChannelCatalogStore((state) => state.refresh)
@@ -115,7 +119,7 @@ export function AcctChannel() {
 
   const selected = channels?.find((channel) => channel.channel === acct.channel)
   const nextDisabled = !selected?.available
-  const steps = selected?.supports_trading === false ? SIGNAL_STEPS : ACCT_STEPS
+  const steps = selected?.channel === SIGNAL_CHANNEL ? SIGNAL_STEPS : ACCT_STEPS
 
   return (
     <div className="flex h-full flex-col">
