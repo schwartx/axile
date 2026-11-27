@@ -28,6 +28,13 @@ export function getSignalConfig(accountId: number, signal?: AbortSignal) {
 
 export type SignalRecordStatus = 'SUCCEEDED' | 'FAILED'
 
+type SignalChanges = { status: 'compared'; changes: Record<string, { before: number; after: number; delta: number }> }
+type SignalNodeChange = (SignalChanges | { status: 'first' | 'missing' }) & { previous_scheduled_at?: string }
+type SignalAdjustment = (SignalChanges | { status: 'unknown' | 'unsupported' }) & {
+  kind?: 'order'
+  basis?: 'signal_holdings' | 'actual_holdings'
+}
+
 export interface SignalRecord {
   id: string
   created_at: string
@@ -37,6 +44,17 @@ export interface SignalRecord {
   error: string | null
   quantity_unit: string
   targets: Record<string, number>
+  node_change: SignalNodeChange | null
+  adjustment: SignalAdjustment | null
+  followed_target: boolean | null
+  sizing_prices?: Record<string, number> | null
+  settlement_prices?: Record<string, number> | null
+  follow_ledger?: {
+    status: 'settled' | 'insufficient_cash' | 'long_only'
+    cash: number
+    equity: number
+    fee: number
+  } | null
   notification_status: 'pending' | 'calling' | 'succeeded' | 'failed' | 'unknown'
   notification_error: string | null
 }
@@ -52,6 +70,7 @@ export function getSignalRecords(accountId: number, options: {
   days?: number | null
   status?: SignalRecordStatus | null
   symbol?: string
+  trigger_source?: SignalRecord['trigger_source']
 }, signal: AbortSignal) {
   const query = new URLSearchParams()
   for (const [key, value] of Object.entries(options)) {

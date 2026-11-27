@@ -13,6 +13,7 @@ import { runtimeSyncMessage, useAccountRuntimeSync } from '@/features/account/us
 import { AccountControlSummary } from '@/features/account/ControlMonitor'
 import { CurrentOrdersButton, CurrentOrdersDialog } from '@/features/account/CurrentOrders'
 import { useCurrentOrders } from '@/features/account/useCurrentOrders'
+import { HoldingsComparison } from '@/features/account/HoldingsComparison'
 import { HoldingsPreviewTable } from '@/features/account/HoldingsPreviewTable'
 import { HoldingDetailDialog } from '@/features/account/HoldingDetailDialog'
 import { holdingPreviewRows } from '@/features/account/holdingDetailModel'
@@ -32,7 +33,6 @@ import { PerformanceCurveLink } from '@/features/history/PerformanceCurveLink'
 import { InkRewrite } from '@/components/ui/InkRewrite'
 import { NumberTicker } from '@/components/ui/NumberTicker'
 import { OverflowText } from '@/components/ui/OverflowText'
-import { ResizeHandle } from '@/components/ui/ResizeHandle'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { Skeleton, SkeletonGroup, SkeletonText } from '@/components/ui/Skeleton'
@@ -92,10 +92,6 @@ import type { Account, AccountDashboardItem } from '@/types/api'
 import { TargetSnapshotControl } from '@/features/portfolio/TargetSnapshotControl'
 import { portfolioTargetSummary } from '@/features/portfolio/portfolioCardSummary'
 
-const DEFAULT_HOLDINGS_SPLIT = 40
-const MIN_HOLDINGS_SPLIT = 25
-const MAX_HOLDINGS_SPLIT = 50
-
 interface AccountDetailProps {
   accountId: number
   /** 若来自仪表盘可直接传入聚合项，省一次请求；否则组件自取。 */
@@ -137,9 +133,6 @@ export function AccountDetail({
   const nameVt = useViewTransitionState(`/accounts/${accountId}`)
   const channelDescriptor = useChannelDescriptor(item.trade_channel)
   const [holdingSelection, setHoldingSelection] = useState<{ accountId: number; symbol: string; keyboardOpened: boolean } | null>(null)
-  const holdingsComparisonRef = useRef<HTMLDivElement>(null)
-  const [holdingsSplit, setHoldingsSplit] = useState(DEFAULT_HOLDINGS_SPLIT)
-  const [holdingsColumnWidths, setHoldingsColumnWidths] = useState<number[] | null>(null)
   const selectedSymbol = holdingSelection?.accountId === accountId ? holdingSelection.symbol : null
   const currentOrders = useCurrentOrders(accountId, () => {
     void refreshAssetSnapshots()
@@ -670,24 +663,12 @@ export function AccountDetail({
 
       <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
         <Card className="px-6 py-4 md:col-span-2">
-          <div className="mb-3 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
-            <div className="mr-auto flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-              <h3 className="flex-none text-[14px] font-semibold text-ink-2">持仓 vs 目标</h3>
+          <HoldingsComparison
+            observation={<>
               <AssetRefreshStatus result={currentOrders.assetRefresh} />
               {targetSnapshotControl}
-            </div>
-            <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
-              {showComparisonPanel && currentHoldings.length > 0 && holdingsColumnWidths && (
-                <button type="button"
-                  className="inline-flex min-h-6 flex-none cursor-pointer items-center rounded-md px-1.5 text-xs whitespace-nowrap text-ink-3 hover:bg-fill hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                  onClick={event => {
-                    setHoldingsColumnWidths(null)
-                    if (event.detail === 0) holdingsComparisonRef.current?.querySelector<HTMLElement>('table [role="separator"]')?.focus({ preventScroll: true })
-                  }}
-                >
-                  重置列宽
-                </button>
-              )}
+            </>}
+            actions={<>
               <CurrentOrdersButton state={currentOrders} />
               <Link
                 to={`/accounts/${accountId}/holdings`}
@@ -695,80 +676,41 @@ export function AccountDetail({
               >
                 持仓明细 →
               </Link>
-            </div>
-          </div>
-          {comparisonLoading ? (
-            <SkeletonGroup label="正在加载持仓与目标对照" className="grid min-h-48 gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.618fr)]">
-              <div className="space-y-3 border-t border-line pt-3">
-                <Skeleton className="h-7 w-32" />
-                <Skeleton className="h-4 w-44" />
-                <Skeleton className="h-2 w-full" />
+            </>}
+            summary={showComparisonPanel && <>
+              <div className={`text-[23px] font-[640] ${STATUS_TEXT_CLASS[driftLevel]}`}>
+                {driftHeadline}
               </div>
-              <div className="min-w-0 border-t border-line lg:border-t-0 lg:border-l lg:pl-5">
-                <HoldingsPreviewTable holdings={null} positionValueLabel={positionValueLabel} quantityMode={quantityTarget} />
+              <div className="mt-1.5 text-[14px] text-ink-2">
+                当前 {!latestAssets ? '尚未查询' : holdingsCount == null ? '待刷新' : holdingsCount === 0 ? '空仓' : `${holdingsCount} 只`} · 目标 {weights.data?.calculated_at ? `${targetCount} 只` : '尚未计算'}
               </div>
-            </SkeletonGroup>
-          ) : showComparisonPanel ? (
-            <div
-              ref={holdingsComparisonRef}
-              className="relative grid min-h-48 gap-5 lg:grid-cols-[minmax(0,var(--holdings-split))_minmax(0,1fr)] lg:gap-0"
-              style={{ '--holdings-split': `${holdingsSplit}%` } as CSSProperties}
-            >
-              <div className="min-w-0 border-t border-line pt-3 lg:mr-5">
-                <div className={`text-[23px] font-[640] ${STATUS_TEXT_CLASS[driftLevel]}`}>
-                  {driftHeadline}
-                </div>
-                <div className="mt-1.5 text-[14px] text-ink-2">
-                  当前 {!latestAssets ? '尚未查询' : holdingsCount == null ? '待刷新' : holdingsCount === 0 ? '空仓' : `${holdingsCount} 只`} · 目标 {weights.data?.calculated_at ? `${targetCount} 只` : '尚未计算'}
-                </div>
-                {plan.off > 0 && (
-                  <>
-                    <div className="mt-1 text-[14px] text-ink-2">
-                      卖 {plan.sells} · 买 {plan.buys}{plan.flips > 0 ? ` · 翻向 ${plan.flips}` : ''}
-                    </div>
-                    {!quantityTarget && (
-                      <>
-                        <div className="mt-4 flex items-baseline justify-between gap-3 text-[13.5px]">
-                          <span className="text-ink-2">预计换手</span>
-                          <span className="num font-medium text-ink-1">{rebalanceTurnover(plan).toFixed(1)}%</span>
-                        </div>
-                        <DriftBar rows={plan.rows} />
-                      </>
-                    )}
-                  </>
-                )}
-              </div>
-              <div className="min-w-0 border-t border-line lg:border-t-0 lg:pl-5">
-                <HoldingsPreviewTable
-                  holdings={currentHoldings}
-                  onSelect={(symbol, keyboardOpened) => { setHoldingSelection({ accountId, symbol, keyboardOpened }) }}
-                  observed={positionsObserved}
-                  currency={item.currency}
-                  positionValueLabel={positionValueLabel}
-                  quantityMode={quantityTarget}
-                  quantityLabel={channelDescriptor?.units?.quantity_label}
-                  columnWidths={holdingsColumnWidths}
-                  onColumnWidthsChange={setHoldingsColumnWidths}
-                />
-              </div>
-              <ResizeHandle
-                aria-label="调整持仓摘要与表格宽度" orientation="vertical"
-                value={holdingsSplit} min={MIN_HOLDINGS_SPLIT} max={MAX_HOLDINGS_SPLIT} step={2}
-                aria-valuetext={`${holdingsSplit}%`}
-                title="左右拖动调整宽度 · 双击恢复默认"
-                className="absolute inset-y-0 z-10 hidden w-[7px] -translate-x-1/2 lg:block"
-                style={{ left: 'var(--holdings-split)' }}
-                valueAt={x => {
-                  const bounds = holdingsComparisonRef.current?.getBoundingClientRect()
-                  if (!bounds) return holdingsSplit
-                  const percent = Math.round((x - bounds.left) / bounds.width * 100)
-                  return Math.min(MAX_HOLDINGS_SPLIT, Math.max(MIN_HOLDINGS_SPLIT, percent))
-                }}
-                onChange={setHoldingsSplit} onCommit={setHoldingsSplit}
-                onReset={() => setHoldingsSplit(DEFAULT_HOLDINGS_SPLIT)}
-              />
-            </div>
-          ) : null}
+              {plan.off > 0 && (
+                <>
+                  <div className="mt-1 text-[14px] text-ink-2">
+                    卖 {plan.sells} · 买 {plan.buys}{plan.flips > 0 ? ` · 翻向 ${plan.flips}` : ''}
+                  </div>
+                  {!quantityTarget && (
+                    <>
+                      <div className="mt-4 flex items-baseline justify-between gap-3 text-[13.5px]">
+                        <span className="text-ink-2">预计换手</span>
+                        <span className="num font-medium text-ink-1">{rebalanceTurnover(plan).toFixed(1)}%</span>
+                      </div>
+                      <DriftBar rows={plan.rows} />
+                    </>
+                  )}
+                </>
+              )}
+            </>}
+            table={comparisonLoading || showComparisonPanel ? {
+              holdings: comparisonLoading ? null : currentHoldings,
+              onSelect: (symbol, keyboardOpened) => setHoldingSelection({ accountId, symbol, keyboardOpened }),
+              observed: positionsObserved,
+              currency: item.currency,
+              positionValueLabel,
+              quantityMode: quantityTarget,
+              quantityLabel: channelDescriptor?.units?.quantity_label,
+            } : undefined}
+          />
           <CurrentOrdersDialog state={currentOrders} units={channelDescriptor?.units} channel={item.trade_channel} />
           <HoldingDetailDialog symbol={selectedSymbol} restoreFocus={!!holdingSelection?.keyboardOpened}
             positions={positions} observed={positionsObserved}

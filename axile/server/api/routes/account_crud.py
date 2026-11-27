@@ -278,7 +278,10 @@ async def create_account(
         ensure_account_control_preset_compatible(account.account_control_preset, account.trade_channel)
         account.futures_close_policy.validate_channel(account.trade_channel)
         _validate_gm_schedule(account.trade_channel, account.market, account.channel_options)
-        account_config = _validate_channel_account_config(account.trade_channel, account.account_config, account.market)
+        config = account.account_config
+        if account.trade_channel == SIGNAL_CHANNEL and "follow_target" not in config:
+            config = config | {"follow_target": config.get("account_code") is None}
+        account_config = _validate_channel_account_config(account.trade_channel, config, account.market)
         _check_algorithm_channel_compat(account.algorithm, str(account.trade_channel), "下单算法")
         _check_algorithm_channel_compat(account.empty_positions_algorithm, str(account.trade_channel), "清仓算法")
         if account.execution_notification_code and account.execution_notification_code.strip():

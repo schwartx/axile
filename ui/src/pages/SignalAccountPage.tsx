@@ -7,14 +7,14 @@ import { Link, useNavigate } from '@/components/ui/nav'
 import { AccountOverviewConfigButton, AccountOverviewEquity, AccountOverviewIdentity, AccountOverviewPortfolio } from '@/features/account/AccountOverviewHero'
 import { AssetRefreshFeedback } from '@/features/account/AssetRefreshFeedback'
 import { describeLeverage } from '@/features/account/configSummary'
-import { HoldingsPreviewTable } from '@/features/account/HoldingsPreviewTable'
+import { HoldingsComparison } from '@/features/account/HoldingsComparison'
 import { signalHoldingPreviewRows } from '@/features/account/holdingDetailModel'
 import { formatBeijingTimestamp, formatObservedAt, formatPlannedAt, formatRecentExecution } from '@/lib/scheduleTime'
 import { portfolioMarketDescriptor } from '@/features/portfolio/portfolioMarkets'
 import { describeCron } from '@/features/setup/cron'
 import { TimerQuickModal } from '@/features/setup/TimerQuickModal'
-import { getSignalRecords } from '@/features/signal/signalApi'
-import { SignalRecordList } from '@/features/signal/SignalRecordList'
+import { getSignalConfig, getSignalRecords } from '@/features/signal/signalApi'
+import { SignalOrderInstructions, SignalRecordList, SignalTargets, signalResultLabel } from '@/features/signal/SignalRecordList'
 import { deleteAccount, getAccount, getAccountAssetSnapshots, getAccountTargetSnapshot, getNextRun, refreshAccountAssets, refreshAccountTargetSnapshot, runAccountSignal, updateAccount } from '@/lib/api/accounts'
 import { currentEquity } from '@/features/dashboard/performance'
 import { usePolling } from '@/lib/hooks/usePolling'
@@ -52,6 +52,12 @@ export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
     { queryKey: `signal-assets:${id}`, intervalMs: 15000 })
   const records = usePolling(useCallback((signal: AbortSignal) => getSignalRecords(id, { limit: 6 }, signal), [id]),
     { queryKey: `recent-signals:${id}`, intervalMs: 15000 })
+  const scheduledSignal = usePolling(useCallback((signal: AbortSignal) => getSignalRecords(id, {
+    limit: 1, trigger_source: 'scheduler',
+  }, signal), [id]), { queryKey: `latest-scheduled-signal:${id}`, intervalMs: 15000 })
+  const storedFollow = assets.data?.data[0]?.assets.source === 'signal_follow'
+  const signalConfig = usePolling(useCallback((signal: AbortSignal) => getSignalConfig(id, signal), [id]),
+    { queryKey: `signal-overview-config:${id}`, intervalMs: 15000 })
   const nextRun = usePolling(useCallback((signal: AbortSignal) => getNextRun(id, signal), [id]),
     { queryKey: `account:${id}:next-run`, intervalMs: 30000, enabled: item.is_scheduled })
   const refreshAccounts = useDomainStore((state) => state.refreshAccounts)
@@ -79,9 +85,9 @@ export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
         await refreshAccountAssets(id)
         await Promise.all([assets.refresh(), refreshAccounts()])
       } else if (action === 'signal') {
-        await runAccountSignal(id)
+        const result = await runAccountSignal(id)
         await Promise.all([targets.reloadSnapshot(), assets.refresh(), records.refresh(), account.refresh(), refreshAccounts()])
-        toast('执行完成')
+        toast(result.message)
       } else if (action === 'toggle') {
         runtime.invalidate()
         const updated = await updateAccount(id, { is_started: !isStarted })
@@ -106,16 +112,20 @@ export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
 
   const latest = assets.data?.data[0]
   const latestExtra = latest?.assets.extra
-  const positionsKnown = latestExtra != null && typeof latestExtra === 'object'
-    && 'positions_known' in latestExtra && latestExtra.positions_known === true
-  const positions = positionsKnown ? latest?.assets.positions ?? [] : undefined
+  const config = signalConfig.data?.account_config
+  const useManual = storedFollow && config != null && !config.follow_target
+  const following = storedFollow && !useManual
+  const positions = useManual ? config.manual_assets?.positions ?? undefined
+    : latestExtra != null && typeof latestExtra === 'object' && 'positions_known' in latestExtra && latestExtra.positions_known === true
+      ? latest?.assets.positions ?? [] : undefined
+  const positionsKnown = positions !== undefined
   const equity = latest?.assets.total_asset ?? currentEquity(item)
   const currency = latest?.assets.currency ?? item.currency
   const availableCash = latest?.assets.available_cash
   const snapshot = targets.data?.calculated_at ? targets.data : null
   const quantities = snapshot?.quantities ?? null
   const holdings = signalHoldingPreviewRows(positions, equity ?? 0, quantities)
-  const holdingsCount = new Set(holdings.filter((row) => !row.targetOnly).map((row) => row.symbol)).size
+  const holdingsCount = new Set(holdings.filter(row => !row.targetOnly).map(row => row.symbol)).size
   const targetCount = quantities ? Object.values(quantities).filter((quantity) => quantity !== 0).length : null
   const market = portfolioMarketDescriptor(channels ?? [], item.market)
   const schedule = market?.schedule
@@ -125,6 +135,7 @@ export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
   const notification = account.data?.notification_state
   const lastPushed = notification?.last_success_at
   const latestSignal = records.data?.items[0]
+  const latestScheduled = scheduledSignal.data?.items[0]
   const longLeverage = account.data?.long_leverage ?? item.long_leverage
   const shortLeverage = account.data?.short_leverage ?? item.short_leverage
 
@@ -133,10 +144,15 @@ export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
     <Card className="p-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <AccountOverviewIdentity item={item} nameTransition={enteringOverview} />
+        {config && <Link to={`${settingsTo}/assets`} title="设置资金与持仓"
+          className="inline-flex rounded-chip hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+          <Chip>{config.follow_target ? '跟随目标' : '手动调仓'}</Chip>
+        </Link>}
         {!isStarted && <Chip>已暂停</Chip>}
-        <AccountActions signal name={item.name} isStarted={isStarted} running={busy === 'signal'}
+        <AccountActions signal signalFollow={config?.follow_target} name={item.name} isStarted={isStarted} running={busy === 'signal'}
           runDisabledReason={item.portfolio_id == null ? '绑定组合后可执行'
-            : actionBusy && busy !== 'signal' ? '当前操作结束后可执行' : undefined}
+            : !config ? signalConfig.error ? '账户配置暂不可用' : '正在读取账户配置'
+              : actionBusy && busy !== 'signal' ? '当前操作结束后可执行' : undefined}
           toggling={actionBusy}
           archiveAction={(className) => <ArchiveAction kind="account" id={id} name={item.name} className={className}
             onChanged={async () => { await refreshAccounts(); await account.refresh() }} />}
@@ -163,9 +179,9 @@ export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
           <time dateTime={latestSignal.created_at}>上次 {formatRecentExecution(latestSignal.created_at)}</time>
           <Link to={`/accounts/${id}/signals`}
             className={`text-[14px] font-semibold tracking-tight hover:underline ${latestSignal.status === 'FAILED' ? 'text-warn' : 'text-ink-1'}`}>
-            {latestSignal.status === 'FAILED' ? '执行失败' : '执行完成'} →
+            {signalResultLabel(latestSignal)} →
           </Link>
-        </> : records.data && '尚无执行'}
+        </> : records.data && '尚无信号'}
       </div>
       {(longLeverage != null || shortLeverage != null || account.data) && (
         <div className="mt-2 flex items-center gap-2 border-t border-line pt-2 text-[14px]">
@@ -193,33 +209,37 @@ export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
 
     <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
       <Card className="min-w-0 px-6 py-4 md:col-span-2">
-        <div className="mb-3 flex min-h-8 min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-          <h3 className="text-[14px] font-semibold text-ink-2">持仓 vs 目标</h3>
-          {snapshot?.calculated_at && <time dateTime={snapshot.calculated_at}
+        <HoldingsComparison
+          observation={snapshot?.calculated_at && <time dateTime={snapshot.calculated_at}
             title={formatBeijingTimestamp(snapshot.calculated_at)} className="text-[13px] text-ink-3">
             目标计算于 {formatObservedAt(snapshot.calculated_at)}
           </time>}
-          {item.portfolio_id != null && <button type="button" disabled={actionBusy}
-            className="ml-auto cursor-pointer text-[13.5px] font-semibold text-accent enabled:hover:underline disabled:cursor-default disabled:opacity-50"
+          actions={item.portfolio_id != null && <button type="button" disabled={actionBusy}
+            className="cursor-pointer text-[13.5px] font-semibold text-accent enabled:hover:underline disabled:cursor-default disabled:opacity-50"
             onClick={() => void targets.recalculate()}>
             {targets.recalculating ? '计算中…' : '计算目标'}
           </button>}
-        </div>
-        <div className={`min-w-0 md:min-h-48 ${holdings.length ? 'grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.618fr)]' : ''}`}>
-          <div className="space-y-1 border-t border-line pt-2.5 text-[14px] text-ink-2">
-            <p>{item.portfolio_id == null ? '绑定组合后可计算目标'
-              : targetCount != null ? `目标持仓 ${targetCount} 个品种`
-                : targets.loading ? '正在读取目标' : targets.error ? '目标暂不可用' : snapshot ? '数量待换算' : '尚未计算目标'}</p>
-            <p className="text-ink-3">{positions === undefined
-              ? latest ? '未提供实际持仓' : assets.loading ? '正在读取持仓' : assets.error ? '实际持仓暂不可用' : '尚未查询实际持仓'
-              : holdingsCount ? `实际持仓 ${holdingsCount} 个品种` : '当前空仓'}</p>
-          </div>
-          {holdings.length > 0 && <div className="min-w-0 border-t border-line lg:border-t-0 lg:border-l lg:pl-5">
-            <HoldingsPreviewTable observed={positionsKnown} holdings={holdings} quantityMode
-              currency={currency} quantityLabel={market?.units.quantity_label}
-              positionValueLabel={holdings.some((row) => row.value != null) ? '市值' : undefined} compact />
+          summary={<div className="flex h-44 flex-col text-[14px] text-ink-2">
+            <div className="flex shrink-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[13px]">
+              <p>{item.portfolio_id == null ? '绑定组合后可计算目标'
+                : targetCount != null ? <>目标持仓 <strong className="num text-ink-1">{targetCount}</strong> 品种</>
+                  : targets.loading ? '正在读取目标' : targets.error ? '目标暂不可用' : snapshot ? '数量待换算' : '尚未计算目标'}</p>
+              <p className="text-ink-3">{positions === undefined
+                ? latest ? '未提供实际持仓' : assets.loading ? '正在读取持仓' : assets.error ? '实际持仓暂不可用' : '尚未查询实际持仓'
+                : following || holdingsCount ? <>{following ? '信号持仓' : '实际持仓'} <strong className="num text-ink-1">{holdingsCount}</strong> 品种</> : '当前空仓'}</p>
+            </div>
+            {latestSignal?.status === 'SUCCEEDED' && <SignalOrderInstructions record={latestSignal} />}
           </div>}
-        </div>
+          table={holdings.length > 0 ? {
+            holdings,
+            observed: positionsKnown,
+            quantityMode: true,
+            showAvailableVolume: false,
+            currency,
+            quantityLabel: market?.units.quantity_label,
+            positionValueLabel: holdings.some(row => row.value != null) ? '市值' : undefined,
+          } : undefined}
+        />
         <ErrorNotice intent="mutation" title="目标计算失败" error={targets.recalculateError} />
         <ErrorNotice intent="read" title="目标快照读取失败" error={targets.error} hasData={snapshot != null} onRetry={targets.reloadSnapshot} />
         <ErrorNotice intent="read" title="资产快照读取失败" error={assets.error} hasData={latest != null} onRetry={assets.refresh} />
@@ -255,6 +275,18 @@ export function SignalAccountDetail({ item }: { item: AccountDashboardItem }) {
             </dd>
           </div>
         </dl>
+        {latestScheduled && <section className="mt-3 space-y-2 border-t border-line pt-3 text-sm">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-2">
+            <h4 className="font-semibold text-ink-2">最近定时信号</h4>
+            {latestScheduled.scheduled_at && <time className="num text-xs text-ink-3" dateTime={latestScheduled.scheduled_at}>
+              {shanghaiLabel(latestScheduled.scheduled_at).slice(5, 16)}
+            </time>}
+          </div>
+          {latestScheduled.status === 'SUCCEEDED' ? <SignalTargets record={latestScheduled} />
+            : <p className="break-words text-warn">{latestScheduled.error ?? '信号生成失败'}</p>}
+        </section>}
+        <ErrorNotice title="最近定时信号读取失败" intent="read" error={scheduledSignal.error}
+          hasData={latestScheduled != null} onRetry={scheduledSignal.refresh} />
         <ErrorNotice title="账户读取失败" intent="read" error={account.error} hasData={account.data != null} onRetry={account.refresh} />
         <ErrorNotice title="定时计划读取失败" intent="read" error={item.is_scheduled ? nextRun.error : null} hasData={nextRun.data != null} onRetry={nextRun.refresh} />
       </Card>

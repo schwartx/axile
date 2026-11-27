@@ -85,7 +85,8 @@ export function SignalNotificationSetup({ mode, webhook, code, name, market, hea
         ) : (
           <p className="text-ink-2">{!market ? '请先在「账户与组合」选择市场。' : custom
             ? '用样例信号试跑，可能实际发送消息。'
-            : '向飞书群发送一张样例调仓卡片。'}</p>
+            : testDraft ? '用最近保存的目标持仓向飞书群发送测试卡片。'
+              : '向飞书群发送一张样例调仓卡片。'}</p>
         )}
       </div>
     </Card>

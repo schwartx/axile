@@ -84,12 +84,13 @@ export function formatPlannedAt(iso: string, now = Date.now()): string {
   return `${plannedDate(target, current)} ${pad(target.hour)}:${pad(target.minute)}`
 }
 
-/** 已观测时间用北京时间的自然日和时分展示。 */
-export function formatObservedAt(iso: string, now = Date.now()): string {
+/** 已观测时间用北京时间的自然日和时刻展示。 */
+export function formatObservedAt(iso: string, now = Date.now(), precision: 'minute' | 'second' = 'minute'): string {
   const target = dateParts(iso)
   const current = dateParts(now)
   if (!target || !current) return '—'
-  const time = `${pad(target.hour)}:${pad(target.minute)}`
+  const minutes = `${pad(target.hour)}:${pad(target.minute)}`
+  const time = precision === 'second' ? `${minutes}:${pad(target.second)}` : minutes
   const daysAgo = dayNumber(current) - dayNumber(target)
   if (daysAgo === 0) return `今天 ${time}`
   if (daysAgo === 1) return `昨天 ${time}`

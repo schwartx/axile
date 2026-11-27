@@ -1,10 +1,11 @@
 import { displayCurrencyUnit } from '@/lib/format'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useParams, useSearchParams } from 'react-router'
-import { RefreshCw, Search, ExternalLink, Check } from 'lucide-react'
+import { ExternalLink, Check } from 'lucide-react'
 import { Link } from '@/components/ui/nav'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { Skeleton } from '@/components/ui/Skeleton'
+import { JournalFilters, JournalHeader, JournalPageHeader, JournalRefresh, JournalSymbolSearch } from '@/components/ui/JournalRecord'
 import { Segmented } from '@/components/ui/Segmented'
 import { Select } from '@/components/ui/Select'
 import { DatePicker } from '@/components/ui/DatePicker'
@@ -12,7 +13,7 @@ import { AccountPageTitle } from '@/features/account/pageHead'
 import { EvidenceExportButton } from '@/features/account/EvidenceExportButton'
 import { evidenceDatesFromSnapshot, evidenceDatesFromWindow } from '@/features/account/evidenceExport'
 import { groupJournalExecutions, journalWindow, matchesJournalStatus, type JournalRange } from '@/features/account/executionJournal'
-import { ExecutionGroup, RepeatedExecutionGroup, SymbolGroup, EXEC_COLS, SYMBOL_COLS, type Expansion } from '@/features/account/JournalRows'
+import { ExecutionGroup, RepeatedExecutionGroup, SymbolGroup, SYMBOL_COLS, type Expansion } from '@/features/account/JournalRows'
 import { parseJournalScope, scopeLabel, SNAPSHOT_PARAMS, loadSnapshotJournal, loadLiveJournal, filterLiveExecutions, compareJournal, journalTotals, activityWindowQuery } from '@/features/account/journalSource'
 import { amount, coverageText, shanghaiLabel, lossClass } from '@/features/history/costs'
 import { usePolling } from '@/lib/hooks/usePolling'
@@ -25,7 +26,6 @@ const VIEWS = [{ value: 'executions', label: '按执行' }, { value: 'symbols', 
 const RANGES: { value: JournalRange; label: string }[] = [{ value: '7', label: '近 7 天' }, { value: '30', label: '近 30 天' }, { value: '90', label: '近 90 天' }, { value: 'custom', label: '自定义' }]
 const STATUSES = ['全部状态', '已完成', '执行不到位', '执行失败', '已终止', '已跳过', '执行结果待确认', '历史执行记录'].map(label => ({ value: label, label }))
 const SORTS = [{ value: 'time', label: '时间从近到远' }, { value: 'value', label: '成交额从高到低' }, { value: 'slippage', label: '滑点损耗优先' }, { value: 'cost', label: '滑点成本从高到低' }]
-const INPUT = 'min-w-0 rounded-lg border border-line bg-surface px-3 py-1.5 text-[13px] text-ink-1 outline-none focus:border-accent'
 interface Visit { expanded: Record<string, Expansion>; count: number; scroll: number }
 const closedExpansion = (): Expansion => ({ open: false, count: 20, side: 'all' })
 const visits = new Map<string, Visit>()
@@ -129,23 +129,25 @@ function ExecutionJournal({ accountId }: { accountId: number }) {
   const expired = poll.error instanceof ApiError && poll.error.status === 409
   const scopedQuery = scope ? { ...scope, symbol_search: keyword.trim() || undefined } : undefined
   return <section className="min-w-0 [&_button]:min-h-9 [&_button]:min-w-9">
-    <div className="mb-5 flex flex-wrap items-center justify-between gap-3"><div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1"><AccountPageTitle accountId={accountId} page="执行记录" name={item?.name} channel={item?.trade_channel} market={item?.market} /></div>
-      <div className="ml-auto flex shrink-0 items-center gap-2">
+    <JournalPageHeader
+      title={<AccountPageTitle accountId={accountId} page="执行记录" name={item?.name} channel={item?.trade_channel} market={item?.market} />}
+      actions={<>
         <EvidenceExportButton target={{ kind: 'account', accountId }} accountName={item?.name} initialDates={exportDates} fromSnapshot={!!scope} />
-        <button type="button" aria-label="刷新执行记录" title="刷新执行记录" disabled={poll.loading || poll.refreshing || !!parsed.error || expired} onClick={() => void poll.refresh()} className="flex size-9 shrink-0 items-center justify-center rounded-md text-ink-3 hover:bg-fill disabled:opacity-40"><RefreshCw size={16} className={poll.refreshing ? 'animate-spin motion-reduce:animate-none' : ''} /></button>
-      </div></div>
+        <JournalRefresh label="刷新执行记录" disabled={poll.loading || poll.refreshing || !!parsed.error || expired}
+          refreshing={poll.refreshing} onRefresh={() => void poll.refresh()} />
+      </>} />
     {(scope || parsed.error) && <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-ink-3" data-testid="journal-source">
       <Link to={`/accounts/${accountId}/history`} className="inline-flex min-h-9 items-center text-accent">返回实盘绩效</Link>
       {scope && <><span>来自实盘绩效 · {scopeLabel(scope)}</span>{poll.data?.dataUntil && <span>分析数据截止 {shanghaiLabel(poll.data.dataUntil)}</span>}</>}
       <button className="min-h-9 text-accent" onClick={() => update('range', '30')}>查看最新记录</button>
     </div>}
-    <div className="flex flex-wrap items-center gap-3 border-b border-line pb-4">
+    <JournalFilters>
       <Segmented size="sm" value={view} options={VIEWS} onChange={value => update('view', value)} />
       <Select ariaLabel="时间范围" value={scope ? 'snapshot' : range} options={scope ? [{ value: 'snapshot', label: '绩效选定范围' }, ...RANGES] : RANGES} onChange={value => { if (value !== 'snapshot') update('range', value) }} />
-      <label className="relative min-w-0 flex-1 basis-40 sm:max-w-64"><Search size={14} className="pointer-events-none absolute left-2.5 top-2.5 text-ink-3" aria-hidden /><input aria-label="搜索品种" placeholder="搜索品种" value={keyword} onChange={e => update('symbol', e.target.value)} className={`${INPUT} w-full pl-8`} /></label>
+      <JournalSymbolSearch value={keyword} onChange={value => update('symbol', value)} />
       {view === 'executions' && <Select ariaLabel="执行状态" value={status} options={STATUSES} onChange={value => update('status', value)} />}
       <Select ariaLabel="排序" value={sort} options={SORTS} onChange={value => update('sort', value)} />
-    </div>
+    </JournalFilters>
     <div inert={!!scope || range !== 'custom'} className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${!scope && range === 'custom' ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}><div className="min-h-0 overflow-hidden"><div className="flex flex-wrap items-center gap-3 py-3">
       <div className="flex min-w-0 items-center gap-2 text-xs text-ink-3">开始<DatePicker ariaLabel="开始日期" value={from} max={to} onChange={value => update('from', value)} className="w-44" /></div>
       <div className="flex min-w-0 items-center gap-2 text-xs text-ink-3">结束<DatePicker ariaLabel="结束日期" value={to} min={from} onChange={value => update('to', value)} className="w-44" /></div>
@@ -173,7 +175,7 @@ function ExecutionJournal({ accountId }: { accountId: number }) {
         </label>}
       </div>
       {view === 'executions' ? <>
-        <div className={`${EXEC_COLS} hidden border-y border-line px-3 py-2 text-xs text-ink-3 xl:grid`}><span>执行时间</span><span>执行摘要</span><span>状态</span><span className="text-right">成交额 {displayCurrencyUnit(currency)}</span><span className="text-right">滑点损耗 BP</span><span className="text-right">滑点成本 {displayCurrencyUnit(currency)}</span><span className="text-right">耗时</span></div>
+        <JournalHeader><span>执行时间</span><span>执行摘要</span><span>状态</span><span className="text-right">成交额 {displayCurrencyUnit(currency)}</span><span className="text-right">滑点损耗 BP</span><span className="text-right">滑点成本 {displayCurrencyUnit(currency)}</span><span className="text-right">耗时</span></JournalHeader>
         {groups.slice(0, count).map(rows => {
           const children = rows.map(row => <ExecutionGroup key={`${row.key}:${scopeKey}:${keyword}`} row={row} accountId={accountId} scope={scopedQuery} expansion={expanded[row.key] ?? closedExpansion()} update={next => updateExpansion(row.key, next)} detailLink={detailLink} currency={currency} units={descriptor?.units} liveWindow={liveWindow} />)
           const key = `repeat:${rows[0].key}`
@@ -181,7 +183,7 @@ function ExecutionJournal({ accountId }: { accountId: number }) {
         })}
         {filtered.length === 0 && <p className="py-16 text-center text-sm text-ink-3">所选范围内无匹配记录</p>}
       </> : <>
-        <div className={`${SYMBOL_COLS} hidden border-y border-line px-3 py-2 text-xs text-ink-3 xl:grid`}><span>品种</span><span className="text-right">成交额 {displayCurrencyUnit(currency)}</span><span className="text-right">滑点损耗 BP</span><span className="text-right">滑点成本 {displayCurrencyUnit(currency)}</span><span className="text-right">成交笔数</span><span className="text-right">最近成交</span><span /></div>
+        <JournalHeader columns={SYMBOL_COLS}><span>品种</span><span className="text-right">成交额 {displayCurrencyUnit(currency)}</span><span className="text-right">滑点损耗 BP</span><span className="text-right">滑点成本 {displayCurrencyUnit(currency)}</span><span className="text-right">成交笔数</span><span className="text-right">最近成交</span><span /></JournalHeader>
         {symbols.slice(0, count).map(row => <SymbolGroup key={`${row.symbol}:${scopeKey}:${keyword}`} row={row} accountId={accountId} scope={scopedQuery} expansion={expanded[`symbol:${row.symbol}`] ?? closedExpansion()} update={next => updateExpansion(`symbol:${row.symbol}`, next)} detailLink={detailLink} currency={currency} units={descriptor?.units} liveWindow={liveWindow} />)}
         {symbols.length === 0 && <p className="py-16 text-center text-sm text-ink-3">所选范围内无匹配成交</p>}
       </>}

@@ -1,6 +1,7 @@
 """调仓信号渠道的账户配置与静态能力。"""
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 from math import isfinite
 from typing import Literal, NotRequired, TypedDict
 
@@ -143,12 +144,30 @@ class SignalAccountConfig(BaseAccountConfig):
     channel_type: TradeChannel = TradeChannel(SIGNAL_CHANNEL)
     manual_assets: SignalAssets | None = None
     account_code: str | None = None
+    follow_target: bool = False
+    follow_fee_bps: float = 5
     quote_source: SignalQuoteSource
+
+    @classmethod
+    def prepare(cls, config: dict[str, object]) -> dict[str, object]:
+        """将已保存的小数费率转换为基点。"""
+        if "follow_fee_rate" not in config:
+            return config
+        normalized = config.copy()
+        rate = normalized.pop("follow_fee_rate")
+        if type(rate) in (int, float):
+            rate = float(Decimal(str(rate)) * 10_000)
+        normalized.setdefault("follow_fee_bps", rate)
+        return normalized
 
     def validate(self) -> None:
         """校验所选账户数据来源。"""
         if self.account_code is not None and not self.account_code.strip():
             raise ValueError("自定义账户函数不能为空")
+        if not 0 <= self.follow_fee_bps <= 10_000:
+            raise ValueError("跟随手续费率必须在 0 到 10000 bp 之间")
+        if self.account_code is not None and self.follow_target:
+            raise ValueError("自定义账户函数提供实仓，不能开启跟随目标")
         if self.account_code is None and self.manual_assets is None:
             raise ValueError("请录入资金和持仓，或配置自定义账户函数")
 

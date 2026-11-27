@@ -39,6 +39,8 @@ test('真实零盈亏不显示缺失警告，费用缺失仍保留可用毛盈�
   expect(complete).not.toContain('区间数据不完整')
   expect(complete).not.toContain('手续费未完整')
   expect(complete).toContain('累计毛盈亏贡献')
+  expect(complete).toMatch(/aria-label="向上滚动品种贡献列表" tabindex="-1"/)
+  expect(complete).toMatch(/aria-label="向下滚动品种贡献列表" tabindex="-1"/)
   const missingFee = render({ gross_pnl: 100, fee_missing: 1 })
   expect(missingFee).not.toContain('区间数据不完整')
   expect(missingFee).toContain('费用缺失')

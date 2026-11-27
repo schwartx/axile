@@ -75,7 +75,7 @@ function SignalDataEditor({ id, account, section, market, initial, onSaved, head
   const quotes = section === 'quotes'
   const title = quotes ? '行情设置' : '资金与持仓'
   const quoteErrors = signalQuoteErrors(draft)
-  const assetErrors = signalAccountErrors(draft)
+  const assetErrors = signalAccountErrors(draft, account.market)
   const valid = !Object.values(quotes ? quoteErrors : assetErrors).some(Boolean)
   const dirty = JSON.stringify(draft) !== JSON.stringify(baseline)
   const validate = () => { setShowErrors(true); return valid }
@@ -89,7 +89,7 @@ function SignalDataEditor({ id, account, section, market, initial, onSaved, head
     setSaving(true)
     setError(null)
     try {
-      const account_config = quotes ? { quote_source: signalQuoteConfig(draft) } : signalAccountConfig(draft)
+      const account_config = quotes ? { quote_source: signalQuoteConfig(draft) } : signalAccountConfig(draft, account.market)
       await updateAccount(id, { account_config })
       setBaseline(draft)
       await onSaved()

@@ -261,12 +261,14 @@ async def _build_test_card(
             if account.portfolio_id is not None
             else None
         )
-        quantities = (await read_account_target(account, signal))["quantities"]
+        target = await read_account_target(account, signal)
         return build_signal_feishu_card(
             account.name,
-            quantities or {},
+            target["quantities"],
             signal_quantity_unit(account.market),
-            "尚未计算目标持仓" if quantities is None else None,
+            market=account.market,
+            at=target["calculated_at"],
+            is_test=True,
         )
     if not try_register_account_asset_refresh(account_id):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="账户正在执行或刷新资产，请稍后再试")

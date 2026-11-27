@@ -60,7 +60,9 @@ export function SignalAccountNotificationPage({ id, account, onSaved }: { id: nu
       draftKey={draftKey('account_notification', `/accounts/${id}/edit/notification`)}
       savedCode={baseline.execution_notification_code ?? ''}
       testDraft={(method, draft) => method === 'feishu' ? testAccountFeishu(id, draft) : testAccountNotificationFunction(id, draft)}
-      heading={<AccountPageTitle accountId={id} page="通知设置" name={account.name} channel={account.trade_channel} market={account.market} />}
+      heading={<div className="flex min-w-0 flex-wrap items-center gap-3">
+        <AccountPageTitle accountId={id} page="通知" name={account.name} channel={account.trade_channel} market={account.market} />
+      </div>}
       footer={(testRunning) => <EditSaveBar layout="inline" changes={dirty ? ['通知设置已改'] : []}
         blocked={blocked} saveDisabled={testRunning} saving={saving} error={error}
         onCancel={() => reset(baseline)} onSave={() => void save(testRunning)} />}

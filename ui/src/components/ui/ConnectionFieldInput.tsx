@@ -21,6 +21,7 @@ interface Props {
   placeholder?: string
   suggestion?: string
   required: boolean
+  appearance: "default" | "flat"
   help?: string
   valueHint?: string
   message?: string | null
@@ -47,6 +48,7 @@ export const ConnectionFieldInput = forwardRef<HTMLInputElement, Props>(function
     placeholder,
     suggestion,
     required,
+    appearance,
     help,
     valueHint,
     message,
@@ -66,6 +68,7 @@ export const ConnectionFieldInput = forwardRef<HTMLInputElement, Props>(function
 ) {
   const inputRef = useRef<HTMLInputElement | null>(null)
   const [revealed, setRevealed] = useState(false)
+  const flat = appearance === 'flat'
   const secret = kind === 'secret'
   const mono = kind === 'identifier' || secret || kind === 'endpoint' || kind === 'directory'
   const inlineHint = message ? undefined : valueHint
@@ -98,13 +101,15 @@ export const ConnectionFieldInput = forwardRef<HTMLInputElement, Props>(function
   return (
     <div className="group min-w-0">
       <div
-        className={`rounded-[8px] border bg-surface px-3.5 pt-2 pb-2 transition-colors duration-150 focus-within:border-accent ${message ? 'border-warn' : 'border-line'}`}
+        className={flat
+          ? `border-b transition-colors duration-150 focus-within:border-accent ${message ? 'border-warn' : value ? 'border-transparent' : 'border-line'}`
+          : `rounded-[8px] border bg-surface px-3.5 pt-2 pb-2 transition-colors duration-150 focus-within:border-accent ${message ? 'border-warn' : 'border-line'}`}
         onClick={() => inputRef.current?.focus()}
       >
         <label htmlFor={id} className="block text-[13px] leading-4 text-ink-2">
           {label}{required ? <span className="ml-0.5 text-ink-3">*</span> : null}
         </label>
-        <div className="relative mt-0.5 flex min-h-8 min-w-0 items-center gap-1">
+        <div className={`relative flex min-w-0 items-center gap-1 ${flat ? 'mt-1.5 min-h-[43px]' : 'mt-0.5 min-h-8'}`}>
           <input
             ref={setRef}
             id={id}
@@ -122,7 +127,7 @@ export const ConnectionFieldInput = forwardRef<HTMLInputElement, Props>(function
             aria-invalid={message ? true : undefined}
             aria-describedby={`${id}-keys${message || help ? ` ${id}-message` : ''}${inlineHint ? ` ${id}-value-hint` : ''}`}
             aria-keyshortcuts="Alt+ArrowDown"
-            className={`min-w-0 flex-1 bg-transparent text-[16px] leading-7 outline-none placeholder:text-ink-3 ${mono ? 'font-mono' : ''} ${kind === 'money' ? 'num' : ''}`}
+            className={`min-w-0 flex-1 bg-transparent outline-none placeholder:text-ink-3 ${flat ? 'text-[24px] leading-8 font-semibold' : 'text-[16px] leading-7'} ${mono ? 'font-mono' : ''} ${kind === 'money' ? 'num' : ''}`}
             style={maskStyle}
             onChange={(event) => {
               const next = event.target.value

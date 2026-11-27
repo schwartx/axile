@@ -2,6 +2,7 @@ import { displayCurrencyUnit } from '@/lib/format'
 import { useCallback, type ReactNode } from 'react'
 import { useLocation } from 'react-router'
 import { ChevronDown, ExternalLink } from 'lucide-react'
+import { EXEC_COLS, JournalEvidenceTable, JournalField as Field, JournalRecordRow } from '@/components/ui/JournalRecord'
 import { Segmented } from '@/components/ui/Segmented'
 import { Link } from '@/components/ui/nav'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
@@ -23,15 +24,11 @@ import type { ChannelCapability } from '@/types/api'
 export interface Expansion { open: boolean; count: number; side: string; cursors?: (string | undefined)[]; evidenceView?: 'actions' | 'positions' }
 export type { LiveWindow }
 const tableClass = 'w-full whitespace-nowrap text-left text-xs [&_td]:px-3 [&_td]:py-2 [&_th]:px-3 [&_th]:py-2'
-export const EXEC_COLS = 'grid grid-cols-2 gap-x-4 gap-y-2 xl:grid-cols-[155px_minmax(120px,1fr)_70px_95px_105px_115px_55px]'
 export const SYMBOL_COLS = 'grid grid-cols-2 gap-x-4 gap-y-2 xl:grid-cols-[minmax(120px,1fr)_110px_115px_120px_80px_145px_20px]'
 const SIDES = [{ value: 'all', label: '全部方向' }, { value: 'buy', label: '买入' }, { value: 'sell', label: '卖出' }]
 type Units = ChannelCapability['units']
 type DetailLink = (id: string | null) => ReactNode
 
-export function Field({ label, children }: { label: string; children: ReactNode }) {
-  return <span className="block min-w-0 break-words xl:text-right"><span className="mr-2 text-xs text-ink-3 xl:hidden">{label}</span>{children}</span>
-}
 export function Slip({ summary }: { summary: CostSummary | null }) {
   return <span className={`num ${lossClass(summary?.lossBp ?? null)}`}>{amount(summary?.lossBp ?? null)}</span>
 }
@@ -58,9 +55,9 @@ function readEvidence(row: JournalExecution, accountId: number, signal: AbortSig
 }
 
 export function TradeTable({ trades, currency, units, detailLink }: { trades: CostTrade[]; currency: string; units?: Units; detailLink?: DetailLink }) {
-  return <div className="relative overflow-x-auto"><table className={tableClass}><thead className="text-ink-3"><tr><th>成交时间</th><th>品种</th><th>方向 / 数量</th><th>参考价</th><th>成交价</th><th>成交额 {displayCurrencyUnit(currency)}</th><th>滑点损耗 BP</th><th>滑点成本 {displayCurrencyUnit(currency)}</th>{detailLink && <th>详情</th>}</tr></thead><tbody>
+  return <div className="relative overflow-x-auto"><JournalEvidenceTable className={tableClass}><thead className="text-ink-3"><tr><th>成交时间</th><th>品种</th><th>方向 / 数量</th><th>参考价</th><th>成交价</th><th>成交额 {displayCurrencyUnit(currency)}</th><th>滑点损耗 BP</th><th>滑点成本 {displayCurrencyUnit(currency)}</th>{detailLink && <th>详情</th>}</tr></thead><tbody>
     {trades.map((trade, i) => <tr key={trade.trade_id ?? `${trade.record_id}:${trade.symbol}:${i}`} className="border-t border-line"><td>{shanghaiLabel(new Date(trade.time).toISOString())}{trade.timeEstimated && <small className="block text-warn">使用执行时间</small>}</td><td>{trade.symbol}</td><td>{trade.side === 'buy' ? '买' : trade.side === 'sell' ? '卖' : '方向未知'} / {quantityText(trade.quantity)} {quantityUnit(units, trade.symbol, currency)}</td><td>{amount(trade.reference)}{trade.referenceSource === 'last' && <small className="block text-ink-3">到达最新价</small>}</td><td>{amount(trade.price)}</td><td>{amount(trade.value)}</td><td className={lossClass(trade.lossBp)}>{amount(trade.lossBp)}</td><td className={lossClass(trade.cost)}>{amount(trade.cost)}</td>{detailLink && <td>{detailLink(trade.execution_id ?? null)}</td>}</tr>)}
-  </tbody></table></div>
+  </tbody></JournalEvidenceTable></div>
 }
 
 function TradeList({ accountId, scope, trades, expansion, update, currency, units, detailLink, scoped, loading }: {
@@ -101,7 +98,7 @@ function ExecutionExpansion({ row, accountId, scope, expansion, update, currency
     queryKey: `journal-evidence:${row.executionId}`, intervalMs: 0, enabled: expansion.open && !!row.executionId,
   })
   const scoped = !!scope && (scope.start != null || !!scope.day)
-  return <div className="border-l-2 border-accent px-3 py-2" data-testid="execution-expansion">
+  return <div data-testid="execution-expansion">
     <div className="mb-2 flex min-h-9 flex-wrap items-center gap-x-3 gap-y-1 text-xs">
       {row.executionId && <Link to={`/accounts/${accountId}/executions/${row.executionId}/replay`} state={{ replayReturn: { to: `${location.pathname}${location.search}` } }} className="inline-flex min-h-9 items-center gap-1 text-accent hover:underline focus-visible:outline-2 focus-visible:outline-accent">查看回放 <ExternalLink size={13} aria-hidden /></Link>}
       {detailLink(row.executionId)}
@@ -123,15 +120,14 @@ export function ExecutionGroup(props: RowProps) {
   const { row, expansion, update, scope } = props
   const panel = `execution-panel-${row.key}`
   const expandable = row.recordId != null || !!row.executionId || row.trades.length > 0
-  return <div className="border-b border-line" data-journal-record={row.recordId ?? undefined}>
-    <button type="button" disabled={!expandable} aria-expanded={expandable ? expansion.open : undefined} aria-controls={expandable ? panel : undefined} aria-label={`${expansion.open ? '收起' : '展开'}执行 ${row.recordId ?? row.key}`} onClick={() => update({ ...expansion, open: !expansion.open })} className={`${EXEC_COLS} w-full items-baseline px-3 py-4 text-left text-[13px] hover:bg-bg-subtle disabled:cursor-default ${expansion.open ? 'bg-bg-subtle' : ''}`}>
-      <span className="flex min-w-0 items-center gap-1 num text-xs text-ink-3">{expandable && <ChevronDown size={14} className={`shrink-0 transition-transform motion-reduce:transition-none ${expansion.open ? 'rotate-180' : ''}`} />}{shanghaiLabel(row.time)}</span>
+  return <JournalRecordRow recordId={row.recordId ?? undefined} time={shanghaiLabel(row.time)} panelId={panel} open={expansion.open}
+    label={`${expansion.open ? '收起' : '展开'}执行 ${row.recordId ?? row.key}`}
+    onToggle={expandable ? () => update({ ...expansion, open: !expansion.open }) : undefined}
+    details={<ExecutionExpansion {...props} />}>
       <span className="col-span-2 min-w-0 break-words text-ink-2 xl:col-span-1">{row.description}{scope && (scope.start != null || scope.day) && <small className="block text-ink-3">区间内成交</small>}</span>
       <span className={row.warning ? 'text-warn' : 'text-ink-2'}>{row.status}</span>
       <Field label="成交额"><span className="num">{amount(row.summary?.value ?? null)}</span></Field><Field label="滑点损耗 BP"><Slip summary={row.summary} /></Field><Field label="滑点成本"><Cost summary={row.summary} /></Field><Field label="耗时"><span className="num">{durationText(row.durationSec)}</span></Field>
-    </button>
-    <div id={panel} inert={!expansion.open} className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${expansion.open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}><div className="min-h-0 overflow-hidden"><ExecutionExpansion {...props} /></div></div>
-  </div>
+  </JournalRecordRow>
 }
 
 export function RepeatedExecutionGroup({ rows, folded, open, onToggle, children }: {

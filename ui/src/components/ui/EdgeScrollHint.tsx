@@ -1,5 +1,6 @@
-import type { RefObject } from 'react'
+import { useLayoutEffect, useState, type RefObject } from 'react'
 import { ChevronDown, ChevronUp } from 'lucide-react'
+import { useScrollEdges } from '@/hooks/useScrollEdges'
 
 /** 溢出端的方向提示：渐隐带 + 可点击箭头，点击按接近一屏的步长朝该端滚动。 */
 export function EdgeScrollHint({ edge, visible, target, label = '导航', className = 'from-surface via-surface/80' }: {
@@ -39,4 +40,41 @@ export function EdgeScrollHint({ edge, visible, target, label = '导航', classN
       </button>
     </div>
   )
+}
+
+/** 与滚动区同处一个定位容器，提示覆盖正文边缘并为固定表头留位。 */
+export function EdgeScrollHints({ target, label, stickyHeader = false, className }: {
+  target: RefObject<HTMLDivElement | null>
+  label: string
+  stickyHeader?: boolean
+  className?: string
+}) {
+  const edges = useScrollEdges(target)
+  const [bounds, setBounds] = useState({ top: 0, left: 0, width: 0, height: 0 })
+
+  useLayoutEffect(() => {
+    const viewport = target.current
+    if (!viewport) return
+    const header = stickyHeader ? viewport.querySelector('thead') : null
+    const measure = () => {
+      const headerHeight = header?.offsetHeight ?? 0
+      setBounds({
+        top: viewport.clientTop + headerHeight,
+        left: viewport.clientLeft,
+        width: viewport.clientWidth,
+        height: Math.max(0, viewport.clientHeight - headerHeight),
+      })
+    }
+    measure()
+    // 观察内容宽度，滚动条出现或消失时仍能对齐滚动区。
+    const observer = new ResizeObserver(measure)
+    observer.observe(viewport)
+    if (header) observer.observe(header)
+    return () => observer.disconnect()
+  }, [target, stickyHeader])
+
+  return <div className="pointer-events-none absolute" style={bounds}>
+    <EdgeScrollHint edge="up" visible={edges.up && bounds.height > 0} target={target} label={label} className={className} />
+    <EdgeScrollHint edge="down" visible={edges.down && bounds.height > 0} target={target} label={label} className={className} />
+  </div>
 }

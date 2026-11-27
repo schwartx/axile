@@ -1,5 +1,6 @@
-import { Fragment, useMemo, useState } from 'react'
+import { Fragment, useMemo, useRef, useState } from 'react'
 import { Check, ChevronRight, Info } from 'lucide-react'
+import { EdgeScrollHints } from '@/components/ui/EdgeScrollHint'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { displayCurrencyUnit } from '@/lib/format'
 import type { AnalysisChart } from '@/lib/api/performance'
@@ -15,6 +16,7 @@ import { OverflowText } from '@/components/ui/OverflowText'
 export function ContributionPanel({ chart, selection, scaleMode }: {
   chart: AnalysisChart; selection: ChartSelection; scaleMode: TimeScaleMode
 }) {
+  const contributionsRef = useRef<HTMLDivElement>(null)
   const view = useMemo(() => contributionView(chart, selection), [chart, selection])
   const [chosen, setChosen] = useState<string[] | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
@@ -48,44 +50,47 @@ export function ContributionPanel({ chart, selection, scaleMode }: {
       {groups.some(row => row.feeMissing > 0) && <div className="text-ink-3"><dt className="sr-only">费用状态</dt><dd>手续费未完整</dd></div>}
     </dl>
     {chart.contributions == null ? <p className="text-sm text-ink-3">当前快照尚无品种贡献，请刷新绩效。</p> : groups.length === 0 ? <p className="text-sm text-ink-3">本区间无可归因品种。</p> : <div className="grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(22rem,1.2fr)_minmax(0,1.8fr)]">
-      <div role="region" aria-label="品种贡献列表" tabIndex={0} className="h-[290px] min-w-0 overflow-auto overscroll-contain pr-2 focus-visible:outline-2 focus-visible:outline-accent">
-        <table className="w-full text-left text-xs tabular-nums"><caption className="sr-only">品种贡献排名，按毛盈亏从高到低；包含已清仓合约</caption>
-          <thead className="sticky top-0 z-10 bg-bg text-ink-3 [&_th]:whitespace-nowrap"><tr className="border-b border-line"><th className="py-2 font-normal">品种</th><th className="py-2 pr-3 text-right font-normal">毛盈亏</th><th className="py-2 pr-3 text-right font-normal">净盈亏</th><th className="py-2 font-normal">状态</th></tr></thead>
-          <tbody>{groups.map(row => <Fragment key={row.symbol}>
-            <tr className="border-b border-line hover:bg-bg-subtle focus-within:bg-bg-subtle">
-              <td className="py-1 pr-3"><div className="flex items-center gap-1">
-                <label className="flex min-h-[30px] min-w-0 cursor-pointer items-center gap-2">
-                  <span className="relative inline-flex shrink-0 items-center justify-center">
-                    <input type="checkbox" checked={selected.includes(row.symbol)} onChange={() => toggle(row.symbol)} aria-label={`查看 ${row.product} 贡献曲线`}
-                      style={{ color: seriesStyle(row.symbol).color }}
-                      className="peer size-4 cursor-pointer appearance-none rounded-[3px] border border-ink-3 bg-transparent checked:border-current checked:bg-current hover:border-current focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent forced-colors:appearance-auto" />
-                    <Check size={12} strokeWidth={2.5} aria-hidden="true" className="pointer-events-none absolute text-bg opacity-0 peer-checked:opacity-100 forced-colors:hidden" />
-                  </span>
-                  <OverflowText text={row.product} />
-                </label>
-                <button type="button" aria-label={`${expanded === row.symbol ? '收起' : '展开'} ${row.product} 合约与数据状态`} aria-expanded={expanded === row.symbol} className="inline-flex shrink-0 items-center gap-0.5 rounded px-1 text-ink-3 hover:bg-fill hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-accent" onClick={() => setExpanded(expanded === row.symbol ? null : row.symbol)}>
-                  <span className="whitespace-nowrap">{row.contracts.length}合约</span><ChevronRight size={12} aria-hidden="true" className={`transition-transform duration-200 motion-reduce:transition-none ${expanded === row.symbol ? 'rotate-90' : ''}`} />
-                </button>
-              </div></td>
-              <td className={`whitespace-nowrap py-1 pr-3 text-right ${returnColor(row.gross)}`}>{amount(row.gross)}</td>
-              <td className={`whitespace-nowrap py-1 pr-3 text-right ${returnColor(row.net)}`}>{amount(row.net)}</td>
-              <td className="whitespace-nowrap py-1 text-ink-3">
-                {row.gross == null ? <span className={row.issues > 0 ? 'text-warn' : undefined}>{row.issues > 0 ? '待核对' : '估值未知'}</span> : null}
-                {row.gross == null && row.feeMissing > 0 && ' · '}
-                {row.feeMissing > 0 ? '费用缺失' : row.gross != null ? '—' : null}
-              </td>
-            </tr>
-            <tr><td colSpan={4} className="p-0">
-              <div className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${expanded === row.symbol ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}><div className="min-h-0 overflow-hidden" inert={expanded !== row.symbol} aria-hidden={expanded !== row.symbol}>
-                <div className="space-y-1 border-b border-line px-2 py-2 text-ink-2">
-                  {row.gross == null && <p className={row.issues > 0 ? 'text-warn' : 'text-ink-3'}>{row.issues > 0 ? '成交／持仓待核对，完整区间毛盈亏未计入汇总；曲线保留可计算的分段。' : '估值未获取，毛盈亏未计入汇总。'}</p>}
-                  <p className="text-ink-3">{row.feeMissing > 0 ? `${row.feeMissing} 笔费用未知，净盈亏暂不可用。已知费用 ${amount(row.fee)}` : `费用 ${amount(row.fee)}`} {displayCurrencyUnit(row.currency)}</p>
-                  {row.contracts.map(c => <div key={c.symbol} className="flex justify-between gap-3"><span>{c.symbol}</span><span>{amount(c.gross)} {displayCurrencyUnit(c.currency)}</span></div>)}
-                </div>
-              </div></div>
-            </td></tr>
-          </Fragment>)}</tbody>
-        </table>
+      <div className="relative min-w-0">
+        <div ref={contributionsRef} role="region" aria-label="品种贡献列表" tabIndex={0} className="h-[290px] min-w-0 overflow-auto overscroll-contain pr-2 focus-visible:outline-2 focus-visible:outline-accent">
+          <table className="w-full text-left text-xs tabular-nums"><caption className="sr-only">品种贡献排名，按毛盈亏从高到低；包含已清仓合约</caption>
+            <thead className="sticky top-0 z-10 bg-bg text-ink-3 [&_th]:whitespace-nowrap"><tr className="border-b border-line"><th className="py-2 font-normal">品种</th><th className="py-2 pr-3 text-right font-normal">毛盈亏</th><th className="py-2 pr-3 text-right font-normal">净盈亏</th><th className="py-2 font-normal">状态</th></tr></thead>
+            <tbody>{groups.map(row => <Fragment key={row.symbol}>
+              <tr className="border-b border-line hover:bg-bg-subtle focus-within:bg-bg-subtle">
+                <td className="py-1 pr-3"><div className="flex items-center gap-1">
+                  <label className="flex min-h-[30px] min-w-0 cursor-pointer items-center gap-2">
+                    <span className="relative inline-flex shrink-0 items-center justify-center">
+                      <input type="checkbox" checked={selected.includes(row.symbol)} onChange={() => toggle(row.symbol)} aria-label={`查看 ${row.product} 贡献曲线`}
+                        style={{ color: seriesStyle(row.symbol).color }}
+                        className="peer size-4 cursor-pointer appearance-none rounded-[3px] border border-ink-3 bg-transparent checked:border-current checked:bg-current hover:border-current focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent forced-colors:appearance-auto" />
+                      <Check size={12} strokeWidth={2.5} aria-hidden="true" className="pointer-events-none absolute text-bg opacity-0 peer-checked:opacity-100 forced-colors:hidden" />
+                    </span>
+                    <OverflowText text={row.product} />
+                  </label>
+                  <button type="button" aria-label={`${expanded === row.symbol ? '收起' : '展开'} ${row.product} 合约与数据状态`} aria-expanded={expanded === row.symbol} className="inline-flex shrink-0 items-center gap-0.5 rounded px-1 text-ink-3 hover:bg-fill hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-accent" onClick={() => setExpanded(expanded === row.symbol ? null : row.symbol)}>
+                    <span className="whitespace-nowrap">{row.contracts.length}合约</span><ChevronRight size={12} aria-hidden="true" className={`transition-transform duration-200 motion-reduce:transition-none ${expanded === row.symbol ? 'rotate-90' : ''}`} />
+                  </button>
+                </div></td>
+                <td className={`whitespace-nowrap py-1 pr-3 text-right ${returnColor(row.gross)}`}>{amount(row.gross)}</td>
+                <td className={`whitespace-nowrap py-1 pr-3 text-right ${returnColor(row.net)}`}>{amount(row.net)}</td>
+                <td className="whitespace-nowrap py-1 text-ink-3">
+                  {row.gross == null ? <span className={row.issues > 0 ? 'text-warn' : undefined}>{row.issues > 0 ? '待核对' : '估值未知'}</span> : null}
+                  {row.gross == null && row.feeMissing > 0 && ' · '}
+                  {row.feeMissing > 0 ? '费用缺失' : row.gross != null ? '—' : null}
+                </td>
+              </tr>
+              <tr><td colSpan={4} className="p-0">
+                <div className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${expanded === row.symbol ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}><div className="min-h-0 overflow-hidden" inert={expanded !== row.symbol} aria-hidden={expanded !== row.symbol}>
+                  <div className="space-y-1 border-b border-line px-2 py-2 text-ink-2">
+                    {row.gross == null && <p className={row.issues > 0 ? 'text-warn' : 'text-ink-3'}>{row.issues > 0 ? '成交／持仓待核对，完整区间毛盈亏未计入汇总；曲线保留可计算的分段。' : '估值未获取，毛盈亏未计入汇总。'}</p>}
+                    <p className="text-ink-3">{row.feeMissing > 0 ? `${row.feeMissing} 笔费用未知，净盈亏暂不可用。已知费用 ${amount(row.fee)}` : `费用 ${amount(row.fee)}`} {displayCurrencyUnit(row.currency)}</p>
+                    {row.contracts.map(c => <div key={c.symbol} className="flex justify-between gap-3"><span>{c.symbol}</span><span>{amount(c.gross)} {displayCurrencyUnit(c.currency)}</span></div>)}
+                  </div>
+                </div></div>
+              </td></tr>
+            </Fragment>)}</tbody>
+          </table>
+        </div>
+        <EdgeScrollHints target={contributionsRef} label="品种贡献列表" stickyHeader className="from-bg via-bg/80" />
       </div>
       <ContributionChart rows={visible} points={points} scaleMode={scaleMode} currency={view.currency} />
     </div>}

@@ -10,6 +10,7 @@ import { Tooltip } from '@/components/ui/Tooltip'
 interface AccountActionsProps {
   name: string
   signal?: boolean
+  signalFollow?: boolean
   runDisabledReason?: string
   archiveAction?: (className: string) => ReactNode
   isStarted: boolean
@@ -54,9 +55,10 @@ export function AccountActions(props: AccountActionsProps) {
   const { onClear, onTerminate } = props
   const [terminateOpen, setTerminateOpen] = useState(false)
   const active = !props.signal && (props.running || !!props.hasPendingSupplement)
-  const execLabel = props.signal ? props.running ? '执行中' : '立即执行'
+  const signalLabel = props.signalFollow ? '立即跟随' : '生成信号'
+  const execLabel = props.signal ? props.running ? '计算中' : signalLabel
     : props.terminating ? '终止中' : active ? '终止执行' : '立即执行'
-  const execText = props.signal && props.running ? '执行中…'
+  const execText = props.signal && props.running ? '计算中…'
     : props.terminating ? '■ 终止中…' : active ? '■ 终止执行' : `▶ ${execLabel}`
   useEffect(() => { if (!active) setTerminateOpen(false) }, [active])
   const ref = useRef<HTMLDivElement>(null)
@@ -83,7 +85,9 @@ export function AccountActions(props: AccountActionsProps) {
   }, [menuOpen])
 
   const execTip = props.signal ? (
-    props.runDisabledReason ?? '按当前账户数据计算目标，并按通知设置推送调仓信号。'
+    props.runDisabledReason ?? (props.signalFollow
+      ? '按当前行情计算目标，更新跟随账本，并按通知设置推送信号。'
+      : '按当前账户数据计算目标，并按通知设置推送调仓信号。')
   ) : (
     <div className="flex flex-col gap-0.5">
       <span>现在按最新目标调一次仓。</span>
@@ -119,11 +123,8 @@ export function AccountActions(props: AccountActionsProps) {
     </div>
   )
 
-  const menuItemBase =
-    'flex w-full cursor-pointer items-center gap-2.5 rounded-lg border-0 bg-transparent px-3 py-2.5 text-left text-sm'
-  // 编辑=可逆，中性；删除=不可逆，静止即红、悬停红底（与清仓/终止同属红档）。
-  const menuItem = `${menuItemBase} text-ink-1 hover:bg-fill`
-  const menuItemDanger = `${menuItemBase} text-bad hover:bg-bad/10`
+  const menuItem =
+    'flex w-full cursor-pointer items-center gap-2.5 rounded-lg border-0 bg-transparent px-3 py-2.5 text-left text-sm text-ink-1 hover:bg-fill'
 
   return (
     <div className={`ml-auto flex items-center gap-2 ${props.signal ? 'flex-wrap justify-end' : 'flex-none'}`}>
@@ -214,7 +215,7 @@ export function AccountActions(props: AccountActionsProps) {
             {props.archiveAction?.(menuItem)}
             <div className="mx-1.5 my-1.5 h-px bg-line" />
             <button
-              className={menuItemDanger}
+              className={menuItem}
               onClick={() => {
                 closeMenu()
                 setConfirm({

@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react'
 import { useParams } from 'react-router'
-import { RefreshCw, Search } from 'lucide-react'
+import { JournalFilters, JournalPageHeader, JournalRefresh, JournalSymbolSearch } from '@/components/ui/JournalRecord'
 import { Select } from '@/components/ui/Select'
 import { AccountPageTitle } from '@/features/account/pageHead'
 import { getSignalRecords, type SignalRecordStatus } from '@/features/signal/signalApi'
@@ -34,35 +34,31 @@ function SignalJournal({ accountId }: { accountId: number }) {
   const [cursors, setCursors] = useState<(number | null)[]>([null])
   const before = cursors.at(-1)
   const symbol = keyword.trim()
+  const queryKey = `signal-records:${accountId}:${before}:${days}:${status}:${symbol}`
   const poll = usePolling(useCallback((signal: AbortSignal) =>
     getSignalRecords(accountId, { limit: 30, before, days, status, symbol }, signal),
   [accountId, before, days, status, symbol]), {
-    queryKey: `signal-records:${accountId}:${before}:${days}:${status}:${symbol}`,
+    queryKey,
     intervalMs: before == null && !symbol ? 15000 : 0,
   })
   const next = poll.data?.next_cursor
   const resetPage = () => setCursors([null])
 
-  return <section>
-    <header className="mb-4 flex min-h-10 flex-wrap items-center gap-3">
-      <AccountPageTitle accountId={accountId} page="信号记录" name={account?.name} channel={account?.trade_channel} market={account?.market} />
-      <button type="button" aria-label="刷新信号记录" disabled={poll.loading || poll.refreshing}
-        onClick={poll.refresh} className="ml-auto flex size-9 shrink-0 items-center justify-center rounded-md text-ink-3 enabled:cursor-pointer enabled:hover:bg-fill disabled:opacity-40">
-        <RefreshCw size={16} aria-hidden className={poll.refreshing ? 'animate-spin motion-reduce:animate-none' : ''} />
-      </button>
-    </header>
-    <div className="mb-4 flex flex-wrap items-center gap-3">
+  return <section className="min-w-0 [&_button]:min-h-9 [&_button]:min-w-9">
+    <JournalPageHeader
+      title={<AccountPageTitle accountId={accountId} page="信号记录" name={account?.name} channel={account?.trade_channel} market={account?.market} />}
+      actions={<JournalRefresh label="刷新信号记录" disabled={poll.loading || poll.refreshing}
+        refreshing={poll.refreshing} onRefresh={() => void poll.refresh()} />} />
+    <JournalFilters>
       <Select ariaLabel="时间范围" value={days} options={RANGES} onChange={value => { setDays(value); resetPage() }} />
-      <label className="relative w-64 max-w-full">
-        <Search aria-hidden size={15} className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-3" />
-        <input type="search" aria-label="搜索品种" placeholder="搜索品种" maxLength={80} value={keyword}
-          onChange={event => { setKeyword(event.target.value); resetPage() }}
-          className="w-full rounded-lg border border-line bg-surface py-1.5 pr-3 pl-9 text-sm text-ink-1 outline-none focus:border-accent" />
-      </label>
+      <JournalSymbolSearch value={keyword} maxLength={80} onChange={value => { setKeyword(value); resetPage() }} />
       <Select ariaLabel="执行状态" value={status} options={STATUSES} onChange={value => { setStatus(value); resetPage() }} />
-    </div>
-    <SignalRecordList poll={poll} filtered={days != null || status != null || !!symbol} />
-    {(cursors.length > 1 || next != null) && <nav aria-label="信号记录分页" className="flex items-center justify-end gap-3 border-t border-line py-3">
+    </JournalFilters>
+    {!!poll.data?.items.length && <div className="flex min-h-14 items-center py-3 text-xs text-ink-3">
+      本页 {poll.data.items.length} 条记录
+    </div>}
+    <SignalRecordList key={queryKey} poll={poll} filtered={days != null || status != null || !!symbol} />
+    {(cursors.length > 1 || next != null) && <nav aria-label="信号记录分页" className="flex items-center justify-end gap-3 py-3">
       <button type="button" className={PAGE_BUTTON} disabled={cursors.length === 1}
         onClick={() => setCursors(previous => previous.slice(0, -1))}>上一页</button>
       <span className="num text-xs text-ink-3">第 {cursors.length} 页</span>

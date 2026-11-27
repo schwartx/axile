@@ -83,11 +83,10 @@ pub(crate) fn encode_snapshot_weights(
         };
         head.insert(format!("{role}_kind"), json!(kind));
     }
-    if let Some(quantities) = payload
-        .get("signal_quantities")
-        .filter(|value| value.is_object())
-    {
-        metadata.insert("signal_quantities".into(), quantities.clone());
+    for field in ["signal_quantities", "sizing_prices"] {
+        if let Some(values) = payload.get(field).filter(|value| value.is_object()) {
+            metadata.insert(field.into(), values.clone());
+        }
     }
     head.insert("weights_metadata".into(), Value::Object(metadata));
     Ok((Value::Object(head), rows))
@@ -129,8 +128,10 @@ pub(crate) fn decode_snapshot_weights(
         };
         result.insert(role.into(), value);
     }
-    if let Some(quantities) = head["weights_metadata"].get("signal_quantities") {
-        result.insert("signal_quantities".into(), quantities.clone());
+    for field in ["signal_quantities", "sizing_prices"] {
+        if let Some(values) = head["weights_metadata"].get(field) {
+            result.insert(field.into(), values.clone());
+        }
     }
     if !invalid_values.is_empty() {
         result.insert(

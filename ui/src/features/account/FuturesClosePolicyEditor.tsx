@@ -1,5 +1,6 @@
-import { useId, useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import { CircleHelp, Settings } from 'lucide-react'
+import { EdgeScrollHints } from '@/components/ui/EdgeScrollHint'
 import { CenteredModal } from '@/components/ui/CenteredModal'
 import { Segmented } from '@/components/ui/Segmented'
 import { InkRewrite } from '@/components/ui/InkRewrite'
@@ -32,6 +33,7 @@ export function FuturesClosePolicyEditor({ value, capability, onChange, compact 
   onChange: (value: FuturesClosePolicy) => void
   compact?: boolean
 }) {
+  const rulesRef = useRef<HTMLDivElement>(null)
   const searchId = useId()
   const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState(value)
@@ -101,36 +103,39 @@ export function FuturesClosePolicyEditor({ value, capability, onChange, compact 
           <button type="button" className="shrink-0 cursor-pointer text-[13px] text-accent disabled:cursor-default disabled:text-ink-3" disabled={!Object.keys(draft.overrides).length && lockable.every((p) => (draft.avoid_close_today ?? lockable).includes(p))} onClick={() => setDraft((d) => ({ ...d, overrides: {}, avoid_close_today: [...lockable].sort() }))}>恢复全部预设</button>
         </div>
         {error && <p role="alert" className="shrink-0 text-xs text-warn">{error}</p>}
-        <div className="isolate min-h-0 max-h-[440px] flex-1 overflow-auto rounded-lg border border-line">
-          <table className="w-full min-w-[620px] text-left text-[13px]">
-            <thead className="sticky top-0 z-20 whitespace-nowrap bg-surface"><tr className="border-b border-line text-ink-3"><th className="p-3 font-normal">品种</th><th className="p-3 font-normal">平昨手续费</th><th className="p-3 font-normal">平今手续费</th><th className="p-3 font-normal" aria-live="polite"><InkRewrite text={draft.mode === 'fee' ? '兜底顺序' : '平仓顺序'} tone="label" /></th>{lockable.length > 0 && <th className="p-3 font-normal">平今转锁仓</th>}<th className="p-3 font-normal">来源</th></tr></thead>
-            <tbody className="relative z-0">{shown.map((product) => {
-              const preset = presets.get(product)
-              const locked = (draft.avoid_close_today ?? lockable).includes(product)
-              const modified = Object.hasOwn(draft.overrides, product) || (lockable.includes(product) && !locked)
-              const priority = draft.overrides[product] ?? preset?.priority ?? draft.fallback
-              const sameFee = Boolean(preset?.yesterday_fee) && preset?.yesterday_fee === preset?.today_fee
-              return <tr key={product} className="border-b border-line last:border-0">
-                <td className="p-3"><span className="font-medium text-ink-1">{product}</span><span className="ml-2 text-[11px] text-ink-3">{preset?.exchange}</span></td>
-                {sameFee ? <td colSpan={2} className="p-3">
-                  <p className="mb-1 text-[11px] text-ink-3">平今、平昨相同</p>
-                  <FeeDetails fee={preset?.yesterday_fee} shared />
-                </td> : <>
-                  <td className="p-3 align-top"><FeeDetails fee={preset?.yesterday_fee} /></td>
-                  <td className="p-3 align-top"><FeeDetails fee={preset?.today_fee} /></td>
-                </>}
-                <td className="p-3">{preset?.can_choose === false ? <span className="text-ink-3">按交易所规则执行</span> : <div role="group" aria-label={`${product} 平仓顺序`} className="whitespace-nowrap"><Segmented size="sm" value={priority} options={priorities} onChange={(next) => setPriority(product, next)} /></div>}</td>
-                {lockable.length > 0 && <td className="p-3">{lockable.includes(product)
-                  ? <Toggle on={locked} onClick={() => setAvoidCloseToday(product)} ariaLabel={`${product} 平今转锁仓`} />
-                  : <span className="text-ink-3">—</span>}</td>}
-                <td className="p-3 whitespace-nowrap"><span className="inline-grid">
-                  <span className={`col-start-1 row-start-1 text-ink-3 ${modified ? 'invisible' : ''}`} aria-hidden={Boolean(modified)}>{preset ? '预设' : `默认${closePriorityLabel(priority)}`}</span>
-                  <span className={`col-start-1 row-start-1 ${modified ? '' : 'invisible'}`} aria-hidden={!modified}><span className="text-accent">已修改</span><button type="button" aria-label={`${product} 恢复预设`} className="ml-2 cursor-pointer text-ink-3 hover:text-accent" onClick={() => restore(product)}>恢复预设</button></span>
-                </span></td>
-              </tr>
-            })}</tbody>
-          </table>
-          {!shown.length && <p className="p-4 text-sm text-ink-3">没有匹配的品种，可输入字母代码添加。</p>}
+        <div className="relative flex min-h-0 min-w-0 max-h-[440px] flex-1 flex-col">
+          <div ref={rulesRef} className="isolate min-h-0 flex-1 overflow-auto rounded-lg border border-line">
+            <table className="w-full min-w-[620px] text-left text-[13px]">
+              <thead className="sticky top-0 z-20 whitespace-nowrap bg-surface"><tr className="border-b border-line text-ink-3"><th className="p-3 font-normal">品种</th><th className="p-3 font-normal">平昨手续费</th><th className="p-3 font-normal">平今手续费</th><th className="p-3 font-normal" aria-live="polite"><InkRewrite text={draft.mode === 'fee' ? '兜底顺序' : '平仓顺序'} tone="label" /></th>{lockable.length > 0 && <th className="p-3 font-normal">平今转锁仓</th>}<th className="p-3 font-normal">来源</th></tr></thead>
+              <tbody className="relative z-0">{shown.map((product) => {
+                const preset = presets.get(product)
+                const locked = (draft.avoid_close_today ?? lockable).includes(product)
+                const modified = Object.hasOwn(draft.overrides, product) || (lockable.includes(product) && !locked)
+                const priority = draft.overrides[product] ?? preset?.priority ?? draft.fallback
+                const sameFee = Boolean(preset?.yesterday_fee) && preset?.yesterday_fee === preset?.today_fee
+                return <tr key={product} className="border-b border-line last:border-0">
+                  <td className="p-3"><span className="font-medium text-ink-1">{product}</span><span className="ml-2 text-[11px] text-ink-3">{preset?.exchange}</span></td>
+                  {sameFee ? <td colSpan={2} className="p-3">
+                    <p className="mb-1 text-[11px] text-ink-3">平今、平昨相同</p>
+                    <FeeDetails fee={preset?.yesterday_fee} shared />
+                  </td> : <>
+                    <td className="p-3 align-top"><FeeDetails fee={preset?.yesterday_fee} /></td>
+                    <td className="p-3 align-top"><FeeDetails fee={preset?.today_fee} /></td>
+                  </>}
+                  <td className="p-3">{preset?.can_choose === false ? <span className="text-ink-3">按交易所规则执行</span> : <div role="group" aria-label={`${product} 平仓顺序`} className="whitespace-nowrap"><Segmented size="sm" value={priority} options={priorities} onChange={(next) => setPriority(product, next)} /></div>}</td>
+                  {lockable.length > 0 && <td className="p-3">{lockable.includes(product)
+                    ? <Toggle on={locked} onClick={() => setAvoidCloseToday(product)} ariaLabel={`${product} 平今转锁仓`} />
+                    : <span className="text-ink-3">—</span>}</td>}
+                  <td className="p-3 whitespace-nowrap"><span className="inline-grid">
+                    <span className={`col-start-1 row-start-1 text-ink-3 ${modified ? 'invisible' : ''}`} aria-hidden={Boolean(modified)}>{preset ? '预设' : `默认${closePriorityLabel(priority)}`}</span>
+                    <span className={`col-start-1 row-start-1 ${modified ? '' : 'invisible'}`} aria-hidden={!modified}><span className="text-accent">已修改</span><button type="button" aria-label={`${product} 恢复预设`} className="ml-2 cursor-pointer text-ink-3 hover:text-accent" onClick={() => restore(product)}>恢复预设</button></span>
+                  </span></td>
+                </tr>
+              })}</tbody>
+            </table>
+            {!shown.length && <p className="p-4 text-sm text-ink-3">没有匹配的品种，可输入字母代码添加。</p>}
+          </div>
+          <EdgeScrollHints target={rulesRef} label="平仓规则表" stickyHeader />
         </div>
       </div>
     </CenteredModal>
