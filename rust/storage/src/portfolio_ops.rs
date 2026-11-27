@@ -279,13 +279,15 @@ fn target_public(snapshot: Option<Value>) -> Result<Value, AnalysisError> {
     if !matches!(mode, "weight" | "quantity") {
         return Err(AnalysisError::new("TARGET_INVALID", "组合目标快照口径无效"));
     }
-    Ok(
-        json!({"weights": if mode == "weight" { weights.clone() } else { json!({}) },
+    let mut result = json!({"weights": if mode == "weight" { weights.clone() } else { json!({}) },
         "target_mode":mode,"raw_targets":weights,
         "quantities":null, "strategy_weights":null,"account_weights":null,"sizing":null,
         "calculated_at":snapshot["calculated_at"],"source":snapshot["source"],
-        "execution_id":snapshot["execution_id"],"context_account_id":snapshot["account_id"]}),
-    )
+        "execution_id":snapshot["execution_id"],"context_account_id":snapshot["account_id"]});
+    if let Some(prices) = snapshot.get("sizing_prices") {
+        result["sizing_prices"] = prices.clone();
+    }
+    Ok(result)
 }
 
 /// 纯 HTTP 查询返回最终视图，由绑定层直接编码为 JSON 字节。

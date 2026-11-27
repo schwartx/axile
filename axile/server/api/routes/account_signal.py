@@ -12,6 +12,7 @@ from msgspec import Meta
 from axile.channels.market_data import MarketDataUnavailable
 from axile.channels.rebalance_signal import (
     SIGNAL_CHANNEL,
+    SignalAccountConfig,
     SignalAccountContext,
     SignalQuoteSource,
 )
@@ -19,8 +20,8 @@ from axile.common.default_account_notification import build_signal_feishu_card
 from axile.common.feishu import push_feishu_card
 from axile.common.gm_symbols import GM_SYMBOL_RESOLVER
 from axile.common.notification_function import run_notification_function
-from axile.common.serialization import to_payload
-from axile.executor.algorithms.utils.clock import clock_now
+from axile.common.serialization import parse_input, to_payload
+from axile.executor.algorithms.utils.clock import clock_now, clock_now_iso
 from axile.executor.models.unified_price import UnifiedPriceData
 from axile.server._native import _core
 from axile.server.api.inputs import json_body
@@ -163,12 +164,13 @@ async def test_signal_notification(
     draft = payload.draft.strip()
     if not draft:
         raise HTTPException(422, detail="请填写飞书 Webhook 或通知函数")
+    at = clock_now_iso()
     try:
-        context, targets, unit = signal_notification_sample(name, payload.market)
+        context, targets, unit = signal_notification_sample(name, payload.market, at)
     except ValueError as exc:
         raise HTTPException(422, detail=str(exc)) from exc
     if payload.mode == "feishu":
-        card = build_signal_feishu_card(f"【测试】{name}", targets, unit)
+        card = build_signal_feishu_card(name, targets, unit, market=payload.market, at=at, is_test=True)
         try:
             await asyncio.to_thread(push_feishu_card, card, draft)
         except (RuntimeError, ValueError) as exc:
@@ -189,7 +191,8 @@ async def signal_config(account_id: int) -> dict[str, Any]:
     account = await _get_account_or_404(account_id)
     if account.trade_channel != SIGNAL_CHANNEL:
         raise HTTPException(404, detail="该账户不是调仓信号账户")
-    return {"account_config": account.account_config}
+    config = parse_input(SignalAccountConfig, account.account_config)
+    return {"account_config": to_payload(config, mode="json", exclude={"channel_type"})}
 
 
 @router.post("/{account_id}/signal/run", response_model=None)
@@ -202,16 +205,16 @@ async def run_signal_now(account_id: int) -> dict[str, str]:
     if account.portfolio_id is None:
         raise HTTPException(409, detail="请先绑定组合")
     try:
-        event_id = await publish_account_signal(account)
+        publication = await publish_account_signal(account)
     except _core.NativeError as exc:
         if exc.args[0] in {"TARGET_INVALID", "ACCOUNT_CONFLICT", "ARCHIVED"}:
             raise HTTPException(409, detail=exc.args[1]) from exc
         raise
     except (ValueError, TimeoutError) as exc:
         raise HTTPException(422, detail=exception_details(exc, "调仓信号执行失败")) from exc
-    if event_id is None:
+    if publication is None:
         raise HTTPException(409, detail="账户正在计算或刷新，或者组合绑定已变更")
-    return {"event_id": event_id, "message": "执行完成"}
+    return publication
 
 
 @router.get("/{account_id}/signal/records", response_model=None)
@@ -222,6 +225,7 @@ async def list_signal_records(
     days: Annotated[int | None, Query(ge=1, le=365)] = None,
     status: Literal["SUCCEEDED", "FAILED"] | None = None,
     symbol: Annotated[str | None, Query(max_length=80)] = None,
+    trigger_source: Literal["manual", "scheduler"] | None = None,
 ) -> dict[str, Any]:
     """分页读取账户已保存的调仓信号。"""
     account = await _get_account_or_404(account_id)
@@ -237,5 +241,6 @@ async def list_signal_records(
             "since": since,
             "status": status,
             "symbol": (symbol or "").strip() or None,
+            "trigger_source": trigger_source,
         },
     )

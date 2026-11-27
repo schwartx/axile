@@ -12,8 +12,8 @@ test('桌面侧栏收起后通过图标和浮层保留导航，展开后显示�
   const previous = domain.accounts
   domain.accounts = [{ account_id: 7, name: '信号账户', trade_channel: SIGNAL_CHANNEL, market: 'A股' } as AccountDashboardItem]
   try {
-    const render = (desktopCollapsed: boolean) => renderToStaticMarkup(createElement(MemoryRouter, {
-      initialEntries: ['/accounts/7/signals'],
+    const render = (desktopCollapsed: boolean, path = '/accounts/7/signals') => renderToStaticMarkup(createElement(MemoryRouter, {
+      initialEntries: [path],
     }, createElement(AppSidebar, { desktopCollapsed })))
     const collapsed = render(true)
     expect(collapsed).toContain('--sidebar-width:56px')
@@ -26,6 +26,10 @@ test('桌面侧栏收起后通过图标和浮层保留导航，展开后显示�
     expect(expanded).toContain('--sidebar-width:184px')
     expect(expanded).toContain('aria-label="调整侧栏宽度"')
     expect(expanded).not.toContain('popover="auto"')
+
+    const notificationPath = '/accounts/7/edit/notification'
+    expect(collapsed).toContain(`href="${notificationPath}"`)
+    expect(render(false, notificationPath)).toMatch(/<a(?=[^>]*href="\/accounts\/7\/edit\/notification")(?=[^>]*aria-current="page")[^>]*>.*?>通知</)
   } finally {
     domain.accounts = previous
   }

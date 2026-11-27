@@ -46,6 +46,8 @@ export interface SignalAssetSnapshot {
 export interface SignalConfig {
   manual_assets: SignalAssetSnapshot | null
   account_code: string | null
+  follow_target?: boolean
+  follow_fee_bps?: number
   quote_source: SignalQuoteSource
 }
 
@@ -71,6 +73,8 @@ export interface SignalDraft {
   cashFromEquity?: boolean
   currency: string
   positionsKnown: boolean
+  followTarget: boolean
+  followFeeBps: string
   positions: PositionDraft[]
   accountCode: string
   quoteKind: SignalQuoteSource['kind'] | ''
@@ -93,7 +97,7 @@ export function signalEquityPatch(draft: SignalDraft, equity: string): Partial<S
 }
 
 export const initialSignalDraft: SignalDraft = {
-  mode: 'manual', equity: '', cash: '', currency: 'CNY', positionsKnown: false, positions: [],
+  mode: 'manual', equity: '', cash: '', currency: 'CNY', positionsKnown: false, followTarget: true, followFeeBps: '5', positions: [],
   accountCode: `from axile.channels.rebalance_signal import SignalAccountContext
 
 def fetch_account(_context: SignalAccountContext) -> dict[str, object]:
@@ -173,6 +177,8 @@ export function configToSignalDraft(config: SignalConfig): SignalDraft {
   return {
     ...initialSignalDraft,
     mode: config.account_code == null ? 'manual' : 'function',
+    followTarget: config.follow_target ?? false,
+    followFeeBps: config.follow_fee_bps == null ? initialSignalDraft.followFeeBps : String(config.follow_fee_bps),
     equity: manual ? String(manual.total_asset) : '',
     cash: manual ? String(manual.available_cash) : '',
     currency: manual?.currency ?? 'CNY',
@@ -264,20 +270,24 @@ export type SignalPositionErrors = Partial<Record<'symbol' | 'volume' | 'availab
 export interface SignalAccountErrors {
   accountCode?: string
   equity?: string
+  followFeeBps?: string
   cash?: string
   currency?: string
   positions?: Record<string, SignalPositionErrors>
 }
 
-export function signalAccountErrors(draft: SignalDraft): SignalAccountErrors {
+export function signalAccountErrors(draft: SignalDraft, market?: string): SignalAccountErrors {
   if (draft.mode === 'function') {
     if (!draft.accountCode.trim()) return { accountCode: '请填写账户函数' }
     return isSignalAccountExample(draft.accountCode) ? { accountCode: '示例快照用于测试，请接入你的账户数据后继续' } : {}
   }
   const errors: SignalAccountErrors = {}
-  if (!Number.isFinite(amount(draft.equity))) errors.equity = '请填写有效的账户权益'
+  const followLedger = market === 'A股' && draft.followTarget
+  if (!followLedger && !Number.isFinite(amount(draft.equity))) errors.equity = '请填写有效的账户权益'
   if (!Number.isFinite(amount(draft.cash))) errors.cash = '请填写有效的可用资金'
   if (!draft.currency.trim()) errors.currency = '请填写计价币种'
+  const fee = amount(draft.followFeeBps)
+  if (followLedger && !(fee >= 0 && fee <= 10_000)) errors.followFeeBps = '请输入 0 到 10000 之间的基点数'
   if (!draft.positionsKnown) return errors
 
   const positions: Record<string, SignalPositionErrors> = {}
@@ -299,22 +309,26 @@ export function signalAccountErrors(draft: SignalDraft): SignalAccountErrors {
   return errors
 }
 
-export function signalAccountConfig(draft: SignalDraft): Pick<SignalConfig, 'manual_assets' | 'account_code'> {
-  const errors = signalAccountErrors(draft)
+export function signalAccountConfig(draft: SignalDraft, market?: string): Pick<SignalConfig, 'manual_assets' | 'account_code' | 'follow_target' | 'follow_fee_bps'> {
+  const errors = signalAccountErrors(draft, market)
   const firstPosition = Object.values(errors.positions ?? {})[0]
-  const error = errors.accountCode ?? errors.equity ?? errors.cash ?? errors.currency ?? Object.values(firstPosition ?? {})[0]
+  const error = errors.accountCode ?? errors.equity ?? errors.cash ?? errors.currency ?? errors.followFeeBps ?? Object.values(firstPosition ?? {})[0]
   if (error) throw new Error(error)
-  if (draft.mode === 'function') return { manual_assets: null, account_code: draft.accountCode }
+  if (draft.mode === 'function') return { manual_assets: null, account_code: draft.accountCode, follow_target: false }
   const positions = draft.positionsKnown ? draft.positions.map((row) => ({
     symbol: row.symbol.trim(), direction: row.direction, volume: amount(row.volume),
     available_volume: amount(row.available), market_value: null,
   })) : null
+  const cash = amount(draft.cash)
+  const equity = amount(draft.equity)
   return {
     account_code: null,
-    manual_assets: { total_asset: amount(draft.equity), available_cash: amount(draft.cash), currency: draft.currency.trim(), positions },
+    follow_target: draft.followTarget,
+    ...(market === 'A股' && draft.followTarget ? { follow_fee_bps: amount(draft.followFeeBps) } : {}),
+    manual_assets: { total_asset: Number.isFinite(equity) ? equity : cash, available_cash: cash, currency: draft.currency.trim(), positions },
   }
 }
 
-export function signalConfig(draft: SignalDraft): SignalConfig {
-  return { quote_source: signalQuoteConfig(draft), ...signalAccountConfig(draft) }
+export function signalConfig(draft: SignalDraft, market?: string): SignalConfig {
+  return { quote_source: signalQuoteConfig(draft), ...signalAccountConfig(draft, market) }
 }

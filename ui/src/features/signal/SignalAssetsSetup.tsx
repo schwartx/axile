@@ -23,7 +23,8 @@ export function SignalAssetsSetup({ value, errors, showErrors, name, market, hea
 }) {
   const [status, setStatus] = useState<HTMLDivElement | null>(null)
   const manual = value.mode === 'manual'
-  const incompleteFunds = Boolean(errors.equity || errors.cash || errors.currency)
+  const stockFollow = market === 'A股'
+  const incompleteFunds = Boolean(errors.equity || errors.cash || errors.currency || errors.followFeeBps)
   const incompletePositions = Object.keys(errors.positions ?? {}).length
   const completePositions = value.positions.length - incompletePositions
   const positionSummary = incompletePositions > 0
@@ -35,7 +36,7 @@ export function SignalAssetsSetup({ value, errors, showErrors, name, market, hea
       <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 border-t border-line pt-3 text-[13px]">
         <dt className="text-ink-2">账户资金</dt>
         <dd className="text-right">{incompleteFunds ? '待补全' : '资金字段已填写'}</dd>
-        <dt className="text-ink-2">实际持仓</dt>
+        <dt className="text-ink-2">{stockFollow && value.followTarget ? '起始持仓' : '实际持仓'}</dt>
         <dd className="text-right">{positionSummary}</dd>
       </dl>
     </Card>
@@ -49,7 +50,7 @@ export function SignalAssetsSetup({ value, errors, showErrors, name, market, hea
     </div>
     <SignalSetupColumns sidebar={sidebar} footer={footer}>
       {manual ? <div className="min-h-0 flex-1 overflow-y-auto">
-        <SignalManualAssets value={value} errors={showErrors ? errors : undefined} onChange={onChange} />
+        <SignalManualAssets value={value} stockFollow={stockFollow} errors={showErrors ? errors : undefined} onChange={onChange} />
       </div> : <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden rounded-[8px] border border-line max-lg:min-h-72">
         <PythonWorkbenchPane kind="signal_account" title="账户函数" code={value.accountCode} savedCode={savedCode}
           draftKey={identity} storageKey="axile.signalAccount.editorSplit"

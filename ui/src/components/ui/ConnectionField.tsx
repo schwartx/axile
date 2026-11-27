@@ -14,6 +14,7 @@ export interface ConnectionFieldProps {
   placeholder?: string
   fillablePlaceholder?: boolean
   required?: boolean
+  appearance?: "default" | "flat"
   help?: string
   valueHint?: string
   error?: string | null
@@ -43,6 +44,7 @@ export const ConnectionField = forwardRef<HTMLInputElement, ConnectionFieldProps
     placeholder,
     fillablePlaceholder,
     required = false,
+    appearance = "default",
     help,
     valueHint,
     error,
@@ -143,6 +145,7 @@ export const ConnectionField = forwardRef<HTMLInputElement, ConnectionFieldProps
         placeholder={placeholder}
         suggestion={suggestion}
         required={required}
+        appearance={appearance}
         help={help}
         valueHint={valueHint}
         message={message}

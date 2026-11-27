@@ -661,6 +661,10 @@ pub fn signal_records(path: &str, request: &Value) -> Result<Value, AnalysisErro
         .map_err(invalid)?;
     let status = optional_text(request, "status")?;
     let symbol = optional_text(request, "symbol")?;
+    let trigger_source = optional_text(request, "trigger_source")?;
+    let scheduled_before = optional_text(request, "scheduled_before")?;
+    let followed = request["followed"].as_bool().unwrap_or(false);
+    let ledger = request["ledger"].as_bool().unwrap_or(false);
     crate::with_read_snapshot(Path::new(path), |connection| {
         let mut statement = connection
             .prepare(&format!(
@@ -671,8 +675,17 @@ pub fn signal_records(path: &str, request: &Value) -> Result<Value, AnalysisErro
                 AND (?5 IS NULL OR EXISTS (
                     SELECT 1 FROM json_each(context,'$.targets.target_volume')
                     WHERE instr(lower(key),lower(?5))>0
+                    UNION ALL SELECT 1 FROM json_each(context,'$.node_change.changes')
+                    WHERE instr(lower(key),lower(?5))>0
+                    UNION ALL SELECT 1 FROM json_each(context,'$.adjustment.changes')
+                    WHERE instr(lower(key),lower(?5))>0
                 ))
-                ORDER BY sequence DESC LIMIT ?6"
+                AND (?7 IS NULL OR json_extract(context,'$.execution.trigger_source')=?7)
+                AND (?8 IS NULL OR json_extract(context,'$.scheduled_at')<?8)
+                AND (NOT ?9 OR json_extract(context,'$.followed_target')=1)
+                AND (NOT ?10 OR json_type(context,'$.follow_ledger')='object')
+                ORDER BY CASE WHEN ?8 IS NOT NULL
+                    THEN json_extract(context,'$.scheduled_at') END DESC, sequence DESC LIMIT ?6"
             ))
             .map_err(database)?;
         let mut rows = statement
@@ -682,7 +695,11 @@ pub fn signal_records(path: &str, request: &Value) -> Result<Value, AnalysisErro
                 since,
                 status,
                 symbol,
-                limit + 1
+                limit + 1,
+                trigger_source,
+                scheduled_before,
+                followed,
+                ledger,
             ])
             .map_err(database)?;
         let mut records = Vec::new();
@@ -702,6 +719,11 @@ pub fn signal_records(path: &str, request: &Value) -> Result<Value, AnalysisErro
                 "status": context["execution"]["status"], "error": context["execution"]["error"],
                 "scheduled_at": context["scheduled_at"], "quantity_unit": context["quantity_unit"],
                 "targets": context["targets"]["target_volume"],
+                "node_change": context["node_change"],
+                "adjustment": context["adjustment"],
+                "followed_target": context["followed_target"],
+                "follow_ledger": context["follow_ledger"],
+                "sizing_prices": context["sizing_prices"], "settlement_prices": context["settlement_prices"],
                 "notification_status": event["status"], "notification_error": event["error"],
             }));
         }

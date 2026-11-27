@@ -98,7 +98,7 @@ export function SignalSetupPage() {
   }
 
   const quoteErrors = signalQuoteErrors(data)
-  const accountErrors = signalAccountErrors(data)
+  const accountErrors = signalAccountErrors(data, market)
   const validateQuotes = () => {
     setShowQuoteErrors(true)
     return !Object.values(quoteErrors).some(Boolean)
@@ -134,7 +134,7 @@ export function SignalSetupPage() {
         trade_channel: SIGNAL_CHANNEL,
         brokerage: SIGNAL_CHANNEL,
         portfolio_id: portfolioId,
-        account_config: signalConfig(data),
+        account_config: signalConfig(data, market),
         account_control_preset: 'default',
         is_started: timer.autoOn,
         cron_expr: cron,
@@ -235,6 +235,10 @@ export function SignalSetupPage() {
           <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs text-ink-3">
             <dt>杠杆</dt>
             <dd>{describeLeverage(Number(leverage.long), Number(leverage.short), showShort)}</dd>
+            {data.mode === 'manual' && <>
+              <dt>跟随目标</dt>
+              <dd>{data.followTarget ? market === 'A股' ? `已开启 · 手续费率 ${data.followFeeBps} bp` : '已开启' : '已关闭'}</dd>
+            </>}
             <dt>定时任务</dt>
             <dd>{timer?.autoOn && scheduleKind ? describeCron(scheduleKind, cron, schedule.night, gmSessions) ?? cron : '已暂停'}</dd>
             <dt>通知</dt>
@@ -277,7 +281,9 @@ export function SignalSetupPage() {
   const assetStep = step === 3
   const workspaceStep = (quoteStep && Boolean(descriptor)) || assetStep || notificationStep
   const lead = quoteStep ? '选择组合计算使用的行情来源，可在右侧用指定标的测试。'
-    : assetStep ? '提供组合计算使用的账户权益、可用资金和币种。实际持仓可选填。'
+    : assetStep ? data.mode === 'manual' && market === 'A股' && data.followTarget
+      ? '填写期初可用资金、手续费率和计价币种。起始持仓可选填。'
+      : '提供组合计算使用的账户权益、可用资金和币种。实际持仓可选填。'
     : notificationStep ? '选择调仓信号的通知方式。' : null
   const heading = <div className="min-w-0">
     <h1 id="signal-step-title" className="text-[23px] font-[680] tracking-tight">{steps[step].label}</h1>

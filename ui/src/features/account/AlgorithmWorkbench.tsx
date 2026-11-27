@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Trash2 } from 'lucide-react'
-import { EdgeScrollHint } from '@/components/ui/EdgeScrollHint'
+import { EdgeScrollHint, EdgeScrollHints } from '@/components/ui/EdgeScrollHint'
 import { MacTimePicker } from '@/components/ui/MacTimePicker'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { NumberTicker } from '@/components/ui/NumberTicker'
@@ -113,11 +113,16 @@ export function AlgorithmWorkbench({ channel, trade, empty, schedule, onTradeCha
     <div className="col-start-1 row-start-2 hidden pb-2 min-[900px]:block">
       {item('trade', '默认算法', trade)}
     </div>
-    <div ref={listRef} aria-label="调仓时段" className="quiet-scrollbar col-start-1 row-start-3 hidden min-h-0 overflow-y-auto overscroll-contain [scrollbar-gutter:stable] min-[900px]:block">
-      {schedule.map((rule, index) => <AlgorithmItem key={rule.key} itemKey={rule.key} time={rule}
-        label={rule.start && rule.end ? algorithmTimeLabel(rule.start, rule.end) : '新时段'} algorithm={rule.algorithm}
-        selected={active === rule.key} error={timeErrors[index] || errors[rule.key]} onSelect={() => select(rule.key)} />)}
-      {schedule.length === 0 && <p className="px-3 py-4 text-xs text-ink-3">未设置独立时段</p>}
+    <div className="relative col-start-1 row-start-3 hidden min-h-0 min-[900px]:block">
+      <div ref={listRef} aria-label="调仓时段" className="quiet-scrollbar h-full overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
+        <div>
+          {schedule.map((rule, index) => <AlgorithmItem key={rule.key} itemKey={rule.key} time={rule}
+            label={rule.start && rule.end ? algorithmTimeLabel(rule.start, rule.end) : '新时段'} algorithm={rule.algorithm}
+            selected={active === rule.key} error={timeErrors[index] || errors[rule.key]} onSelect={() => select(rule.key)} />)}
+          {schedule.length === 0 && <p className="px-3 py-4 text-xs text-ink-3">未设置独立时段</p>}
+        </div>
+      </div>
+      <EdgeScrollHints target={listRef} label="调仓时段" className="from-bg via-bg/80" />
     </div>
     <div className="col-start-1 row-start-3 min-w-0 border-t border-line pt-2 min-[900px]:row-start-4">
       {showEmpty && <div className="hidden pb-2 min-[900px]:block">{item('empty', '清仓算法', empty)}</div>}

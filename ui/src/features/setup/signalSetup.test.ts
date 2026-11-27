@@ -46,6 +46,10 @@ test('信号向导先选择市场，并在单独的一步配置通知', () => {
     expect(market).not.toContain('>做多杠杆</label>')
     expect(market).not.toContain('>做空杠杆</label>')
     expect(market).toContain('先选择市场，再查看同市场的组合。')
+    const assets = render(4)
+    expect(assets).toContain('aria-pressed="true" aria-label="跟随目标"')
+    expect(assets).toContain('定时计算成功后，将目标记为信号持仓。')
+    expect(assets).toContain('aria-label="跟随目标说明"')
     expect(render(5)).toContain('请先在「账户与组合」选择市场。')
 
     const notification = render(6)
@@ -60,6 +64,7 @@ test('信号向导先选择市场，并在单独的一步配置通知', () => {
     expect(confirmation).toContain('账户设置 · 7 / 7')
     expect(confirmation).toContain('暂不绑定组合')
     expect(confirmation).toContain('>确认</div>')
+    expect(confirmation).toContain('>跟随目标</dt><dd>已开启</dd>')
     expect(confirmation).not.toContain('试算目标数量')
     expect(confirmation).toContain('>创建账户</button>')
     expect(confirmation).toContain('>通知</dt><dd>未配置</dd>')
@@ -210,4 +215,18 @@ test('期货行情只保存所选来源的字段，编辑时恢复已保存的�
   expect(tq.quote_source).toEqual({ kind: 'tq', tq_username: draft.tq_username, tq_password: draft.tq_password })
   expect(signalConfig(configToSignalDraft(tq))).toEqual(tq)
   expect(signalQuoteErrors({ ...draft, quoteKind: 'tq', tq_password: '' }).tq_password).toBe('请填写天勤密码')
+})
+
+
+test('开户提交保存期初现金和手续费，自定义账户函数关闭跟随', () => {
+  const draft = { ...initialSignalDraft, cash: '100000', quoteKind: 'tushare' as const, tushareToken: 'fixture', followTarget: true }
+  const config = signalConfig(draft, 'A股')
+  expect(config.follow_target).toBe(true)
+  expect(config.follow_fee_bps).toBe(5)
+  expect(config.manual_assets?.available_cash).toBe(100000)
+  expect(signalConfig({ ...draft, followFeeBps: '0' }, 'A股').follow_fee_bps).toBe(0)
+  expect(signalAccountErrors({ ...draft, followFeeBps: '-1' }, 'A股').followFeeBps).toBeTruthy()
+  expect(configToSignalDraft(config).followTarget).toBe(true)
+  expect(configToSignalDraft(config).followFeeBps).toBe('5')
+  expect(signalConfig({ ...draft, mode: 'function', accountCode: 'def fetch_account(context): return {}' }, 'A股').follow_target).toBe(false)
 })

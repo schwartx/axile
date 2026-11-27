@@ -16,9 +16,10 @@ from axile.channels import ChannelPortfolioPreset, ChannelSchedule, get_channel,
 from axile.channels.market_data import MarketDataUnavailable
 from axile.channels.rebalance_signal import SIGNAL_CHANNEL
 from axile.common import feishu
-from axile.common.default_account_notification import SIGNAL_NOTIFICATION_CODE
+from axile.common.default_account_notification import SIGNAL_NOTIFICATION_CODE, build_signal_feishu_card
 from axile.executor import gm_market_data
 from axile.executor.gm_market_data import GMMarketData, GMMarketDataConfig
+from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_price import UnifiedPriceData
 from axile.server import market_data, signal_runner, signal_service, tushare_quotes
 from axile.server.api.deps import get_scheduler
@@ -240,7 +241,7 @@ def signal_account_payload(portfolio_id, quote_source=CUSTOM_SOURCE, *, market="
         "trade_channel": SIGNAL_CHANNEL,
         "brokerage": SIGNAL_CHANNEL,
         "portfolio_id": portfolio_id,
-        "account_config": {"manual_assets": MANUAL, "quote_source": quote_source},
+        "account_config": {"manual_assets": MANUAL, "quote_source": quote_source, "follow_target": False},
         "account_control_preset": "default",
         "is_started": True,
         "cron_expr": "0 0 1 1 *",
@@ -299,6 +300,31 @@ def calculate_portfolio(context):
     assert client.get(f"{url}/target_snapshot").json()["quantities"] == {"600000.SH": 200, "510300.SH": -150}
 
 
+def test_signal_card_distinguishes_empty_missing_and_failed_targets():
+    for targets, error, message in [
+        ({}, None, "目标空仓"),
+        (None, None, "尚未计算目标持仓"),
+        ({}, "行情读取失败", "行情读取失败"),
+    ]:
+        card = build_signal_feishu_card("示例", targets, "股", error)
+        status = "调仓信号失败" if error else "调仓信号"
+        assert card["header"]["title"]["content"] == "示例"
+        assert card["header"]["subtitle"]["content"] == status
+        assert card["body"]["elements"][0]["text"]["content"] == message
+
+    card = build_signal_feishu_card("示例", {"TEST": -1234.56789}, "手", at="2026-11-27T01:30:00+00:00")
+    assert card["header"]["subtitle"]["content"] == "调仓信号"
+    assert card["body"]["elements"][-1]["content"] == "2026-11-27 09:30"
+    assert signal_card_targets(card) == {"TEST": "-1,234.56789 手"}
+
+
+def signal_card_targets(card):
+    columns = next(element["columns"] for element in card["body"]["elements"] if element["tag"] == "column_set")
+    symbols = columns[0]["elements"][0]["text"]["content"].splitlines()
+    quantities = columns[1]["elements"][0]["content"].splitlines()
+    return dict(zip(symbols, quantities, strict=True))
+
+
 def test_signal_notification_tests_use_sample_without_saved_account(client, monkeypatch):
     sender = Mock()
     monkeypatch.setattr(account_signal, "push_feishu_card", sender)
@@ -310,8 +336,12 @@ def test_signal_notification_tests_use_sample_without_saved_account(client, monk
     assert response.json()["ok"] is True
     card, key = sender.call_args.args
     assert key == "draft-key"
-    assert "【测试】草稿账户" in card["header"]["title"]["content"]
-    assert "100 股" in card["elements"][0]["content"]
+    assert card["config"]["width_mode"] == "compact"
+    assert card["header"]["title"]["content"] == "【测试】草稿账户"
+    section, positions, _timestamp = card["body"]["elements"]
+    assert section["content"] == "**目标持仓**"
+    assert positions["columns"][1]["elements"][0]["text_align"] == "right"
+    assert list(signal_card_targets(card).values()) == ["100 股", "100 股"]
 
     sender.side_effect = RuntimeError("机器人拒绝 draft-key")
     response = client.post(url, json=webhook)
@@ -395,7 +425,10 @@ def test_signal_schedule_persists_complete_targets_once_and_rejects_trade(client
     namespace = {}
     exec(SIGNAL_NOTIFICATION_CODE, namespace)  # noqa: S102 - 检查内置卡片实际发送数据
     namespace["notify"](context)
-    assert all(symbol in sender.call_args.args[0]["elements"][0]["content"] for symbol in TARGET)
+    card = sender.call_args.args[0]
+    assert card["header"]["title"]["content"] == "离线信号"
+    assert card["header"]["subtitle"]["content"].endswith(" · 定时生成")
+    assert signal_card_targets(card) == {symbol: f"{quantity} 股" for symbol, quantity in TARGET.items()}
 
 
 def test_manual_signal_publishes_for_paused_account_without_trade_intent(client, native_database, monkeypatch):
@@ -457,6 +490,7 @@ def test_signal_records_page_filters_saved_signals(client, monkeypatch):
     assert failed["trigger_source"] == "scheduler"
     assert failed["status"] == "FAILED" and failed["error"] and failed["targets"] == {}
     assert failed["scheduled_at"] == "2026-11-23T02:30:00+00:00"
+    assert failed["sizing_prices"] is None and failed["settlement_prices"] is None
     older = client.get(history, params={"before": latest["next_cursor"], "limit": 1}).json()
     (succeeded,) = older["items"]
     assert succeeded["id"] == manual.json()["event_id"]
@@ -524,6 +558,7 @@ def calculate_portfolio(context):
         "raw_targets": weights,
         "account_weights": {"600000.SH": 0.6, "510300.SH": -0.5},
         "quantities": quantities,
+        "sizing_prices": {"600000.SH": 10, "510300.SH": 10},
     }
     assert refreshed.json() | expected == refreshed.json()
 
@@ -531,6 +566,8 @@ def calculate_portfolio(context):
     assert portfolio_refresh.status_code == 200, portfolio_refresh.text
     assert portfolio_refresh.json()["target_mode"] == "weight"
     assert portfolio_refresh.json()["weights"] == weights
+    assert portfolio_refresh.json()["sizing_prices"] == expected["sizing_prices"]
+    assert client.get(f"/portfolio/{portfolio}/target_snapshot").json()["sizing_prices"] == expected["sizing_prices"]
     assert client.get(f"{account_url}/target_snapshot").json()["quantities"] == quantities
 
     sender = Mock()
@@ -538,16 +575,16 @@ def calculate_portfolio(context):
     tested = client.post(f"{account_url}/feishu/test", json={"feishu_key": "fixture-key"})
     assert tested.status_code == 200 and tested.json()["ok"], tested.text
     (card, _key) = sender.call_args.args
-    assert set(card["elements"][0]["content"].splitlines()) == {
-        "**目标持仓**",
-        "600000.SH  600 股",
-        "510300.SH  -500 股",
-    }
+    assert card["header"]["title"]["content"] == "【测试】离线信号"
+    assert card["header"]["subtitle"]["content"] == "调仓信号 · A股"
+    assert signal_card_targets(card) == {symbol: f"{quantity:g} 股" for symbol, quantity in quantities.items()}
 
     asyncio.run(run_scheduled_signal(account_id, datetime.fromisoformat("2026-11-23T10:30:00+08:00")))
     target = client.get(f"{account_url}/target_snapshot").json()
     assert target | expected == target
     assert target["source"] == "signal"
+    (record,) = client.get(f"{account_url}/signal/records").json()["items"]
+    assert record["sizing_prices"] == expected["sizing_prices"]
     with closing(connect(native_database)) as connection:
         (notified,) = connection.execute(
             "SELECT json_extract(context,'$.targets') FROM notification_event WHERE event_type='signal.calculated'"
@@ -879,3 +916,211 @@ def test_registered_plugin_market_drives_signal_schedule(client, monkeypatch):
     asyncio.run(scheduler.execute_scheduled_rebalance(account_id, "2026-11-22T03:00:00+08:00"))
     response = client.get(f"/account/{account_id}/target_snapshot")
     assert response.json()["quantities"] == TARGET
+
+
+def test_manual_follow_updates_ledger_without_changing_scheduled_node_baseline(client, monkeypatch):
+    monkeypatch.setattr(signal_service, "wake_notifications", Mock())
+    code = f"""
+def calculate_portfolio(context):
+    targets = {{}} if context.get_price("510300.SH") >= 12 else {TARGET}
+    return {{"mode": "quantity", "targets": targets}}
+"""
+    portfolio = create_portfolio(client, "A股", code)
+    payload = signal_account_payload(portfolio) | {
+        "cron_expr": "30 9,10 * * mon-fri|0 11 * * mon-fri",
+        "is_started": False,
+    }
+    payload["account_config"]["manual_assets"] = MANUAL | {"available_cash": 10000}
+    payload["account_config"]["follow_target"] = True
+    created = client.post("/account/", json=payload)
+    assert created.status_code == 201, created.text
+    account_id = created.json()["id"]
+    url = f"/account/{account_id}"
+    config = client.get(f"{url}/signal-config").json()["account_config"]
+    assert config["follow_target"] is True
+    assert config["follow_fee_bps"] == 5
+
+    def run(clock, day="23"):
+        asyncio.run(run_scheduled_signal(account_id, datetime.fromisoformat(f"2026-11-{day}T{clock}:00+08:00")))
+
+    def latest():
+        return client.get(f"{url}/signal/records", params={"limit": 1, "trigger_source": "scheduler"}).json()["items"][
+            0
+        ]
+
+    def holdings():
+        assets = client.get(f"{url}/asset_snapshots").json()["data"][0]["assets"]
+        return assets["source"], {p["symbol"]: p["volume"] for p in assets["positions"]}
+
+    assert client.post(f"{url}/target_snapshot/refresh").status_code == 200
+    assert client.get(f"{url}/signal/records").json()["items"] == []
+    manual = client.post(f"{url}/signal/run")
+    assert manual.status_code == 200, manual.text
+    assert manual.json()["message"] == "跟随已结转"
+    assert holdings() == ("signal_follow", TARGET)
+    assets = client.get(f"{url}/asset_snapshots").json()["data"][0]["assets"]
+    assert (assets["available_cash"], assets["total_asset"]) == (1996, 9996)
+    (record,) = client.get(f"{url}/signal/records").json()["items"]
+    assert record["node_change"] is None
+    assert record["adjustment"] == {
+        "kind": "order",
+        "basis": "signal_holdings",
+        "status": "compared",
+        "changes": {symbol: {"before": 0, "after": quantity, "delta": quantity} for symbol, quantity in TARGET.items()},
+    }
+    card = build_signal_feishu_card("示例", TARGET, "股", adjustment=record["adjustment"])
+    assert "600000.SH  买入 300 股" in card["body"]["elements"][1]["text"]["content"]
+    assert record["follow_ledger"] == {
+        "status": "settled",
+        "positions": TARGET,
+        "cash": 1996,
+        "equity": 9996,
+        "fee": 4,
+        "fee_bps": 5,
+    }
+    started = client.patch(url, json={"is_started": True})
+    assert started.status_code == 200, started.text
+    run("09:30")
+    assert latest()["node_change"] == {"status": "first"}
+    assert latest()["followed_target"] is True
+    assert latest()["follow_ledger"]["fee"] == 0
+    assert latest()["follow_ledger"]["cash"] == 1996
+    run("09:30")
+    assert latest()["follow_ledger"]["cash"] == 1996
+    repriced = client.patch(
+        url,
+        json={
+            "account_config": {
+                "quote_source": CUSTOM_SOURCE
+                | {
+                    "code": QUOTES.replace("last_price=10,", "last_price=11,"),
+                }
+            }
+        },
+    )
+    assert repriced.status_code == 200, repriced.text
+    run("11:00")
+    assert latest()["follow_ledger"] == {
+        "status": "settled",
+        "positions": TARGET,
+        "cash": 1996,
+        "equity": 10796,
+        "fee": 0,
+        "fee_bps": 5,
+    }
+    assert latest()["node_change"] == {"status": "missing"}
+    run("09:30", "24")
+    assert latest()["node_change"] == {
+        "status": "compared",
+        "previous_scheduled_at": "2026-11-23T03:00:00+00:00",
+        "changes": {},
+    }
+
+    repriced = client.patch(
+        url,
+        json={
+            "account_config": {
+                "quote_source": CUSTOM_SOURCE
+                | {
+                    "code": QUOTES.replace("last_price=10,", "last_price=12,"),
+                }
+            }
+        },
+    )
+    assert repriced.status_code == 200, repriced.text
+    sold = client.post(f"{url}/signal/run")
+    assert sold.status_code == 200, sold.text
+    assert sold.json()["message"] == "跟随已结转"
+    assert holdings() == ("signal_follow", {})
+    records = client.get(f"{url}/signal/records").json()["items"]
+    record = records[0]
+    assert record["sizing_prices"] is None
+    assert record["settlement_prices"] == dict.fromkeys(TARGET, 12)
+    assert records[-1]["settlement_prices"] == dict.fromkeys(TARGET, 10)
+    card = build_signal_feishu_card("示例", {}, "股", adjustment=record["adjustment"])
+    assert "510300.SH  卖出 500 股" in card["body"]["elements"][1]["text"]["content"]
+    assert record["follow_ledger"] == {
+        "status": "settled",
+        "positions": {},
+        "cash": 11591.2,
+        "equity": 11591.2,
+        "fee": 4.8,
+        "fee_bps": 5,
+    }
+    run("10:30", "24")
+    assert latest()["adjustment"]["changes"] == {}
+    assert latest()["follow_ledger"]["fee"] == 0
+    assert latest()["follow_ledger"]["cash"] == 11591.2
+    assert latest()["node_change"]["changes"] == {
+        symbol: {"before": quantity, "after": 0, "delta": -quantity} for symbol, quantity in TARGET.items()
+    }
+
+    response = client.patch(url, json={"account_config": {"follow_target": False}})
+    assert response.status_code == 200, response.text
+    assert client.post(f"{url}/signal/run").status_code == 200
+    assert holdings() == ("signal_manual", {})
+
+
+def test_signal_function_reports_adjustment_separately_from_target_change():
+    assets = UnifiedAccountAssets(
+        total_asset=10000,
+        available_cash=10000,
+        currency="CNY",
+        update_time="",
+        source="signal_function",
+        market_value=None,
+        extra={"positions_known": False},
+    )
+    assert signal_service._adjustment(assets, TARGET) == {"status": "unknown"}
+    assets.extra["positions_known"] = True
+    adjustment = signal_service._adjustment(assets, TARGET)
+    assert adjustment["changes"] == {
+        symbol: {"before": 0, "after": quantity, "delta": quantity} for symbol, quantity in TARGET.items()
+    }
+    card = build_signal_feishu_card("示例", TARGET, "股", adjustment=adjustment)
+    assert card["body"]["elements"][0]["content"] == "**待调整**"
+    assert signal_card_targets(card) == {symbol: f"{quantity} 股" for symbol, quantity in TARGET.items()}
+
+
+def test_follow_keeps_signal_target_and_cash_when_fees_make_it_unaffordable(client, monkeypatch):
+    monkeypatch.setattr(signal_service, "wake_notifications", Mock())
+    code = f"""
+def calculate_portfolio(context):
+    assert context.account.total_asset == 8000
+    return {{"mode": "quantity", "targets": {TARGET}}}
+"""
+    portfolio = create_portfolio(client, "A股", code)
+    payload = signal_account_payload(portfolio)
+    payload["account_config"]["follow_target"] = True
+    response = client.post("/account/", json=payload)
+    assert response.status_code == 201, response.text
+    account_id = response.json()["id"]
+    result = client.post(f"/account/{account_id}/signal/run")
+    assert result.status_code == 200, result.text
+    assert result.json()["message"] == "信号已生成，资金不足未结转"
+    (record,) = client.get(f"/account/{account_id}/signal/records").json()["items"]
+    assert record["targets"] == TARGET
+    assert record["followed_target"] is False
+    assert record["follow_ledger"] == {
+        "status": "insufficient_cash",
+        "positions": {},
+        "cash": 8000,
+        "equity": 8000,
+        "fee": 0,
+        "fee_bps": 5,
+    }
+
+
+@pytest.mark.parametrize(("legacy_rate", "expected_bps"), [(None, 5), (0.0003, 3)])
+def test_new_manual_signal_defaults_to_follow_and_normalizes_fee_bps(client, legacy_rate, expected_bps):
+    payload = signal_account_payload(None)
+    payload["account_config"].pop("follow_target")
+    if legacy_rate is not None:
+        payload["account_config"]["follow_fee_rate"] = legacy_rate
+    result = client.post("/account/", json=payload)
+    assert result.status_code == 201, result.text
+    account_id = result.json()["id"]
+    config = client.get(f"/account/{account_id}/signal-config").json()["account_config"]
+    assert config["follow_target"] is True
+    assert config["follow_fee_bps"] == expected_bps
+    assert "follow_fee_rate" not in config

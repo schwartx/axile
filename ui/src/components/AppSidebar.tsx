@@ -376,6 +376,7 @@ export function AppSidebar({
       <NavItem item={{ label: '行情设置', to: accountPath('/edit/quotes'), active: exact(accountPath('/edit/quotes')) }} dense={denseNav} />
       <NavItem item={{ label: '资金与持仓', to: accountPath('/edit/assets'), active: exact(accountPath('/edit/assets')) }} dense={denseNav} />
       <NavItem item={accountExecution[0]} dense={denseNav} />
+      <NavItem item={{ label: '通知', to: accountPath('/edit/notification'), active: exact(accountPath('/edit/notification')) }} dense={denseNav} />
       <NavItem item={accountExecution[3]} dense={denseNav} />
     </NavSection> : <>
       <NavSection compact dense={denseNav} label="参数">

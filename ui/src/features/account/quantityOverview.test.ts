@@ -1,12 +1,16 @@
 import { expect, test } from 'bun:test'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
+import { HoldingsComparison } from '@/features/account/HoldingsComparison'
 import { HoldingsPreviewTable } from '@/features/account/HoldingsPreviewTable'
 import { HoldingsView } from '@/features/account/HoldingsView'
 import { holdingPreviewRows, signalHoldingPreviewRows } from '@/features/account/holdingDetailModel'
 import { rebalanceHeadline } from '@/features/account/holdingPreview'
 import { portfolioTargetSummary } from '@/features/portfolio/portfolioCardSummary'
+import { SignalOrderEvidence, SignalOrderInstructions, SignalRecordList, SignalTargets } from '@/features/signal/SignalRecordList'
+import type { SignalRecord } from '@/features/signal/signalApi'
 import { rebalancePlanOfServer } from '@/lib/derive'
+import { formatObservedAt } from '@/lib/scheduleTime'
 import type { AccountRebalancePlan, TargetSizingRow, TargetWeightSnapshot } from '@/types/api'
 
 const targets = { '513050.SH': 34700, '513090.SH': 1900 }
@@ -25,18 +29,22 @@ const snapshot: TargetWeightSnapshot = {
 
 test('持仓预览默认填满表格，有品种时提供三个列宽分隔条', () => {
   const holdings = holdingPreviewRows([], 0, snapshot, true, comparison.rows)
-  const renderPreview = (rows: typeof holdings | null) => renderToStaticMarkup(createElement(HoldingsPreviewTable, {
-    holdings: rows, quantityMode: true, positionValueLabel: '名义价值', onColumnWidthsChange: () => {},
+  const renderPreview = (rows: typeof holdings | null, columnWidths?: number[]) => renderToStaticMarkup(createElement(HoldingsPreviewTable, {
+    holdings: rows, quantityMode: true, positionValueLabel: '名义价值', columnWidths, onColumnWidthsChange: () => {},
   }))
   const html = renderPreview(holdings)
   expect(html).toContain('class="w-full table-auto')
   expect(html.match(/role="separator"/g)).toHaveLength(3)
-  for (const label of ['品种', '持仓/可用', '目标数量']) {
+  for (const label of ['品种', '持仓/可用', '目标']) {
     expect(html).toContain(`aria-label="调整${label}列宽"`)
   }
   expect(html).not.toContain('rounded-full ring-2 ring-surface')
+  expect(html).toMatch(/aria-label="向上滚动持仓表" tabindex="-1"/)
+  expect(html).toMatch(/aria-label="向下滚动持仓表" tabindex="-1"/)
+  expect(renderPreview([])).not.toContain('向下滚动持仓表')
   expect(renderPreview(null)).not.toContain('role="separator"')
   expect(renderPreview([])).not.toContain('role="separator"')
+  expect(renderPreview(holdings, [100, 80, 80])).toContain('class="w-full table-auto')
 })
 
 test('数量目标空仓保留待建仓结论与买卖统计，不依赖百分比行', () => {
@@ -165,8 +173,8 @@ test('权重模式的买卖统计与百分比行保留', () => {
 })
 
 test('信号账户复用数量表，未知持仓和实际空仓显示不同，快照数量无执行偏离', () => {
-  const render = (holdings: ReturnType<typeof signalHoldingPreviewRows>) => renderToStaticMarkup(createElement(HoldingsPreviewTable, {
-    holdings, quantityMode: true, quantityLabel: '股', compact: true,
+  const render = (holdings: ReturnType<typeof signalHoldingPreviewRows>) => renderToStaticMarkup(createElement(HoldingsComparison, {
+    table: { holdings, quantityMode: true, quantityLabel: '股', showAvailableVolume: false },
   }))
   const unknown = signalHoldingPreviewRows(undefined, 0, targets)
   const empty = signalHoldingPreviewRows([], 0, targets)
@@ -178,15 +186,188 @@ test('信号账户复用数量表，未知持仓和实际空仓显示不同，�
   expect(compared[0]).toMatchObject({ volume: 500, snapshotQuantity: 0 })
   expect(signalHoldingPreviewRows(positions, 0, null)[0].snapshotQuantity).toBeUndefined()
 
-  const html = render(compared)
-  expect(html).toContain('目标数量')
+  const html = render(compared.map(row => ({ ...row, availableVolume: 200 })))
+  expect(html).toContain('>持仓</span>')
+  expect(html).toContain('>多500</span>')
+  expect(html).not.toContain('持仓/可用')
+  expect(html).not.toContain('多500/')
+  expect(html).toContain('>目标</span>')
   expect(html).toContain('多34,700股')
   expect(html).not.toContain('待调整')
   expect(html.match(/<th /g)).toHaveLength(3)
+  expect(html).toContain('aria-label="调整持仓列宽"')
+  expect(html).toContain('aria-label="调整持仓摘要与表格宽度"')
+  expect(html).not.toContain('重置列宽')
 })
 
 test('信号持仓对照区分已换算的空仓和未换算', () => {
   const positions = [{ symbol: '513050.SH', direction: '多头', volume: 500 }]
   expect(signalHoldingPreviewRows(positions, 0, {})[0].snapshotQuantity).toBe(0)
   expect(signalHoldingPreviewRows(positions, 0, null)[0].snapshotQuantity).toBeUndefined()
+})
+
+
+test('信号明细区分目标移除与实仓未知', () => {
+  const record: SignalRecord = {
+    id: 'signal', created_at: '2026-11-27T01:30:00Z', scheduled_at: '2026-11-27T01:30:00Z',
+    trigger_source: 'scheduler', status: 'SUCCEEDED', error: null, quantity_unit: '股',
+    targets: { '600000.SH': 4600 }, node_change: {
+      status: 'compared', changes: { '000001.SZ': { before: 1000, after: 0, delta: -1000 } },
+    },
+    adjustment: { status: 'unknown' }, followed_target: false, notification_status: 'succeeded', notification_error: null,
+  }
+  const html = renderToStaticMarkup(createElement(SignalTargets, { record, detailed: true }))
+  expect(html).toContain('600000.SH')
+  expect(html).toContain('000001.SZ')
+  expect(html).toContain('较上一节点')
+  expect(html).toContain('1,000 → 0')
+  expect(html).toContain('-1,000')
+  expect(html).toContain('实仓未知，待调整不可用')
+})
+
+
+test('信号记录只收起无变化的零目标品种，保留清仓指示和结转账本', () => {
+  const record: SignalRecord = {
+    id: 'signal', created_at: '2026-11-27T04:42:56Z', scheduled_at: null,
+    trigger_source: 'manual', status: 'SUCCEEDED', error: null, quantity_unit: '股',
+    targets: { '000001.SZ': 0, '000002.SZ': 1400, '600000.SH': 0 },
+    node_change: { status: 'compared', changes: { '600036.SH': { before: 100, after: 0, delta: -100 } } },
+    adjustment: {
+      kind: 'order', basis: 'signal_holdings', status: 'compared',
+      changes: {
+        '000001.SZ': { before: 0, after: 0, delta: 0 },
+        '000002.SZ': { before: 0, after: 1400, delta: 1400 },
+        '600000.SH': { before: 900, after: 0, delta: -900 },
+      },
+    },
+    followed_target: true,
+    follow_ledger: { status: 'settled', equity: 99945.4, cash: 46687.4, fee: 31.35 },
+    notification_status: 'succeeded', notification_error: null,
+  }
+  const html = renderToStaticMarkup(createElement(SignalTargets, { record, detailed: true }))
+  expect(html).not.toContain('000001.SZ')
+  expect(html).toContain('000002.SZ')
+  expect(html).toContain('600000.SH')
+  expect(html).toContain('600036.SH')
+  expect(html).toContain('aria-label="信号品种范围"')
+  expect(html).toContain('本次信号')
+  expect(html).toContain('全部品种')
+  expect(html).toContain('bg-up/15 text-up">买入')
+  expect(html).toContain('bg-down/15 text-down">卖出')
+  expect(html).toContain('900 股')
+  expect(html.indexOf('按结转前信号持仓')).toBeLessThan(html.indexOf('<table'))
+  expect(html).not.toContain('31.35')
+  const pricedRecord = {
+    ...record,
+    sizing_prices: { '000002.SZ': 8.75 },
+    settlement_prices: { '000002.SZ': 9.5, '600000.SH': 10.25 },
+  }
+  const priced = renderToStaticMarkup(createElement(SignalTargets, { record: pricedRecord, detailed: true }))
+  expect(priced).toContain('换算价')
+  expect(priced).toContain('结转价（¥）')
+  expect(priced).toMatch(/8\.75<\/td><td[^>]*>9\.5<\/td><td[^>]*>13,300\.00/)
+  expect(priced).toMatch(/—<\/td><td[^>]*>10\.25<\/td><td[^>]*>9,225\.00/)
+  const scheduledTargets = renderToStaticMarkup(createElement(SignalTargets, { record }))
+  expect(scheduledTargets).toContain('000001.SZ')
+  expect(scheduledTargets).toContain('¥31.35')
+
+  const renderList = (compact: boolean, items: SignalRecord[]) => renderToStaticMarkup(createElement(SignalRecordList, {
+    compact,
+    poll: {
+      data: { items, next_cursor: null }, error: null, loading: false, refreshing: false,
+      updatedAt: null, stale: false, refresh: async () => {},
+    },
+  }))
+  const overview = renderList(true, [record])
+  expect(overview).toContain('手动生成')
+  expect(overview).not.toContain('<details')
+  expect(overview).not.toContain('信号目标持仓')
+  const second = { ...record, id: 'second', targets: { '600519.SH': 100 }, node_change: null, adjustment: null }
+  const noOrders: SignalRecord = { ...second, id: 'no-orders', follow_ledger: null, adjustment: { kind: 'order', status: 'compared', changes: {} } }
+  const unknown: SignalRecord = { ...noOrders, id: 'unknown', adjustment: { kind: 'order', status: 'unknown' } }
+  const failed: SignalRecord = { ...noOrders, id: 'failed', status: 'FAILED', error: '计算失败原因' }
+  const journal = renderList(false, [record, second, noOrders, unknown, failed])
+  expect(journal).toContain('aria-label="信号记录列表"')
+  expect(journal).toContain('aria-expanded="false"')
+  expect(journal).toContain('aria-controls=')
+  expect(journal).toContain('inert=""')
+  expect(journal).toContain('border-l-2 border-accent')
+  const summaries = [...journal.matchAll(/<button[^>]+aria-expanded="false"[^>]*>.*?<\/button>/g)].map(match => match[0])
+  expect(summaries).toHaveLength(4)
+  for (const content of ['权益 ¥', '99,945.4', '可用资金 ¥', '46,687.4', '手续费 ¥', '31.35', '2 单']) {
+    expect(summaries[0]).toContain(content)
+  }
+  expect(summaries[0]).not.toContain('3 单')
+  expect(summaries[2]).toContain('无需调仓')
+  expect(summaries[3]).toContain('无下单指示')
+  expect(journal).toContain('计算失败原因')
+  expect(journal).toContain('信号目标持仓')
+  expect(journal).toContain('600000.SH')
+  expect(journal).toContain('600519.SH')
+
+  const scheduled = renderList(true, [{ ...record, scheduled_at: record.created_at }])
+  expect(scheduled).toContain('<details')
+  expect(scheduled).toContain('计划时间')
+  expect(scheduled).not.toContain('信号目标持仓')
+})
+
+test('概览左栏直接显示上次信号的买卖操作与品种', () => {
+  const record = {
+    created_at: '2026-11-27T03:00:22Z',
+    quantity_unit: '股',
+    adjustment: {
+      kind: 'order', basis: 'signal_holdings', status: 'compared',
+      changes: {
+        '600000.SH': { before: 0, after: 300, delta: 300 },
+        '510300.SH': { before: 500, after: 0, delta: -500 },
+      },
+    },
+  } as const
+  const html = renderToStaticMarkup(createElement(SignalOrderInstructions, { record }))
+  expect(html).toContain('最近一次信号')
+  expect(html).toContain('aria-label="最近一次信号的买卖列表"')
+  expect(html).toContain('overflow-y-auto overscroll-contain')
+  expect(html).toContain('aria-label="向下滚动买卖列表"')
+  expect(html).toContain('aria-haspopup="dialog" aria-label="展开买卖列表"')
+  expect(html.indexOf('展开买卖列表')).toBeLessThan(html.indexOf('最近一次信号的买卖列表'))
+  expect(html).not.toContain('下单指示')
+  expect(html).toMatch(/>买入<\/span>.*>300 股<\/span>.*>600000\.SH<\/span>/)
+  expect(html).toMatch(/>卖出<\/span>.*>500 股<\/span>.*>510300\.SH<\/span>/)
+  expect(html).toContain('11:00:22</time></p>')
+  expect(formatObservedAt(record.created_at, Date.parse('2026-11-27T04:00:00Z'), 'second')).toBe('今天 11:00:22')
+  expect(html).not.toContain('按结转前信号持仓')
+  const empty = { ...record, adjustment: { ...record.adjustment, changes: {} } }
+  const emptyHtml = renderToStaticMarkup(createElement(SignalOrderInstructions, { record: empty }))
+  expect(emptyHtml).toContain('无需下单')
+  expect(emptyHtml).not.toContain('展开买卖列表')
+})
+
+
+test('信号弹窗按结转价汇总金额，缺价时保留未知并标记未结转测算', () => {
+  const record = {
+    created_at: '2026-11-27T04:42:56Z', quantity_unit: '股', adjustment: null,
+    settlement_prices: { '600000.SH': 9.5, '510300.SH': 10.25 },
+    follow_ledger: { status: 'settled', equity: 99945.4, cash: 46687.4, fee: 31.35 },
+  } as const
+  const orders: [string, { delta: number }][] = [
+    ['600000.SH', { delta: 300 }], ['510300.SH', { delta: -500 }],
+  ]
+  const render = (value: Pick<SignalRecord, keyof typeof record>) =>
+    renderToStaticMarkup(createElement(SignalOrderEvidence, { record: value, orders }))
+  const html = render(record)
+  expect(html).toMatch(/<dt[^>]*>买入金额（¥）<\/dt><dd[^>]*>2,850\.00/)
+  expect(html).toMatch(/<dt[^>]*>卖出金额（¥）<\/dt><dd[^>]*>5,125\.00/)
+  expect(html).toMatch(/<dt[^>]*>手续费（¥）<\/dt><dd[^>]*>31\.35/)
+  const old = render({ ...record, settlement_prices: null })
+  expect(old).toMatch(/<dt[^>]*>买入金额（¥）<\/dt><dd[^>]*>—/)
+  expect(old).toContain('31.35')
+  const estimate = render({
+    ...record, follow_ledger: { ...record.follow_ledger, status: 'insufficient_cash', fee: 0 },
+    settlement_prices: { '510300.SH': 10.25 },
+  })
+  expect(estimate).toContain('资金不足，本次未跟随')
+  expect(estimate).toContain('测算金额（¥）')
+  expect(estimate).toMatch(/<dt[^>]*>测算买入金额（¥）<\/dt><dd[^>]*>—/)
+  expect(estimate).toMatch(/<dt[^>]*>测算卖出金额（¥）<\/dt><dd[^>]*>5,125\.00/)
+  expect(estimate).toMatch(/<dt[^>]*>手续费（¥）<\/dt><dd[^>]*>0\.00/)
 })

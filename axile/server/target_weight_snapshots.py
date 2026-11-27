@@ -24,6 +24,7 @@ async def append_target_weight_snapshot(
     source: Literal["manual", "execution"],
     execution_id: str | None = None,
     signal_quantities: dict[str, float] | None = None,
+    sizing_prices: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """由 Rust 一次提交快照头和权重明细。"""
     return await native_operation(
@@ -39,6 +40,7 @@ async def append_target_weight_snapshot(
             "execution_id": execution_id,
             "calculated_at": now_str(),
             **({"signal_quantities": signal_quantities} if signal_quantities is not None else {}),
+            **({"sizing_prices": sizing_prices} if sizing_prices is not None else {}),
         },
     )
 
@@ -105,6 +107,7 @@ def target_snapshot_public(
         "strategy_weights": strategy_weights if mode == "weight" else None,
         "account_weights": account_weights if mode == "weight" else None,
         "sizing": sizing,
+        **({"sizing_prices": snapshot["sizing_prices"]} if "sizing_prices" in snapshot else {}),
         "calculated_at": snapshot["calculated_at"],
         "source": cast(Literal["manual", "execution", "signal"], snapshot["source"]),
         "execution_id": snapshot["execution_id"],

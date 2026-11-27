@@ -1,9 +1,11 @@
-import { Plus, Trash2 } from 'lucide-react'
+import { CircleHelp, Plus, Trash2 } from 'lucide-react'
 import { useId, useRef, useState, type Ref } from 'react'
+import { Toggle } from '@/features/account/editUi'
 import { Card } from '@/components/ui/Card'
 import { ConnectionField } from '@/components/ui/ConnectionField'
 import { InkRewrite } from '@/components/ui/InkRewrite'
 import { Segmented } from '@/components/ui/Segmented'
+import { Tooltip } from '@/components/ui/Tooltip'
 import { amountMagnitude } from '@/components/ui/amountMagnitude'
 import { isDecimalDraft, normalizeMoneyValue } from '@/components/ui/connectionFieldValue'
 import { MOTION_LAYOUT } from '@/lib/viewTransition'
@@ -17,16 +19,16 @@ function magnitudeHint(value: string): string | undefined {
   return magnitude ? `${normalized.startsWith('-') ? '-' : ''}${magnitude}` : undefined
 }
 
-function CellInput({ label, value, error, numeric, inputRef, onChange }: {
-  label: string; value: string; error?: string; numeric?: boolean; inputRef?: Ref<HTMLInputElement>; onChange: (next: string) => void
+function CellInput({ label, value, error, numeric, inputRef, onChange, large = false, showMagnitude = true }: {
+  label: string; value: string; error?: string; numeric?: boolean; large?: boolean; showMagnitude?: boolean; inputRef?: Ref<HTMLInputElement>; onChange: (next: string) => void
 }) {
   const messageId = useId()
-  const valueHint = numeric && !error ? magnitudeHint(value) : undefined
+  const valueHint = numeric && showMagnitude && !error ? magnitudeHint(value) : undefined
   return <div className="grid min-w-0 gap-1">
-    <label className={`flex h-8 min-w-0 items-center gap-2 rounded-md border bg-surface px-2.5 focus-within:border-accent ${error ? 'border-warn' : 'border-line'}`}>
+    <label className={`flex min-w-0 items-center gap-2 rounded-md border bg-surface px-2.5 focus-within:border-accent ${large ? 'h-11' : 'h-8'} ${error ? 'border-warn' : 'border-line'}`}>
       <input ref={inputRef} aria-label={label} aria-invalid={Boolean(error) || undefined} aria-describedby={error || valueHint ? messageId : undefined}
         inputMode={numeric ? 'decimal' : 'text'} autoComplete="off" spellCheck={false}
-        className={`h-full min-w-0 flex-1 bg-transparent text-[13px] text-ink-1 outline-none ${numeric ? 'num' : ''}`}
+        className={`h-full min-w-0 flex-1 bg-transparent text-ink-1 outline-none ${large ? 'text-lg font-semibold' : 'text-[13px]'} ${numeric ? 'num' : ''}`}
         value={value} onChange={(event) => {
           const next = event.target.value
           if (!numeric || isDecimalDraft(next)) onChange(next)
@@ -39,11 +41,14 @@ function CellInput({ label, value, error, numeric, inputRef, onChange }: {
   </div>
 }
 
-export function SignalManualAssets({ value, errors, onChange }: {
+export function SignalManualAssets({ value, errors, onChange, stockFollow }: {
+  stockFollow: boolean
   value: SignalDraft
   errors?: SignalAccountErrors
   onChange: (patch: Partial<SignalDraft>) => void
 }) {
+  const followDescription = useId()
+  const followLedger = stockFollow && value.followTarget
   const addButton = useRef<HTMLButtonElement>(null)
   const focusPosition = useRef<string | null>(null)
   const [closingPosition, setClosingPosition] = useState<{ row: PositionDraft; errors?: SignalPositionErrors } | null>(null)
@@ -70,46 +75,79 @@ export function SignalManualAssets({ value, errors, onChange }: {
     onChange({ positionsKnown: positions.length > 0, positions })
   }
 
-  return <div className="grid gap-4">
-    <section aria-label="账户资金" className="grid gap-3">
-      <div className="flex items-start justify-between gap-3">
-        <h2 className="self-start pt-1.5 text-[15px] font-semibold text-ink-1">账户资金</h2>
-        <div className="flex items-start gap-2 text-[13px] text-ink-2">
-          <span className="pt-1.5">计价币种</span>
-          <div className="min-w-20 max-w-36">
-            <CellInput label="计价币种" value={value.currency} error={errors?.currency} onChange={(currency) => onChange({ currency })} />
+  return <div className="grid gap-6">
+    <section aria-label="跟随设置" className="grid gap-4">
+      <div className="flex items-center justify-between gap-5">
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-1">
+            <h2 className="text-base font-semibold text-ink-1">跟随目标</h2>
+            <Tooltip content="开启后，系统将定时目标结转为信号持仓。关闭后，按生成的信号手动调仓，持仓由你录入。" arrow>
+              <button type="button" aria-label="跟随目标说明" onClick={(event) => event.currentTarget.focus()}
+                className="inline-flex size-6 cursor-help items-center justify-center rounded text-ink-3 hover:text-ink-2 focus-visible:outline-accent">
+                <CircleHelp size={14} aria-hidden />
+              </button>
+            </Tooltip>
+          </div>
+          <p id={followDescription} className="text-sm leading-relaxed text-ink-3">
+            {value.followTarget ? '定时计算成功后，将目标记为信号持仓。' : '按生成的信号手动调仓。'}
+          </p>
+        </div>
+        <Toggle on={value.followTarget} onClick={() => onChange({ followTarget: !value.followTarget })}
+          ariaLabel="跟随目标" describedBy={followDescription} />
+      </div>
+    </section>
+    <section aria-label="账户资金" className="@container rounded-card border border-line bg-surface px-4 py-4 sm:px-5">
+      <div className="grid items-start gap-x-6 gap-y-4 @min-[52rem]:grid-cols-[max-content_minmax(0,1fr)]">
+        <div className="flex items-center gap-1 @min-[52rem]:self-center">
+          <h2 className="text-base font-semibold text-ink-1">账户资金</h2>
+          {followLedger && <Tooltip content="按变动金额计费。权益由现金和持仓市值计算，未填写起始持仓时按空仓起步。" arrow>
+            <button type="button" aria-label="账户资金说明" onClick={(event) => event.currentTarget.focus()}
+              className="inline-flex size-6 cursor-help items-center justify-center rounded text-ink-3 hover:text-ink-2 focus-visible:outline-accent">
+              <CircleHelp size={14} aria-hidden />
+            </button>
+          </Tooltip>}
+        </div>
+        <div className={`grid min-w-0 items-start gap-x-6 gap-y-4 ${followLedger
+          ? '@min-[34rem]:grid-cols-[minmax(0,1fr)_8rem_8rem]'
+          : '@min-[34rem]:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_8rem]'}`}>
+          {!followLedger && <ConnectionField kind="money" appearance="flat" label="账户权益" placeholder="输入金额" required value={value.equity} error={errors?.equity}
+            valueHint={magnitudeHint(value.equity)} onChange={(equity) => onChange(signalEquityPatch(value, equity))} />}
+          <ConnectionField kind="money" appearance="flat" label={followLedger ? '期初可用资金' : '可用资金'} placeholder="输入金额" required value={value.cash} error={errors?.cash}
+            valueHint={magnitudeHint(value.cash)} onChange={(cash) => onChange({ cash, cashFromEquity: false })} />
+          {followLedger && <div className="grid min-w-0 max-w-40 gap-1.5">
+            <span className="text-[13px] leading-4 text-ink-2">手续费率（bp）</span>
+            <CellInput label="手续费率（bp）" value={value.followFeeBps} large numeric showMagnitude={false}
+              error={errors?.followFeeBps} onChange={(followFeeBps) => onChange({ followFeeBps })} />
+          </div>}
+          <div className="grid min-w-0 max-w-40 gap-1.5">
+            <span className="text-[13px] leading-4 text-ink-2">计价币种</span>
+            <CellInput label="计价币种" large value={value.currency} error={errors?.currency} onChange={(currency) => onChange({ currency })} />
           </div>
         </div>
       </div>
-      <div className="grid grid-cols-2 items-start gap-3">
-        <ConnectionField kind="money" label="账户权益" required value={value.equity} error={errors?.equity}
-          valueHint={magnitudeHint(value.equity)} onChange={(equity) => onChange(signalEquityPatch(value, equity))} />
-        <ConnectionField kind="money" label="可用资金" required value={value.cash} error={errors?.cash}
-          valueHint={magnitudeHint(value.cash)} onChange={(cash) => onChange({ cash, cashFromEquity: false })} />
-      </div>
     </section>
-    <section aria-label="实际持仓" className="border-t border-line pt-3">
-      <div className="flex min-h-8 flex-wrap items-start justify-between gap-x-3 gap-y-2">
-        <div>
-          <h2 className="text-[15px] leading-4 font-semibold text-ink-1">实际持仓 <span className="text-xs font-normal text-ink-3">（选填）</span></h2>
-          {!hasPositions && <p role="status" className="text-xs leading-4 text-ink-3">
+    <section aria-label="持仓设置" className="border-t border-line pt-5">
+      <div className="flex min-h-10 flex-wrap items-center justify-between gap-x-5 gap-y-3">
+        <div className="space-y-1.5">
+          <h2 className="text-base font-semibold text-ink-1">{followLedger ? "起始持仓" : "实际持仓"} <span className="text-[13px] font-normal text-ink-3">（选填）</span></h2>
+          {!hasPositions && <p role="status" className="text-[13px] leading-5 text-ink-3">
             <InkRewrite text={value.positionsKnown ? '已确认当前无持仓' : '未提供持仓'} tone="label" />
           </p>}
         </div>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex items-center gap-3">
           {!hasPositions && <button type="button" onClick={() => onChange({ positionsKnown: !value.positionsKnown })}
-            className="h-8 cursor-pointer rounded-md px-2 text-[13px] text-ink-2 hover:bg-fill">
+            className="h-10 cursor-pointer rounded-md px-3 text-sm text-ink-2 hover:bg-fill">
             {value.positionsKnown ? '撤销确认' : '确认空仓'}
           </button>}
           <button ref={addButton} type="button" onClick={addPosition}
-            className="flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-line bg-surface px-3 text-[13px] text-ink-1 hover:bg-fill">
+            className="flex h-10 cursor-pointer items-center gap-2 rounded-md border border-line bg-surface px-4 text-sm text-ink-1 hover:bg-fill">
             <Plus size={14} aria-hidden />添加持仓
           </button>
         </div>
       </div>
       <div inert={!hasPositions} className={`grid transition-[grid-template-rows] ${MOTION_LAYOUT} ${hasPositions ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
         <div className="min-h-0 overflow-clip">
-          <Card className="mt-2.5 overflow-hidden">
+          <Card className="mt-4 overflow-hidden">
             <table className="w-full table-fixed text-left text-[13px]">
               <colgroup>
                 <col className="sm:w-[22%]" />
